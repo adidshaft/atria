@@ -1,16 +1,42 @@
-# Atria
+<p align="center">
+  <img src="assets/atria-logo.png" alt="Atria app icon" width="120" height="120">
+</p>
 
-**Free local WHOOP strap usage, for life.**
+<h1 align="center">Atria</h1>
 
-For queries reachout to [adidshaft](https://x.com/adidshaft).
+<p align="center">
+  Free local strap data, for life.
+</p>
 
-![Atria logo](assets/atria-logo.png)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0A1A3E" alt="MIT license"></a>
+  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache--2.0-0A1A3E" alt="Apache 2.0 license"></a>
+  <img src="https://img.shields.io/badge/iOS-physical%20device%20required-0A1A3E" alt="Physical iPhone required">
+  <img src="https://img.shields.io/badge/data-local%20only-2B6BE0" alt="Local-only data">
+  <img src="https://img.shields.io/badge/HRV-reference%20pending-D97706" alt="HRV reference pending">
+</p>
+
+<p align="center">
+  <a href="#current-status">Status</a>
+  ·
+  <a href="#quick-start">Quick Start</a>
+  ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+  ·
+  <a href="https://x.com/adidshaft">Contact adidshaft</a>
+</p>
+
+<p align="center">
+  For queries reach out to <a href="https://x.com/adidshaft">adidshaft</a>.
+</p>
 
 Atria is an open-source iOS app and BLE research toolkit for using a compatible WHOOP strap locally, without the official WHOOP cloud, account, subscription, or app. It is designed for people who own unused straps and want honest local metrics: live heart rate, saved RR windows, strain, sleep/workout evidence, HealthKit export, and protocol research.
 
 This project is independent and unaffiliated with WHOOP. It does not bypass paid cloud features. It talks to your own hardware over Bluetooth LE and keeps data on device.
 
-![Atria Today screen](assets/atria-today.png)
+<p align="center">
+  <img src="assets/atria-today.png" alt="Atria Today screen" width="360">
+</p>
 
 ## Current Status
 
