@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Atria</string>
+	<key>CFBundleName</key>
+	<string>Atria</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>This app reads Health only to confirm locally captured Atria data appears in Apple Health.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you explicitly enable export.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Atria samples this iPhone's motion only to label local diagnostic evidence; wrist and sleep metrics still require validated strap motion.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
+</dict>
+</plist>

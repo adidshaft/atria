@@ -1,0 +1,40 @@
+# Python (macOS BLE exploration tooling)
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime artifacts from the Terminal BLE workaround
+whoop_log.txt
+which_script.txt
+# contains a copied Python interpreter; not source
+WhoopBLE.app/
+
+# Runtime transcripts from cabled iPhone WHOOPDBG sessions
+logs/live-device/
+
+# Generated physical-device evidence can include private health/device data.
+# Keep curated evidence tracked only when explicitly staged with -f.
+docs/evidence/**
+
+# Xcode / iOS
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+
+# Local signing/secrets material
+.env
+.env.*
+keys/
+*.p8
+*.mobileprovision
+
+# Local execution contracts can contain device-specific history.
+GOAL.md
+
+# Local design experiments; curated public assets live in assets/.
+design/
+
+# macOS
+.DS_Store
