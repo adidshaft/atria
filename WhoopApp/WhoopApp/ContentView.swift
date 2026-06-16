@@ -2,8 +2,32 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject var ble: WhoopBLEManager
-    @EnvironmentObject var store: SessionStore
+    let ble: WhoopBLEManager
+    let store: SessionStore
+    @State private var showOnboarding = false
+
+    var body: some View {
+        AtriaHomeContainer(ble: ble, store: store)
+            .equatable()
+            .onAppear {
+                let debugCompletesOnboarding = ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
+                showOnboarding = !store.profile.hasCompletedOnboarding && !debugCompletesOnboarding
+            }
+            .sheet(isPresented: $showOnboarding) {
+                ProfileOnboardingView(profile: store.profile) { profile in
+                    store.completeOnboarding(with: profile)
+                    showOnboarding = false
+                }
+                .interactiveDismissDisabled()
+            }
+    }
+}
+
+struct LegacyContentView: View {
+    let ble: WhoopBLEManager
+    let store: SessionStore
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("atria.dashboard.section") private var selectedSectionRaw = DashboardSection.overview.rawValue
     @State private var showOnboarding = false
     @State private var lastStrainLogKey = ""
     @State private var lastGuidanceLogKey = ""
@@ -27,77 +51,61 @@ struct ContentView: View {
     @State private var lastTodaySettledLogKey = ""
     @State private var lastTodayGateETrainingLogKey = ""
     @State private var manualCheckpointStatus = ""
+    @AppStorage("atria.dashboard.expandedPanels") private var expandedDiagnosticPanelsRaw = "framesList,localCoreState,localSignals,strainCriteria"
+
+    private enum DashboardSection: String, CaseIterable, Identifiable {
+        case overview
+        case vitals
+        case collection
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .overview: return "Overview"
+            case .vitals: return "Vitals"
+            case .collection: return "Collection"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .overview: return "Daily guidance"
+            case .vitals: return "Live body signals"
+            case .collection: return "Capture and diagnostics"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .overview: return "sparkles"
+            case .vitals: return "heart.text.square.fill"
+            case .collection: return "waveform.badge.magnifyingglass"
+            }
+        }
+    }
+
+    private enum DiagnosticPanel: String, CaseIterable, Hashable {
+        case localCoreState
+        case localSignals
+        case localReference
+        case localGates
+        case localModes
+        case strainCriteria
+        case framesList
+    }
+
+    init(ble: WhoopBLEManager, store: SessionStore) {
+        self.ble = ble
+        self.store = store
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    statusCard
-                    todayUsabilityCard
-                    DailyEvidenceCard(restFallback: restForStrain)
-                    CollectionReliabilityCard()
-                    if diagnosticsWarm {
-                        localStatusCard
-                        trendPreviewCard
-                    } else {
-                        diagnosticsWarmupCard
-                    }
-                    HStack(spacing: 12) {
-                        RecoveryRing(percent: recoveryEstimate.percent,
-                                     detail: recoveryEstimate.detail,
-                                     confidence: recoveryEstimate.confidence)
-                        StrainGauge(strain: strainEstimate.strain,
-                                    detail: strainEstimate.detail,
-                                    confidence: strainEstimate.confidence)
-                    }
-                    DailyGuidanceCard(recovery: recoveryEstimate, strain: strainEstimate.strain)
-                    if diagnosticsWarm {
-                        strainValidationCard
-                    }
-                    heartRateCard
-                    hrvCard
-                    BaselineCard(baseline: store.baseline, currentResting: ble.restingHR)
-                    profileCard
-                    metricsRow
-                    captureCard
-                    framesCard
-                }
-                .padding()
-            }
-            .navigationTitle("Atria")
-            .background(Color(.systemGroupedBackground))
-            .onAppear { logRecoveryEstimate(recoveryEstimate) }
-            .onAppear { logStrainEstimate(strainEstimate) }
-            .onAppear { logGuidanceDecision(recovery: recoveryEstimate, strain: strainEstimate) }
-            .onAppear { logHRMaxCalibrationUI() }
-            .onAppear { scheduleDiagnosticsWarmup() }
-            .onAppear { syncProfileToBLE() }
+        AtriaHomeContainer(ble: ble, store: store)
+            .equatable()
             .onAppear {
                 let debugCompletesOnboarding = ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
                 showOnboarding = !store.profile.hasCompletedOnboarding && !debugCompletesOnboarding
-            }
-            .onChange(of: recoveryEstimate) { _, newValue in
-                logRecoveryEstimate(newValue)
-                logGuidanceDecision(recovery: newValue, strain: strainEstimate)
-            }
-            .onChange(of: strainEstimate) { _, newValue in
-                logStrainEstimate(newValue)
-                logGuidanceDecision(recovery: recoveryEstimate, strain: newValue)
-                logLocalStatusIfWarm()
-            }
-            .onReceive(store.$sessions) { _ in
-                logLocalStatusIfWarm()
-            }
-            .onChange(of: store.profile) { _, _ in
-                syncProfileToBLE()
-                logHRMaxCalibrationUI()
-                logLocalStatusIfWarm()
-            }
-            .onReceive(ble.$session) { _ in
-                logHRMaxCalibrationUI()
-            }
-            .onChange(of: ble.sleepMotionHintCount) { _, _ in
-                logLocalStatusIfWarm()
             }
             .sheet(isPresented: $showOnboarding) {
                 ProfileOnboardingView(profile: store.profile) { profile in
@@ -106,26 +114,6 @@ struct ContentView: View {
                 }
                 .interactiveDismissDisabled()
             }
-            .fileImporter(isPresented: $showHRReferenceImporter,
-                          allowedContentTypes: [.commaSeparatedText, .plainText, .data],
-                          allowsMultipleSelection: false) { result in
-                handleHRReferenceImport(result)
-            }
-            .fileImporter(isPresented: $showRRReferenceImporter,
-                          allowedContentTypes: [.commaSeparatedText, .plainText, .data],
-                          allowsMultipleSelection: false) { result in
-                handleRRReferenceImport(result)
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        HistoryView()
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                    }
-                }
-            }
-        }
     }
 
     // MARK: Headline metric inputs
@@ -876,18 +864,6 @@ struct ContentView: View {
         }
     }
 
-    private func syncProfileToBLE() {
-        if ble.maxHRSetting != store.profile.maxHR {
-            ble.maxHRSetting = store.profile.maxHR
-        }
-        NSLog("WHOOPDBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d rest_hr=%d",
-              store.profile.age,
-              store.profile.maxHRSource.rawValue,
-              store.profile.maxHR,
-              store.profile.measuredMaxHR,
-              restForStrain)
-    }
-
     private var connectionStatusText: String {
         if ble.status == .connected {
             return ble.status.rawValue
@@ -903,6 +879,334 @@ struct ContentView: View {
         return ble.status.rawValue
     }
 
+    private var dashboardHero: some View {
+        let guidance = Coach.guide(recovery: recoveryEstimate, strain: strainEstimate.strain)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Today")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(guidance.headline)
+                        .font(.system(.title2, design: .rounded).weight(.bold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(guidance.detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    Label(connectionStatusText, systemImage: ble.status == .connected ? "bolt.heart.fill" : "bolt.horizontal.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ble.status == .connected ? .green : .orange)
+                    Text(ble.heartRate > 0 ? "\(ble.heartRate)" : "--")
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                    Text("live bpm")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 10) {
+                dashboardHeroStat(title: "Recovery",
+                                  value: recoveryEstimate.percent.map { "\($0)%" } ?? "Learning",
+                                  detail: recoveryEstimate.confidence.rawValue,
+                                  tint: .green)
+                dashboardHeroStat(title: "Strain",
+                                  value: String(format: "%.1f", strainEstimate.strain),
+                                  detail: strainEstimate.confidence,
+                                  tint: .orange)
+                dashboardHeroStat(title: "HRV",
+                                  value: store.latestReferenceValidatedHRV.map(String.init) ?? (ble.hrvSnapshot?.isReady == true ? "Pending" : "Learning"),
+                                  detail: store.latestReferenceValidatedHRV != nil ? "validated" : "RR window",
+                                  tint: .purple)
+            }
+        }
+        .padding(20)
+        .background(
+            LinearGradient(colors: [
+                Color.white.opacity(0.78),
+                Color.white.opacity(0.46)
+            ], startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 28, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.white.opacity(0.65), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 18, y: 10)
+    }
+
+    private func dashboardHeroStat(title: String, value: String, detail: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var dashboardSectionPicker: some View {
+        AtriaGlassToolbar {
+            ForEach(DashboardSection.allCases) { section in
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) {
+                        selectSection(section)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Label(section.title, systemImage: section.systemImage)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .foregroundStyle(selectedSection == section ? .primary : .secondary)
+                    .background {
+                        if selectedSection == section {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.white.opacity(0.55))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var dashboardSectionLeadCard: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedSection.title)
+                    .font(.title3.weight(.semibold))
+                Text(selectedSection.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            dashboardLeadBadge
+        }
+        .padding(18)
+        .background(AtriaQuietCardBackground())
+    }
+
+    @ViewBuilder
+    private var dashboardLeadBadge: some View {
+        switch selectedSection {
+        case .overview:
+            Label(connectionStatusText, systemImage: ble.status == .connected ? "bolt.heart.fill" : "bolt.horizontal.circle")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ble.status == .connected ? .green : .orange)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.5), in: Capsule())
+
+        case .vitals:
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(ble.heartRate > 0 ? "\(ble.heartRate)" : "--")
+                    .font(.title3.weight(.bold).monospacedDigit())
+                Text("live bpm")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+        case .collection:
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(ble.isRecording ? "Recording" : "Local mode")
+                    .font(.caption.weight(.semibold))
+                Text(ble.isRecording ? "\(ble.capturedRows) rows" : "checkpoints ready")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private var dashboardSectionContent: some View {
+        switch selectedSection {
+        case .overview:
+            if usesSplitDashboardLayout {
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(spacing: 18) {
+                        todayUsabilityCard
+                        DailyGuidanceCard(recovery: recoveryEstimate, strain: strainEstimate.strain)
+                        DailyEvidenceCard(restFallback: restForStrain)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+
+                    VStack(spacing: 18) {
+                        HStack(alignment: .top, spacing: 12) {
+                            RecoveryRing(percent: recoveryEstimate.percent,
+                                         detail: recoveryEstimate.detail,
+                                         confidence: recoveryEstimate.confidence)
+                            StrainGauge(strain: strainEstimate.strain,
+                                        detail: strainEstimate.detail,
+                                        confidence: strainEstimate.confidence)
+                        }
+                        CollectionReliabilityCard()
+                        BaselineCard(baseline: store.baseline, currentResting: ble.restingHR)
+                        if diagnosticsWarm {
+                            trendPreviewCard
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            } else {
+                VStack(spacing: 18) {
+                    todayUsabilityCard
+                    ViewThatFits {
+                        HStack(alignment: .top, spacing: 12) {
+                            RecoveryRing(percent: recoveryEstimate.percent,
+                                         detail: recoveryEstimate.detail,
+                                         confidence: recoveryEstimate.confidence)
+                            StrainGauge(strain: strainEstimate.strain,
+                                        detail: strainEstimate.detail,
+                                        confidence: strainEstimate.confidence)
+                        }
+                        VStack(spacing: 12) {
+                            RecoveryRing(percent: recoveryEstimate.percent,
+                                         detail: recoveryEstimate.detail,
+                                         confidence: recoveryEstimate.confidence)
+                            StrainGauge(strain: strainEstimate.strain,
+                                        detail: strainEstimate.detail,
+                                        confidence: strainEstimate.confidence)
+                        }
+                    }
+                    DailyGuidanceCard(recovery: recoveryEstimate, strain: strainEstimate.strain)
+                    DailyEvidenceCard(restFallback: restForStrain)
+                    CollectionReliabilityCard()
+                    BaselineCard(baseline: store.baseline, currentResting: ble.restingHR)
+                    if diagnosticsWarm {
+                        trendPreviewCard
+                    }
+                }
+            }
+
+        case .vitals:
+            if usesSplitDashboardLayout {
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(spacing: 18) {
+                        heartRateCard
+                        hrvCard
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+
+                    VStack(spacing: 18) {
+                        if diagnosticsWarm {
+                            strainValidationCard
+                        }
+                        profileCard
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            } else {
+                VStack(spacing: 18) {
+                    heartRateCard
+                    hrvCard
+                    if diagnosticsWarm {
+                        strainValidationCard
+                    }
+                    profileCard
+                }
+            }
+
+        case .collection:
+            if usesSplitDashboardLayout {
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(spacing: 18) {
+                        captureCard
+                        if diagnosticsWarm {
+                            localStatusCard
+                        } else {
+                            diagnosticsWarmupCard
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+
+                    VStack(spacing: 18) {
+                        framesCard
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            } else {
+                VStack(spacing: 18) {
+                    captureCard
+                    if diagnosticsWarm {
+                        localStatusCard
+                    } else {
+                        diagnosticsWarmupCard
+                    }
+                    framesCard
+                }
+            }
+        }
+    }
+
+    private var usesSplitDashboardLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var dashboardMaxWidth: CGFloat {
+        usesSplitDashboardLayout ? 1120 : 700
+    }
+
+    private var selectedSection: DashboardSection {
+        DashboardSection(rawValue: selectedSectionRaw) ?? .overview
+    }
+
+    private var expandedDiagnosticPanels: Set<DiagnosticPanel> {
+        Set(
+            expandedDiagnosticPanelsRaw
+                .split(separator: ",")
+                .compactMap { DiagnosticPanel(rawValue: String($0)) }
+        )
+    }
+
+    private func selectSection(_ section: DashboardSection) {
+        selectedSectionRaw = section.rawValue
+    }
+
+    private func setDiagnosticPanel(_ panel: DiagnosticPanel, expanded: Bool) {
+        var panels = expandedDiagnosticPanels
+        if expanded {
+            panels.insert(panel)
+        } else {
+            panels.remove(panel)
+        }
+        expandedDiagnosticPanelsRaw = panels
+            .map(\.rawValue)
+            .sorted()
+            .joined(separator: ",")
+    }
+
     private var statusCard: some View {
         HStack {
             Circle()
@@ -913,7 +1217,7 @@ struct ContentView: View {
             Text(ble.deviceName).font(.caption).foregroundStyle(.secondary)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var todayUsabilityCard: some View {
@@ -942,27 +1246,23 @@ struct ContentView: View {
         let checkpointLastSamples = UserDefaults.standard.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastSamples)
         let loggingReady = checkpointArmed || ble.longWearModeEnabled
         let sessionCount = store.sessions.count
-        let metricRows: [[TodayMetricItem]] = [
-            [
-                TodayMetricItem(title: "Strain", value: String(format: "%.1f", strain.strain), detail: strain.confidence, system: "bolt.heart.fill", color: .orange, ready: true),
-                TodayMetricItem(title: "Recovery", value: recovery.percent.map { "\($0)%" } ?? "learning", detail: recovery.confidence.rawValue, system: "gauge.with.dots.needle.bottom.50percent", color: .green, ready: recovery.percent != nil),
-                TodayMetricItem(title: "HRV", value: todayHRVValue(hrv, rrPackage: rrPackage), detail: hrvDetail(hrv, rrPackage: rrPackage), system: "waveform.path.ecg", color: .purple, ready: hrvReady || rrReadyForReference)
-            ],
-            [
-                TodayMetricItem(title: "Workout", value: todayWorkoutValue(saved: savedWorkout, live: liveWorkout), detail: todayWorkoutDetail(saved: savedWorkout, live: liveWorkout), system: "figure.run", color: .red, ready: savedWorkout.ready || liveWorkout.ready),
-                TodayMetricItem(title: "Sleep", value: todaySleepValue(sleep), detail: todaySleepDetail(sleep), system: "bed.double.fill", color: .cyan, ready: sleep.ready),
-                TodayMetricItem(title: "Log", value: loggingReady ? "on" : "off", detail: todayCollectionDetail(collection, fallback: todayLoggingDetail(armed: checkpointArmed, lastStatus: checkpointLastStatus, lastSamples: checkpointLastSamples)), system: "record.circle.fill", color: .teal, ready: loggingReady && collection.ready)
-            ],
-            [
-                TodayMetricItem(title: "Battery", value: ble.batteryLevel >= 0 ? "\(ble.batteryLevel)%" : "--", detail: ble.batteryLevel >= 0 ? "strap" : "waiting", system: "battery.100", color: .green, ready: ble.batteryLevel >= 0),
-                TodayMetricItem(title: "RR package", value: todayRRPackageValue(rrPackage), detail: todayRRPackageDetail(rrPackage), system: "waveform.path.ecg", color: .purple, ready: rrPackage.ready),
-                TodayMetricItem(title: "Baseline", value: "\(store.baseline.hrvSampleCount)/7", detail: recovery.confidence.rawValue, system: "calendar.badge.clock", color: .indigo, ready: recovery.confidence == .high)
-            ],
-            [
-                TodayMetricItem(title: "Backup", value: todayBackupValue(backup), detail: todayBackupDetail(backup), system: "externaldrive.fill.badge.checkmark", color: .blue, ready: backup.current),
-                TodayMetricItem(title: "Health", value: todayHealthValue(health), detail: todayHealthDetail(health), system: "heart.text.square.fill", color: .pink, ready: health.readback.dataAppears),
-                TodayMetricItem(title: "Reference", value: todayReferenceValue(health), detail: todayReferenceDetail(health), system: "checkmark.seal.fill", color: .green, ready: health.referenceAudit.externalReferenceReady)
-            ]
+        let primaryMetrics: [TodayMetricItem] = [
+            TodayMetricItem(title: "Strain", value: String(format: "%.1f", strain.strain), detail: strain.confidence, system: "bolt.heart.fill", color: .orange, ready: true),
+            TodayMetricItem(title: "Recovery", value: recovery.percent.map { "\($0)%" } ?? "learning", detail: recovery.confidence.rawValue, system: "gauge.with.dots.needle.bottom.50percent", color: .green, ready: recovery.percent != nil),
+            TodayMetricItem(title: "HRV", value: todayHRVValue(hrv, rrPackage: rrPackage), detail: hrvDetail(hrv, rrPackage: rrPackage), system: "waveform.path.ecg", color: .purple, ready: hrvReady || rrReadyForReference),
+            TodayMetricItem(title: "Workout", value: todayWorkoutValue(saved: savedWorkout, live: liveWorkout), detail: todayWorkoutDetail(saved: savedWorkout, live: liveWorkout), system: "figure.run", color: .red, ready: savedWorkout.ready || liveWorkout.ready)
+        ]
+        let readinessMetrics: [TodayMetricItem] = [
+            TodayMetricItem(title: "Sleep", value: todaySleepValue(sleep), detail: todaySleepDetail(sleep), system: "bed.double.fill", color: .cyan, ready: sleep.ready),
+            TodayMetricItem(title: "Log", value: loggingReady ? "on" : "off", detail: todayCollectionDetail(collection, fallback: todayLoggingDetail(armed: checkpointArmed, lastStatus: checkpointLastStatus, lastSamples: checkpointLastSamples)), system: "record.circle.fill", color: .teal, ready: loggingReady && collection.ready),
+            TodayMetricItem(title: "Backup", value: todayBackupValue(backup), detail: todayBackupDetail(backup), system: "externaldrive.fill.badge.checkmark", color: .blue, ready: backup.current),
+            TodayMetricItem(title: "Health", value: todayHealthValue(health), detail: todayHealthDetail(health), system: "heart.text.square.fill", color: .pink, ready: health.readback.dataAppears)
+        ]
+        let supportMetrics: [TodayMetricItem] = [
+            TodayMetricItem(title: "Battery", value: ble.batteryLevel >= 0 ? "\(ble.batteryLevel)%" : "--", detail: ble.batteryLevel >= 0 ? "strap" : "waiting", system: "battery.100", color: .green, ready: ble.batteryLevel >= 0),
+            TodayMetricItem(title: "RR package", value: todayRRPackageValue(rrPackage), detail: todayRRPackageDetail(rrPackage), system: "waveform.path.ecg", color: .purple, ready: rrPackage.ready),
+            TodayMetricItem(title: "Baseline", value: "\(store.baseline.hrvSampleCount)/7", detail: recovery.confidence.rawValue, system: "calendar.badge.clock", color: .indigo, ready: recovery.confidence == .high),
+            TodayMetricItem(title: "Reference", value: todayReferenceValue(health), detail: todayReferenceDetail(health), system: "checkmark.seal.fill", color: .green, ready: health.referenceAudit.externalReferenceReady)
         ]
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
@@ -987,10 +1287,17 @@ struct ContentView: View {
                 }
             }
 
-            ForEach(metricRows.indices, id: \.self) { rowIndex in
-                HStack(spacing: 8) {
-                    ForEach(metricRows[rowIndex]) { item in
-                        todayMetric(item)
+            todayMetricSection("Signals", items: primaryMetrics)
+
+            todayMetricSection("Readiness", items: readinessMetrics)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Support")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(supportMetrics) { item in
+                        todayMetaPill(item)
                     }
                 }
             }
@@ -1025,7 +1332,7 @@ struct ContentView: View {
             .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
         .onAppear {
             logTodayGateETraining(gateETraining)
             NSLog("WHOOPDBG hrv_display state=%@ main_rmssd=%@ validated_sessions=%d rr_ready=%d rr_package_ready=%d rr_package_reason=%@ rr_package_raw=%d rr_package_kept=%d rr_package_conf=%d rr_package_gap_s=%.1f rr_package_rmssd=%@ reason=%@ metric_promotions=0 surface=today",
@@ -1253,6 +1560,42 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         .padding(9)
         .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func todayMetricSection(_ title: String, items: [TodayMetricItem]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(items) { item in
+                    todayMetric(item)
+                }
+            }
+        }
+    }
+
+    private func todayMetaPill(_ item: TodayMetricItem) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: item.system)
+                .foregroundStyle(item.ready ? item.color : .secondary)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("\(item.value) · \(item.detail.replacingOccurrences(of: "_", with: " "))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func hrvDetail(_ snapshot: HRVSnapshot?, rrPackage: RRPackageStatus) -> String {
@@ -1698,98 +2041,102 @@ struct ContentView: View {
                 .lineLimit(2)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var localStatusCard: some View {
         let status = localStatus
         let sleepReady = status.sleepState == "ready" || status.sleepState == "validated"
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 Label("Local status", systemImage: "checklist.checked")
                     .font(.headline)
                 Spacer()
-                Text("\(store.sessions.count) sessions")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(store.sessions.count)")
+                        .font(.title3.weight(.bold).monospacedDigit())
+                    Text("sessions")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
-                statusTile(title: "Sleep",
-                           value: status.sleepDays > 0 ? "\(status.sleepDays)d" : (status.sleepCandidateDays > 0 ? "candidate" : "learning"),
-                           detail: status.sleepState,
-                           system: "bed.double.fill",
-                           isReady: sleepReady)
-                statusTile(title: "Workout",
-                           value: status.workoutDays > 0 ? "\(status.workoutDays)d" : (status.confirmedWorkoutDays > 0 ? "confirmed" : "learning"),
-                           detail: status.workoutState,
-                           system: "figure.run",
-                           isReady: status.workoutDays > 0 || status.confirmedWorkoutDays > 0)
-                statusTile(title: "HRV",
-                           value: status.validatedHRVSessions > 0 ? "\(status.validatedHRVSessions)" : "pending",
-                           detail: status.hrvState,
-                           system: "waveform.path.ecg",
-                           isReady: status.validatedHRVSessions > 0)
-                statusTile(title: "Trends",
-                           value: "\(status.trendCoveragePercent)%",
-                           detail: status.trendState,
-                           system: "chart.line.uptrend.xyaxis",
-                           isReady: status.trendState == "ready" || status.trendState == "partial")
-                statusTile(title: "Logging",
-                           value: status.checkpointArmed ? "armed" : "learning",
-                           detail: checkpointDetail(status),
-                           system: "externaldrive.fill.badge.checkmark",
-                           isReady: status.checkpointArmed && status.checkpointLastStatus == "saved")
+
+            collapsibleDiagnosticSection("Core state", panel: .localCoreState) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
+                    statusTile(title: "Sleep",
+                               value: status.sleepDays > 0 ? "\(status.sleepDays)d" : (status.sleepCandidateDays > 0 ? "candidate" : "learning"),
+                               detail: status.sleepState,
+                               system: "bed.double.fill",
+                               isReady: sleepReady)
+                    statusTile(title: "Workout",
+                               value: status.workoutDays > 0 ? "\(status.workoutDays)d" : (status.confirmedWorkoutDays > 0 ? "confirmed" : "learning"),
+                               detail: status.workoutState,
+                               system: "figure.run",
+                               isReady: status.workoutDays > 0 || status.confirmedWorkoutDays > 0)
+                    statusTile(title: "HRV",
+                               value: status.validatedHRVSessions > 0 ? "\(status.validatedHRVSessions)" : "pending",
+                               detail: status.hrvState,
+                               system: "waveform.path.ecg",
+                               isReady: status.validatedHRVSessions > 0)
+                    statusTile(title: "Trends",
+                               value: "\(status.trendCoveragePercent)%",
+                               detail: status.trendState,
+                               system: "chart.line.uptrend.xyaxis",
+                               isReady: status.trendState == "ready" || status.trendState == "partial")
+                    statusTile(title: "Logging",
+                               value: status.checkpointArmed ? "armed" : "learning",
+                               detail: checkpointDetail(status),
+                               system: "externaldrive.fill.badge.checkmark",
+                               isReady: status.checkpointArmed && status.checkpointLastStatus == "saved")
+                }
             }
-            Text("Recovery \(status.recoveryState) · HRV baseline \(status.hrvBaselineSamples)/7 · motion \(status.motionSource.replacingOccurrences(of: "_", with: " "))")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.8)
-            Text(workoutAttemptDetail(status.liveWorkout))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(status.liveWorkout.ready ? .green : .secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
-            Text(savedWorkoutAttemptDetail(status.savedWorkout))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(status.savedWorkout.ready ? .green : (status.savedWorkout.nearMiss ? .orange : .secondary))
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
-            hrReferenceProofCard(status)
-            Divider()
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Gate readiness")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+
+            collapsibleDiagnosticSection("Signals", panel: .localSignals) {
+                diagnosticCallout("Recovery \(status.recoveryState) · HRV baseline \(status.hrvBaselineSamples)/7 · motion \(status.motionSource.replacingOccurrences(of: "_", with: " "))")
+                diagnosticCallout(workoutAttemptDetail(status.liveWorkout),
+                                  tint: status.liveWorkout.ready ? .green : .secondary)
+                diagnosticCallout(savedWorkoutAttemptDetail(status.savedWorkout),
+                                  tint: status.savedWorkout.ready ? .green : (status.savedWorkout.nearMiss ? .orange : .secondary))
+            }
+
+            collapsibleDiagnosticSection("Reference proof", panel: .localReference) {
+                hrReferenceProofCard(status)
+            }
+
+            collapsibleDiagnosticSection("Gate readiness", panel: .localGates) {
                 ForEach(gateReadinessRows(for: status)) { row in
                     gateReadinessRow(row)
                 }
             }
-            Toggle(isOn: Binding(get: {
-                ble.standardHROnlyEnabled
-            }, set: { enabled in
-                ble.setStandardHROnlyEnabled(enabled)
-                logLocalStatusIfWarm()
-            })) {
-                Label("Low radio HR", systemImage: "dot.radiowaves.left.and.right")
+
+            collapsibleDiagnosticSection("Modes", panel: .localModes) {
+                Toggle(isOn: Binding(get: {
+                    ble.standardHROnlyEnabled
+                }, set: { enabled in
+                    ble.setStandardHROnlyEnabled(enabled)
+                    logLocalStatusIfWarm()
+                })) {
+                    Label("Low radio HR", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .font(.caption)
+                .tint(.green)
+
+                Toggle(isOn: Binding(get: {
+                    ble.longWearModeEnabled
+                }, set: { enabled in
+                    ble.setLongWearModeEnabled(enabled,
+                                               rest: store.baseline.restingInt ?? restForStrain,
+                                               maxHR: store.profile.maxHR)
+                    logLocalStatusIfWarm()
+                })) {
+                    Label("Long wear", systemImage: "record.circle")
+                }
+                .font(.caption)
+                .tint(.blue)
             }
-            .font(.caption)
-            .tint(.green)
-            Toggle(isOn: Binding(get: {
-                ble.longWearModeEnabled
-            }, set: { enabled in
-                ble.setLongWearModeEnabled(enabled,
-                                           rest: store.baseline.restingInt ?? restForStrain,
-                                           maxHR: store.profile.maxHR)
-                logLocalStatusIfWarm()
-            })) {
-                Label("Long wear", systemImage: "record.circle")
-            }
-            .font(.caption)
-            .tint(.blue)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var trendPreviewCard: some View {
@@ -1805,41 +2152,47 @@ struct ContentView: View {
             TrendSummaryView(summaries: dashboardTrends)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var strainValidationCard: some View {
         let summary = strainValidationStatus
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 Label("Strain validation", systemImage: "figure.run.circle")
                     .font(.headline)
                 Spacer()
-                Text(summary.ready ? "ready" : "learning")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(summary.ready ? .green : .orange)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(summary.ready ? "ready" : "learning")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(summary.ready ? .green : .orange)
+                    Text("\(summary.streamCoveragePercent)% stream")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
+
             HStack(spacing: 10) {
-                strainValidationMetric("Strain", String(format: "%.1f", summary.strain))
-                strainValidationMetric("TRIMP", String(format: "%.1f", summary.trimp))
-                strainValidationMetric("Max HRR", "\(Int((summary.maxHRReserve * 100).rounded()))%")
+                strainStatTile("Strain", String(format: "%.1f", summary.strain))
+                strainStatTile("TRIMP", String(format: "%.1f", summary.trimp))
+                strainStatTile("Max HRR", "\(Int((summary.maxHRReserve * 100).rounded()))%")
             }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
-                strainCriterion("duration \(Int(summary.totalSeconds))/600s", good: summary.totalSeconds >= 600)
-                strainCriterion("stream \(summary.streamCoveragePercent)%", good: summary.streamCoveragePercent >= 75)
-                strainCriterion("rest z0 \(Int(summary.secondsZ0))/60s", good: summary.secondsZ0 >= 60)
-                strainCriterion("high \(Int(summary.highZoneSeconds))/60s", good: summary.highZoneSeconds >= 60)
-                strainCriterion("max HRR \(Int((summary.maxHRReserve * 100).rounded()))/85%", good: summary.maxHRReserve >= 0.85)
-                strainCriterion("external HR", good: summary.externalHRReferenceValidated)
+
+            collapsibleDiagnosticSection("Criteria", panel: .strainCriteria) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                    strainCriterion("duration \(Int(summary.totalSeconds))/600s", good: summary.totalSeconds >= 600)
+                    strainCriterion("stream \(summary.streamCoveragePercent)%", good: summary.streamCoveragePercent >= 75)
+                    strainCriterion("rest z0 \(Int(summary.secondsZ0))/60s", good: summary.secondsZ0 >= 60)
+                    strainCriterion("high \(Int(summary.highZoneSeconds))/60s", good: summary.highZoneSeconds >= 60)
+                    strainCriterion("max HRR \(Int((summary.maxHRReserve * 100).rounded()))/85%", good: summary.maxHRReserve >= 0.85)
+                    strainCriterion("external HR", good: summary.externalHRReferenceValidated)
+                }
             }
-            Text(summary.primaryBlocker.replacingOccurrences(of: "_", with: " "))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
+
+            diagnosticCallout(summary.primaryBlocker.replacingOccurrences(of: "_", with: " "))
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private func strainValidationMetric(_ label: String, _ value: String) -> some View {
@@ -1851,6 +2204,19 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func strainStatTile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func strainCriterion(_ text: String, good: Bool) -> some View {
@@ -2173,58 +2539,103 @@ struct ContentView: View {
     }
 
     private var heartRateCard: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "heart.fill")
-                .font(.title2)
-                .foregroundStyle(.red)
-                .symbolEffect(.pulse, options: .repeating, isActive: ble.heartRate > 0)
-            Text(ble.heartRate > 0 ? "\(ble.heartRate)" : "—")
-                .font(.system(size: 64, weight: .bold, design: .rounded))
-                .contentTransition(.numericText())
-            Text(ble.status == .connected && !ble.hasContact && ble.heartRate == 0
-                 ? "no skin contact" : "BPM")
-                .font(.caption).foregroundStyle(ble.hasContact || ble.heartRate > 0 ? Color.secondary : Color.orange)
-
-            ZoneBar(current: HRZone.zone(for: ble.heartRate, maxHR: store.profile.maxHR)).padding(.top, 6)
-
-            if ble.session.count > 1 {
-                HRChart(samples: ble.session, maxHR: store.profile.maxHR).padding(.top, 4)
-            } else {
-                Sparkline(values: ble.lastHeartRates).frame(height: 44).padding(.top, 4)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Heart rate", systemImage: "heart.fill")
+                        .font(.headline)
+                        .foregroundStyle(.red)
+                    Text(ble.status == .connected && !ble.hasContact && ble.heartRate == 0
+                         ? "Waiting for stable contact"
+                         : "Live cardiovascular signal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label(connectionStatusText, systemImage: ble.status == .connected ? "bolt.heart.fill" : "bolt.horizontal.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ble.status == .connected ? .green : .orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.5), in: Capsule())
             }
 
-            HStack(spacing: 0) {
-                hrStat("Resting", ble.restingHR)
-                hrStat("Average", ble.avgHR)
-                hrStat("Peak", ble.peakHR)
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.12))
+                        .frame(width: 72, height: 72)
+                    Image(systemName: "heart.fill")
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                        .symbolEffect(.pulse, options: .repeating, isActive: ble.heartRate > 0)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ble.heartRate > 0 ? "\(ble.heartRate)" : "—")
+                        .font(.system(size: 52, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                    Text(ble.status == .connected && !ble.hasContact && ble.heartRate == 0 ? "no skin contact" : "beats per minute")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ble.hasContact || ble.heartRate > 0 ? Color.secondary : Color.orange)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    hrMiniStat("Resting", ble.restingHR)
+                    hrMiniStat("Average", ble.avgHR)
+                    hrMiniStat("Peak", ble.peakHR)
+                }
             }
-            .padding(.top, 8)
+
+            ZoneBar(current: HRZone.zone(for: ble.heartRate, maxHR: store.profile.maxHR))
+
+            Group {
+                if ble.session.count > 1 {
+                    HRChart(samples: ble.session, maxHR: store.profile.maxHR)
+                } else {
+                    Sparkline(values: ble.liveHeartWindow.sparkline)
+                        .frame(height: 52)
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            HStack(spacing: 10) {
+                hrStatTile("Resting", ble.restingHR)
+                hrStatTile("Average", ble.avgHR)
+                hrStatTile("Peak", ble.peakHR)
+            }
 
             if ble.session.count > 1 {
-                VStack(spacing: 8) {
-                    Button {
-                        saveManualCheckpoint()
-                    } label: {
-                        Label("Save checkpoint", systemImage: "tray.and.arrow.down.fill")
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button {
-                        if let s = ble.finishSession(label: ble.captureLabel) {
-                            if store.add(s) {
-                                ble.clearFinishedSessionJournal(after: s, reason: "manual_finish")
-                                ble.captureLabel = ""
-                                manualCheckpointStatus = ""
-                            }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            saveManualCheckpoint()
+                        } label: {
+                            Label("Save checkpoint", systemImage: "tray.and.arrow.down.fill")
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity)
                         }
-                    } label: {
-                        Label("Finish & save session", systemImage: "checkmark.circle")
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
+                        .buttonStyle(.borderedProminent)
+
+                        Button {
+                            if let s = ble.finishSession(label: ble.captureLabel) {
+                                if store.add(s) {
+                                    ble.clearFinishedSessionJournal(after: s, reason: "manual_finish")
+                                    ble.captureLabel = ""
+                                    manualCheckpointStatus = ""
+                                }
+                            }
+                        } label: {
+                            Label("Finish session", systemImage: "checkmark.circle")
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
 
                     if !manualCheckpointStatus.isEmpty {
                         Text(manualCheckpointStatus)
@@ -2234,12 +2645,11 @@ struct ContentView: View {
                             .minimumScaleFactor(0.75)
                     }
                 }
-                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(AtriaQuietCardBackground())
     }
 
     private func saveManualCheckpoint() {
@@ -2284,56 +2694,83 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private func hrMiniStat(_ title: String, _ value: Int?) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(value.map(String.init) ?? "—")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func hrStatTile(_ title: String, _ value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value.map(String.init) ?? "—")
+                .font(.headline.monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private var hrvCard: some View {
         let validatedRMSSD = store.latestReferenceValidatedHRV
         let liveSnapshot = ble.hrvSnapshot
         let rrPackage = store.rrPackageStatusFast()
         let liveReadyButReferencePending = validatedRMSSD == nil && (liveSnapshot?.isReady == true || rrPackage.ready)
-        return VStack(spacing: 10) {
-            HStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "waveform.path").foregroundStyle(.purple)
-                        Text("HRV").font(.headline)
-                    }
-                    Text("5-min corrected RR window")
-                        .font(.caption2).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("HRV", systemImage: "waveform.path")
+                        .font(.headline)
+                        .foregroundStyle(.purple)
+                    Text("5-minute corrected RR window")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 3) {
                     Text(validatedRMSSD.map(String.init) ?? (liveReadyButReferencePending ? "pending" : "learning"))
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .minimumScaleFactor(0.6)
                         .contentTransition(.numericText())
-                    if let h = liveSnapshot {
-                        Text(validatedRMSSD != nil
-                             ? "validated RMSSD ms · \(h.confidencePercent)% · \(h.kept)/\(h.raw) RR"
-                             : (liveReadyButReferencePending ? "reference pending · \(rrPackage.ready ? rrPackage.confidencePercent : h.confidencePercent)% · \(rrPackage.ready ? rrPackage.kept : h.kept)/\(rrPackage.ready ? rrPackage.raw : h.raw) RR" : "learning · \(h.confidencePercent)% · \(h.kept)/\(h.raw) RR"))
-                            .font(.caption2)
-                            .foregroundStyle(validatedRMSSD != nil ? .green : .orange)
-                        Text(validatedRMSSD != nil ? String(format: "SDNN %.1f · pNN50 %.1f%% · ln %.2f", h.sdnn, h.pnn50, h.lnRMSSD) : "SDNN · pNN50 · ln reference pending")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(validatedRMSSD != nil ? (h.respiratoryRate.map { String(format: "Resp %.1f/min", $0) } ?? "Resp learning") : "Resp reference pending")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(rrPackage.ready
-                             ? "reference pending · \(rrPackage.confidencePercent)% · \(rrPackage.kept)/\(rrPackage.raw) RR"
-                             : ble.hrvQuality)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if rrPackage.ready {
-                            Text(String(format: "RMSSD %.1f · gap %.1fs", rrPackage.rmssd ?? 0, rrPackage.maxGapSeconds))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text(ble.rrContinuityDetail)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(ble.rrContinuityState == "ready" ? .green : .orange)
+                    Text(validatedRMSSD != nil ? "validated RMSSD ms" : (liveReadyButReferencePending ? "reference pending" : "learning"))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(validatedRMSSD != nil ? .green : .orange)
                 }
             }
+
+            if let h = liveSnapshot {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    hrvMetricTile("Confidence", "\(h.confidencePercent)% kept", tint: validatedRMSSD != nil ? .green : .orange)
+                    hrvMetricTile("RR kept", "\(h.kept)/\(h.raw)", tint: .purple)
+                    hrvMetricTile("SDNN", validatedRMSSD != nil ? String(format: "%.1f", h.sdnn) : "pending", tint: .secondary)
+                    hrvMetricTile("Resp", validatedRMSSD != nil ? (h.respiratoryRate.map { String(format: "%.1f/min", $0) } ?? "learning") : "pending", tint: .secondary)
+                }
+                .padding(12)
+                .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else if rrPackage.ready {
+                HStack(spacing: 10) {
+                    hrvMetricTile("Package", "\(rrPackage.confidencePercent)% kept", tint: .purple)
+                    hrvMetricTile("RMSSD", rrPackage.rmssd.map { String(format: "%.1f", $0) } ?? "—", tint: .secondary)
+                }
+                .padding(12)
+                .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(hrvDetail(liveSnapshot, rrPackage: rrPackage))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(liveReadyButReferencePending ? .orange : .secondary)
+                Text(ble.rrContinuityDetail)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(ble.rrContinuityState == "ready" ? .green : .orange)
+            }
+
             HStack(spacing: 8) {
                 Button {
                     rrReferenceShareURL = store.exportRRReferencePackageForUI()
@@ -2368,7 +2805,7 @@ struct ContentView: View {
             }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
         .overlay(alignment: .center) {
             if !ble.tachogram.isEmpty {
                 VStack {
@@ -2388,6 +2825,22 @@ struct ContentView: View {
         }
     }
 
+    private func hrvMetricTile(_ title: String, _ value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private var metricsRow: some View {
         HStack(spacing: 12) {
             metric(title: "Battery",
@@ -2400,14 +2853,18 @@ struct ContentView: View {
     }
 
     private var profileCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 Label("Profile", systemImage: "person.crop.circle")
                     .font(.headline)
                 Spacer()
-                Text("\(store.profile.maxHR) max")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(store.profile.maxHR)")
+                        .font(.title3.weight(.bold).monospacedDigit())
+                    Text("active HRmax")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Picker("HRmax source", selection: Binding(
@@ -2420,15 +2877,22 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
 
-            Stepper("Age \(store.profile.age)", value: Binding(
-                get: { store.profile.age },
-                set: { age in store.updateProfile { $0.age = age } }
-            ), in: 13...100)
-
-            Stepper("Measured max \(store.profile.measuredMaxHR)", value: Binding(
-                get: { store.profile.measuredMaxHR },
-                set: { maxHR in store.updateProfile { $0.measuredMaxHR = maxHR } }
-            ), in: 120...220)
+            HStack(spacing: 10) {
+                profileStepperCard(title: "Age",
+                                   value: "\(store.profile.age)",
+                                   range: 13...100,
+                                   binding: Binding(
+                                    get: { store.profile.age },
+                                    set: { age in store.updateProfile { $0.age = age } }
+                                   ))
+                profileStepperCard(title: "Measured max",
+                                   value: "\(store.profile.measuredMaxHR)",
+                                   range: 120...220,
+                                   binding: Binding(
+                                    get: { store.profile.measuredMaxHR },
+                                    set: { maxHR in store.updateProfile { $0.measuredMaxHR = maxHR } }
+                                   ))
+            }
 
             let calibration = hrMaxCalibrationSummary
             HStack(alignment: .center, spacing: 10) {
@@ -2459,9 +2923,36 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
+
+            HStack(spacing: 10) {
+                metric(title: "Battery",
+                       value: ble.batteryLevel >= 0 ? "\(ble.batteryLevel)%" : "—",
+                       system: "battery.100")
+                metric(title: "Max HR",
+                       value: "\(store.profile.maxHR)",
+                       system: "figure.run")
+            }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
+    }
+
+    private func profileStepperCard(title: String,
+                                    value: String,
+                                    range: ClosedRange<Int>,
+                                    binding: Binding<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+            Stepper(title, value: binding, in: range)
+                .labelsHidden()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func metric(title: String, value: String, system: String) -> some View {
@@ -2472,17 +2963,26 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var captureCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Capture").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Capture").font(.headline)
+                    Text("Local recording workspace for checkpoints, exports, and RR collection.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                if ble.isRecording {
-                    Text("\(ble.capturedRows) rows")
-                        .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(ble.isRecording ? "Recording" : "Ready")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ble.isRecording ? .red : .secondary)
+                    Text(ble.isRecording ? "\(ble.capturedRows) rows" : "local only")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
             if ble.isRecording {
@@ -2490,9 +2990,19 @@ struct ContentView: View {
             } else if ble.capturedRows > 0 {
                 captureSummary
             }
-            TextField("Label (e.g. still, walking, deep breath)", text: $ble.captureLabel)
-                .textFieldStyle(.roundedBorder)
-                .font(.subheadline)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Label")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("still, walking, deep breath", text: Binding(
+                    get: { ble.captureLabel },
+                    set: { ble.captureLabel = $0 })
+                )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.subheadline)
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             HStack(spacing: 12) {
                 Button {
                     ble.toggleRecording()
@@ -2514,7 +3024,7 @@ struct ContentView: View {
             }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
     }
 
     private var captureReadiness: some View {
@@ -2592,35 +3102,96 @@ struct ContentView: View {
     }
 
     private var framesCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 Text("Proprietary stream").font(.headline)
                 Spacer()
-                Text("\(ble.frames.count)").font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(ble.recentFramesNewestFirst.count)")
+                        .font(.title3.weight(.bold).monospacedDigit())
+                    Text("frames")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
-            if ble.frames.isEmpty {
+            if ble.recentFramesNewestFirst.isEmpty {
                 Text("No frames yet — wear the strap to wake the sensors.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(ble.frames.prefix(40)) { f in
-                HStack(alignment: .top, spacing: 8) {
-                    Text(String(format: "%02X", f.opcode))
-                        .font(.system(.caption, design: .monospaced).bold())
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(f.source) · len \(f.declaredLen) · sum \(f.checksumHex)\(f.wellFormed ? "" : " ⚠︎")")
-                            .font(.caption2).foregroundStyle(.secondary)
-                        Text(f.hex)
-                            .font(.system(.caption2, design: .monospaced))
-                            .lineLimit(2)
+            collapsibleDiagnosticSection("Recent frames", panel: .framesList) {
+                ForEach(ble.recentFramesNewestFirst.prefix(40)) { f in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(String(format: "%02X", f.opcode))
+                            .font(.system(.caption, design: .monospaced).bold())
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(Color.accentColor.opacity(0.9), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(f.source) · len \(f.declaredLen) · sum \(f.checksumHex)\(f.wellFormed ? "" : " ⚠︎")")
+                                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            Text(f.hex)
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
                     }
+                    .padding(10)
+                    .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .padding(.vertical, 2)
-                Divider()
             }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
+    }
+
+    @ViewBuilder
+    private func diagnosticSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func collapsibleDiagnosticSection<Content: View>(_ title: String,
+                                                             panel: DiagnosticPanel,
+                                                             @ViewBuilder content: @escaping () -> Content) -> some View {
+        DisclosureGroup(isExpanded: diagnosticBinding(for: panel)) {
+            VStack(alignment: .leading, spacing: 8) {
+                content()
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .tint(.secondary)
+    }
+
+    private func diagnosticBinding(for panel: DiagnosticPanel) -> Binding<Bool> {
+        Binding(
+            get: { expandedDiagnosticPanels.contains(panel) },
+            set: { isExpanded in
+                setDiagnosticPanel(panel, expanded: isExpanded)
+            }
+        )
+    }
+
+    private func diagnosticCallout(_ text: String, tint: Color = .secondary) -> some View {
+        Text(text)
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(tint)
+            .lineLimit(3)
+            .minimumScaleFactor(0.75)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -2713,7 +3284,7 @@ private struct DailyEvidenceCard: View {
             }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
         .onAppear { log(summary: summary, reason: "appear") }
         .onReceive(store.$sessions) { _ in log(summary: makeSummary(), reason: "sessions_changed") }
     }
@@ -3103,7 +3674,7 @@ private struct CollectionReliabilityCard: View {
                 .minimumScaleFactor(0.78)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .background(AtriaQuietCardBackground())
         .onAppear { log(summary: summary, reason: "appear") }
         .onChange(of: ble.status) { _, _ in log(summary: makeSummary(), reason: "ble_status") }
         .onChange(of: ble.heartRate) { _, _ in log(summary: makeSummary(), reason: "hr") }
@@ -3241,9 +3812,148 @@ private struct CollectionReliabilityCard: View {
     }
 }
 
+struct AtriaDashboardBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        LinearGradient(colors: gradientColors,
+                       startPoint: .topLeading,
+                       endPoint: .bottomTrailing)
+        .overlay(alignment: .topTrailing) {
+            Circle()
+                .fill(topGlowColor)
+                .frame(width: 240, height: 240)
+                .blur(radius: 28)
+                .offset(x: 70, y: -70)
+        }
+        .overlay(alignment: .bottomLeading) {
+            Circle()
+                .fill(bottomGlowColor)
+                .frame(width: 220, height: 220)
+                .blur(radius: 36)
+                .offset(x: -80, y: 90)
+        }
+    }
+
+    private var gradientColors: [Color] {
+        if colorScheme == .dark {
+            return [
+                Color(red: 0.020, green: 0.024, blue: 0.034),
+                Color(red: 0.024, green: 0.030, blue: 0.044),
+                Color(red: 0.016, green: 0.020, blue: 0.030)
+            ]
+        }
+        return [
+            Color(red: 0.96, green: 0.97, blue: 0.99),
+            Color(red: 0.89, green: 0.93, blue: 0.98),
+            Color(red: 0.97, green: 0.96, blue: 0.94)
+        ]
+    }
+
+    private var topGlowColor: Color {
+        colorScheme == .dark ? Color.cyan.opacity(0.12) : Color.white.opacity(0.42)
+    }
+
+    private var bottomGlowColor: Color {
+        colorScheme == .dark ? Color.blue.opacity(0.10) : Color.cyan.opacity(0.12)
+    }
+}
+
+struct AtriaQuietCardBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(baseFill)
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(tintWash)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.28), lineWidth: 1)
+            }
+    }
+
+    private var baseFill: some ShapeStyle {
+        if colorScheme == .dark {
+            return AnyShapeStyle(
+                LinearGradient(colors: [
+                    Color(red: 0.070, green: 0.080, blue: 0.104).opacity(0.98),
+                    Color(red: 0.032, green: 0.040, blue: 0.058).opacity(0.96)
+                ], startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+        }
+        return AnyShapeStyle(
+            LinearGradient(colors: [
+                Color.white.opacity(0.94),
+                Color(red: 0.93, green: 0.95, blue: 0.98).opacity(0.84)
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+    }
+
+    private var tintWash: some ShapeStyle {
+        AnyShapeStyle(
+            LinearGradient(colors: [
+                Color.white.opacity(colorScheme == .dark ? 0.05 : 0.14),
+                colorScheme == .dark ? Color.cyan.opacity(0.035) : Color.blue.opacity(0.04),
+                Color.clear
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+    }
+}
+
+struct AtriaGlassToolbar<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            content
+        }
+        .padding(8)
+        .background {
+            if #available(iOS 26, *) {
+                Capsule(style: .continuous)
+                    .fill(backgroundGradient)
+                    .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
+            } else {
+                Capsule(style: .continuous)
+                    .fill(backgroundGradient)
+            }
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.22), lineWidth: 1)
+        }
+    }
+
+    private var backgroundGradient: LinearGradient {
+        if colorScheme == .dark {
+            return LinearGradient(colors: [
+                Color.white.opacity(0.10),
+                Color(red: 0.070, green: 0.082, blue: 0.110).opacity(0.84)
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+        return LinearGradient(colors: [
+            Color.white.opacity(0.84),
+            Color(red: 0.88, green: 0.92, blue: 0.98).opacity(0.72)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var glassTint: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.16)
+    }
+}
+
 struct ProfileOnboardingView: View {
     @State private var draft: AthleteProfile
     let onComplete: (AthleteProfile) -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     init(profile: AthleteProfile, onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
@@ -3252,65 +3962,325 @@ struct ProfileOnboardingView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    Picker("HRmax source", selection: $draft.maxHRSource) {
-                        ForEach(AthleteProfile.HRMaxSource.allCases) { source in
-                            Text(source.label).tag(source)
+            ZStack {
+                AtriaDashboardBackdrop()
+                    .ignoresSafeArea()
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Profile")
+                                .font(.system(size: 34, weight: .bold, design: .rounded))
+                            Text("Tune HRmax once so strain, recovery, and workout guidance stay fast and local.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
+
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("HRmax source")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            onboardingSourcePicker
+
+                            HStack(spacing: 12) {
+                                onboardingStepperCard(title: "Age",
+                                                      value: "\(draft.age)",
+                                                      detail: "13-100") {
+                                    draft.age = max(13, draft.age - 1)
+                                } increment: {
+                                    draft.age = min(100, draft.age + 1)
+                                }
+
+                                onboardingStepperCard(title: "Measured max",
+                                                      value: "\(draft.measuredMaxHR)",
+                                                      detail: "120-220 bpm") {
+                                    draft.measuredMaxHR = max(120, draft.measuredMaxHR - 1)
+                                } increment: {
+                                    draft.measuredMaxHR = min(220, draft.measuredMaxHR + 1)
+                                }
+                            }
+                        }
+                        .padding(18)
+                        .background(AtriaQuietCardBackground())
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Active HRmax")
+                                    .font(.headline.weight(.semibold))
+                                Spacer()
+                                Text("\(draft.maxHR)")
+                                    .font(.title3.weight(.bold).monospacedDigit())
+                            }
+
+                            Text("Atria uses HR reserve from learned resting HR up to this HRmax. You can change it later from the Vitals tab.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 10) {
+                                onboardingMetricPill(label: "Source", value: draft.maxHRSource.label, tint: .cyan)
+                                onboardingMetricPill(label: "Age", value: "\(draft.age)", tint: .green)
+                                onboardingMetricPill(label: "Measured", value: "\(draft.measuredMaxHR)", tint: .orange)
+                            }
+                        }
+                        .padding(18)
+                        .background(AtriaQuietCardBackground())
                     }
-                    .pickerStyle(.segmented)
-                    Stepper("Age \(draft.age)", value: $draft.age, in: 13...100)
-                    Stepper("Measured max \(draft.measuredMaxHR)", value: $draft.measuredMaxHR, in: 120...220)
-                }
-                Section {
-                    HStack {
-                        Text("Active HRmax")
-                        Spacer()
-                        Text("\(draft.maxHR)")
-                            .font(.headline.monospacedDigit())
-                    }
-                    Text("Strain uses HR reserve from learned resting HR to this HRmax.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 124)
                 }
             }
-            .navigationTitle("Profile")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button("Use this profile") {
                         onComplete(draft)
                     }
+                    .buttonStyle(ProfileOnboardingPrimaryButtonStyle())
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+                .background {
+                    ProfileOnboardingFooterBackground()
                 }
             }
         }
+    }
+
+    private var onboardingSourcePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(AthleteProfile.HRMaxSource.allCases) { source in
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        draft.maxHRSource = source
+                    }
+                } label: {
+                    Text(source.label)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                }
+                .buttonStyle(ProfileOnboardingSourceButtonStyle(selected: draft.maxHRSource == source))
+            }
+        }
+        .padding(8)
+        .background(AtriaQuietCardBackground())
+    }
+
+    private func onboardingStepperCard(title: String,
+                                       value: String,
+                                       detail: String,
+                                       decrement: @escaping () -> Void,
+                                       increment: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(value)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .monospacedDigit()
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Button(action: decrement) {
+                    Image(systemName: "minus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(ProfileOnboardingStepperButtonStyle())
+
+                Button(action: increment) {
+                    Image(systemName: "plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(ProfileOnboardingStepperButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.05) : Color.white.opacity(0.62))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.24), lineWidth: 1)
+                }
+        )
+    }
+
+    private func onboardingMetricPill(label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(colorScheme == .dark ? tint.opacity(0.10) : tint.opacity(0.08))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), lineWidth: 1)
+                }
+        )
+    }
+}
+
+private struct ProfileOnboardingSourceButtonStyle: ButtonStyle {
+    let selected: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(
+                            LinearGradient(colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.11 : 0.72),
+                                colorScheme == .dark
+                                    ? Color(red: 0.060, green: 0.078, blue: 0.116).opacity(0.84)
+                                    : Color.white.opacity(0.44)
+                            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.28), lineWidth: 1)
+                        }
+                }
+            }
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+    }
+}
+
+private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.92 : 1))
+            .padding(.vertical, 15)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(
+                        LinearGradient(colors: colorScheme == .dark
+                            ? [
+                                Color(red: 0.18, green: 0.52, blue: 0.98),
+                                Color(red: 0.06, green: 0.28, blue: 0.82)
+                            ]
+                            : [
+                                Color(red: 0.24, green: 0.56, blue: 0.98),
+                                Color(red: 0.12, green: 0.40, blue: 0.90)
+                            ],
+                                       startPoint: .topLeading,
+                                       endPoint: .bottomTrailing)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.28), lineWidth: 1)
+                    }
+            )
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+    }
+}
+
+private struct ProfileOnboardingFooterBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(colors: colorScheme == .dark
+                    ? [
+                        Color(red: 0.038, green: 0.045, blue: 0.060).opacity(0.96),
+                        Color(red: 0.020, green: 0.024, blue: 0.034).opacity(0.99)
+                    ]
+                    : [
+                        Color.white.opacity(0.94),
+                        Color(red: 0.92, green: 0.95, blue: 0.99).opacity(0.92)
+                    ],
+                               startPoint: .top,
+                               endPoint: .bottom)
+            )
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.18))
+                    .frame(height: 1)
+            }
+    }
+}
+
+private struct ProfileOnboardingStepperButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.88 : 1))
+            .padding(.vertical, 10)
+            .background(AtriaQuietCardBackground())
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }
 
 /// Minimal heart-rate sparkline.
-struct Sparkline: View {
+struct Sparkline: View, Equatable {
     let values: [Int]
+
+    static func == (lhs: Sparkline, rhs: Sparkline) -> Bool {
+        lhs.values == rhs.values
+    }
+
     var body: some View {
-        GeometryReader { geo in
+        Group {
             if values.count > 1 {
-                let lo = Double(values.min() ?? 0)
-                let hi = Double(values.max() ?? 1)
-                let span = max(hi - lo, 1)
-                Path { p in
-                    for (i, v) in values.enumerated() {
-                        let x = geo.size.width * Double(i) / Double(values.count - 1)
-                        let y = geo.size.height * (1 - (Double(v) - lo) / span)
-                        i == 0 ? p.move(to: .init(x: x, y: y)) : p.addLine(to: .init(x: x, y: y))
-                    }
-                }
-                .stroke(.red.gradient, style: .init(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                SparklineShape(values: values)
+                    .stroke(.red.gradient, style: .init(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
         }
     }
 }
 
+private struct SparklineShape: Shape, Equatable {
+    let values: [Int]
+
+    func path(in rect: CGRect) -> Path {
+        guard values.count > 1 else { return Path() }
+
+        let lo = Double(values.min() ?? 0)
+        let hi = Double(values.max() ?? 1)
+        let span = max(hi - lo, 1)
+
+        var path = Path()
+        for (index, value) in values.enumerated() {
+            let x = rect.width * CGFloat(Double(index) / Double(values.count - 1))
+            let y = rect.height * CGFloat(1 - (Double(value) - lo) / span)
+            if index == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        return path
+    }
+}
+
 #Preview {
-    ContentView()
-        .environmentObject(WhoopBLEManager())
-        .environmentObject(SessionStore())
+    ContentView(ble: WhoopBLEManager(), store: SessionStore())
 }

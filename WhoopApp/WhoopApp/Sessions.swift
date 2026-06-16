@@ -1796,10 +1796,53 @@ extension SavedSession {
 /// Loads/saves sessions to a JSON file in the app's Documents directory.
 @MainActor
 final class SessionStore: ObservableObject {
+    struct HomeDashboardDiagnostics {
+        let rest: Int
+        let rrPackage: RRPackageStatus
+        let sleep: SleepEvidenceStatus
+        let workout: SavedWorkoutAttemptStatus
+        let collection: CurrentCollectionStatus
+        let backup: SessionBackupStatus
+        let trend90: TrendSummary
+    }
+
+    struct HomeSavedAggregate {
+        let rest: Int
+        let maxHR: Int
+        let savedTodayTRIMP: Double
+        let hasSavedToday: Bool
+        let sessionsCount: Int
+    }
+
+    private struct DeferredLoadPreparation {
+        let latestReferenceValidatedHRV: Int?
+        let canonicalSessions: [SavedSession]
+        let baseline: PersonalBaseline
+        let didRebuildBaseline: Bool
+        let backupStatus: SessionBackupStatus
+    }
+
     @Published private(set) var sessions: [SavedSession] = []
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
+    @Published private(set) var dashboardRevision = 0
     private let healthKitExporter = HealthKitExporter()
+    private let persistenceQueue = DispatchQueue(label: "com.adidshaft.atria.session-store.persistence",
+                                                 qos: .utility)
+    private var pendingSessionSaveWorkItem: DispatchWorkItem?
+    private static let checkpointPersistenceDelay: TimeInterval = 2.25
+    private var sessionPersistenceRevision = 0
+    private var lastCompletedSessionPersistenceRevision = 0
+    private var pendingSessionPersistenceRevision = 0
+    private var cachedLatestReferenceValidatedHRV: Int?
+    private var cachedConfirmedWorkouts: [UserConfirmedWorkout]
+    private var cachedConfirmedSleeps: [UserConfirmedSleep]
+    private var cachedSessionBackupStatus: SessionBackupStatus
+    private var cachedCanonicalSessions: [SavedSession]
+    private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
+    private var cachedHomeSavedAggregate: HomeSavedAggregate?
+    private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
+    private static let currentCollectionStatusCacheTTL: TimeInterval = 3
 
     private enum ConfirmedWorkoutDefaults {
         static let key = "atria.confirmedWorkouts.v1"
@@ -1831,18 +1874,243 @@ final class SessionStore: ObservableObject {
         return dir.appendingPathComponent("sessions.json")
     }()
 
-    init() { load() }
+    init() {
+        self.cachedConfirmedWorkouts = Self.readConfirmedWorkouts()
+        self.cachedConfirmedSleeps = Self.readConfirmedSleeps()
+        self.cachedSessionBackupStatus = .missing
+        self.cachedLatestReferenceValidatedHRV = nil
+        self.cachedCanonicalSessions = []
+        self.cachedHomeDashboardDiagnostics = nil
+        self.cachedHomeSavedAggregate = nil
+        self.cachedCurrentCollectionStatus = nil
+        loadPersistedSessionsDeferred()
+        refreshSessionDerivedCaches()
+    }
 
     var latestReferenceValidatedHRV: Int? {
-        sessions.compactMap(\.referenceValidatedHRV).first
+        cachedLatestReferenceValidatedHRV
     }
 
     var confirmedWorkouts: [UserConfirmedWorkout] {
-        loadConfirmedWorkouts()
+        cachedConfirmedWorkouts
     }
 
     var confirmedSleeps: [UserConfirmedSleep] {
-        loadConfirmedSleeps()
+        cachedConfirmedSleeps
+    }
+
+    private func refreshSessionDerivedCaches() {
+        cachedLatestReferenceValidatedHRV = sessions.first(where: { $0.referenceValidatedHRV != nil })?.referenceValidatedHRV
+        cachedCanonicalSessions = Self.makeCanonicalSessions(from: sessions)
+        cachedHomeSavedAggregate = nil
+        cachedCurrentCollectionStatus = nil
+    }
+
+    private func refreshSessionDerivedCachesAfterUpsert(_ session: SavedSession) {
+        cachedLatestReferenceValidatedHRV = sessions.first(where: { $0.referenceValidatedHRV != nil })?.referenceValidatedHRV
+        cachedCanonicalSessions = Self.makeCanonicalSessions(from: cachedCanonicalSessions + [session],
+                                                             preferredSession: preferredSession)
+        cachedHomeSavedAggregate = nil
+        cachedCurrentCollectionStatus = nil
+    }
+
+    private func refreshBackupStatusCache() {
+        cachedSessionBackupStatus = computeSessionBackupStatus()
+    }
+
+    private func refreshHomeDashboardDiagnosticsCache() {
+        let rest = baseline.restingInt ?? sessions.first?.restingStable ?? 60
+        let maxHR = profile.maxHR
+        cachedHomeDashboardDiagnostics = HomeDashboardDiagnostics(rest: rest,
+                                                                 rrPackage: rrPackageStatusFast(),
+                                                                 sleep: sleepEvidenceStatusFast(rest: rest),
+                                                                 workout: savedWorkoutAttemptStatusFast(rest: rest, maxHR: maxHR),
+                                                                 collection: currentCollectionStatus(),
+                                                                 backup: cachedSessionBackupStatus,
+                                                                 trend90: trendSummaryFast(rest: rest, maxHR: maxHR, days: 90))
+    }
+
+    private func publishDashboardRevision() {
+        dashboardRevision &+= 1
+    }
+
+    private func invalidateHomeDashboardDiagnosticsCache() {
+        cachedHomeDashboardDiagnostics = nil
+        cachedCurrentCollectionStatus = nil
+    }
+
+    private func markSessionPersistenceDirty() {
+        sessionPersistenceRevision &+= 1
+    }
+
+    func homeSavedAggregate(rest: Int, maxHR: Int, calendar: Calendar = .current) -> HomeSavedAggregate {
+        if let cachedHomeSavedAggregate,
+           cachedHomeSavedAggregate.rest == rest,
+           cachedHomeSavedAggregate.maxHR == maxHR {
+            return cachedHomeSavedAggregate
+        }
+
+        var savedTodayTRIMP = 0.0
+        var hasSavedToday = false
+        for session in sessions {
+            guard calendar.isDateInToday(session.start) else { break }
+            hasSavedToday = true
+            savedTodayTRIMP += session.trimp(rest: rest, max: maxHR)
+        }
+
+        let aggregate = HomeSavedAggregate(rest: rest,
+                                           maxHR: maxHR,
+                                           savedTodayTRIMP: savedTodayTRIMP,
+                                           hasSavedToday: hasSavedToday,
+                                           sessionsCount: sessions.count)
+        cachedHomeSavedAggregate = aggregate
+        return aggregate
+    }
+
+    private func scheduleSessionFilePersist(reason: String, delay: TimeInterval) {
+        guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
+        let snapshot = sessions
+        let sourceURL = url
+        let revision = sessionPersistenceRevision
+
+        pendingSessionSaveWorkItem?.cancel()
+        pendingSessionPersistenceRevision = revision
+        let workItem = DispatchWorkItem { [weak self] in
+            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lastCompletedSessionPersistenceRevision = max(self.lastCompletedSessionPersistenceRevision, revision)
+                if self.pendingSessionPersistenceRevision == revision {
+                    self.pendingSessionPersistenceRevision = 0
+                }
+            }
+        }
+        pendingSessionSaveWorkItem = workItem
+        persistenceQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    func requestPersistenceFlush(reason: String) {
+        guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
+        let snapshot = sessions
+        let sourceURL = url
+        let revision = sessionPersistenceRevision
+
+        pendingSessionSaveWorkItem?.cancel()
+        pendingSessionPersistenceRevision = revision
+        let workItem = DispatchWorkItem { [weak self] in
+            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lastCompletedSessionPersistenceRevision = max(self.lastCompletedSessionPersistenceRevision, revision)
+                if self.pendingSessionPersistenceRevision == revision {
+                    self.pendingSessionPersistenceRevision = 0
+                }
+            }
+        }
+        pendingSessionSaveWorkItem = workItem
+        persistenceQueue.async(execute: workItem)
+    }
+
+    func flushScheduledPersistence(reason: String) {
+        guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
+        let snapshot = sessions
+        let sourceURL = url
+        let revision = sessionPersistenceRevision
+        pendingSessionSaveWorkItem?.cancel()
+        pendingSessionSaveWorkItem = nil
+        pendingSessionPersistenceRevision = revision
+        persistenceQueue.sync {
+            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+        }
+        lastCompletedSessionPersistenceRevision = max(lastCompletedSessionPersistenceRevision, revision)
+        if pendingSessionPersistenceRevision == revision {
+            pendingSessionPersistenceRevision = 0
+        }
+    }
+
+    private static func persistSessionsSnapshot(_ sessions: [SavedSession], to url: URL, reason: String) {
+        do {
+            let data = try JSONEncoder().encode(sessions)
+            try data.write(to: url, options: .atomic)
+            WHOOPDebugLog("WHOOPDBG session_store_save status=ok op=%@ sessions=%d bytes=%d",
+                  reason,
+                  sessions.count,
+                  data.count)
+        } catch {
+            WHOOPDebugLog("WHOOPDBG session_store_save status=failed op=%@ error=%@",
+                  reason,
+                  error.localizedDescription)
+        }
+    }
+
+    private func insertionIndex(for start: Date) -> Int {
+        var low = 0
+        var high = sessions.count
+        while low < high {
+            let mid = (low + high) / 2
+            if sessions[mid].start > start {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
+    }
+
+    private func upsertSession(_ session: SavedSession) -> String {
+        if let existingIndex = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions.remove(at: existingIndex)
+            let destination = insertionIndex(for: session.start)
+            sessions.insert(session, at: destination)
+            return "replace"
+        }
+
+        let destination = insertionIndex(for: session.start)
+        sessions.insert(session, at: destination)
+        return "insert"
+    }
+
+    func homeDashboardDiagnostics() -> HomeDashboardDiagnostics {
+        if let cachedHomeDashboardDiagnostics {
+            return cachedHomeDashboardDiagnostics
+        }
+        refreshHomeDashboardDiagnosticsCache()
+        return cachedHomeDashboardDiagnostics ?? HomeDashboardDiagnostics(rest: baseline.restingInt ?? sessions.first?.restingStable ?? 60,
+                                                                         rrPackage: .empty,
+                                                                         sleep: SleepEvidenceStatus(ready: false,
+                                                                                                    state: "learning",
+                                                                                                    blocker: "sleep_learning",
+                                                                                                    confidence: "none",
+                                                                                                    candidates: 0,
+                                                                                                    readyCandidates: 0,
+                                                                                                    motionSource: "unavailable",
+                                                                                                    motionValidated: false,
+                                                                                                    fallbackAvailable: false,
+                                                                                                    fallbackSource: "none",
+                                                                                                    fallbackReason: "none",
+                                                                                                    fallbackDuration: 0,
+                                                                                                    fallbackSpan: 0,
+                                                                                                    fallbackSessions: 0),
+                                                                         workout: .empty,
+                                                                         collection: currentCollectionStatus(),
+                                                                         backup: cachedSessionBackupStatus,
+                                                                         trend90: TrendSummary(id: 90,
+                                                                                               days: 90,
+                                                                                               sessions: 0,
+                                                                                               coverageDays: 0,
+                                                                                               requiredCoverageDays: trendRequiredCoverageDays(windowDays: 90),
+                                                                                               coveragePercent: 0,
+                                                                                               confidence: "learning",
+                                                                                               avgRecovery: nil,
+                                                                                               avgHRV: nil,
+                                                                                               avgRHR: nil,
+                                                                                               avgStrain: nil,
+                                                                                               anomalies: [],
+                                                                                               anomalySource: "none",
+                                                                                               anomalySampleDays: 0,
+                                                                                               hrvState: "reference_pending",
+                                                                                               detail: "Saved trends are loading.",
+                                                                                               blockers: "loading"))
     }
 
     var externalHRReferenceValidated: Bool {
@@ -1963,6 +2231,12 @@ final class SessionStore: ObservableObject {
     }
 
     func currentCollectionStatus(now: Date = Date()) -> CurrentCollectionStatus {
+        if let cachedCurrentCollectionStatus,
+           now.timeIntervalSince(cachedCurrentCollectionStatus.evaluatedAt) <= Self.currentCollectionStatusCacheTTL {
+            return cachedCurrentCollectionStatus.status
+        }
+
+        let status: CurrentCollectionStatus
         if let record = ActiveSessionJournal.load() {
             let age = max(0, Int(now.timeIntervalSince(record.updatedAt).rounded()))
             let samples = record.samples.count
@@ -1970,55 +2244,58 @@ final class SessionStore: ObservableObject {
             let fresh = age <= 90
             let label = Self.diagnosticToken(record.label.isEmpty ? "Long wear" : record.label)
             if fresh && samples > 0 {
-                return CurrentCollectionStatus(ready: true,
-                                               source: "active_journal",
-                                               blocker: "none",
-                                               label: label,
-                                               samples: samples,
-                                               rrValues: record.rrSamples?.count ?? 0,
-                                               ageSeconds: age,
-                                               durationSeconds: duration)
+                status = CurrentCollectionStatus(ready: true,
+                                                 source: "active_journal",
+                                                 blocker: "none",
+                                                 label: label,
+                                                 samples: samples,
+                                                 rrValues: record.rrSamples?.count ?? 0,
+                                                 ageSeconds: age,
+                                                 durationSeconds: duration)
+            } else {
+                status = CurrentCollectionStatus(ready: false,
+                                                 source: "active_journal",
+                                                 blocker: fresh ? "active_journal_empty" : "active_journal_stale",
+                                                 label: label,
+                                                 samples: samples,
+                                                 rrValues: record.rrSamples?.count ?? 0,
+                                                 ageSeconds: age,
+                                                 durationSeconds: duration)
             }
-            return CurrentCollectionStatus(ready: false,
-                                           source: "active_journal",
-                                           blocker: fresh ? "active_journal_empty" : "active_journal_stale",
-                                           label: label,
-                                           samples: samples,
-                                           rrValues: record.rrSamples?.count ?? 0,
-                                           ageSeconds: age,
-                                           durationSeconds: duration)
-        }
-
-        if let latest = sessions.max(by: { $0.end < $1.end }) {
+        } else if let latest = sessions.first {
             let age = max(0, Int(now.timeIntervalSince(latest.end).rounded()))
             if age <= 300 && !latest.points.isEmpty {
-                return CurrentCollectionStatus(ready: true,
-                                               source: "saved_session_tail",
-                                               blocker: "none",
-                                               label: Self.diagnosticToken(latest.label),
-                                               samples: latest.points.count,
-                                               rrValues: latest.rrSampleCount,
-                                               ageSeconds: age,
-                                               durationSeconds: max(0, Int(latest.duration.rounded())))
+                status = CurrentCollectionStatus(ready: true,
+                                                 source: "saved_session_tail",
+                                                 blocker: "none",
+                                                 label: Self.diagnosticToken(latest.label),
+                                                 samples: latest.points.count,
+                                                 rrValues: latest.rrSampleCount,
+                                                 ageSeconds: age,
+                                                 durationSeconds: max(0, Int(latest.duration.rounded())))
+            } else {
+                status = CurrentCollectionStatus(ready: false,
+                                                 source: "saved_session_tail",
+                                                 blocker: age <= 300 ? "saved_tail_empty" : "saved_tail_stale",
+                                                 label: Self.diagnosticToken(latest.label),
+                                                 samples: latest.points.count,
+                                                 rrValues: latest.rrSampleCount,
+                                                 ageSeconds: age,
+                                                 durationSeconds: max(0, Int(latest.duration.rounded())))
             }
-            return CurrentCollectionStatus(ready: false,
-                                           source: "saved_session_tail",
-                                           blocker: age <= 300 ? "saved_tail_empty" : "saved_tail_stale",
-                                           label: Self.diagnosticToken(latest.label),
-                                           samples: latest.points.count,
-                                           rrValues: latest.rrSampleCount,
-                                           ageSeconds: age,
-                                           durationSeconds: max(0, Int(latest.duration.rounded())))
+        } else {
+            status = CurrentCollectionStatus(ready: false,
+                                             source: "none",
+                                             blocker: "no_active_or_saved_tail",
+                                             label: "none",
+                                             samples: 0,
+                                             rrValues: 0,
+                                             ageSeconds: -1,
+                                             durationSeconds: 0)
         }
 
-        return CurrentCollectionStatus(ready: false,
-                                       source: "none",
-                                       blocker: "no_active_or_saved_tail",
-                                       label: "none",
-                                       samples: 0,
-                                       rrValues: 0,
-                                       ageSeconds: -1,
-                                       durationSeconds: 0)
+        cachedCurrentCollectionStatus = (evaluatedAt: now, status: status)
+        return status
     }
 
     private static func diagnosticToken(_ value: String) -> String {
@@ -2056,15 +2333,37 @@ final class SessionStore: ObservableObject {
         sessions.reduce(0) { $0 + $1.hrAcceptedGapsValue }
     }
 
-    private func canonicalSessions(includeActiveJournal: Bool = false) -> [SavedSession] {
-        var byID: [UUID: SavedSession] = [:]
-        var source = sessions
-        if includeActiveJournal, let active = activeJournalSessionIfFresh() {
-            source.append(active)
+    private func recentCanonicalSessions(windowDays: Int? = nil,
+                                         limitSessions: Int? = nil,
+                                         includeActiveJournal: Bool = false,
+                                         now: Date = Date()) -> [SavedSession] {
+        var recent = canonicalSessions(includeActiveJournal: includeActiveJournal)
+        if let windowDays {
+            let cutoff = now.addingTimeInterval(-Double(windowDays) * 24 * 60 * 60)
+            recent = recent.filter { $0.start >= cutoff }
         }
+        if let limitSessions {
+            recent = Array(recent.prefix(max(1, limitSessions)))
+        }
+        return recent
+    }
+
+    private func canonicalSessions(includeActiveJournal: Bool = false) -> [SavedSession] {
+        guard includeActiveJournal, let active = activeJournalSessionIfFresh() else {
+            return cachedCanonicalSessions
+        }
+        return Self.makeCanonicalSessions(from: cachedCanonicalSessions + [active],
+                                          preferredSession: preferredSession)
+    }
+
+    private nonisolated static func makeCanonicalSessions(from source: [SavedSession],
+                                                          preferredSession: ((SavedSession, SavedSession) -> Bool)? = nil) -> [SavedSession] {
+        var byID: [UUID: SavedSession] = [:]
         for session in source {
             if let existing = byID[session.id] {
-                byID[session.id] = preferredSession(session, over: existing) ? session : existing
+                let prefersIncoming = preferredSession?(session, existing)
+                    ?? defaultPreferredSession(session, over: existing)
+                byID[session.id] = prefersIncoming ? session : existing
             } else {
                 byID[session.id] = session
             }
@@ -2073,6 +2372,19 @@ final class SessionStore: ObservableObject {
             if lhs.start != rhs.start { return lhs.start > rhs.start }
             return lhs.end > rhs.end
         }
+    }
+
+    private nonisolated static func defaultPreferredSession(_ lhs: SavedSession, over rhs: SavedSession) -> Bool {
+        if lhs.points.count != rhs.points.count {
+            return lhs.points.count > rhs.points.count
+        }
+        if lhs.rrSampleCount != rhs.rrSampleCount {
+            return lhs.rrSampleCount > rhs.rrSampleCount
+        }
+        if lhs.end != rhs.end {
+            return lhs.end > rhs.end
+        }
+        return lhs.start > rhs.start
     }
 
     private func activeJournalSessionIfFresh(now: Date = Date()) -> SavedSession? {
@@ -2138,30 +2450,11 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func add(_ s: SavedSession) -> Bool {
-        let mode: String
-        if let existing = sessions.firstIndex(where: { $0.id == s.id }) {
-            sessions[existing] = s
-            mode = "replace"
-        } else {
-            sessions.insert(s, at: 0)
-            mode = "insert"
-        }
-        sessions.sort { $0.start > $1.start }
-        guard save() else {
-            NSLog("WHOOPDBG session_store_save status=failed op=add mode=%@ id=%@ label=%@ samples=%d duration_s=%.0f",
-                  mode,
-                  s.id.uuidString,
-                  s.label,
-                  s.points.count,
-                  s.duration)
-            return false
-        }
-        NSLog("WHOOPDBG session_store_save status=ok op=add mode=%@ id=%@ label=%@ samples=%d duration_s=%.0f",
-              mode,
-              s.id.uuidString,
-              s.label,
-              s.points.count,
-              s.duration)
+        let mode = upsertSession(s)
+        markSessionPersistenceDirty()
+        refreshSessionDerivedCachesAfterUpsert(s)
+        invalidateHomeDashboardDiagnosticsCache()
+        scheduleSessionFilePersist(reason: "add", delay: 0.10)
         if mode == "replace" {
             rebuildBaselineFromEligibleSessions(reason: "session-add-replace")
         } else {
@@ -2169,7 +2462,7 @@ final class SessionStore: ObservableObject {
         }
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
-            NSLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
+            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -2189,7 +2482,7 @@ final class SessionStore: ObservableObject {
         let evidence = session.baselineLearningEvidence(rest: baseline.restingInt ?? session.restingStable,
                                                         maxHR: profile.maxHR)
         guard evidence.accepted else {
-            NSLog("WHOOPDBG resting_baseline_sample status=skipped reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
+            WHOOPDebugLog("WHOOPDBG resting_baseline_sample status=skipped reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
                   evidence.reason,
                   evidence.value,
                   evidence.source,
@@ -2205,7 +2498,8 @@ final class SessionStore: ObservableObject {
                        hrv: session.referenceValidatedHRV ?? 0,
                        at: session.end)
         baseline.save()
-        NSLog("WHOOPDBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
+        refreshHomeDashboardDiagnosticsCache()
+        WHOOPDebugLog("WHOOPDBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
               evidence.source,
@@ -2217,7 +2511,8 @@ final class SessionStore: ObservableObject {
               reason)
     }
 
-    private func rebuildBaselineFromEligibleSessions(reason: String) {
+    private func rebuildBaselineFromEligibleSessions(reason: String,
+                                                     refreshDiagnosticsCache: Bool = true) {
         let previousRest = baseline.restingInt
         let previousSamples = baseline.restingSampleCount
         var rebuilt = PersonalBaseline()
@@ -2237,7 +2532,12 @@ final class SessionStore: ObservableObject {
         }
         baseline = rebuilt
         baseline.save()
-        NSLog("WHOOPDBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_validated_samples=%d",
+        if refreshDiagnosticsCache {
+            refreshHomeDashboardDiagnosticsCache()
+        } else {
+            cachedHomeDashboardDiagnostics = nil
+        }
+        WHOOPDebugLog("WHOOPDBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_validated_samples=%d",
               reason,
               accepted,
               skipped,
@@ -2250,28 +2550,13 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func checkpoint(_ s: SavedSession) -> Bool {
-        if let existing = sessions.firstIndex(where: { $0.id == s.id }) {
-            sessions[existing] = s
-        } else {
-            sessions.insert(s, at: 0)
-        }
-        sessions.sort { $0.start > $1.start }
-        guard save() else {
-            NSLog("WHOOPDBG session_store_save status=failed op=checkpoint id=%@ label=%@ samples=%d duration_s=%.0f",
-                  s.id.uuidString,
-                  s.label,
-                  s.points.count,
-                  s.duration)
-            return false
-        }
-        NSLog("WHOOPDBG session_store_save status=ok op=checkpoint id=%@ label=%@ samples=%d duration_s=%.0f",
-              s.id.uuidString,
-              s.label,
-              s.points.count,
-              s.duration)
+        _ = upsertSession(s)
+        markSessionPersistenceDirty()
+        refreshSessionDerivedCachesAfterUpsert(s)
+        scheduleSessionFilePersist(reason: "checkpoint", delay: Self.checkpointPersistenceDelay)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
-            NSLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ source=checkpoint motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
+            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ source=checkpoint motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -2283,26 +2568,32 @@ final class SessionStore: ObservableObject {
                   s.motionHintKindsValue,
                   s.motionEvidenceValidatedValue ? 1 : 0)
         }
-        writeAutomaticSessionBackup(reason: "session-checkpoint")
         return true
     }
 
     func delete(_ offsets: IndexSet) {
         sessions.remove(atOffsets: offsets)
-        guard save() else {
-            NSLog("WHOOPDBG session_store_save status=failed op=delete")
-            return
-        }
+        markSessionPersistenceDirty()
+        refreshSessionDerivedCaches()
+        invalidateHomeDashboardDiagnosticsCache()
+        scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
+    }
+
+    func deleteSession(id: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        delete(IndexSet(integer: index))
     }
 
     func updateProfile(_ edit: (inout AthleteProfile) -> Void) {
         var next = profile
         edit(&next)
         next.clamp()
+        guard next != profile else { return }
         profile = next
         profile.save()
-        NSLog("WHOOPDBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
+        invalidateHomeDashboardDiagnosticsCache()
+        WHOOPDebugLog("WHOOPDBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
     }
@@ -2310,9 +2601,11 @@ final class SessionStore: ObservableObject {
     func completeOnboarding(with profile: AthleteProfile) {
         var next = profile
         next.completeOnboarding()
+        guard next != self.profile else { return }
         self.profile = next
         self.profile.save()
-        NSLog("WHOOPDBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
+        invalidateHomeDashboardDiagnosticsCache()
+        WHOOPDebugLog("WHOOPDBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
               self.profile.maxHR,
@@ -2332,7 +2625,7 @@ final class SessionStore: ObservableObject {
         let latestValidated = latestReferenceValidatedHRV ?? 0
         let hrvReady = baseline.hrvSampleCount >= 7
         let recoveryHighReady = hrvReady && latestValidated > 0
-        NSLog("WHOOPDBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_validated_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_high_ready=%d",
+        WHOOPDebugLog("WHOOPDBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_validated_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_high_ready=%d",
               baseline.sessions,
               baseline.restingSampleCount,
               restingStats.map { String(format: "%.1f", $0.mean) } ?? "learning",
@@ -2341,7 +2634,7 @@ final class SessionStore: ObservableObject {
               hrvReady ? 1 : 0,
               latestValidated,
               recoveryHighReady ? 1 : 0)
-        NSLog("WHOOPDBG baseline_hrv_stats count=%d lnrmssd_mean=%@ lnrmssd_sd=%@ state=%@",
+        WHOOPDebugLog("WHOOPDBG baseline_hrv_stats count=%d lnrmssd_mean=%@ lnrmssd_sd=%@ state=%@",
               hrvStats?.count ?? 0,
               hrvStats.map { String(format: "%.3f", $0.mean) } ?? "learning",
               hrvStats.map { String(format: "%.3f", $0.sd) } ?? "learning",
@@ -2355,7 +2648,7 @@ final class SessionStore: ObservableObject {
            arguments.indices.contains(arguments.index(after: delayIndex)),
            let delay = Double(arguments[arguments.index(after: delayIndex)]),
            delay > 0 {
-            NSLog("WHOOPDBG collection_health_schedule delay_s=%.1f", delay)
+            WHOOPDebugLog("WHOOPDBG collection_health_schedule delay_s=%.1f", delay)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 if Task.isCancelled { return }
@@ -2391,7 +2684,7 @@ final class SessionStore: ObservableObject {
         } else {
             blocker = "active_journal_empty"
         }
-        NSLog("WHOOPDBG collection_health phase=%@ status=%@ blocker=%@ active_journal_present=%d active_journal_fresh=%d active_journal_samples=%d active_journal_rr_values=%d active_journal_duration_s=%d active_journal_rr_coverage_3s_percent=%d active_journal_recent_rr_values=%d active_journal_recent_rr_duration_s=%d active_journal_recent_rr_coverage_3s_percent=%d rr_state=%@ gate_b_current_rr_ready=%d metric_promotions=0 %@ %@ %@",
+        WHOOPDebugLog("WHOOPDBG collection_health phase=%@ status=%@ blocker=%@ active_journal_present=%d active_journal_fresh=%d active_journal_samples=%d active_journal_rr_values=%d active_journal_duration_s=%d active_journal_rr_coverage_3s_percent=%d active_journal_recent_rr_values=%d active_journal_recent_rr_duration_s=%d active_journal_recent_rr_coverage_3s_percent=%d rr_state=%@ gate_b_current_rr_ready=%d metric_promotions=0 %@ %@ %@",
               phase,
               collectionReady ? "ready" : "learning",
               blocker,
@@ -2415,7 +2708,7 @@ final class SessionStore: ObservableObject {
         guard arguments.contains("--whoop-log-gate-readiness") else { return }
         if !arguments.contains("--whoop-log-gate-readiness-delay-fired") {
             let delay = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 8.0 : 1.0
-            NSLog("WHOOPDBG gate_readiness_ui schedule delay_s=%.1f reason=launch_arg", delay)
+            WHOOPDebugLog("WHOOPDBG gate_readiness_ui schedule delay_s=%.1f reason=launch_arg", delay)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 var delayedArguments = arguments
@@ -2510,7 +2803,7 @@ final class SessionStore: ObservableObject {
             .map { "\($0.gate)=\($0.status)[\($0.blocker)]" }
             .joined(separator: ";")
             .replacingOccurrences(of: " ", with: "_")
-        NSLog("WHOOPDBG gate_readiness_ui source=launch_arg gates=%d ready=%d evidence=%@",
+        WHOOPDebugLog("WHOOPDBG gate_readiness_ui source=launch_arg gates=%d ready=%d evidence=%@",
               rows.count,
               readyCount,
               evidence)
@@ -2536,7 +2829,7 @@ final class SessionStore: ObservableObject {
         if !arguments.contains("--whoop-log-gate-status-delay-fired"),
            let delay = explicitDelay ?? liveCollectionSettleDelay {
             let clampedDelay = min(max(delay, 0), 86_400)
-            NSLog("WHOOPDBG gate_status schedule delay_s=%.1f reason=%@", clampedDelay, explicitDelay != nil ? "launch_arg" : "live_collection_settle")
+            WHOOPDebugLog("WHOOPDBG gate_status schedule delay_s=%.1f reason=%@", clampedDelay, explicitDelay != nil ? "launch_arg" : "live_collection_settle")
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(clampedDelay))
                 var delayedArguments = arguments
@@ -2557,7 +2850,7 @@ final class SessionStore: ObservableObject {
         let boundedLargeStore = sessions.count > 120 || hrAcceptedSamples > 20_000 || rrSamples > 20_000
         let workoutReplayLimit = boundedLargeStore ? 80 : nil
         let workoutReplayScope = boundedLargeStore ? "bounded_large_store" : "full"
-        NSLog("WHOOPDBG gate_status_start mode=%@ deep_replay=%d sessions=%d rr_sessions=%d rr_samples=%d hr_accepted=%d hrv_validated_sessions=%d hrv_baseline_samples=%d workout_replay_scope=%@ workout_replay_limit=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_start mode=%@ deep_replay=%d sessions=%d rr_sessions=%d rr_samples=%d hr_accepted=%d hrv_validated_sessions=%d hrv_baseline_samples=%d workout_replay_scope=%@ workout_replay_limit=%d",
               mode,
               includeDeepReplay ? 1 : 0,
               sessions.count,
@@ -2595,7 +2888,7 @@ final class SessionStore: ObservableObject {
         let backupAvailable = latestBackup != nil
         let backupLabel = latestBackup.map { backupRelativePath(for: $0) } ?? "none"
         let backupCurrent = latestBackup.map { latestBackupMatchesCurrentStore($0) } ?? false
-        NSLog("WHOOPDBG gate_status_progress stage=local_rollups mode=%@ days=%d sleep_days=%d sleep_candidate_days=%d workout_days=%d trend90_coverage_percent=%d backup_available=%d backup_current=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=local_rollups mode=%@ days=%d sleep_days=%d sleep_candidate_days=%d workout_days=%d trend90_coverage_percent=%d backup_available=%d backup_current=%d",
               mode,
               rollups.count,
               sleepDays,
@@ -2604,7 +2897,7 @@ final class SessionStore: ObservableObject {
               trend90?.coveragePercent ?? 0,
               backupAvailable ? 1 : 0,
               backupCurrent ? 1 : 0)
-        NSLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_start mode=%@", mode)
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_start mode=%@", mode)
         let confirmedWorkoutRecords = confirmedWorkouts
         let confirmedSleepRecords = confirmedSleeps
         let confirmedWorkoutCount = confirmedWorkoutRecords.count
@@ -2614,7 +2907,7 @@ final class SessionStore: ObservableObject {
                                                       maxHR: profile.maxHR,
                                                       confirmedWorkouts: confirmedWorkoutRecords,
                                                       confirmedSleeps: confirmedSleepRecords)
-        NSLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_done mode=%@ entitlement=%d available=%d planned_hr=%d planned_workouts=%d planned_hrv=%d planned_sleeps=%d reference_status=%@ reference_ready=%d readback_status=%@ readback_missing_total_atria_hr_samples=%d readback_overfill_total_atria_hr_samples=%d readback_reconciliation=%@",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_done mode=%@ entitlement=%d available=%d planned_hr=%d planned_workouts=%d planned_hrv=%d planned_sleeps=%d reference_status=%@ reference_ready=%d readback_status=%@ readback_missing_total_atria_hr_samples=%d readback_overfill_total_atria_hr_samples=%d readback_reconciliation=%@",
               mode,
               healthKit.entitlementPresent ? 1 : 0,
               healthKit.healthDataAvailable ? 1 : 0,
@@ -2665,7 +2958,7 @@ final class SessionStore: ObservableObject {
         let gateHStatus = historicalDownloadProtocolValidated ? "ready" : "partial"
         let reserveHR = max(profile.maxHR - rest, 0)
         let thresholdHR = rest + Int((Double(reserveHR) * 0.50).rounded())
-        NSLog("WHOOPDBG gate_status_progress stage=workout_replay_start mode=%@ sessions=%d scope=%@ limit=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=workout_replay_start mode=%@ sessions=%d scope=%@ limit=%d",
               mode,
               sessions.count,
               workoutReplayScope,
@@ -2675,7 +2968,7 @@ final class SessionStore: ObservableObject {
                                                         limitSessions: workoutReplayLimit,
                                                         includeAggregates: workoutReplayLimit == nil,
                                                         includeActiveJournal: true)
-        NSLog("WHOOPDBG gate_status_progress stage=workout_replay_done mode=%@ ready=%d best_source=%@ best_blocker=%@ best_next_action=%@ scope=%@ limit=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=workout_replay_done mode=%@ ready=%d best_source=%@ best_blocker=%@ best_next_action=%@ scope=%@ limit=%d",
               mode,
               workoutReplay.readySessions,
               workoutReplay.bestSource,
@@ -2683,23 +2976,23 @@ final class SessionStore: ObservableObject {
               workoutReplay.bestNextAction,
               workoutReplayScope,
               workoutReplayLimit ?? 0)
-        NSLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_start mode=%@", mode)
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_start mode=%@", mode)
         let historicalGapRepair = historicalGapRepairSummary(workoutReplay: workoutReplay,
                                                              archive: historicalArchive)
-        NSLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_done mode=%@ status=%@ reason=%@ metric_usable=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_done mode=%@ status=%@ reason=%@ metric_usable=%d",
               mode,
               historicalGapRepair.status,
               historicalGapRepair.reason,
               historicalGapRepair.metricUsable ? 1 : 0)
-        NSLog("WHOOPDBG gate_status_progress stage=strain_validation_start mode=%@", mode)
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=strain_validation_start mode=%@", mode)
         let strainValidation = strainValidationSummary(rest: rest, maxHR: profile.maxHR)
-        NSLog("WHOOPDBG gate_status_progress stage=strain_validation_done mode=%@ ready=%d blocker=%@ stream_coverage_percent=%d max_hrr_percent=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=strain_validation_done mode=%@ ready=%d blocker=%@ stream_coverage_percent=%d max_hrr_percent=%d",
               mode,
               strainValidation.ready ? 1 : 0,
               strainValidation.primaryBlocker,
               strainValidation.streamCoveragePercent,
               Int((strainValidation.maxHRReserve * 100).rounded()))
-        NSLog("WHOOPDBG gate_status_summary mode=%@ deep_replay=%d sessions=%d days=%d rest_hr=%d max_hr=%d hrv_validated_sessions=%d hrv_baseline_samples=%d backup_available=%d backup_current=%d healthkit_entitlement=%d healthkit_available=%d healthkit_hr_samples=%d healthkit_workouts=%d healthkit_hrv_samples=%d healthkit_sleeps=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_summary mode=%@ deep_replay=%d sessions=%d days=%d rest_hr=%d max_hr=%d hrv_validated_sessions=%d hrv_baseline_samples=%d backup_available=%d backup_current=%d healthkit_entitlement=%d healthkit_available=%d healthkit_hr_samples=%d healthkit_workouts=%d healthkit_hrv_samples=%d healthkit_sleeps=%d",
               mode,
               includeDeepReplay ? 1 : 0,
               sessions.count,
@@ -2717,14 +3010,14 @@ final class SessionStore: ObservableObject {
               healthKit.planned.hrvSamples,
               healthKit.planned.sleeps)
         let rrReplayLimit = includeDeepReplay ? 0 : 12
-        NSLog("WHOOPDBG gate_status_progress stage=rr_replay_start mode=%@ rr_sessions=%d rr_samples=%d limit=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=rr_replay_start mode=%@ rr_sessions=%d rr_samples=%d limit=%d",
               mode,
               rrSessions,
               rrSamples,
               rrReplayLimit)
         let rrReplay = replaySavedRRLedger(limitSessions: rrReplayLimit == 0 ? nil : rrReplayLimit,
                                            includeActiveJournal: true)
-        NSLog("WHOOPDBG gate_status_progress stage=rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@ limit=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@ limit=%d",
               mode,
               rrReplay.bestReady ? 1 : 0,
               rrReplay.bestSessionLabel,
@@ -2809,7 +3102,7 @@ final class SessionStore: ObservableObject {
         guard includeDeepReplay else { return }
         logGateStatus("E.deep", status: workoutReplay.readySessions > 0 ? "ready" : "partial",
                       evidence: "workout_replay_scope=\(workoutReplayScope); workout_replay_limit_sessions=\(workoutReplayLimit ?? 0); workout_replay_aggregates=\(workoutReplayLimit == nil ? 1 : 0); workout_saved_ready=\(workoutReplay.readySessions); workout_near_miss=\(workoutReplay.nearMiss ? 1 : 0); workout_near_miss_reason=\(workoutReplay.nearMissReason); workout_strength_candidate=\(workoutReplay.strengthCandidate ? 1 : 0); workout_strength_candidate_reason=\(workoutReplay.strengthCandidateReason); workout_strength_diagnostic_only=1; workout_next_action=\(workoutReplay.bestNextAction); workout_best_source=\(workoutReplay.bestSource); workout_best_chunks=\(workoutReplay.bestChunkCount); workout_best_reason=\(workoutReplay.bestReason); workout_best_blocker=\(workoutReplay.bestPrimaryBlocker); workout_best_stream_coverage_percent=\(workoutReplay.bestStreamCoveragePercent); workout_best_threshold_gap_bpm=\(workoutReplay.bestThresholdGapBPM); workout_best_p95_hr=\(workoutReplay.bestP95HR); workout_best_p99_hr=\(workoutReplay.bestP99HR); workout_best_samples_above_threshold=\(workoutReplay.bestSamplesAboveThreshold); workout_best_samples_above_borderline=\(workoutReplay.bestSamplesAboveBorderline); workout_best_duration_s=\(Int(workoutReplay.bestDuration.rounded())); workout_best_observed_s=\(Int(workoutReplay.bestObservedDuration.rounded())); workout_best_dropped_gap_s=\(Int(workoutReplay.bestDroppedGapSeconds.rounded())); workout_best_elevated_s=\(Int(workoutReplay.bestElevatedSeconds.rounded())); workout_best_longest_bout_s=\(Int(workoutReplay.bestLongestBout.rounded())); workout_best_required_bout_s=\(Int(workoutReplay.bestRequiredBout.rounded())); profile_sensitivity_diagnostic_only=1; required_profile_max_hr_for_p95_hrr50=\(workoutReplay.profileMaxHRForBestP95AtHRR50); required_profile_max_hr_for_p99_hrr50=\(workoutReplay.profileMaxHRForBestP99AtHRR50); required_profile_max_hr_for_peak_hrr50=\(workoutReplay.profileMaxHRForBestPeakAtHRR50); current_profile_minus_p99_required_bpm=\(workoutReplay.p99ProfileMaxHRGap); historical_gap_repair_status=\(historicalGapRepair.status); historical_gap_repair_reason=\(historicalGapRepair.reason); historical_gap_repair_overlap_s=\(historicalGapRepair.overlapSeconds); historical_gap_repair_separation_s=\(historicalGapRepair.separationSeconds); historical_gap_repair_current_usable_rows=\(historicalGapRepair.archiveCurrentUsableRows); historical_gap_repair_metric_usable=\(historicalGapRepair.metricUsable ? 1 : 0); diagnostic_only=1")
-        NSLog("WHOOPDBG gate_status_deep status=ready stage=e_deep_logged deep_mode=%@ workout_replay_limit=%d rr_replay=skipped_bounded_deep_status rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
+        WHOOPDebugLog("WHOOPDBG gate_status_deep status=ready stage=e_deep_logged deep_mode=%@ workout_replay_limit=%d rr_replay=skipped_bounded_deep_status rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
               workoutReplayScope,
               workoutReplayLimit ?? 0,
               rrSamples,
@@ -2819,7 +3112,7 @@ final class SessionStore: ObservableObject {
               historicalGapRepair.status,
               historicalGapRepair.reason)
         guard workoutReplayLimit == nil else {
-            NSLog("WHOOPDBG gate_status_deep_detail status=skipped reason=bounded_large_store sessions=%d hr_accepted=%d rr_samples=%d action=use_fast_rows_or_run_targeted_workout_diagnostics diagnostic_only=1",
+            WHOOPDebugLog("WHOOPDBG gate_status_deep_detail status=skipped reason=bounded_large_store sessions=%d hr_accepted=%d rr_samples=%d action=use_fast_rows_or_run_targeted_workout_diagnostics diagnostic_only=1",
                   sessions.count,
                   hrAcceptedSamples,
                   rrSamples)
@@ -2828,7 +3121,7 @@ final class SessionStore: ObservableObject {
         logWorkoutReplay(workoutReplay)
         logWorkoutThresholdSensitivity(rest: rest, maxHR: profile.maxHR)
         logHistoricalGapRepair(historicalGapRepair)
-        NSLog("WHOOPDBG gate_status_deep rr_replay=%@ rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
+        WHOOPDebugLog("WHOOPDBG gate_status_deep rr_replay=%@ rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
               "skipped_bounded_deep_status",
               rrSamples,
               workoutReplay.readySessions,
@@ -2933,12 +3226,12 @@ final class SessionStore: ObservableObject {
         let appGroupWidgetStatus = widget.appGroupEnabled
             && widget.widgetTargetPresent
             && widget.complicationTargetPresent ? "shared_ready" : "diagnostic_only"
-        NSLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_start mode=%@ sessions=%d rr_samples=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_start mode=%@ sessions=%d rr_samples=%d",
               mode,
               sessions.count,
               rrSamples)
         let rrReplay = replaySavedRRLedger(limitSessions: nil, includeActiveJournal: true)
-        NSLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@",
               mode,
               rrReplay.bestReady ? 1 : 0,
               rrReplay.bestSessionLabel,
@@ -2979,7 +3272,7 @@ final class SessionStore: ObservableObject {
             secondaryLocalAction = "decode_historical_or_new_sensor_when_new_evidence_exists"
         }
 
-        NSLog("WHOOPDBG gate_status_progress stage=bounded_fast_large_store mode=%@ sessions=%d rr_samples=%d hr_accepted=%d reason=avoid_inline_large_store_replay healthkit_cached=1 widget_cached=1 backup_current=%d",
+        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_fast_large_store mode=%@ sessions=%d rr_samples=%d hr_accepted=%d reason=avoid_inline_large_store_replay healthkit_cached=1 widget_cached=1 backup_current=%d",
               mode,
               sessions.count,
               rrSamples,
@@ -3010,7 +3303,7 @@ final class SessionStore: ObservableObject {
         let boundedLocalWindows = boundedTrendSummaries.filter { $0.avgRHR != nil || $0.avgStrain != nil }.count
         let boundedLocalTrendReady = boundedLocalWindows > 0
         let boundedGateFStatus = gateFStatus(summary: boundedTrend90, hrvValidated: hrvValidated)
-        NSLog("WHOOPDBG trend_fast_local windows=%d local_windows=%d rhr_points=%d strain_points=%d recovery_points=%d hrv_points=%d trend90_confidence=%@ trend90_coverage_days=%d trend90_required_coverage_days=%d trend90_coverage_percent=%d trend90_anomaly_source=%@ trend90_anomaly_days=%d hrv_reference_gated=%d status=%@ blockers=%@",
+        WHOOPDebugLog("WHOOPDBG trend_fast_local windows=%d local_windows=%d rhr_points=%d strain_points=%d recovery_points=%d hrv_points=%d trend90_confidence=%@ trend90_coverage_days=%d trend90_required_coverage_days=%d trend90_coverage_percent=%d trend90_anomaly_source=%@ trend90_anomaly_days=%d hrv_reference_gated=%d status=%@ blockers=%@",
               boundedTrendSummaries.count,
               boundedLocalWindows,
               boundedTrendSummaries.filter { $0.avgRHR != nil }.count,
@@ -3050,7 +3343,7 @@ final class SessionStore: ObservableObject {
         let sanitizedEvidence = evidence.replacingOccurrences(of: " ", with: "_")
         persistGateStatusSnapshotLine("WHOOPDBG gate_status gate=\(gate) status=\(status) evidence=\(sanitizedEvidence)",
                                       reset: gate == "local")
-        NSLog("WHOOPDBG gate_status gate=%@ status=%@ evidence=%@",
+        WHOOPDebugLog("WHOOPDBG gate_status gate=%@ status=%@ evidence=%@",
               gate,
               status,
               sanitizedEvidence)
@@ -3075,7 +3368,7 @@ final class SessionStore: ObservableObject {
         let line = "WHOOPDBG execution_priority next_gate=\(nextGate) next_action=\(nextAction) next_local_gate=\(nextLocalGate) next_local_action=\(nextLocalAction)\(secondary) external_blocked=\(externalBlocked) real_world_needed=\(realWorldNeeded) local_blocked=\(localBlocked) ready=\(ready) diagnostic_only=\(diagnosticOnly) skip=\(skip)"
         persistGateStatusSnapshotLine(line, reset: false)
         if let secondaryLocalGate, let secondaryLocalAction {
-            NSLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ secondary_local_gate=%@ secondary_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
+            WHOOPDebugLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ secondary_local_gate=%@ secondary_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
                   nextGate,
                   nextAction,
                   nextLocalGate,
@@ -3089,7 +3382,7 @@ final class SessionStore: ObservableObject {
                   diagnosticOnly,
                   skip)
         } else {
-            NSLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
+            WHOOPDebugLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
                   nextGate,
                   nextAction,
                   nextLocalGate,
@@ -3123,7 +3416,7 @@ final class SessionStore: ObservableObject {
     private func logGateETrainingLine(_ line: String) {
         let sanitized = line.replacingOccurrences(of: " ", with: "_")
         persistGateStatusSnapshotLine(sanitized, reset: false)
-        NSLog("%@", sanitized)
+        WHOOPDebugLog("%@", sanitized)
     }
 
     private func exactWorkoutTrainingReadiness(for workout: UserConfirmedWorkout,
@@ -3238,7 +3531,7 @@ final class SessionStore: ObservableObject {
                 try handle.write(contentsOf: data)
             }
         } catch {
-            NSLog("WHOOPDBG gate_status_snapshot_error error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG gate_status_snapshot_error error=%@", String(describing: error))
         }
     }
 
@@ -3423,7 +3716,7 @@ final class SessionStore: ObservableObject {
             requiredProof = "inspect_detector_inputs_no_metric_credit"
         }
 
-        NSLog("WHOOPDBG hr_profile_validation_plan status=needed reason=%@ gate_d_ready=%d gate_e_ready=0 workout_ready=0 next_action=%@ next_proof=%@ required_proof=%@ reference_state=%@ reference_required=independent_hr_csv_or_healthkit_non_atria export_action=run_--export-hr-reference-package validate_action=push_independent_hr_csv_to_Documents/atria-reference/hr-reference.csv_then_run_--validate-hr-reference cannot_count_workout_without=sustained_hr_or_external_reference source=%@ chunks=%d coverage_percent=%d duration_s=%.0f observed_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d rest_hr=%d profile_max_hr=%d reserve_hr=%d threshold_hr=%d threshold_hrr_percent=%d peak_hr=%d p95_hr=%d p95_hrr_percent=%d p99_hr=%d p99_hrr_percent=%d required_profile_max_hr_for_p95_hrr50=%d required_profile_max_hr_for_p99_hrr50=%d required_profile_max_hr_for_peak_hrr50=%d current_profile_minus_p99_required_bpm=%d profile_sensitivity_diagnostic_only=1 samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d primary_blocker=%@ stream_coverage_required_percent=75 hrr50_required=1 external_hr_reference_required=1 always_emit_when_workout_ready_0=1",
+        WHOOPDebugLog("WHOOPDBG hr_profile_validation_plan status=needed reason=%@ gate_d_ready=%d gate_e_ready=0 workout_ready=0 next_action=%@ next_proof=%@ required_proof=%@ reference_state=%@ reference_required=independent_hr_csv_or_healthkit_non_atria export_action=run_--export-hr-reference-package validate_action=push_independent_hr_csv_to_Documents/atria-reference/hr-reference.csv_then_run_--validate-hr-reference cannot_count_workout_without=sustained_hr_or_external_reference source=%@ chunks=%d coverage_percent=%d duration_s=%.0f observed_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d rest_hr=%d profile_max_hr=%d reserve_hr=%d threshold_hr=%d threshold_hrr_percent=%d peak_hr=%d p95_hr=%d p95_hrr_percent=%d p99_hr=%d p99_hrr_percent=%d required_profile_max_hr_for_p95_hrr50=%d required_profile_max_hr_for_p99_hrr50=%d required_profile_max_hr_for_peak_hrr50=%d current_profile_minus_p99_required_bpm=%d profile_sensitivity_diagnostic_only=1 samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d primary_blocker=%@ stream_coverage_required_percent=75 hrr50_required=1 external_hr_reference_required=1 always_emit_when_workout_ready_0=1",
               reason,
               gateDReady ? 1 : 0,
               action,
@@ -3474,7 +3767,7 @@ final class SessionStore: ObservableObject {
         } else {
             metricSummary = "rmssd=learning sdnn=learning pnn50=learning lnrmssd=learning resp=learning"
         }
-        NSLog("WHOOPDBG rr_ledger_summary sessions=%d rr_samples=%d best_ready=%d best_label=%@ raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f reason=%@ source=saved_rr_points reference_validated=0 %@",
+        WHOOPDebugLog("WHOOPDBG rr_ledger_summary sessions=%d rr_samples=%d best_ready=%d best_label=%@ raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f reason=%@ source=saved_rr_points reference_validated=0 %@",
               summary.sessionsWithRR,
               summary.rrSamples,
               summary.bestReady ? 1 : 0,
@@ -3713,7 +4006,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logWorkoutReplay(_ summary: WorkoutReplaySummary) {
-        NSLog("WHOOPDBG workout_replay_summary raw_sessions=%d canonical_sessions=%d sessions=%d ready=%d near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ best_source=%@ best_chunks=%d best_span_s=%.0f best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d hr_distribution_below_workout_band=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f elevated_fraction=%.2f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f source=saved_sessions_plus_aggregates",
+        WHOOPDebugLog("WHOOPDBG workout_replay_summary raw_sessions=%d canonical_sessions=%d sessions=%d ready=%d near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ best_source=%@ best_chunks=%d best_span_s=%.0f best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d hr_distribution_below_workout_band=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f elevated_fraction=%.2f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f source=saved_sessions_plus_aggregates",
               summary.rawSessions,
               summary.canonicalSessions,
               summary.sessionsEvaluated,
@@ -3816,7 +4109,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logHistoricalGapRepair(_ summary: HistoricalGapRepairSummary) {
-        NSLog("WHOOPDBG historical_gap_repair status=%@ reason=%@ diagnostic_only=%d metric_usable=%d archive_rows=%d archive_current_usable_rows=%d archive_metric_usable_rows=%d archive_start_unix=%d archive_end_unix=%d workout_start_unix=%d workout_end_unix=%d overlap_s=%d separation_s=%d source=historical_archive_vs_saved_workout",
+        WHOOPDebugLog("WHOOPDBG historical_gap_repair status=%@ reason=%@ diagnostic_only=%d metric_usable=%d archive_rows=%d archive_current_usable_rows=%d archive_metric_usable_rows=%d archive_start_unix=%d archive_end_unix=%d workout_start_unix=%d workout_end_unix=%d overlap_s=%d separation_s=%d source=historical_archive_vs_saved_workout",
               summary.status,
               summary.reason,
               summary.diagnosticOnly ? 1 : 0,
@@ -3960,7 +4253,7 @@ final class SessionStore: ObservableObject {
         let summary = replaySavedWorkoutReadiness(rest: rest, maxHR: maxHR)
         guard let bestStart = summary.bestStart,
               let bestEnd = summary.bestEnd else {
-            NSLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_window source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
+            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_window source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
                   source,
                   rest,
                   maxHR)
@@ -3969,7 +4262,7 @@ final class SessionStore: ObservableObject {
         guard summary.sessionsEvaluated > 0,
               summary.bestSource != "none",
               bestEnd > bestStart else {
-            NSLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
+            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
                   source,
                   rest,
                   maxHR)
@@ -3978,7 +4271,7 @@ final class SessionStore: ObservableObject {
         let confirmable = summary.bestObservedDuration >= 10 * 60
             && (summary.nearMiss || summary.strengthCandidate || summary.readySessions > 0 || summary.bestStreamCoveragePercent >= 20)
         guard confirmable else {
-            NSLog("WHOOPDBG workout_confirm status=learning reason=candidate_too_weak source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
+            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=candidate_too_weak source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
                   source,
                   summary.bestSource,
                   summary.bestObservedDuration,
@@ -3988,10 +4281,10 @@ final class SessionStore: ObservableObject {
                   summary.readySessions > 0 ? 1 : 0)
             return nil
         }
-        var existing = loadConfirmedWorkouts()
+        var existing = cachedConfirmedWorkouts
         let id = confirmedWorkoutID(start: bestStart, end: bestEnd, source: summary.bestSource)
         if let already = existing.first(where: { $0.id == id }) {
-            NSLog("WHOOPDBG workout_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ metric_promotions=0 auto_gate_e_unchanged=1",
+            WHOOPDebugLog("WHOOPDBG workout_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ metric_promotions=0 auto_gate_e_unchanged=1",
                   already.id,
                   source,
                   already.source,
@@ -4021,7 +4314,7 @@ final class SessionStore: ObservableObject {
                                              reason: summary.bestReason)
         existing.append(confirmed)
         saveConfirmedWorkouts(existing)
-        NSLog("WHOOPDBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
+        WHOOPDebugLog("WHOOPDBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
               confirmed.id,
               source,
               confirmed.source,
@@ -4042,7 +4335,7 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
-    private func loadConfirmedWorkouts() -> [UserConfirmedWorkout] {
+    private static func readConfirmedWorkouts() -> [UserConfirmedWorkout] {
         guard let data = UserDefaults.standard.data(forKey: ConfirmedWorkoutDefaults.key),
               let decoded = try? JSONDecoder().decode([UserConfirmedWorkout].self, from: data) else {
             return []
@@ -4051,8 +4344,10 @@ final class SessionStore: ObservableObject {
     }
 
     private func saveConfirmedWorkouts(_ workouts: [UserConfirmedWorkout]) {
-        guard let data = try? JSONEncoder().encode(workouts.sorted(by: { $0.start > $1.start })) else { return }
+        let sorted = workouts.sorted(by: { $0.start > $1.start })
+        guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedWorkoutDefaults.key)
+        cachedConfirmedWorkouts = sorted
     }
 
     private func confirmedWorkoutID(start: Date, end: Date, source: String) -> String {
@@ -4073,7 +4368,7 @@ final class SessionStore: ObservableObject {
 
     private func confirmBestSleepCandidate(rest: Int, source: String) -> UserConfirmedSleep? {
         guard let best = aggregateSleepCandidates(rest: rest, calendar: .current).first else {
-            NSLog("WHOOPDBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            WHOOPDebugLog("WHOOPDBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
                   rest)
             return nil
@@ -4081,17 +4376,17 @@ final class SessionStore: ObservableObject {
         let confirmable = best.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
             && best.span >= AggregateSleepCandidate.fragmentedMinimumSpan
         guard confirmable else {
-            NSLog("WHOOPDBG sleep_confirm status=learning reason=candidate_too_short source=%@ duration_s=%.0f span_s=%.0f sessions=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            WHOOPDebugLog("WHOOPDBG sleep_confirm status=learning reason=candidate_too_short source=%@ duration_s=%.0f span_s=%.0f sessions=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
                   best.duration,
                   best.span,
                   best.sessions)
             return nil
         }
-        var existing = loadConfirmedSleeps()
+        var existing = cachedConfirmedSleeps
         let id = confirmedSleepID(start: best.start, end: best.end, source: best.sessions > 1 ? "aggregate_sleep" : "sleep_window")
         if let already = existing.first(where: { $0.id == id }) {
-            NSLog("WHOOPDBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            WHOOPDebugLog("WHOOPDBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   already.id,
                   source,
                   already.source,
@@ -4122,7 +4417,7 @@ final class SessionStore: ObservableObject {
                                            motionValidated: best.motionEvidenceValidated)
         existing.append(confirmed)
         saveConfirmedSleeps(existing)
-        NSLog("WHOOPDBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
+        WHOOPDebugLog("WHOOPDBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
               confirmed.id,
               source,
               confirmed.source,
@@ -4143,7 +4438,7 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
-    private func loadConfirmedSleeps() -> [UserConfirmedSleep] {
+    private static func readConfirmedSleeps() -> [UserConfirmedSleep] {
         guard let data = UserDefaults.standard.data(forKey: ConfirmedSleepDefaults.key),
               let decoded = try? JSONDecoder().decode([UserConfirmedSleep].self, from: data) else {
             return []
@@ -4152,8 +4447,10 @@ final class SessionStore: ObservableObject {
     }
 
     private func saveConfirmedSleeps(_ sleeps: [UserConfirmedSleep]) {
-        guard let data = try? JSONEncoder().encode(sleeps.sorted(by: { $0.start > $1.start })) else { return }
+        let sorted = sleeps.sorted(by: { $0.start > $1.start })
+        guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
+        cachedConfirmedSleeps = sorted
     }
 
     private func confirmedSleepID(start: Date, end: Date, source: String) -> String {
@@ -4180,7 +4477,7 @@ final class SessionStore: ObservableObject {
             if summary.readySessions > 0 {
                 readyFractions.append("hrr\(fractionPercent)")
             }
-            NSLog("WHOOPDBG workout_threshold_sensitivity hrr_percent=%d rest_hr=%d max_hr=%d threshold_hr=%d ready=%d ready_candidates=%d best_source=%@ best_chunks=%d best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d peak_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
+            WHOOPDebugLog("WHOOPDBG workout_threshold_sensitivity hrr_percent=%d rest_hr=%d max_hr=%d threshold_hr=%d ready=%d ready_candidates=%d best_source=%@ best_chunks=%d best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d peak_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
                   fractionPercent,
                   rest,
                   maxHR,
@@ -4209,7 +4506,7 @@ final class SessionStore: ObservableObject {
                   summary.bestBorderlineElevatedSeconds,
                   summary.bestBorderlineLongestBout)
         }
-        NSLog("WHOOPDBG workout_threshold_sensitivity_summary fractions=%@ ready_fractions=%@ diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
+        WHOOPDebugLog("WHOOPDBG workout_threshold_sensitivity_summary fractions=%@ ready_fractions=%@ diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
               fractions.map { "hrr\(Int(($0 * 100).rounded()))" }.joined(separator: ","),
               readyFractions.isEmpty ? "none" : readyFractions.joined(separator: ","))
     }
@@ -4405,7 +4702,117 @@ final class SessionStore: ObservableObject {
         return backupDigest != nil && backupDigest == currentDigest
     }
 
+    private nonisolated static func computeSessionBackupStatus(currentSessions: [SavedSession],
+                                                               baseline: PersonalBaseline,
+                                                               profile: AthleteProfile,
+                                                               sessionFileURL: URL) -> SessionBackupStatus {
+        guard let latest = latestSessionBackupURL(sessionFileURL: sessionFileURL,
+                                                  includeSafetyBackups: false) else {
+            return .missing
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let rrSamples = { (sessions: [SavedSession]) in
+            sessions.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) }
+        }
+        do {
+            let data = try Data(contentsOf: latest)
+            let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
+            guard envelope.schema == 1 else {
+                return SessionBackupStatus(available: true,
+                                           current: false,
+                                           path: backupRelativePath(for: latest),
+                                           sessions: envelope.sessions.count,
+                                           rrSamples: rrSamples(envelope.sessions),
+                                           bytes: data.count,
+                                           reason: "unsupported_schema_\(envelope.schema)")
+            }
+            let current = latestBackupMatchesCurrentStore(latest,
+                                                          currentSessions: currentSessions,
+                                                          baseline: baseline,
+                                                          profile: profile)
+            return SessionBackupStatus(available: true,
+                                       current: current,
+                                       path: backupRelativePath(for: latest),
+                                       sessions: envelope.sessions.count,
+                                       rrSamples: rrSamples(envelope.sessions),
+                                       bytes: data.count,
+                                       reason: current ? "current" : "digest_mismatch")
+        } catch {
+            return SessionBackupStatus(available: true,
+                                       current: false,
+                                       path: backupRelativePath(for: latest),
+                                       sessions: 0,
+                                       rrSamples: 0,
+                                       bytes: 0,
+                                       reason: "decode_error")
+        }
+    }
+
+    private nonisolated static func latestBackupMatchesCurrentStore(_ latest: URL,
+                                                                    currentSessions: [SavedSession],
+                                                                    baseline: PersonalBaseline,
+                                                                    profile: AthleteProfile) -> Bool {
+        guard let data = try? Data(contentsOf: latest) else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let envelope = try? decoder.decode(SessionBackupEnvelope.self, from: data),
+              envelope.schema == 1,
+              envelope.sessions.count == currentSessions.count else {
+            return false
+        }
+        let backupDigest = makeBackupContentDigest(sessions: envelope.sessions,
+                                                   baseline: envelope.baseline,
+                                                   profile: envelope.profile)
+        let currentDigest = makeBackupContentDigest(sessions: currentSessions,
+                                                    baseline: baseline,
+                                                    profile: profile)
+        return backupDigest != nil && backupDigest == currentDigest
+    }
+
+    private nonisolated static func latestSessionBackupURL(sessionFileURL: URL,
+                                                           includeSafetyBackups: Bool) -> URL? {
+        var allFiles: [URL] = []
+        for backupDir in sessionBackupDirectoriesForReading(sessionFileURL: sessionFileURL) {
+            guard let files = try? FileManager.default.contentsOfDirectory(at: backupDir,
+                                                                           includingPropertiesForKeys: nil,
+                                                                           options: [.skipsHiddenFiles])
+                .filter({
+                    $0.pathExtension == "json"
+                        && (includeSafetyBackups || !$0.deletingPathExtension().lastPathComponent.hasSuffix("-pre-restore"))
+                }) else {
+                continue
+            }
+            allFiles.append(contentsOf: files)
+        }
+        return allFiles.max { backupSortDate($0) < backupSortDate($1) }
+    }
+
+    private nonisolated static func sessionBackupDirectoriesForReading(sessionFileURL: URL) -> [URL] {
+        let documentsURL = sessionFileURL.deletingLastPathComponent()
+        return [
+            documentsURL.appendingPathComponent("atria-backups"),
+            documentsURL.appendingPathComponent("whoop-backups")
+        ]
+    }
+
+    private nonisolated static func backupRelativePath(for backupURL: URL) -> String {
+        let directory = backupURL.deletingLastPathComponent().lastPathComponent
+        return "Documents/\(directory)/\(backupURL.lastPathComponent)"
+    }
+
+    private nonisolated static func backupSortDate(_ backupURL: URL) -> Date {
+        if let date = (try? FileManager.default.attributesOfItem(atPath: backupURL.path)[.modificationDate]) as? Date {
+            return date
+        }
+        return .distantPast
+    }
+
     func sessionBackupStatus() -> SessionBackupStatus {
+        cachedSessionBackupStatus
+    }
+
+    private func computeSessionBackupStatus() -> SessionBackupStatus {
         guard let latest = latestSessionBackupURL() else {
             return .missing
         }
@@ -4459,7 +4866,7 @@ final class SessionStore: ObservableObject {
             }
             return lhs.peakHR > rhs.peakHR
         }
-        NSLog("WHOOPDBG activity_detect_summary sessions=%d detections=%d emitted=%d suppressed=%d workouts=%d activity_candidates=%d sleep_candidates=%d rest_candidates=%d rest_hr=%d max_hr=%d",
+        WHOOPDebugLog("WHOOPDBG activity_detect_summary sessions=%d detections=%d emitted=%d suppressed=%d workouts=%d activity_candidates=%d sleep_candidates=%d rest_candidates=%d rest_hr=%d max_hr=%d",
               sessions.count,
               detections.count,
               min(maxRows, detections.count),
@@ -4471,7 +4878,7 @@ final class SessionStore: ObservableObject {
               baseline.restingInt ?? 60,
               profile.maxHR)
         for detection in rankedDetections.prefix(maxRows) {
-            NSLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@",
+            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -4508,7 +4915,7 @@ final class SessionStore: ObservableObject {
         let minDuration = 10 * 60
         let minElevated = min(max(Double(minDuration) * 0.35, 5 * 60), 20 * 60)
         let minBout = min(max(Double(minDuration) * 0.20, 3 * 60), 8 * 60)
-        NSLog("WHOOPDBG workout_preflight rest_hr=%d max_hr=%d reserve_hr=%d threshold_hr=%d hrr50_hr=%d threshold_method=hrr50 min_duration_s=%d min_elevated_s=%.0f min_bout_s=%.0f elevated_rule=max(duration*0.35,5m)_cap20m bout_rule=max(duration*0.20,3m)_cap8m saved_sessions=%d",
+        WHOOPDebugLog("WHOOPDBG workout_preflight rest_hr=%d max_hr=%d reserve_hr=%d threshold_hr=%d hrr50_hr=%d threshold_method=hrr50 min_duration_s=%d min_elevated_s=%.0f min_bout_s=%.0f elevated_rule=max(duration*0.35,5m)_cap20m bout_rule=max(duration*0.20,3m)_cap8m saved_sessions=%d",
               rest,
               maxHR,
               reserve,
@@ -4531,7 +4938,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logStrainValidation(_ summary: StrainValidationSummary) {
-        NSLog("WHOOPDBG strain_validation ready=%d rest_to_max_ready=%d primary_blocker=%@ external_hr_reference_validated=%d days=%d sessions=%d best_day=%@ best_day_sessions=%d rest_hr=%d max_hr=%d reserve_hr=%d samples=%d total_s=%.0f dropped_gap_s=%.0f stream_coverage_percent=%d z0_lt30_s=%.0f z1_30_50_s=%.0f z2_50_70_s=%.0f z3_70_85_s=%.0f z4_85_100_s=%.0f high_z3_z4_s=%.0f min_hrr=%.2f max_hrr=%.2f max_hrr_percent=%d trimp=%.2f strain=%.2f criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required source=saved_sessions_grouped_by_day_no_hr_estimation",
+        WHOOPDebugLog("WHOOPDBG strain_validation ready=%d rest_to_max_ready=%d primary_blocker=%@ external_hr_reference_validated=%d days=%d sessions=%d best_day=%@ best_day_sessions=%d rest_hr=%d max_hr=%d reserve_hr=%d samples=%d total_s=%.0f dropped_gap_s=%.0f stream_coverage_percent=%d z0_lt30_s=%.0f z1_30_50_s=%.0f z2_50_70_s=%.0f z3_70_85_s=%.0f z4_85_100_s=%.0f high_z3_z4_s=%.0f min_hrr=%.2f max_hrr=%.2f max_hrr_percent=%d trimp=%.2f strain=%.2f criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required source=saved_sessions_grouped_by_day_no_hr_estimation",
               summary.ready ? 1 : 0,
               summary.restToMaxReady ? 1 : 0,
               summary.primaryBlocker,
@@ -4698,7 +5105,7 @@ final class SessionStore: ObservableObject {
         }) { candidate in
             candidate.day
         }
-        let confirmedWorkoutsByDay = Dictionary(grouping: loadConfirmedWorkouts()) { workout in
+        let confirmedWorkoutsByDay = Dictionary(grouping: cachedConfirmedWorkouts) { workout in
             calendar.startOfDay(for: workout.start)
         }
         return grouped.map { day, daySessions in
@@ -5043,13 +5450,20 @@ final class SessionStore: ObservableObject {
     }
 
     func aggregateSleepCandidates(rest: Int, calendar: Calendar = .current) -> [AggregateSleepCandidate] {
-        let eligible = canonicalSessions().filter { session in
+        aggregateSleepCandidates(in: canonicalSessions(), rest: rest, maxHR: profile.maxHR, calendar: calendar)
+    }
+
+    private func aggregateSleepCandidates(in sourceSessions: [SavedSession],
+                                          rest: Int,
+                                          maxHR: Int,
+                                          calendar: Calendar = .current) -> [AggregateSleepCandidate] {
+        let eligible = sourceSessions.filter { session in
             guard session.duration >= 20 * 60, !session.points.isEmpty else { return false }
             let startHour = calendar.component(.hour, from: session.start)
             let endHour = calendar.component(.hour, from: session.end)
             let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
             let lowHR = session.avg <= rest + 18 && session.peak <= rest + 55
-            let notWorkout = !session.workoutReadiness(rest: rest, maxHR: profile.maxHR).ready
+            let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
             return overnight && lowHR && notWorkout
         }
         let grouped = Dictionary(grouping: eligible) { session in
@@ -5138,6 +5552,69 @@ final class SessionStore: ObservableObject {
         }
         return candidates
         .sorted { $0.day > $1.day }
+    }
+
+    func sleepEvidenceStatusFast(rest: Int,
+                                 calendar: Calendar = .current,
+                                 windowDays: Int = 45,
+                                 limitSessions: Int = 48) -> SleepEvidenceStatus {
+        let recent = recentCanonicalSessions(windowDays: windowDays, limitSessions: limitSessions)
+        let candidates = aggregateSleepCandidates(in: recent,
+                                                  rest: rest,
+                                                  maxHR: profile.maxHR,
+                                                  calendar: calendar)
+        let ready = candidates.filter { candidate in
+            candidate.motionEvidenceValidated && candidate.confidence != .low
+        }
+        if let best = ready.first {
+            return SleepEvidenceStatus(ready: true,
+                                       state: "ready",
+                                       blocker: "none",
+                                       confidence: best.confidence.rawValue,
+                                       candidates: candidates.count,
+                                       readyCandidates: ready.count,
+                                       motionSource: best.motionEvidenceSource,
+                                       motionValidated: true,
+                                       fallbackAvailable: false,
+                                       fallbackSource: "none",
+                                       fallbackReason: "none",
+                                       fallbackDuration: 0,
+                                       fallbackSpan: 0,
+                                       fallbackSessions: 0)
+        }
+
+        if let best = candidates.first {
+            return SleepEvidenceStatus(ready: false,
+                                       state: "low_confidence",
+                                       blocker: sleepEvidenceBlocker(for: best),
+                                       confidence: best.confidence.rawValue,
+                                       candidates: candidates.count,
+                                       readyCandidates: 0,
+                                       motionSource: best.motionEvidenceSource,
+                                       motionValidated: best.motionEvidenceValidated,
+                                       fallbackAvailable: true,
+                                       fallbackSource: best.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep",
+                                       fallbackReason: best.reason,
+                                       fallbackDuration: best.duration,
+                                       fallbackSpan: best.span,
+                                       fallbackSessions: best.sessions)
+        }
+
+        let observedSleepDays = Set(recent.map { calendar.startOfDay(for: $0.start) }).count
+        return SleepEvidenceStatus(ready: false,
+                                   state: observedSleepDays > 0 ? "low_confidence" : "learning",
+                                   blocker: observedSleepDays > 0 ? "sleep_low_confidence" : "sleep_learning",
+                                   confidence: observedSleepDays > 0 ? "low" : "none",
+                                   candidates: 0,
+                                   readyCandidates: 0,
+                                   motionSource: "unavailable",
+                                   motionValidated: false,
+                                   fallbackAvailable: false,
+                                   fallbackSource: "none",
+                                   fallbackReason: "none",
+                                   fallbackDuration: 0,
+                                   fallbackSpan: 0,
+                                   fallbackSessions: 0)
     }
 
     func sleepEvidenceStatus(rest: Int,
@@ -5350,16 +5827,76 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func trendSummaryFast(rest: Int,
+                          maxHR: Int,
+                          days: Int = 90,
+                          limitSessions: Int = 120,
+                          now: Date = Date()) -> TrendSummary {
+        let recent = recentCanonicalSessions(windowDays: days,
+                                             limitSessions: limitSessions,
+                                             now: now)
+        let coverageDays = Set(recent.map { Calendar.current.startOfDay(for: $0.start) }).count
+        let requiredCoverageDays = trendRequiredCoverageDays(windowDays: days)
+        let coveragePercent = Int((Double(coverageDays) / Double(days) * 100).rounded())
+        let confidence = trendConfidence(coverageDays: coverageDays, windowDays: days)
+        let rhrs = recent.compactMap { session -> Int? in
+            let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
+            return evidence.accepted ? evidence.value : nil
+        }
+        let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+        let hrvs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+        let recoveries = recent.compactMap {
+            let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
+                                              fallbackRMSSD: $0.referenceValidatedHRV,
+                                              restingNow: $0.restingStable,
+                                              baseline: baseline)
+            return recovery.confidence == .high ? recovery.percent : nil
+        }
+        let hrvState = hrvs.isEmpty ? "reference_pending" : "validated_samples_\(hrvs.count)"
+        let avgRecovery = averageInt(recoveries)
+        let avgHRV = averageInt(hrvs)
+        let detail = trendDetail(coverageDays: coverageDays,
+                                 windowDays: days,
+                                 hrvState: hrvState,
+                                 rhrSamples: rhrs.count,
+                                 strainSamples: strains.count,
+                                 anomalySource: "bounded_recent_sessions",
+                                 anomalySampleDays: coverageDays,
+                                 anomalies: [])
+        let blockers = trendSummaryBlockers(coverageDays: coverageDays,
+                                            requiredCoverageDays: requiredCoverageDays,
+                                            avgRecovery: avgRecovery,
+                                            avgHRV: avgHRV,
+                                            hrvState: hrvState)
+        return TrendSummary(id: days,
+                            days: days,
+                            sessions: recent.count,
+                            coverageDays: coverageDays,
+                            requiredCoverageDays: requiredCoverageDays,
+                            coveragePercent: coveragePercent,
+                            confidence: confidence,
+                            avgRecovery: avgRecovery,
+                            avgHRV: avgHRV,
+                            avgRHR: averageInt(rhrs),
+                            avgStrain: averageDouble(strains),
+                            anomalies: [],
+                            anomalySource: "bounded_recent_sessions",
+                            anomalySampleDays: coverageDays,
+                            hrvState: hrvState,
+                            detail: detail,
+                            blockers: blockers)
+    }
+
     func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-log-trends") else { return }
         let rest = baseline.restingInt ?? 60
         let summaries = trendSummaries(rest: rest, maxHR: profile.maxHR)
-        NSLog("WHOOPDBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
+        WHOOPDebugLog("WHOOPDBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
               sessions.count, rest, profile.maxHR, summaries.count)
         for summary in summaries {
             let anomalyFlags = trendAnomalyFlags(summary.anomalies)
             let detail = summary.detail.replacingOccurrences(of: " ", with: "_")
-            NSLog("WHOOPDBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
+            WHOOPDebugLog("WHOOPDBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
                   summary.days,
                   summary.sessions,
                   summary.coverageDays,
@@ -5391,13 +5928,13 @@ final class SessionStore: ObservableObject {
         let confirmedWorkoutCount = rollups.reduce(0) { $0 + $1.confirmedWorkouts }
         let restCandidateDays = rollups.filter { $0.restCandidates > 0 }.count
         let restCandidateCount = rollups.reduce(0) { $0 + $1.restCandidates }
-        NSLog("WHOOPDBG daily_rollup_summary sessions=%d days=%d sleep_ready_days=%d sleep_candidate_days=%d rest_candidate_days=%d rest_candidates=%d workout_days=%d confirmed_workout_days=%d confirmed_workouts=%d rest_hr=%d max_hr=%d",
+        WHOOPDebugLog("WHOOPDBG daily_rollup_summary sessions=%d days=%d sleep_ready_days=%d sleep_candidate_days=%d rest_candidate_days=%d rest_candidates=%d workout_days=%d confirmed_workout_days=%d confirmed_workouts=%d rest_hr=%d max_hr=%d",
               sessions.count, rollups.count, sleepReadyDays, sleepCandidateDays, restCandidateDays, restCandidateCount, workoutDays, confirmedWorkoutDays, confirmedWorkoutCount, rest, profile.maxHR)
         let formatter = DateFormatter()
         formatter.calendar = Calendar.current
         formatter.dateFormat = "yyyy-MM-dd"
         for rollup in rollups.prefix(14) {
-            NSLog("WHOOPDBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
+            WHOOPDebugLog("WHOOPDBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
                   formatter.string(from: rollup.day),
                   rollup.sessions,
                   rollup.activityCandidates,
@@ -5414,7 +5951,7 @@ final class SessionStore: ObservableObject {
         let aggregateWorkouts = aggregateWorkoutCandidates(rest: rest, maxHR: profile.maxHR, calendar: Calendar.current)
         let readyAggregateWorkouts = aggregateWorkouts.filter { $0.readiness.ready }.count
         let bestAggregateWorkout = aggregateWorkouts.first
-        NSLog("WHOOPDBG aggregate_workout_summary candidates=%d ready=%d best_source=%@ best_status=%@ best_reason=%@ best_blocker=%@ best_strength_candidate=%d best_strength_candidate_reason=%@ strength_diagnostic_only=1 best_next_action=%@ best_stream_coverage_percent=%d best_chunks=%d best_duration_s=%.0f best_observed_duration_s=%.0f best_dropped_gap_s=%.0f best_max_gap_s=%.1f best_p90_hr=%d best_p95_hr=%d best_p99_hr=%d best_threshold_gap_bpm=%d best_samples_above_threshold=%d best_samples_above_borderline=%d best_elevated_s=%.0f best_required_elevated_s=%.0f best_longest_bout_s=%.0f best_required_bout_s=%.0f best_borderline_threshold_hr=%d best_borderline_elevated_s=%.0f best_borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 best_hr_raw_2a37=%d best_hr_accepted=%d best_hr_zero=%d best_hr_artifact_held=%d best_hr_artifact_dropped=%d best_hr_raw_gaps=%d best_hr_accepted_gaps=%d best_hr_max_raw_gap_s=%.1f best_hr_max_accepted_gap_s=%.1f cluster_gap_limit_s=1800 window_min_s=600 window_max_s=5400 sample_gap_limit_s=5 source=saved_session_chunks",
+        WHOOPDebugLog("WHOOPDBG aggregate_workout_summary candidates=%d ready=%d best_source=%@ best_status=%@ best_reason=%@ best_blocker=%@ best_strength_candidate=%d best_strength_candidate_reason=%@ strength_diagnostic_only=1 best_next_action=%@ best_stream_coverage_percent=%d best_chunks=%d best_duration_s=%.0f best_observed_duration_s=%.0f best_dropped_gap_s=%.0f best_max_gap_s=%.1f best_p90_hr=%d best_p95_hr=%d best_p99_hr=%d best_threshold_gap_bpm=%d best_samples_above_threshold=%d best_samples_above_borderline=%d best_elevated_s=%.0f best_required_elevated_s=%.0f best_longest_bout_s=%.0f best_required_bout_s=%.0f best_borderline_threshold_hr=%d best_borderline_elevated_s=%.0f best_borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 best_hr_raw_2a37=%d best_hr_accepted=%d best_hr_zero=%d best_hr_artifact_held=%d best_hr_artifact_dropped=%d best_hr_raw_gaps=%d best_hr_accepted_gaps=%d best_hr_max_raw_gap_s=%.1f best_hr_max_accepted_gap_s=%.1f cluster_gap_limit_s=1800 window_min_s=600 window_max_s=5400 sample_gap_limit_s=5 source=saved_session_chunks",
               aggregateWorkouts.count,
               readyAggregateWorkouts,
               bestAggregateWorkout?.source ?? "none",
@@ -5454,7 +5991,7 @@ final class SessionStore: ObservableObject {
               bestAggregateWorkout?.hrMaxAcceptedGap ?? 0)
         for aggregate in aggregateWorkouts.prefix(7) {
             let readiness = aggregate.readiness
-            NSLog("WHOOPDBG aggregate_workout_candidate day=%@ source=%@ status=%@ reason=%@ primary_blocker=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 hr_distribution_below_workout_band=%d next_action=%@ stream_coverage_percent=%d chunks=%d duration_s=%.0f span_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f labels=%@",
+            WHOOPDebugLog("WHOOPDBG aggregate_workout_candidate day=%@ source=%@ status=%@ reason=%@ primary_blocker=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 hr_distribution_below_workout_band=%d next_action=%@ stream_coverage_percent=%d chunks=%d duration_s=%.0f span_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f labels=%@",
                   formatter.string(from: aggregate.day),
                   aggregate.source,
                   readiness.status,
@@ -5505,7 +6042,7 @@ final class SessionStore: ObservableObject {
         let motionHintSessions = sessions.filter { $0.motionHintCountValue > 0 }.count
         let motionSource = motionHintTotal > 0 ? "diagnostic_observe_only" : "unavailable"
         let motionShortStats = motionShortSummary(for: sessions)
-        NSLog("WHOOPDBG broken_sleep_summary candidates=%d eligible_sessions=%d evaluated_sessions=%d rejected_too_short=%d rejected_not_overnight=%d rejected_hr_too_high=%d rejected_workout_like=%d min_total_s=10800 fragmented_min_total_s=9000 fragmented_min_span_s=10800 max_gap_s=7200 confidence=low motion_source=%@ motion_hint_sessions=%d motion_hints=%d motion_validated=0 motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_policy=window_overlap_required",
+        WHOOPDebugLog("WHOOPDBG broken_sleep_summary candidates=%d eligible_sessions=%d evaluated_sessions=%d rejected_too_short=%d rejected_not_overnight=%d rejected_hr_too_high=%d rejected_workout_like=%d min_total_s=10800 fragmented_min_total_s=9000 fragmented_min_span_s=10800 max_gap_s=7200 confidence=low motion_source=%@ motion_hint_sessions=%d motion_hints=%d motion_validated=0 motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_policy=window_overlap_required",
               aggregateDiagnostics.candidates,
               aggregateDiagnostics.eligible,
               aggregateDiagnostics.evaluated,
@@ -5522,7 +6059,7 @@ final class SessionStore: ObservableObject {
               formatDouble(motionShortStats.max),
               motionShortStats.overOne)
         for aggregate in aggregateSleepCandidates(rest: rest, calendar: Calendar.current).prefix(7) {
-            NSLog("WHOOPDBG broken_sleep_candidate day=%@ sessions=%d duration_s=%.0f span_s=%.0f max_gap_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d confidence=%@ reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d",
+            WHOOPDebugLog("WHOOPDBG broken_sleep_candidate day=%@ sessions=%d duration_s=%.0f span_s=%.0f max_gap_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d confidence=%@ reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d",
                   formatter.string(from: aggregate.day),
                   aggregate.sessions,
                   aggregate.duration,
@@ -5557,7 +6094,7 @@ final class SessionStore: ObservableObject {
         }
         for session in sessions.prefix(10) {
             let restingEvidence = session.restingHRForBaseline(rest: rest, maxHR: profile.maxHR)
-            NSLog("WHOOPDBG resting_source label=%@ value=%d source=%@ stable_10th=%d sleep_5th=%d motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
+            WHOOPDebugLog("WHOOPDBG resting_source label=%@ value=%d source=%@ stable_10th=%d sleep_5th=%d motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
                   session.label,
                   restingEvidence.value,
                   restingEvidence.source,
@@ -5575,7 +6112,7 @@ final class SessionStore: ObservableObject {
         }
         for session in sessions.prefix(10) {
             let readiness = session.workoutReadiness(rest: rest, maxHR: profile.maxHR)
-            NSLog("WHOOPDBG workout_readiness label=%@ status=%@ reason=%@ ready=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.2f required_elevated_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f",
+            WHOOPDebugLog("WHOOPDBG workout_readiness label=%@ status=%@ reason=%@ ready=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.2f required_elevated_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f",
                   session.label,
                   readiness.status,
                   readiness.reason,
@@ -5610,7 +6147,7 @@ final class SessionStore: ObservableObject {
                   session.hrAcceptedGapsValue,
                   session.hrMaxRawGapValue,
                   session.hrMaxAcceptedGapValue)
-            NSLog("WHOOPDBG workout_sustained label=%@ longest_bout_s=%.0f required_bout_s=%.0f elevated_s=%.0f required_elevated_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d decision=%@ reason=%@",
+            WHOOPDebugLog("WHOOPDBG workout_sustained label=%@ longest_bout_s=%.0f required_bout_s=%.0f elevated_s=%.0f required_elevated_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d decision=%@ reason=%@",
                   session.label,
                   readiness.longestElevatedBout,
                   readiness.requiredElevatedBout,
@@ -5633,7 +6170,7 @@ final class SessionStore: ObservableObject {
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
-        NSLog("WHOOPDBG sleep_validation schedule delay_s=%.1f label=%@", delay, label ?? "latest")
+        WHOOPDebugLog("WHOOPDBG sleep_validation schedule delay_s=%.1f label=%@", delay, label ?? "latest")
         Task { @MainActor in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
@@ -5656,7 +6193,7 @@ final class SessionStore: ObservableObject {
             let validationReason = validationReady
                 ? "aggregate_overnight_low_hr_window"
                 : sleepEvidenceBlocker(for: aggregate)
-            NSLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=aggregate_sleep duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
+            WHOOPDebugLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=aggregate_sleep duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
                   validationReady ? "ready" : "learning",
                   validationReason,
                   "latest",
@@ -5713,7 +6250,7 @@ final class SessionStore: ObservableObject {
                 return $0.start > $1.start
             }
         guard let session = matching.first else {
-            NSLog("WHOOPDBG sleep_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
+            WHOOPDebugLog("WHOOPDBG sleep_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
                   label ?? "latest", sessions.count, rest, profile.maxHR)
             return
         }
@@ -5740,7 +6277,7 @@ final class SessionStore: ObservableObject {
         } else {
             reason = "overnight_low_hr_window"
         }
-        NSLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ duration_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=%d low_hr=%d sleep_candidates_matching=%d confidence=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
+        WHOOPDebugLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ duration_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=%d low_hr=%d sleep_candidates_matching=%d confidence=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
               status,
               reason,
               label ?? "latest",
@@ -5777,7 +6314,7 @@ final class SessionStore: ObservableObject {
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
-        NSLog("WHOOPDBG workout_validation schedule delay_s=%.1f label=%@", delay, label)
+        WHOOPDebugLog("WHOOPDBG workout_validation schedule delay_s=%.1f label=%@", delay, label)
         Task { @MainActor in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
@@ -5839,7 +6376,7 @@ final class SessionStore: ObservableObject {
             }
             return lhs.readiness.maxSampleGap < rhs.readiness.maxSampleGap
         }).first else {
-            NSLog("WHOOPDBG workout_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
+            WHOOPDebugLog("WHOOPDBG workout_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
                   requestedLabel, sessions.count, rest, profile.maxHR)
             return
         }
@@ -5847,7 +6384,7 @@ final class SessionStore: ObservableObject {
         let status = readiness.ready ? "ready" : "learning"
         let reason = status == "ready" ? "sustained_elevated_hr" : readiness.reason
         let readyMatches = candidates.filter { $0.readiness.ready }.count
-        NSLog("WHOOPDBG workout_validation status=%@ reason=%@ primary_blocker=%@ near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ stream_coverage_percent=%d label=%@ matched_label=%@ source=%@ chunks=%d span_s=%.0f duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 workouts_matching=%d aggregate_candidates=%d",
+        WHOOPDebugLog("WHOOPDBG workout_validation status=%@ reason=%@ primary_blocker=%@ near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ stream_coverage_percent=%d label=%@ matched_label=%@ source=%@ chunks=%d span_s=%.0f duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 workouts_matching=%d aggregate_candidates=%d",
               status,
               reason,
               readiness.primaryBlocker,
@@ -5921,7 +6458,7 @@ final class SessionStore: ObservableObject {
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
                                              profile: profile) ?? "error"
-            NSLog("WHOOPDBG session_backup path=%@ sessions=%d rr_samples=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d schema=%d digest=%@",
+            WHOOPDebugLog("WHOOPDBG session_backup path=%@ sessions=%d rr_samples=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d schema=%d digest=%@",
                   backupRelativePath(for: backupURL),
                   sessions.count,
                   totalRRSamples(in: sessions),
@@ -5936,7 +6473,7 @@ final class SessionStore: ObservableObject {
             pruneAutomaticBackups(in: backupDir, keep: 24)
             return backupURL
         } catch {
-            NSLog("WHOOPDBG session_backup_error error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG session_backup_error error=%@", String(describing: error))
             return nil
         }
     }
@@ -5969,7 +6506,7 @@ final class SessionStore: ObservableObject {
             }
         }
         clearHRReferenceValidation(reason: "reference_inputs_cleared")
-        NSLog("WHOOPDBG reference_inputs_clear status=%@ removed=%d missing=%d failed=%d paths=rr-reference.csv,hr-reference.csv error=%@",
+        WHOOPDebugLog("WHOOPDBG reference_inputs_clear status=%@ removed=%d missing=%d failed=%d paths=rr-reference.csv,hr-reference.csv error=%@",
               failures.isEmpty ? "ok" : "partial",
               removed,
               missing,
@@ -5979,7 +6516,7 @@ final class SessionStore: ObservableObject {
 
     func exportRRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-export-rr-reference-package") else { return }
-        NSLog("WHOOPDBG rr_reference_package status=started sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
+        WHOOPDebugLog("WHOOPDBG rr_reference_package status=started sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
               sessions.count,
               totalRRSamples(in: sessions))
         _ = exportRRReferencePackage()
@@ -5987,19 +6524,19 @@ final class SessionStore: ObservableObject {
 
     func validateRRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-validate-rr-reference") else { return }
-        NSLog("WHOOPDBG rr_reference_validation status=started sessions=%d rr_samples=%d expected_reference=Documents/atria-reference/rr-reference.csv tolerance_ms=5 external_reference_required=1",
+        WHOOPDebugLog("WHOOPDBG rr_reference_validation status=started sessions=%d rr_samples=%d expected_reference=Documents/atria-reference/rr-reference.csv tolerance_ms=5 external_reference_required=1",
               sessions.count,
               totalRRSamples(in: sessions))
         _ = validateRRReferenceFromDocuments()
     }
 
     func exportRRReferencePackageForUI() -> URL? {
-        NSLog("WHOOPDBG rr_reference_export_ui status=started source=dashboard external_reference_required=1 tolerance_ms=5")
+        WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=started source=dashboard external_reference_required=1 tolerance_ms=5")
         guard let exported = exportRRReferencePackage() else {
-            NSLog("WHOOPDBG rr_reference_export_ui status=learning reason=no_exportable_rr_reference source=dashboard")
+            WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=learning reason=no_exportable_rr_reference source=dashboard")
             return nil
         }
-        NSLog("WHOOPDBG rr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
+        WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
               "Documents/atria-rr-reference-packages/\(exported.csv.lastPathComponent)",
               "Documents/atria-rr-reference-packages/\(exported.manifest.lastPathComponent)")
         return exported.csv
@@ -6022,12 +6559,12 @@ final class SessionStore: ObservableObject {
             }
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
             let bytes = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? NSNumber)?.intValue ?? 0
-            NSLog("WHOOPDBG rr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1 tolerance_ms=5",
+            WHOOPDebugLog("WHOOPDBG rr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1 tolerance_ms=5",
                   sourceURL.lastPathComponent,
                   bytes)
             return validateRRReferenceFromDocuments()
         } catch {
-            NSLog("WHOOPDBG rr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv validation_triggered=0 error=%@",
+            WHOOPDebugLog("WHOOPDBG rr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv validation_triggered=0 error=%@",
                   sourceURL.lastPathComponent,
                   String(describing: error))
             return false
@@ -6037,7 +6574,7 @@ final class SessionStore: ObservableObject {
     func exportHRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-export-hr-reference-package") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
-        NSLog("WHOOPDBG hr_reference_package status=started sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
+        WHOOPDebugLog("WHOOPDBG hr_reference_package status=started sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
               sessions.count,
               hrSamples)
         _ = exportHRReferencePackage()
@@ -6046,19 +6583,19 @@ final class SessionStore: ObservableObject {
     func validateHRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-validate-hr-reference") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
-        NSLog("WHOOPDBG hr_reference_validation status=started sessions=%d hr_samples=%d expected_reference=Documents/atria-reference/hr-reference.csv tolerance_bpm=2 max_pair_age_s=5 external_reference_required=1",
+        WHOOPDebugLog("WHOOPDBG hr_reference_validation status=started sessions=%d hr_samples=%d expected_reference=Documents/atria-reference/hr-reference.csv tolerance_bpm=2 max_pair_age_s=5 external_reference_required=1",
               sessions.count,
               hrSamples)
         _ = validateHRReferenceFromDocuments()
     }
 
     func exportHRReferencePackageForUI() -> URL? {
-        NSLog("WHOOPDBG hr_reference_export_ui status=started source=dashboard external_reference_required=1")
+        WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=started source=dashboard external_reference_required=1")
         guard let exported = exportHRReferencePackage() else {
-            NSLog("WHOOPDBG hr_reference_export_ui status=learning reason=no_exportable_hr_reference source=dashboard")
+            WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=learning reason=no_exportable_hr_reference source=dashboard")
             return nil
         }
-        NSLog("WHOOPDBG hr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
+        WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
               "Documents/atria-hr-reference-packages/\(exported.csv.lastPathComponent)",
               "Documents/atria-hr-reference-packages/\(exported.manifest.lastPathComponent)")
         return exported.csv
@@ -6081,12 +6618,12 @@ final class SessionStore: ObservableObject {
             }
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
             let bytes = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? NSNumber)?.intValue ?? 0
-            NSLog("WHOOPDBG hr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1",
+            WHOOPDebugLog("WHOOPDBG hr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1",
                   sourceURL.lastPathComponent,
                   bytes)
             return validateHRReferenceFromDocuments()
         } catch {
-            NSLog("WHOOPDBG hr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv validation_triggered=0 error=%@",
+            WHOOPDebugLog("WHOOPDBG hr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv validation_triggered=0 error=%@",
                   sourceURL.lastPathComponent,
                   String(describing: error))
             return false
@@ -6098,7 +6635,7 @@ final class SessionStore: ObservableObject {
         let rrSamples = totalRRSamples(in: sessions)
         guard let best = bestSavedRRReferenceWindow() else {
             let reason = rrSamples > 0 ? "no_300s_window" : "no_saved_rr"
-            NSLog("WHOOPDBG rr_reference_package status=learning reason=%@ sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_package status=learning reason=%@ sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
                   reason,
                   sessions.count,
                   rrSamples)
@@ -6106,7 +6643,7 @@ final class SessionStore: ObservableObject {
         }
 
         guard best.ready else {
-            NSLog("WHOOPDBG rr_reference_package status=learning reason=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f external_reference_required=1 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_package status=learning reason=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f external_reference_required=1 reference_validated=0",
                   best.reason,
                   best.session.label,
                   best.snapshot.raw,
@@ -6183,7 +6720,7 @@ final class SessionStore: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: manifestURL, options: .atomic)
 
-            NSLog("WHOOPDBG rr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f rmssd=%.1f sdnn=%.1f pnn50=%.1f lnrmssd=%.2f external_reference_required=1 reference_validated=0 reference_path=Documents/atria-reference/rr-reference.csv tolerance_ms=5 self_compare_rejected=1 schema=2",
+            WHOOPDebugLog("WHOOPDBG rr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f rmssd=%.1f sdnn=%.1f pnn50=%.1f lnrmssd=%.2f external_reference_required=1 reference_validated=0 reference_path=Documents/atria-reference/rr-reference.csv tolerance_ms=5 self_compare_rejected=1 schema=2",
                   "\(relativeDir)/\(csvURL.lastPathComponent)",
                   "\(relativeDir)/\(manifestURL.lastPathComponent)",
                   best.session.label,
@@ -6197,7 +6734,7 @@ final class SessionStore: ObservableObject {
                   best.snapshot.lnRMSSD)
             return (csvURL, manifestURL)
         } catch {
-            NSLog("WHOOPDBG rr_reference_package status=error reason=write_failed error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG rr_reference_package status=error reason=write_failed error=%@", String(describing: error))
             return nil
         }
     }
@@ -6206,14 +6743,14 @@ final class SessionStore: ObservableObject {
     private func validateRRReferenceFromDocuments() -> Bool {
         guard let best = bestSavedRRReferenceWindow(), best.ready else {
             let reason = totalRRSamples(in: sessions) > 0 ? "no_ready_whoop_rr_window" : "no_saved_rr"
-            NSLog("WHOOPDBG rr_reference_validation status=learning reason=%@ gate_b_pass=0 external_reference=0 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=learning reason=%@ gate_b_pass=0 external_reference=0 reference_validated=0",
                   reason)
             return false
         }
 
         let reference = resolveReferenceCSV(kind: "rr", preferredFileName: "rr-reference.csv")
         guard let referenceURL = reference.url else {
-            NSLog("WHOOPDBG rr_reference_validation status=missing reason=%@ path=Documents/atria-reference/rr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_rmssd=%.1f gate_b_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_rr_csv_in_Documents/atria-reference_or_push_rr-reference.csv",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=missing reason=%@ path=Documents/atria-reference/rr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_rmssd=%.1f gate_b_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_rr_csv_in_Documents/atria-reference_or_push_rr-reference.csv",
                   reference.reason,
                   reference.candidateCount,
                   reference.candidates.isEmpty ? "none" : reference.candidates.joined(separator: "|"),
@@ -6224,7 +6761,7 @@ final class SessionStore: ObservableObject {
             return false
         }
         if reference.autoSelected {
-            NSLog("WHOOPDBG rr_reference_validation_reference status=auto_selected preferred=rr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation_reference status=auto_selected preferred=rr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
                   referenceURL.lastPathComponent,
                   reference.candidateCount)
         }
@@ -6233,7 +6770,7 @@ final class SessionStore: ObservableObject {
             let referenceText = try String(contentsOf: referenceURL, encoding: .utf8)
             let selfCSV = rrReferenceCSV(for: best, isoFormatter: ISO8601DateFormatter())
             if normalizeReferenceCSV(referenceText) == normalizeReferenceCSV(selfCSV) {
-                NSLog("WHOOPDBG rr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_b_pass=0 external_reference=0 reference_validated=0 action=provide_independent_rr_ibi_recording",
+                WHOOPDebugLog("WHOOPDBG rr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_b_pass=0 external_reference=0 reference_validated=0 action=provide_independent_rr_ibi_recording",
                       referenceURL.lastPathComponent)
                 return false
             }
@@ -6243,7 +6780,7 @@ final class SessionStore: ObservableObject {
             let metricPassed = best.ready
                 && referenceScore.ready
                 && delta.map { $0 <= 5.0 } == true
-            NSLog("WHOOPDBG rr_reference_validation status=%@ reason=%@ whoop_ready=%d whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_gap_s=%.1f whoop_rmssd=%.1f reference_ready=%d reference_raw=%d reference_kept=%d reference_conf=%d reference_gap_s=%.1f reference_rmssd=%.1f rmssd_delta_ms=%.1f tolerance_ms=5 gate_b_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=%@ reason=%@ whoop_ready=%d whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_gap_s=%.1f whoop_rmssd=%.1f reference_ready=%d reference_raw=%d reference_kept=%d reference_conf=%d reference_gap_s=%.1f reference_rmssd=%.1f rmssd_delta_ms=%.1f tolerance_ms=5 gate_b_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
                   metricPassed ? "pass" : "fail",
                   metricPassed ? "ready" : rrReferenceFailureReason(whoop: best, reference: referenceScore, delta: delta),
                   best.ready ? 1 : 0,
@@ -6269,7 +6806,7 @@ final class SessionStore: ObservableObject {
             }
             return metricPassed
         } catch {
-            NSLog("WHOOPDBG rr_reference_validation status=error reason=parse_failed error=%@ gate_b_pass=0 external_reference=1 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=error reason=parse_failed error=%@ gate_b_pass=0 external_reference=1 reference_validated=0",
                   String(describing: error))
             return false
         }
@@ -6287,7 +6824,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: nil,
                                      invalidateExistingValidation: false)
-            NSLog("WHOOPDBG hr_reference_validation status=learning reason=%@ gate_d_pass=0 external_reference=0 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=learning reason=%@ gate_d_pass=0 external_reference=0 reference_validated=0",
                   reason)
             return false
         }
@@ -6305,7 +6842,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: best.session,
                                      invalidateExistingValidation: false)
-            NSLog("WHOOPDBG hr_reference_validation status=missing reason=%@ path=Documents/atria-reference/hr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_samples=%d whoop_duration_s=%.0f whoop_avg_hr=%.1f whoop_peak_hr=%d whoop_resting_hr=%d tolerance_bpm=2 gate_d_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_hr_csv_in_Documents/atria-reference_or_push_hr-reference.csv",
+            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=missing reason=%@ path=Documents/atria-reference/hr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_samples=%d whoop_duration_s=%.0f whoop_avg_hr=%.1f whoop_peak_hr=%d whoop_resting_hr=%d tolerance_bpm=2 gate_d_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_hr_csv_in_Documents/atria-reference_or_push_hr-reference.csv",
                   reference.reason,
                   reference.candidateCount,
                   reference.candidates.isEmpty ? "none" : reference.candidates.joined(separator: "|"),
@@ -6317,7 +6854,7 @@ final class SessionStore: ObservableObject {
             return false
         }
         if reference.autoSelected {
-            NSLog("WHOOPDBG hr_reference_validation_reference status=auto_selected preferred=hr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
+            WHOOPDebugLog("WHOOPDBG hr_reference_validation_reference status=auto_selected preferred=hr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
                   referenceURL.lastPathComponent,
                   reference.candidateCount)
         }
@@ -6333,7 +6870,7 @@ final class SessionStore: ObservableObject {
                                          comparison: nil,
                                          session: best.session,
                                          invalidateExistingValidation: true)
-                NSLog("WHOOPDBG hr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_d_pass=0 external_reference=0 reference_validated=0 action=provide_independent_chest_strap_hr_recording",
+                WHOOPDebugLog("WHOOPDBG hr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_d_pass=0 external_reference=0 reference_validated=0 action=provide_independent_chest_strap_hr_recording",
                       referenceURL.lastPathComponent)
                 return false
             }
@@ -6350,7 +6887,7 @@ final class SessionStore: ObservableObject {
                                      comparison: comparison,
                                      session: best.session,
                                      invalidateExistingValidation: !comparison.ready)
-            NSLog("WHOOPDBG hr_reference_validation status=%@ reason=%@ whoop_samples=%d reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 gate_d_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
+            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=%@ reason=%@ whoop_samples=%d reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 gate_d_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
                   comparison.ready ? "pass" : "fail",
                   comparison.reason,
                   whoop.count,
@@ -6379,7 +6916,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: best.session,
                                      invalidateExistingValidation: true)
-            NSLog("WHOOPDBG hr_reference_validation status=error reason=parse_failed error=%@ gate_d_pass=0 external_reference=1 reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=error reason=parse_failed error=%@ gate_d_pass=0 external_reference=1 reference_validated=0",
                   String(describing: error))
             return false
         }
@@ -6443,19 +6980,22 @@ final class SessionStore: ObservableObject {
                                               rmssd: Double,
                                               delta: Double) {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else {
-            NSLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_not_found session_id=%@ reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_not_found session_id=%@ reference_validated=0",
                   session.id.uuidString)
             return
         }
         sessions[index].hrv = Int(rmssd.rounded())
         sessions[index].hrvReferenceValidated = true
         guard save() else {
-            NSLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_store_save session_id=%@ reference_validated=0",
+            WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_store_save session_id=%@ reference_validated=0",
                   session.id.uuidString)
             return
         }
         rebuildBaselineFromEligibleSessions(reason: "rr-reference-validation")
-        NSLog("WHOOPDBG rr_reference_validation_persist status=ok session_id=%@ label=%@ hrv=%d rmssd_delta_ms=%.1f reference_validated=1",
+        refreshSessionDerivedCaches()
+        refreshHomeDashboardDiagnosticsCache()
+        publishDashboardRevision()
+        WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=ok session_id=%@ label=%@ hrv=%d rmssd_delta_ms=%.1f reference_validated=1",
               session.id.uuidString,
               session.label,
               sessions[index].referenceValidatedHRV ?? 0,
@@ -6475,7 +7015,9 @@ final class SessionStore: ObservableObject {
         defaults.set(maxDelta ?? -1, forKey: ExternalReferenceDefaults.hrMaxDelta)
         defaults.set(session.id.uuidString, forKey: ExternalReferenceDefaults.hrSessionID)
         defaults.set(session.label, forKey: ExternalReferenceDefaults.hrSessionLabel)
-        NSLog("WHOOPDBG hr_reference_validation_persist status=ok session_id=%@ label=%@ source=csv pairs=%d mean_delta_bpm=%.2f max_delta_bpm=%.2f reference_validated=1",
+        refreshHomeDashboardDiagnosticsCache()
+        publishDashboardRevision()
+        WHOOPDebugLog("WHOOPDBG hr_reference_validation_persist status=ok session_id=%@ label=%@ source=csv pairs=%d mean_delta_bpm=%.2f max_delta_bpm=%.2f reference_validated=1",
               session.id.uuidString,
               session.label,
               pairs,
@@ -6513,7 +7055,9 @@ final class SessionStore: ObservableObject {
         } else if invalidateExistingValidation {
             defaults.set(false, forKey: ExternalReferenceDefaults.hrValidated)
         }
-        NSLog("WHOOPDBG hr_reference_validation_record status=%@ reason=%@ source=%@ reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d reference_validated=%d invalidated=%d",
+        refreshHomeDashboardDiagnosticsCache()
+        publishDashboardRevision()
+        WHOOPDebugLog("WHOOPDBG hr_reference_validation_record status=%@ reason=%@ source=%@ reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d reference_validated=%d invalidated=%d",
               status,
               reason,
               source,
@@ -6541,7 +7085,9 @@ final class SessionStore: ObservableObject {
         defaults.set(-1, forKey: ExternalReferenceDefaults.hrMedianDelta)
         defaults.set(-1, forKey: ExternalReferenceDefaults.hrMaxDelta)
         defaults.set(0, forKey: ExternalReferenceDefaults.hrWithinTolerancePercent)
-        NSLog("WHOOPDBG hr_reference_validation_clear status=ok reason=%@ reference_validated=0",
+        refreshHomeDashboardDiagnosticsCache()
+        publishDashboardRevision()
+        WHOOPDebugLog("WHOOPDBG hr_reference_validation_clear status=ok reason=%@ reference_validated=0",
               reason)
     }
 
@@ -6550,7 +7096,7 @@ final class SessionStore: ObservableObject {
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
         guard let best = bestSavedHRReferenceSession() else {
             let reason = hrSamples > 0 ? "no_60s_saved_hr_window" : "no_saved_hr"
-            NSLog("WHOOPDBG hr_reference_package status=learning reason=%@ sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
+            WHOOPDebugLog("WHOOPDBG hr_reference_package status=learning reason=%@ sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
                   reason,
                   sessions.count,
                   hrSamples)
@@ -6605,7 +7151,7 @@ final class SessionStore: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: manifestURL, options: .atomic)
 
-            NSLog("WHOOPDBG hr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ samples=%d duration_s=%.0f observed_s=%.0f coverage_percent=%d avg_hr=%.1f peak_hr=%d resting_hr=%d source=2a37 external_reference_required=1 reference_validated=0 gate_d_pass=0",
+            WHOOPDebugLog("WHOOPDBG hr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ samples=%d duration_s=%.0f observed_s=%.0f coverage_percent=%d avg_hr=%.1f peak_hr=%d resting_hr=%d source=2a37 external_reference_required=1 reference_validated=0 gate_d_pass=0",
                   "\(relativeDir)/\(csvURL.lastPathComponent)",
                   "\(relativeDir)/\(manifestURL.lastPathComponent)",
                   best.session.label,
@@ -6618,7 +7164,7 @@ final class SessionStore: ObservableObject {
                   resting)
             return (csvURL, manifestURL)
         } catch {
-            NSLog("WHOOPDBG hr_reference_package status=error reason=write_failed error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG hr_reference_package status=error reason=write_failed error=%@", String(describing: error))
             return nil
         }
     }
@@ -6922,7 +7468,10 @@ final class SessionStore: ObservableObject {
 
     private func writeAutomaticSessionBackup(reason: String) {
         let backupURL = writeSessionBackup(label: "auto-\(reason)")
-        NSLog("WHOOPDBG session_backup_auto status=%@ reason=%@ path=%@ sessions=%d",
+        refreshBackupStatusCache()
+        refreshHomeDashboardDiagnosticsCache()
+        publishDashboardRevision()
+        WHOOPDebugLog("WHOOPDBG session_backup_auto status=%@ reason=%@ path=%@ sessions=%d",
               backupURL == nil ? "error" : "ok",
               reason,
               backupURL.map { backupRelativePath(for: $0) } ?? "none",
@@ -6936,7 +7485,7 @@ final class SessionStore: ObservableObject {
 
     func verifyLatestSessionBackup() {
         guard let latest = latestSessionBackupURL() else {
-            NSLog("WHOOPDBG session_backup_verify status=missing reason=no_backup_files")
+            WHOOPDebugLog("WHOOPDBG session_backup_verify status=missing reason=no_backup_files")
             return
         }
         verifySessionBackup(at: latest)
@@ -6949,7 +7498,7 @@ final class SessionStore: ObservableObject {
 
     func restoreLatestSessionBackup() {
         guard let latest = latestRestorableSessionBackupURL() else {
-            NSLog("WHOOPDBG session_backup_restore status=missing reason=no_backup_files")
+            WHOOPDebugLog("WHOOPDBG session_backup_restore status=missing reason=no_backup_files")
             return
         }
 
@@ -6960,22 +7509,26 @@ final class SessionStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
             guard envelope.schema == 1 else {
-                NSLog("WHOOPDBG session_backup_restore status=error reason=unsupported_schema schema=%d", envelope.schema)
+                WHOOPDebugLog("WHOOPDBG session_backup_restore status=error reason=unsupported_schema schema=%d", envelope.schema)
                 return
             }
 
             sessions = envelope.sessions
             profile = envelope.profile
+            refreshSessionDerivedCaches()
             guard save() else {
-                NSLog("WHOOPDBG session_backup_restore status=error reason=store_save_failed")
+                WHOOPDebugLog("WHOOPDBG session_backup_restore status=error reason=store_save_failed")
                 return
             }
             rebuildBaselineFromEligibleSessions(reason: "restore-backup")
             profile.save()
+            refreshBackupStatusCache()
+            refreshHomeDashboardDiagnosticsCache()
+            publishDashboardRevision()
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
                                              profile: profile) ?? "error"
-            NSLog("WHOOPDBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d baseline_samples=%d profile_max_hr=%d digest=%@",
+            WHOOPDebugLog("WHOOPDBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d baseline_samples=%d profile_max_hr=%d digest=%@",
                   backupRelativePath(for: latest),
                   safetyURL.map { backupRelativePath(for: $0) } ?? "none",
                   envelope.schema,
@@ -6984,7 +7537,7 @@ final class SessionStore: ObservableObject {
                   profile.maxHR,
                   digest)
         } catch {
-            NSLog("WHOOPDBG session_backup_restore status=error error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG session_backup_restore status=error error=%@", String(describing: error))
         }
     }
 
@@ -7042,7 +7595,7 @@ final class SessionStore: ObservableObject {
                                                                        includingPropertiesForKeys: nil,
                                                                        options: [.skipsHiddenFiles])
             .filter({ $0.pathExtension == "json" }) else {
-            NSLog("WHOOPDBG session_backup_prune status=missing_dir keep=%d deleted=0 total_json=0 auto_json=0",
+            WHOOPDebugLog("WHOOPDBG session_backup_prune status=missing_dir keep=%d deleted=0 total_json=0 auto_json=0",
                   keep)
             return
         }
@@ -7057,12 +7610,12 @@ final class SessionStore: ObservableObject {
                 try FileManager.default.removeItem(at: file)
                 deleted += 1
             } catch {
-                NSLog("WHOOPDBG session_backup_prune_error file=%@ error=%@",
+                WHOOPDebugLog("WHOOPDBG session_backup_prune_error file=%@ error=%@",
                       file.lastPathComponent,
                       String(describing: error))
             }
         }
-        NSLog("WHOOPDBG session_backup_prune status=ok keep=%d kept_auto=%d deleted=%d total_json=%d auto_json=%d",
+        WHOOPDebugLog("WHOOPDBG session_backup_prune status=ok keep=%d kept_auto=%d deleted=%d total_json=%d auto_json=%d",
               keep,
               min(automatic.count, keep),
               deleted,
@@ -7086,7 +7639,7 @@ final class SessionStore: ObservableObject {
                                                     profile: profile)
             let digestMatches = backupDigest != nil && backupDigest == currentDigest
             let status = countMatches && schemaOK && digestMatches ? "ok" : "mismatch"
-            NSLog("WHOOPDBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
+            WHOOPDebugLog("WHOOPDBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
                   status,
                   backupRelativePath(for: latest),
                   envelope.schema,
@@ -7113,13 +7666,21 @@ final class SessionStore: ObservableObject {
                   currentDigest ?? "error",
                   digestMatches ? 1 : 0)
         } catch {
-            NSLog("WHOOPDBG session_backup_verify status=error error=%@", String(describing: error))
+            WHOOPDebugLog("WHOOPDBG session_backup_verify status=error error=%@", String(describing: error))
         }
     }
 
     private func backupContentDigest(sessions: [SavedSession],
                                      baseline: PersonalBaseline,
                                      profile: AthleteProfile) -> String? {
+        Self.makeBackupContentDigest(sessions: sessions,
+                                     baseline: baseline,
+                                     profile: profile)
+    }
+
+    private nonisolated static func makeBackupContentDigest(sessions: [SavedSession],
+                                                            baseline: PersonalBaseline,
+                                                            profile: AthleteProfile) -> String? {
         let content = SessionBackupContentFingerprint(schema: 1,
                                                       app: "Atria.local",
                                                       sessions: sessions,
@@ -7376,11 +7937,104 @@ final class SessionStore: ObservableObject {
         value.map { String(format: "%.1f", $0) } ?? "learning"
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else { return }
+    private func loadPersistedSessionsDeferred() {
+        let sourceURL = url
+        let currentBaseline = baseline
+        let currentProfile = profile
+        Task.detached(priority: .utility) { [sourceURL, currentBaseline, currentProfile] in
+            let startedAt = CFAbsoluteTimeGetCurrent()
+            guard let data = try? Data(contentsOf: sourceURL),
+                  let decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
+                await MainActor.run {
+                    WHOOPDebugLog("WHOOPDBG session_store_load status=empty")
+                }
+                return
+            }
+
+            let preparation = Self.prepareDeferredLoad(decoded: decoded,
+                                                       baseline: currentBaseline,
+                                                       profile: currentProfile,
+                                                       sessionFileURL: sourceURL)
+            let elapsedMS = Int(((CFAbsoluteTimeGetCurrent() - startedAt) * 1000).rounded())
+            await MainActor.run {
+                self.finishDeferredLoad(decoded, preparation: preparation, elapsedMS: elapsedMS)
+            }
+        }
+    }
+
+    private func finishDeferredLoad(_ decoded: [SavedSession],
+                                    preparation: DeferredLoadPreparation,
+                                    elapsedMS: Int) {
         sessions = decoded
-        rebuildBaselineFromEligibleSessions(reason: "load")
+        cachedLatestReferenceValidatedHRV = preparation.latestReferenceValidatedHRV
+        cachedCanonicalSessions = preparation.canonicalSessions
+        cachedHomeSavedAggregate = nil
+        cachedCurrentCollectionStatus = nil
+        cachedSessionBackupStatus = preparation.backupStatus
+
+        if preparation.didRebuildBaseline {
+            baseline = preparation.baseline
+            let preparedBaseline = preparation.baseline
+            Task.detached(priority: .utility) {
+                preparedBaseline.save()
+            }
+        }
+        cachedHomeDashboardDiagnostics = nil
+        publishDashboardRevision()
+
+        WHOOPDebugLog("WHOOPDBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",
+              decoded.count,
+              preparation.didRebuildBaseline ? 1 : 0,
+              elapsedMS)
+    }
+
+    private nonisolated static func prepareDeferredLoad(decoded: [SavedSession],
+                                                        baseline: PersonalBaseline,
+                                                        profile: AthleteProfile,
+                                                        sessionFileURL: URL) -> DeferredLoadPreparation {
+        let shouldRebuildBaseline = shouldRebuildBaselineAfterLoading(decoded, baseline: baseline)
+        let preparedBaseline = shouldRebuildBaseline
+            ? rebuildBaseline(from: decoded, previousBaseline: baseline, profile: profile)
+            : baseline
+        return DeferredLoadPreparation(
+            latestReferenceValidatedHRV: decoded.first(where: { $0.referenceValidatedHRV != nil })?.referenceValidatedHRV,
+            canonicalSessions: makeCanonicalSessions(from: decoded),
+            baseline: preparedBaseline,
+            didRebuildBaseline: shouldRebuildBaseline,
+            backupStatus: computeSessionBackupStatus(currentSessions: decoded,
+                                                     baseline: preparedBaseline,
+                                                     profile: profile,
+                                                     sessionFileURL: sessionFileURL)
+        )
+    }
+
+    private nonisolated static func shouldRebuildBaselineAfterLoading(_ decoded: [SavedSession],
+                                                                      baseline: PersonalBaseline) -> Bool {
+        guard !decoded.isEmpty else { return false }
+        if baseline.updated == nil || baseline.restingSampleCount == 0 {
+            return true
+        }
+        let hasValidatedHRVInSessions = decoded.contains { ($0.referenceValidatedHRV ?? 0) > 0 }
+        if baseline.hrvSampleCount == 0 && hasValidatedHRVInSessions {
+            return true
+        }
+        return false
+    }
+
+    private nonisolated static func rebuildBaseline(from sessions: [SavedSession],
+                                                    previousBaseline: PersonalBaseline,
+                                                    profile: AthleteProfile) -> PersonalBaseline {
+        let previousRest = previousBaseline.restingInt
+        var rebuilt = PersonalBaseline()
+        for session in sessions.sorted(by: { $0.start < $1.start }) {
+            let rest = rebuilt.restingInt ?? previousRest ?? session.restingStable
+            let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
+            guard evidence.accepted else { continue }
+            rebuilt.learn(fromResting: evidence.value,
+                          hrv: session.referenceValidatedHRV ?? 0,
+                          at: session.end)
+        }
+        return rebuilt
     }
 
     private func save() -> Bool {
@@ -7389,7 +8043,7 @@ final class SessionStore: ObservableObject {
             try data.write(to: url, options: .atomic)
             return true
         } catch {
-            NSLog("WHOOPDBG session_store_save status=failed error=%@", error.localizedDescription)
+            WHOOPDebugLog("WHOOPDBG session_store_save status=failed error=%@", error.localizedDescription)
             return false
         }
     }
@@ -7398,73 +8052,256 @@ final class SessionStore: ObservableObject {
 // MARK: - History UI
 
 struct HistoryView: View {
-    @EnvironmentObject var store: SessionStore
-    private var detections: [ActivityDetection] {
-        store.detectedActivities(rest: store.baseline.restingInt ?? 60,
-                                 maxHR: store.profile.maxHR)
-    }
-    private var trends: [TrendSummary] {
-        store.trendSummaries(rest: store.baseline.restingInt ?? 60,
-                             maxHR: store.profile.maxHR)
-    }
-    private var rollups: [DailyRollup] {
-        store.dailyRollups(rest: store.baseline.restingInt ?? 60,
-                           maxHR: store.profile.maxHR)
+    @ObservedObject var store: SessionStore
+    @State private var snapshot: HistorySnapshot
+
+    init(store: SessionStore) {
+        _store = ObservedObject(wrappedValue: store)
+        _snapshot = State(initialValue: HistorySnapshot(store: store))
     }
 
     var body: some View {
-        List {
-            if store.sessions.isEmpty {
-                ContentUnavailableView("No sessions yet",
-                    systemImage: "heart.text.square",
-                    description: Text("Finish a session to save it here."))
-            }
-            if !store.sessions.isEmpty {
-                Section("Trends") {
-                    TrendSummaryView(summaries: trends)
-                }
-                Section("Daily rollups") {
-                    ForEach(rollups.prefix(14), id: \.day) { rollup in
-                        DailyRollupRow(rollup: rollup)
-                    }
-                }
-            }
-            if !detections.isEmpty {
-                Section("Detected") {
-                    ForEach(detections.prefix(5)) { detection in
-                        DetectionRow(detection: detection)
-                    }
-                }
-            }
-            if store.sessions.count >= 2 {
-                Section {
-                    RestingTrendChart(sessions: store.sessions,
-                                      baseline: store.baseline.restingInt)
-                        .padding(.vertical, 4)
-                }
-            }
-            Section {
-            ForEach(store.sessions) { s in
-                NavigationLink {
-                    SessionDetail(session: s)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(s.label.isEmpty ? "Session" : s.label)
-                                .font(.headline)
-                            Spacer()
-                            Text(s.start, style: .date)
-                                .font(.caption).foregroundStyle(.secondary)
+        ZStack {
+            AtriaDashboardBackdrop()
+                .ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    historyHeroCard
+
+                    if snapshot.sessions.isEmpty {
+                        ContentUnavailableView("No sessions yet",
+                                               systemImage: "heart.text.square",
+                                               description: Text("Finish a session to save it here."))
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                            .background(AtriaQuietCardBackground())
+                    } else {
+                        historySection(title: "Trends", subtitle: "Saved readiness over time") {
+                            TrendSummaryView(summaries: snapshot.trends)
                         }
-                        Text("\(s.durationText) · avg \(s.avg) · peak \(s.peak) · rest \(s.resting)")
-                            .font(.caption).foregroundStyle(.secondary)
+
+                        historySection(title: "Daily rollups", subtitle: "Recent saved evidence") {
+                            LazyVStack(spacing: 12) {
+                                ForEach(snapshot.rollups.prefix(14), id: \.day) { rollup in
+                                    DailyRollupRow(rollup: rollup)
+                                }
+                            }
+                        }
+
+                        if !snapshot.detections.isEmpty {
+                            historySection(title: "Detected", subtitle: "Local-only activity findings") {
+                                LazyVStack(spacing: 12) {
+                                    ForEach(snapshot.detections.prefix(5)) { detection in
+                                        DetectionRow(detection: detection)
+                                    }
+                                }
+                            }
+                        }
+
+                        if snapshot.sessions.count >= 2 {
+                            historySection(title: "Resting trend", subtitle: "Saved resting HR over time") {
+                                RestingTrendChart(sessions: snapshot.sessions,
+                                                  baseline: store.baseline.restingInt)
+                            }
+                        }
+
+                        historySection(title: "Saved sessions", subtitle: "Open any session for detail") {
+                            LazyVStack(spacing: 12) {
+                                ForEach(snapshot.sessions) { session in
+                                    NavigationLink {
+                                        SessionDetail(session: session)
+                                    } label: {
+                                        historySessionRow(session)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            store.deleteSession(id: session.id)
+                                        } label: {
+                                            Label("Delete session", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            .onDelete { store.delete($0) }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
             }
         }
         .navigationTitle("History")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: refreshSnapshot)
+        .onChange(of: store.dashboardRevision) { _, _ in
+            refreshSnapshot()
+        }
+        .onChange(of: store.profile) { _, _ in
+            refreshSnapshot()
+        }
+    }
+
+    private var historyHeroCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("History")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                    Text(snapshot.sessions.isEmpty
+                         ? "Saved trends and session detail appear here once you finish a session."
+                         : "A lighter archive for saved sessions, trends, and local activity evidence.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Text("\(snapshot.sessions.count)")
+                    .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+            }
+
+            HStack(spacing: 12) {
+                HistoryQuickStat(label: "Sessions", value: "\(snapshot.sessions.count)")
+                HistoryQuickStat(label: "Detected", value: "\(snapshot.detections.count)")
+                HistoryQuickStat(label: "Baseline", value: "\(store.baseline.hrvSampleCount)/7")
+            }
+        }
+        .padding(18)
+        .background(AtriaQuietCardBackground())
+    }
+
+    private func historySection<Content: View>(title: String,
+                                               subtitle: String,
+                                               @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            content()
+        }
+        .padding(18)
+        .background(AtriaQuietCardBackground())
+    }
+
+    private func historySessionRow(_ session: SavedSession) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(session.label.isEmpty ? "Session" : session.label)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(2)
+                Spacer(minLength: 12)
+                Text(session.start, style: .date)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("\(session.durationText) · avg \(session.avg) · peak \(session.peak) · rest \(session.resting)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                historySessionPill("HRV", value: session.hrv.map(String.init) ?? "Learning", tint: .purple)
+                historySessionPill("Samples", value: "\(session.points.count)", tint: .cyan)
+                historySessionPill("TRIMP",
+                                   value: String(format: "%.1f",
+                                                 session.trimp(rest: session.restingStable,
+                                                               max: max(store.profile.maxHR, session.restingStable + 1))),
+                                   tint: .orange)
+            }
+        }
+        .padding(16)
+        .background(AtriaInsetSessionCardBackground())
+    }
+
+    private func historySessionPill(_ label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(HistoryPillBackground(tint: tint))
+    }
+
+    private func refreshSnapshot() {
+        snapshot = HistorySnapshot(store: store)
+    }
+}
+
+@MainActor
+private struct HistorySnapshot {
+    let sessions: [SavedSession]
+    let detections: [ActivityDetection]
+    let trends: [TrendSummary]
+    let rollups: [DailyRollup]
+
+    init(store: SessionStore) {
+        let rest = store.baseline.restingInt ?? 60
+        let maxHR = store.profile.maxHR
+        self.sessions = store.sessions
+        self.detections = store.detectedActivities(rest: rest, maxHR: maxHR)
+        self.trends = store.trendSummaries(rest: rest, maxHR: maxHR)
+        self.rollups = store.dailyRollups(rest: rest, maxHR: maxHR)
+    }
+}
+
+private struct HistoryQuickStat: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.weight(.semibold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(AtriaInsetSessionCardBackground())
+    }
+}
+
+private struct AtriaInsetSessionCardBackground: View {
+    var body: some View {
+        AtriaQuietCardBackground()
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.white.opacity(0.02))
+                    .padding(1)
+            }
+    }
+}
+
+private struct HistoryPillBackground: View {
+    let tint: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(colorScheme == .dark ? tint.opacity(0.10) : tint.opacity(0.08))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), lineWidth: 1)
+            }
     }
 }
 
@@ -7604,7 +8441,7 @@ struct TrendSummaryView: View {
                                      coverageMin: coverageMin,
                                      hrvStates: summaries.map(\.hrvState),
                                      confidence: summaries.map(\.confidence))
-        NSLog("WHOOPDBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
+        WHOOPDebugLog("WHOOPDBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
               windows,
               recoveryPoints,
               hrvPoints,
@@ -7813,42 +8650,60 @@ struct DetectionRow: View {
 struct SessionDetail: View {
     let session: SavedSession
     private var maxHR: Int { AthleteProfile.load().maxHR }
+    private var displayedPoints: [SavedSession.Point] {
+        downsampledPoints(session.points)
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Chart(Array(session.points.enumerated()), id: \.offset) { _, p in
-                    LineMark(x: .value("t", p.t), y: .value("bpm", p.bpm))
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(.red.gradient)
-                }
-                .frame(height: 220)
-                .padding()
-                .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        ZStack {
+            AtriaDashboardBackdrop()
+                .ignoresSafeArea()
 
-                HStack(spacing: 0) {
-                    stat("Resting", session.resting)
-                    stat("Average", session.avg)
-                    stat("Peak", session.peak)
-                    VStack(spacing: 2) {
-                        Text(String(format: "%.1f",
-                            Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable, max: maxHR))))
-                            .font(.title2.weight(.semibold).monospacedDigit())
-                        Text("Strain").font(.caption2).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(spacing: 16) {
+                    Chart(Array(displayedPoints.enumerated()), id: \.offset) { _, p in
+                        LineMark(x: .value("t", p.t), y: .value("bpm", p.bpm))
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(.red.gradient)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(height: 220)
+                    .padding()
+                    .background(AtriaQuietCardBackground())
+
+                    HStack(spacing: 0) {
+                        stat("Resting", session.resting)
+                        stat("Average", session.avg)
+                        stat("Peak", session.peak)
+                        VStack(spacing: 2) {
+                            Text(String(format: "%.1f",
+                                Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable, max: maxHR))))
+                                .font(.title2.weight(.semibold).monospacedDigit())
+                            Text("Strain").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .padding()
+                    .background(AtriaQuietCardBackground())
+
+                    TimeInZoneView(session: session, maxHR: maxHR)
+                        .padding()
+                        .background(AtriaQuietCardBackground())
                 }
                 .padding()
-                .background(.background, in: RoundedRectangle(cornerRadius: 16))
-
-                TimeInZoneView(session: session, maxHR: maxHR)
-                    .padding()
-                    .background(.background, in: RoundedRectangle(cornerRadius: 16))
             }
-            .padding()
         }
         .navigationTitle(session.label.isEmpty ? "Session" : session.label)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func downsampledPoints(_ points: [SavedSession.Point], targetCount: Int = 320) -> [SavedSession.Point] {
+        guard points.count > targetCount, targetCount > 1 else { return points }
+        let maxIndex = points.count - 1
+        let step = Double(maxIndex) / Double(targetCount - 1)
+        return (0..<targetCount).map { sample in
+            let index = min(maxIndex, Int((Double(sample) * step).rounded()))
+            return points[index]
+        }
     }
 
     private func stat(_ title: String, _ value: Int) -> some View {

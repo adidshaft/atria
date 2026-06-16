@@ -26,7 +26,7 @@ enum LocalNotificationScheduler {
         let debugDiagnosticRequest = arguments.contains("--whoop-test-notification")
         let productionCadence = !debugMetricRequest && !debugDiagnosticRequest
         let delay = launchDelay(arguments: arguments)
-        NSLog("WHOOPDBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
+        WHOOPDebugLog("WHOOPDBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
               productionCadence ? "production" : "debug",
               delay)
 
@@ -55,8 +55,8 @@ enum LocalNotificationScheduler {
         let granted = await requestProvisionalAuthorization(center: center)
         let settings = await notificationSettings(center: center)
         let status = statusName(settings.authorizationStatus)
-        NSLog("WHOOPDBG notification_auth status=%@ granted=%d", status, granted ? 1 : 0)
-        NSLog("WHOOPDBG notification_readiness status=%@ authorization=%@ metric_decisions=%d diagnostic=%d production_cadence=%d action=%@",
+        WHOOPDebugLog("WHOOPDBG notification_auth status=%@ granted=%d", status, granted ? 1 : 0)
+        WHOOPDebugLog("WHOOPDBG notification_readiness status=%@ authorization=%@ metric_decisions=%d diagnostic=%d production_cadence=%d action=%@",
               productionCadence ? "production_cadence" : "debug_trigger",
               status,
               includeMetricDecisions ? 1 : 0,
@@ -67,7 +67,7 @@ enum LocalNotificationScheduler {
         guard settings.authorizationStatus == .authorized ||
                 settings.authorizationStatus == .provisional ||
                 settings.authorizationStatus == .ephemeral else {
-            NSLog("WHOOPDBG notification_schedule status=blocked reason=authorization_%@", status)
+            WHOOPDebugLog("WHOOPDBG notification_schedule status=blocked reason=authorization_%@", status)
             await logPendingRequests(center: center)
             return
         }
@@ -92,17 +92,17 @@ enum LocalNotificationScheduler {
                 try await add(decision: decision, center: center)
                 scheduled += 1
             } catch {
-                NSLog("WHOOPDBG notification_error kind=%@ error=%@",
+                WHOOPDebugLog("WHOOPDBG notification_error kind=%@ error=%@",
                       decision.kind,
                       String(describing: error))
             }
         }
         for decision in decisions where !decision.shouldSchedule {
-            NSLog("WHOOPDBG notification_skip kind=%@ reason=%@",
+            WHOOPDebugLog("WHOOPDBG notification_skip kind=%@ reason=%@",
                   decision.kind,
                   decision.reason)
         }
-        NSLog("WHOOPDBG notification_schedule status=scheduled count=%d", scheduled)
+        WHOOPDebugLog("WHOOPDBG notification_schedule status=scheduled count=%d", scheduled)
         await logPendingRequests(center: center)
     }
 
@@ -181,7 +181,7 @@ enum LocalNotificationScheduler {
         }
 
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
-        NSLog("WHOOPDBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
+        WHOOPDebugLog("WHOOPDBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
               battery.level,
               battery.source,
               battery.age,
@@ -238,7 +238,7 @@ enum LocalNotificationScheduler {
                                             content: content,
                                             trigger: trigger)
         try await center.add(request)
-        NSLog("WHOOPDBG notification_scheduled kind=%@ id=%@ title=%@ delay_s=%.1f reason=%@",
+        WHOOPDebugLog("WHOOPDBG notification_scheduled kind=%@ id=%@ title=%@ delay_s=%.1f reason=%@",
               decision.kind,
               decision.identifier,
               decision.title,
@@ -250,7 +250,7 @@ enum LocalNotificationScheduler {
         await withCheckedContinuation { continuation in
             center.requestAuthorization(options: [.alert, .sound, .badge, .provisional]) { granted, error in
                 if let error {
-                    NSLog("WHOOPDBG notification_auth_error error=%@", String(describing: error))
+                    WHOOPDebugLog("WHOOPDBG notification_auth_error error=%@", String(describing: error))
                 }
                 continuation.resume(returning: granted)
             }
@@ -272,7 +272,7 @@ enum LocalNotificationScheduler {
         let battery = requests.filter { [Identifier.battery, Identifier.legacyBattery].contains($0.identifier) }.count
         let diagnostic = requests.filter { [Identifier.diagnostic, Identifier.legacyDiagnostic].contains($0.identifier) }.count
         let known = recovery + strain + battery + diagnostic
-        NSLog("WHOOPDBG notification_pending total=%d recovery=%d strain=%d battery=%d diagnostic=%d unknown=%d",
+        WHOOPDebugLog("WHOOPDBG notification_pending total=%d recovery=%d strain=%d battery=%d diagnostic=%d unknown=%d",
               requests.count,
               recovery,
               strain,
@@ -337,7 +337,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         let request = notification.request
-        NSLog("WHOOPDBG notification_delivered kind=%@ id=%@ foreground=1",
+        WHOOPDebugLog("WHOOPDBG notification_delivered kind=%@ id=%@ foreground=1",
               kind(for: request.identifier),
               request.identifier)
         return [.banner, .sound]
@@ -346,7 +346,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         let request = response.notification.request
-        NSLog("WHOOPDBG notification_response kind=%@ id=%@ action=%@",
+        WHOOPDebugLog("WHOOPDBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)

@@ -261,6 +261,7 @@
 		1A000000000000000000000D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = WhoopApp/WhoopApp.entitlements;
 				CODE_SIGN_STYLE = Manual;
@@ -293,6 +294,7 @@
 		1A000000000000000000000E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = WhoopApp/WhoopApp.entitlements;
 				CODE_SIGN_STYLE = Manual;

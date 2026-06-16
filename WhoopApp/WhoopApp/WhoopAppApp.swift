@@ -6,6 +6,9 @@ struct WhoopAppApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var ble: WhoopBLEManager
     @StateObject private var store: SessionStore
+    @State private var didScheduleLaunchWork = false
+    @State private var inactiveFlushTask: Task<Void, Never>?
+    private let launchStartedAt = Date()
 
     init() {
         let ble = WhoopBLEManager()
@@ -18,53 +21,165 @@ struct WhoopAppApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(ble)
-                .environmentObject(store)
+            ContentView(ble: ble, store: store)
                 .onAppear {
+                    guard !didScheduleLaunchWork else { return }
+                    didScheduleLaunchWork = true
                     let launchArguments = ProcessInfo.processInfo.arguments
-                    store.restoreLatestSessionBackupFromLaunchIfRequested()
-                    store.completeOnboardingFromLaunchIfRequested()
-                    store.logBaselineMaturityFromLaunchIfRequested()
-                    store.logCollectionHealthFromLaunchIfRequested(arguments: launchArguments)
-                    store.logGateReadinessFromLaunchIfRequested(arguments: launchArguments)
-                    ble.applyLaunchAutomation()
-                    ble.applyPersistentLongWearModeIfNeeded(rest: store.baseline.restingInt ?? 60,
-                                                            maxHR: store.profile.maxHR)
-                    ble.scheduleLiveWorkoutDiagnosticsIfRequested(rest: store.baseline.restingInt ?? 60,
-                                                                  maxHR: store.profile.maxHR)
-                    ble.scheduleWorkoutAutoSaveIfRequested(rest: store.baseline.restingInt ?? 60,
-                                                           maxHR: store.profile.maxHR)
-                    store.logActivityDetectionsFromLaunchIfRequested()
-                    store.logDailyRollupsFromLaunchIfRequested()
-                    store.logWorkoutPreflightFromLaunchIfRequested()
-                    store.logStrainValidationFromLaunchIfRequested()
-                    store.scheduleSleepValidationFromLaunchIfRequested()
-                    store.scheduleWorkoutValidationFromLaunchIfRequested()
-                    store.logTrendSummariesFromLaunchIfRequested()
-                    store.writeSessionBackupFromLaunchIfRequested()
-                    store.verifyLatestSessionBackupFromLaunchIfRequested()
-                    store.logGateStatusFromLaunchIfRequested()
-                    scheduleLaunchExportsIfRequested(store: store, arguments: launchArguments)
-                    LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store, ble: ble)
-                    WidgetSnapshotPublisher.publishFromLaunchIfRequested(store: store, ble: ble)
+                    let hasRequestedDeferredLaunchWork = hasRequestedDeferredLaunchWork(arguments: launchArguments)
+                    let shouldRunDeferredWork = shouldRunDeferredLaunchWork(arguments: launchArguments)
+                    logLaunchTiming(event: "on_appear")
+                    Task { @MainActor in
+                        // Yield once so SwiftUI can commit its first frame, then start
+                        // the fast foreground setup without an artificial quarter-second pause.
+                        await Task.yield()
+                        handleFastLaunchWork(arguments: launchArguments)
+                    }
+                    if shouldRunDeferredWork {
+                        Task { @MainActor in
+                            // Normal foreground launches stay on the fast path. Only
+                            // explicit diagnostics or true background-style launches
+                            // pull deferred maintenance into startup.
+                            try? await Task.sleep(nanoseconds: hasRequestedDeferredLaunchWork ? 450_000_000 : 1_500_000_000)
+                            handleDeferredLaunchWork(arguments: launchArguments)
+                        }
+                    }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:
+                        inactiveFlushTask?.cancel()
+                        inactiveFlushTask = nil
+                        ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,
+                                                maxHR: store.profile.maxHR,
+                                                reason: "scene_background")
                         ble.flushActiveSessionJournal(reason: "scene_background")
+                        store.requestPersistenceFlush(reason: "scene_background")
                     case .inactive:
-                        ble.flushActiveSessionJournal(reason: "scene_inactive")
+                        // Inactive is often a short transient state during gestures,
+                        // alerts, and multitasking transitions. Delay persistence so
+                        // we avoid heavy writes unless the app actually stays away.
+                        inactiveFlushTask?.cancel()
+                        inactiveFlushTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            guard !Task.isCancelled else { return }
+                            guard scenePhase == .inactive else { return }
+                            ble.flushActiveSessionJournal(reason: "scene_inactive_deferred")
+                            store.requestPersistenceFlush(reason: "scene_inactive_deferred")
+                        }
                     case .active:
-                        break
+                        inactiveFlushTask?.cancel()
+                        inactiveFlushTask = nil
+                        ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                                       maxHR: store.profile.maxHR)
                     @unknown default:
+                        inactiveFlushTask?.cancel()
+                        inactiveFlushTask = nil
                         ble.flushActiveSessionJournal(reason: "scene_unknown")
+                        store.requestPersistenceFlush(reason: "scene_unknown")
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    inactiveFlushTask?.cancel()
+                    inactiveFlushTask = nil
                     ble.flushActiveSessionJournal(reason: "app_will_terminate")
+                    store.flushScheduledPersistence(reason: "app_will_terminate")
                 }
         }
+    }
+
+    @MainActor
+    private func handleFastLaunchWork(arguments: [String]) {
+        logLaunchTiming(event: "fast_launch_begin")
+        ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                       maxHR: store.profile.maxHR)
+        logLaunchTiming(event: "fast_launch_complete")
+    }
+
+    @MainActor
+    private func handleDeferredLaunchWork(arguments: [String]) {
+        logLaunchTiming(event: "deferred_launch_begin")
+        store.restoreLatestSessionBackupFromLaunchIfRequested()
+        store.completeOnboardingFromLaunchIfRequested()
+        ble.applyLaunchAutomation()
+        if scenePhase != .active {
+            ble.applyPersistentLongWearModeIfNeeded(rest: store.baseline.restingInt ?? 60,
+                                                    maxHR: store.profile.maxHR)
+        }
+        ble.scheduleLiveWorkoutDiagnosticsIfRequested(rest: store.baseline.restingInt ?? 60,
+                                                      maxHR: store.profile.maxHR)
+        ble.scheduleWorkoutAutoSaveIfRequested(rest: store.baseline.restingInt ?? 60,
+                                               maxHR: store.profile.maxHR)
+
+        let requestedLaunchDiagnostics = arguments.contains("--whoop-log-baseline")
+            || arguments.contains("--whoop-log-collection-health")
+            || arguments.contains("--whoop-log-gate-readiness")
+            || arguments.contains("--whoop-log-activity-detections")
+            || arguments.contains("--whoop-log-daily-rollups")
+            || arguments.contains("--whoop-log-workout-preflight")
+            || arguments.contains("--whoop-log-strain-validation")
+            || arguments.contains("--whoop-schedule-sleep-validation")
+            || arguments.contains("--whoop-schedule-workout-validation")
+            || arguments.contains("--whoop-log-trend-summaries")
+            || arguments.contains("--whoop-write-session-backup")
+            || arguments.contains("--whoop-verify-session-backup")
+            || arguments.contains("--whoop-log-gate-status")
+            || arguments.contains("--whoop-export-rr-reference-package")
+            || arguments.contains("--whoop-export-rr-reference-ui-package")
+            || arguments.contains("--whoop-export-hr-reference-package")
+            || arguments.contains("--whoop-export-hr-reference-ui-package")
+            || arguments.contains("--whoop-validate-rr-reference")
+            || arguments.contains("--whoop-validate-hr-reference")
+            || arguments.contains("--whoop-clear-reference-inputs")
+            || arguments.contains("--whoop-healthkit-export")
+            || arguments.contains("--whoop-healthkit-reference-audit")
+            || arguments.contains("--whoop-healthkit-reset-rebuild-atria-hr")
+            || arguments.contains("--whoop-confirm-best-workout-candidate")
+            || arguments.contains("--whoop-confirm-best-sleep-candidate")
+        guard requestedLaunchDiagnostics else {
+            logLaunchTiming(event: "deferred_launch_complete")
+            return
+        }
+
+        store.logBaselineMaturityFromLaunchIfRequested(arguments: arguments)
+        store.logCollectionHealthFromLaunchIfRequested(arguments: arguments)
+        store.logGateReadinessFromLaunchIfRequested(arguments: arguments)
+        store.logActivityDetectionsFromLaunchIfRequested(arguments: arguments)
+        store.logDailyRollupsFromLaunchIfRequested(arguments: arguments)
+        store.logWorkoutPreflightFromLaunchIfRequested(arguments: arguments)
+        store.logStrainValidationFromLaunchIfRequested(arguments: arguments)
+        store.scheduleSleepValidationFromLaunchIfRequested(arguments: arguments)
+        store.scheduleWorkoutValidationFromLaunchIfRequested(arguments: arguments)
+        store.logTrendSummariesFromLaunchIfRequested(arguments: arguments)
+        store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)
+        store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
+        store.logGateStatusFromLaunchIfRequested(arguments: arguments)
+        scheduleLaunchExportsIfRequested(store: store, arguments: arguments)
+        LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store, ble: ble)
+        WidgetSnapshotPublisher.publishFromLaunchIfRequested(store: store, ble: ble)
+        logLaunchTiming(event: "deferred_launch_complete")
+    }
+
+    private func shouldRunDeferredLaunchWork(arguments: [String]) -> Bool {
+        if hasRequestedDeferredLaunchWork(arguments: arguments) {
+            return true
+        }
+        return UIApplication.shared.applicationState == .background
+    }
+
+    private func hasRequestedDeferredLaunchWork(arguments: [String]) -> Bool {
+        arguments.contains { argument in
+            guard argument.hasPrefix("--whoop-") else { return false }
+            return argument != "--whoop-enable-debug-logs"
+        }
+    }
+
+    private func logLaunchTiming(event: String) {
+        let elapsedMS = Int(Date().timeIntervalSince(launchStartedAt) * 1000)
+        WHOOPDebugLog("WHOOPDBG launch_timing event=%@ elapsed_ms=%d scene=%@",
+                      event,
+                      elapsedMS,
+                      String(describing: scenePhase))
     }
 
     @MainActor
@@ -82,19 +197,19 @@ struct WhoopAppApp: App {
         let needsWorkoutConfirm = arguments.contains("--whoop-confirm-best-workout-candidate")
         let needsSleepConfirm = arguments.contains("--whoop-confirm-best-sleep-candidate")
         guard needsRR || needsRRUI || needsHR || needsHRUI || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
-        NSLog("WHOOPDBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
-              needsRR ? 1 : 0,
-              needsRRUI ? 1 : 0,
-              needsHR ? 1 : 0,
-              needsHRUI ? 1 : 0,
-              needsRRValidation ? 1 : 0,
-              needsHRValidation ? 1 : 0,
-              needsReferenceClear ? 1 : 0,
-              needsHealthKit ? 1 : 0,
-              needsHealthKitAudit ? 1 : 0,
-              needsHealthKitResetRebuild ? 1 : 0,
-              needsWorkoutConfirm ? 1 : 0,
-              needsSleepConfirm ? 1 : 0)
+        WHOOPDebugLog("WHOOPDBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+                      needsRR ? 1 : 0,
+                      needsRRUI ? 1 : 0,
+                      needsHR ? 1 : 0,
+                      needsHRUI ? 1 : 0,
+                      needsRRValidation ? 1 : 0,
+                      needsHRValidation ? 1 : 0,
+                      needsReferenceClear ? 1 : 0,
+                      needsHealthKit ? 1 : 0,
+                      needsHealthKitAudit ? 1 : 0,
+                      needsHealthKitResetRebuild ? 1 : 0,
+                      needsWorkoutConfirm ? 1 : 0,
+                      needsSleepConfirm ? 1 : 0)
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
             store.clearReferenceInputsFromLaunchIfRequested(arguments: arguments)
@@ -117,19 +232,19 @@ struct WhoopAppApp: App {
                                                     arguments: arguments,
                                                     needsHealthKit: needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild,
                                                     needsResetRebuild: needsHealthKitResetRebuild)
-            NSLog("WHOOPDBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
-                  needsRR ? 1 : 0,
-                  needsRRUI ? 1 : 0,
-                  needsHR ? 1 : 0,
-                  needsHRUI ? 1 : 0,
-                  needsRRValidation ? 1 : 0,
-                  needsHRValidation ? 1 : 0,
-                  needsReferenceClear ? 1 : 0,
-                  needsHealthKit ? 1 : 0,
-                  needsHealthKitAudit ? 1 : 0,
-                  needsHealthKitResetRebuild ? 1 : 0,
-                  needsWorkoutConfirm ? 1 : 0,
-                  needsSleepConfirm ? 1 : 0)
+            WHOOPDebugLog("WHOOPDBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+                          needsRR ? 1 : 0,
+                          needsRRUI ? 1 : 0,
+                          needsHR ? 1 : 0,
+                          needsHRUI ? 1 : 0,
+                          needsRRValidation ? 1 : 0,
+                          needsHRValidation ? 1 : 0,
+                          needsReferenceClear ? 1 : 0,
+                          needsHealthKit ? 1 : 0,
+                          needsHealthKitAudit ? 1 : 0,
+                          needsHealthKitResetRebuild ? 1 : 0,
+                          needsWorkoutConfirm ? 1 : 0,
+                          needsSleepConfirm ? 1 : 0)
         }
     }
 
@@ -146,9 +261,9 @@ struct WhoopAppApp: App {
             if !statusArguments.contains("--whoop-log-gate-status-delay-fired") {
                 statusArguments.append("--whoop-log-gate-status-delay-fired")
             }
-            NSLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=scheduled delay_s=%llu", delaySeconds)
+            WHOOPDebugLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=scheduled delay_s=%llu", delaySeconds)
             store.logGateStatusFromLaunchIfRequested(arguments: statusArguments)
-            NSLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=completed")
+            WHOOPDebugLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=completed")
         }
     }
 }

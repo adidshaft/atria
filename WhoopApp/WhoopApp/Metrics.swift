@@ -235,7 +235,7 @@ enum Metrics {
 
 // MARK: - Recovery ring
 
-struct RecoveryRing: View {
+struct RecoveryRing: View, Equatable {
     let percent: Int?     // nil = not enough data yet
     var detail: String = ""
     var confidence: Metrics.RecoveryEstimate.Confidence = .learning
@@ -247,10 +247,9 @@ struct RecoveryRing: View {
                 if let p = percent {
                     Circle()
                         .trim(from: 0, to: CGFloat(p) / 100)
-                        .stroke(Metrics.recoveryColor(p).gradient,
+                        .stroke(Metrics.recoveryColor(p),
                                 style: .init(lineWidth: 10, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .animation(.easeInOut, value: p)
                 }
                 VStack(spacing: 0) {
                     Text(percent.map { "\($0)" } ?? "—")
@@ -274,13 +273,16 @@ struct RecoveryRing: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(AtriaQuietCardBackground())
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
 // MARK: - Strain gauge
 
-struct StrainGauge: View {
+struct StrainGauge: View, Equatable {
     let strain: Double
     var detail: String = ""
     var confidence: String = "learning"
@@ -292,10 +294,9 @@ struct StrainGauge: View {
                     style: .init(lineWidth: 10, lineCap: .round))
                     .rotationEffect(.degrees(135))
                 Circle().trim(from: 0, to: 0.75 * CGFloat(strain / 21))
-                    .stroke(Metrics.strainColor(strain).gradient,
+                    .stroke(Metrics.strainColor(strain),
                             style: .init(lineWidth: 10, lineCap: .round))
                     .rotationEffect(.degrees(135))
-                    .animation(.easeInOut, value: strain)
                 VStack(spacing: 0) {
                     Text(String(format: "%.1f", strain))
                         .font(.system(size: 28, weight: .bold, design: .rounded))
@@ -318,6 +319,9 @@ struct StrainGauge: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(AtriaQuietCardBackground())
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }

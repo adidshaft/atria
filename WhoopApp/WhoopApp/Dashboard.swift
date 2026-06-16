@@ -11,13 +11,21 @@ enum Coach {
         6.0 + Double(recovery) / 100.0 * 13.0      // ~6 at 0% … ~19 at 100%
     }
 
-    struct Guidance {
+    struct Guidance: Equatable {
         let headline: String
         let detail: String
         let color: Color
         let target: Double?
         let state: String
         let reason: String
+
+        static func == (lhs: Guidance, rhs: Guidance) -> Bool {
+            lhs.headline == rhs.headline
+                && lhs.detail == rhs.detail
+                && lhs.target == rhs.target
+                && lhs.state == rhs.state
+                && lhs.reason == rhs.reason
+        }
     }
 
     static func guide(recovery: Int?, strain: Double) -> Guidance {
@@ -73,34 +81,42 @@ enum Coach {
 }
 
 struct DailyGuidanceCard: View {
-    let recovery: Metrics.RecoveryEstimate
+    let guidance: Coach.Guidance
     let strain: Double
 
-    private var g: Coach.Guidance { Coach.guide(recovery: recovery, strain: strain) }
+    init(guidance: Coach.Guidance, strain: Double) {
+        self.guidance = guidance
+        self.strain = strain
+    }
+
+    init(recovery: Metrics.RecoveryEstimate, strain: Double) {
+        self.guidance = Coach.guide(recovery: recovery, strain: strain)
+        self.strain = strain
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Circle().fill(g.color).frame(width: 10, height: 10)
-                Text(g.headline).font(.headline)
+                Circle().fill(guidance.color).frame(width: 10, height: 10)
+                Text(guidance.headline).font(.headline)
                 Spacer()
-                if let t = g.target {
+                if let t = guidance.target {
                     Text("target \(String(format: "%.1f", t))")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text(g.state)
+                    Text(guidance.state)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            Text(g.detail).font(.subheadline).foregroundStyle(.secondary)
+            Text(guidance.detail).font(.subheadline).foregroundStyle(.secondary)
 
-            if let t = g.target {
+            if let t = guidance.target {
                 // current strain vs target, on the 0–21 scale
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(.quaternary).frame(height: 8)
-                        Capsule().fill(g.color.gradient)
+                        Capsule().fill(guidance.color.gradient)
                             .frame(width: geo.size.width * CGFloat(min(strain / 21, 1)), height: 8)
                         // target marker
                         Rectangle().fill(.primary.opacity(0.5))
@@ -118,6 +134,6 @@ struct DailyGuidanceCard: View {
             }
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(AtriaQuietCardBackground())
     }
 }

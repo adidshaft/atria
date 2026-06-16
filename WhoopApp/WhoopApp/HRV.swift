@@ -15,7 +15,7 @@ struct RRInterval {
     let expectedHR: Int?
 }
 
-struct HRVSnapshot {
+struct HRVSnapshot: Equatable {
     static let maxReadyRRGapSeconds: TimeInterval = 3
     static let maxRRImpliedHRMismatchBPM = 35.0
 
@@ -67,28 +67,51 @@ struct HRVSnapshot {
 }
 
 enum HRVAnalyzer {
-    static func analyze(_ raw: [RRInterval], now: Date = Date()) -> (HRVSnapshot?, [RRSample]) {
-        let window = raw.filter { now.timeIntervalSince($0.t) <= 300 }
-        guard window.count >= 2 else { return (nil, []) }
-        let coverage = raw.first.map { min(300, now.timeIntervalSince($0.t)) } ?? 0
-        let maxRRGapSeconds = maxGapSeconds(in: window)
+    static func analyze<C: Collection>(_ raw: C,
+                        now: Date = Date(),
+                        includeTachogram: Bool = true) -> (HRVSnapshot?, [RRSample]) where C.Element == RRInterval {
+        guard raw.count >= 2 else { return (nil, []) }
+        let minimumWindowDate = now.addingTimeInterval(-300)
+        guard let windowStartIndex = raw.firstIndex(where: { $0.t >= minimumWindowDate }) else {
+            return (nil, [])
+        }
+
+        let window = raw[windowStartIndex...]
+        guard window.count >= 2, let firstSample = window.first else { return (nil, []) }
+        let coverage = min(300, now.timeIntervalSince(firstSample.t))
 
         var kept: [RRInterval] = []
+        kept.reserveCapacity(window.count)
         var corrected: [RRSample] = []
+        if includeTachogram {
+            corrected.reserveCapacity(window.count)
+        }
         var rejectedOutOfRange = 0
         var rejectedDeltaOver20Percent = 0
         var rejectedHRMismatch = 0
+        var maxRRGapSeconds: TimeInterval = 0
+        var previousWindowSample: RRInterval?
+
         for rr in window {
+            if let previousWindowSample {
+                maxRRGapSeconds = max(maxRRGapSeconds, rr.t.timeIntervalSince(previousWindowSample.t))
+            }
+            previousWindowSample = rr
+
             guard (300...2000).contains(rr.ms) else {
                 rejectedOutOfRange += 1
-                corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                if includeTachogram {
+                    corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                }
                 continue
             }
             if let expectedHR = rr.expectedHR, expectedHR > 0 {
                 let impliedHR = 60_000.0 / rr.ms
                 guard abs(impliedHR - Double(expectedHR)) <= HRVSnapshot.maxRRImpliedHRMismatchBPM else {
                     rejectedHRMismatch += 1
-                    corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                    if includeTachogram {
+                        corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                    }
                     continue
                 }
             }
@@ -96,17 +119,20 @@ enum HRVAnalyzer {
                 let delta = abs(rr.ms - previous.ms) / previous.ms
                 guard delta <= 0.20 else {
                     rejectedDeltaOver20Percent += 1
-                    corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                    if includeTachogram {
+                        corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: false, interpolated: false))
+                    }
                     continue
                 }
             }
             kept.append(rr)
-            corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: true, interpolated: false))
+            if includeTachogram {
+                corrected.append(RRSample(t: rr.t, ms: rr.ms, corrected: true, interpolated: false))
+            }
         }
-        let metricSamples = kept.sorted { $0.t < $1.t }
 
-        let confidence = window.isEmpty ? 0 : Double(kept.count) / Double(window.count)
-        guard metricSamples.count >= 2 else {
+        let confidence = Double(kept.count) / Double(window.count)
+        guard kept.count >= 2 else {
             let learning = HRVSnapshot(rmssd: 0, sdnn: 0, pnn50: 0, lnRMSSD: 0,
                                        confidence: confidence, kept: kept.count,
                                        raw: window.count,
@@ -120,13 +146,32 @@ enum HRVAnalyzer {
             return (learning, corrected)
         }
 
-        let diffs = zip(metricSamples.dropFirst(), metricSamples).map { $0.ms - $1.ms }
-        let rmssd = sqrt(diffs.map { $0 * $0 }.reduce(0, +) / Double(diffs.count))
-        let mean = metricSamples.map(\.ms).reduce(0, +) / Double(metricSamples.count)
-        let sdnn = sqrt(metricSamples.map { pow($0.ms - mean, 2) }.reduce(0, +) / Double(metricSamples.count - 1))
-        let pnn50 = Double(diffs.filter { abs($0) > 50 }.count) / Double(diffs.count) * 100
+        var rrTotal = 0.0
+        var diffSquareTotal = 0.0
+        var pnn50Count = 0
+        for index in kept.indices {
+            let value = kept[index].ms
+            rrTotal += value
+            guard index > 0 else { continue }
+            let diff = value - kept[index - 1].ms
+            diffSquareTotal += diff * diff
+            if abs(diff) > 50 {
+                pnn50Count += 1
+            }
+        }
+
+        let diffCount = kept.count - 1
+        let rmssd = sqrt(diffSquareTotal / Double(diffCount))
+        let mean = rrTotal / Double(kept.count)
+        var varianceTotal = 0.0
+        for sample in kept {
+            let delta = sample.ms - mean
+            varianceTotal += delta * delta
+        }
+        let sdnn = sqrt(varianceTotal / Double(kept.count - 1))
+        let pnn50 = Double(pnn50Count) / Double(diffCount) * 100
         let lnRMSSD = rmssd > 0 ? log(rmssd) : 0
-        let resp = respiratoryRate(from: metricSamples, now: now)
+        let resp = respiratoryRate(from: kept, now: now)
         let snapshot = HRVSnapshot(rmssd: rmssd, sdnn: sdnn, pnn50: pnn50,
                                    lnRMSSD: lnRMSSD, confidence: confidence,
                                    kept: kept.count, raw: window.count,
@@ -140,16 +185,11 @@ enum HRVAnalyzer {
         return (snapshot, corrected)
     }
 
-    private static func maxGapSeconds(in samples: [RRInterval]) -> TimeInterval {
-        guard samples.count >= 2 else { return 0 }
-        let sorted = samples.sorted { $0.t < $1.t }
-        return zip(sorted.dropFirst(), sorted)
-            .map { $0.t.timeIntervalSince($1.t) }
-            .max() ?? 0
-    }
-
     private static func respiratoryRate(from kept: [RRInterval], now: Date) -> Double? {
-        let recent = kept.filter { now.timeIntervalSince($0.t) <= 90 }
+        guard let recentStartIndex = kept.firstIndex(where: { $0.t >= now.addingTimeInterval(-90) }) else {
+            return nil
+        }
+        let recent = kept[recentStartIndex...]
         guard recent.count >= 20,
               let first = recent.first?.t,
               let last = recent.last?.t else { return nil }

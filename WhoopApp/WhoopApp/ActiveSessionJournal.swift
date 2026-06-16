@@ -70,6 +70,12 @@ enum ActiveSessionJournal {
     private static let freshAgeLimitSeconds = 90
     private static let fileName = "atria-active-session.json"
     private static let legacyFileName = "whoop-active-session.json"
+    private struct LoadCache {
+        let targetPath: String
+        let modifiedAt: Date
+        let record: ActiveSessionJournalRecord?
+    }
+    private static var loadCache: LoadCache?
     private enum LastCloseDefaults {
         static let status = "atria.activeJournal.lastClose.status"
         static let reason = "atria.activeJournal.lastClose.reason"
@@ -98,12 +104,33 @@ enum ActiveSessionJournal {
         } else {
             target = nil
         }
-        guard let target else { return nil }
+        guard let target else {
+            loadCache = nil
+            return nil
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            loadCache = nil
+            return decodeRecord(at: target)
+        }
+        if let cached = loadCache,
+           cached.targetPath == target.path,
+           cached.modifiedAt == modifiedAt {
+            return cached.record
+        }
+        let record = decodeRecord(at: target)
+        loadCache = LoadCache(targetPath: target.path,
+                              modifiedAt: modifiedAt,
+                              record: record)
+        return record
+    }
+
+    private static func decodeRecord(at target: URL) -> ActiveSessionJournalRecord? {
         do {
             let data = try Data(contentsOf: target)
             return try JSONDecoder().decode(ActiveSessionJournalRecord.self, from: data)
         } catch {
-            NSLog("WHOOPDBG active_session_journal status=load_failed error=%@", error.localizedDescription)
+            WHOOPDebugLog("WHOOPDBG active_session_journal status=load_failed error=%@", error.localizedDescription)
             return nil
         }
     }
@@ -113,14 +140,16 @@ enum ActiveSessionJournal {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(record)
         try data.write(to: url, options: [.atomic])
+        loadCache = nil
     }
 
     static func clear() {
+        loadCache = nil
         for target in [url, legacyURL].compactMap({ $0 }) where FileManager.default.fileExists(atPath: target.path) {
             do {
                 try FileManager.default.removeItem(at: target)
             } catch {
-                NSLog("WHOOPDBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
+                WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
             }
         }
     }

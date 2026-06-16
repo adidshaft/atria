@@ -46,7 +46,7 @@ struct WhoopFrame: Identifiable {
 /// zlib.crc32 AND the real WHOOP device frame trailer (the previous reflected
 /// `>>` variant did NOT — it produced an invalid checksum the strap rejected,
 /// which is why realtime never started on iOS).
-func crc32(_ bytes: [UInt8]) -> UInt32 {
+func crc32<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
     func reflect8(_ x: UInt8) -> UInt32 {
         var v = x, r: UInt8 = 0
         for _ in 0..<8 { r = (r << 1) | (v & 1); v >>= 1 }
@@ -68,7 +68,7 @@ func crc32(_ bytes: [UInt8]) -> UInt32 {
 }
 
 /// CRC-8 (poly 0x07, init 0x00) — used over the 2 length bytes.
-func crc8(_ bytes: [UInt8]) -> UInt8 {
+func crc8<S: Sequence>(_ bytes: S) -> UInt8 where S.Element == UInt8 {
     var c: UInt8 = 0
     for b in bytes {
         c ^= b
