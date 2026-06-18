@@ -1,0 +1,775 @@
+import SwiftUI
+
+struct AtriaOverviewTabContent: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    let liveStore: AtriaHomeModel.CoreLiveStore
+    let heroStore: AtriaHomeModel.HeroStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let snapshotStore: AtriaHomeModel.SnapshotStore
+    let hasUnlockedSecondarySections: Bool
+    let horizontalSizeClass: UserInterfaceSizeClass?
+    let connectionContext: AtriaConnectionGuideContext
+    let onShowConnectionGuide: () -> Void
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        Group {
+            if statusStore.state.status != .connected {
+                if hasUnlockedSecondarySections {
+                    AtriaDisconnectedOverviewHost(statusStore: statusStore,
+                                                 homeStatsStore: homeStatsStore,
+                                                 snapshotStore: snapshotStore,
+                                                 context: connectionContext,
+                                                 onShowConnectionGuide: onShowConnectionGuide,
+                                                 onOpenVitals: onOpenVitals,
+                                                 onOpenCollection: onOpenCollection)
+                }
+            } else if !hasUnlockedSecondarySections {
+                LazyVStack(spacing: 18) {
+                    AtriaOverviewLeadingHost(heroStore: heroStore,
+                                             snapshotStore: snapshotStore,
+                                             hasUnlockedSecondarySections: false)
+                    AtriaLoadingPanel(title: "Preparing saved insights",
+                                      subtitle: "Trend, backup, and collection summaries join after the first live dashboard settles.")
+                }
+            } else if horizontalSizeClass == .regular {
+                HStack(alignment: .top, spacing: 18) {
+                    LazyVStack(spacing: 18) {
+                        AtriaOverviewLeadingHost(heroStore: heroStore,
+                                                 snapshotStore: snapshotStore,
+                                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+
+                    LazyVStack(spacing: 18) {
+                        AtriaOverviewTrailingHost(liveStore: liveStore,
+                                                  homeStatsStore: homeStatsStore,
+                                                  snapshotStore: snapshotStore,
+                                                  hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                                  onOpenCollection: onOpenCollection)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            } else {
+                LazyVStack(spacing: 18) {
+                    AtriaOverviewLeadingHost(heroStore: heroStore,
+                                             snapshotStore: snapshotStore,
+                                             hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+                    AtriaOverviewTrailingHost(liveStore: liveStore,
+                                              homeStatsStore: homeStatsStore,
+                                              snapshotStore: snapshotStore,
+                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                              onOpenCollection: onOpenCollection)
+                }
+            }
+        }
+    }
+}
+
+private struct AtriaDisconnectedOverviewHost: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    let context: AtriaConnectionGuideContext
+    let onShowConnectionGuide: () -> Void
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
+                                       stats: homeStatsStore.state,
+                                       snapshot: snapshotStore.state,
+                                       context: context,
+                                       onShowConnectionGuide: onShowConnectionGuide,
+                                       onOpenVitals: onOpenVitals,
+                                       onOpenCollection: onOpenCollection)
+            .equatable()
+    }
+}
+
+private struct AtriaDisconnectedOverviewPanel: View, Equatable {
+    let status: WhoopBLEManager.Status
+    let stats: AtriaHomeModel.HomeStatsState
+    let snapshot: AtriaHomeModel.Snapshot
+    let context: AtriaConnectionGuideContext
+    let onShowConnectionGuide: () -> Void
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
+
+    static func == (lhs: AtriaDisconnectedOverviewPanel, rhs: AtriaDisconnectedOverviewPanel) -> Bool {
+        lhs.status == rhs.status
+            && lhs.stats == rhs.stats
+            && lhs.snapshot == rhs.snapshot
+            && lhs.context == rhs.context
+    }
+
+    private var tint: Color {
+        switch status {
+        case .connecting, .scanning:
+            return .orange
+        case .poweredOff:
+            return .red
+        case .disconnected:
+            return .blue
+        case .connected:
+            return .green
+        }
+    }
+
+    private var systemImage: String {
+        switch status {
+        case .connecting:
+            return "bolt.horizontal.fill"
+        case .scanning:
+            return "dot.radiowaves.left.and.right"
+        case .poweredOff:
+            return "bolt.slash.fill"
+        case .disconnected:
+            return "bolt.horizontal.circle"
+        case .connected:
+            return "bolt.heart.fill"
+        }
+    }
+
+    private var title: String {
+        switch status {
+        case .connecting:
+            return "Finishing the first handoff"
+        case .scanning:
+            return "Searching nearby"
+        case .poweredOff:
+            return "Bluetooth is paused"
+        case .disconnected:
+            return "Waiting for the strap"
+        case .connected:
+            return "Live data is flowing"
+        }
+    }
+
+    private var detail: String {
+        switch status {
+        case .connecting:
+            return "Atria already has the first-run path and is trying to attach with the lightweight connection flow."
+        case .scanning:
+            return "The radio is scanning quietly in the background while the rest of the dashboard stays fast."
+        case .poweredOff:
+            return "Turn Bluetooth back on and Atria will resume its automatic scan without extra setup."
+        case .disconnected:
+            return "Atria is keeping the disconnected state light while it waits for the strap to be free from the WHOOP app."
+        case .connected:
+            return "Saved insights will finish loading after the live connection settles."
+        }
+    }
+
+    private var setupDetail: String {
+        switch status {
+        case .connecting:
+            return "Keep the phone unlocked and nearby while Atria finishes the first connection."
+        case .scanning:
+            return "Atria is already trying automatically. Use Scan now only if WHOOP just released the strap."
+        case .poweredOff:
+            return "Bluetooth must come back first. Once it does, Atria resumes scanning on its own."
+        case .disconnected:
+            return "If WHOOP still owns the strap, disconnect it there first, then leave Atria open for the handoff."
+        case .connected:
+            return "Automatic reconnects are armed after the first successful handoff."
+        }
+    }
+
+    private var setupItems: [String] {
+        [
+            "Disconnect the strap inside the WHOOP app if WHOOP still owns the live connection.",
+            "Fully quit the WHOOP app so it does not quietly reclaim the strap.",
+            "Keep this phone unlocked and the strap nearby until Atria completes the first handoff."
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Overview", subtitle: title)
+
+                Spacer(minLength: 0)
+
+                AtriaStatusChip(text: status.rawValue,
+                                systemImage: systemImage,
+                                tint: tint)
+            }
+
+            Text(detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            AtriaOverviewActionStrip(title: "Quick actions",
+                                     primaryTitle: "Vitals",
+                                     primarySystemImage: "heart.text.square",
+                                     primaryAction: onOpenVitals,
+                                     secondaryTitle: "Collection",
+                                     secondarySystemImage: "waveform.badge.magnifyingglass",
+                                     secondaryAction: onOpenCollection)
+
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
+                }
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
+                AtriaDisconnectedOverviewAutomaticCard(status: status,
+                                                       tint: tint,
+                                                       setupDetail: setupDetail,
+                                                       context: context,
+                                                       onShowConnectionGuide: onShowConnectionGuide)
+
+                AtriaDisconnectedOverviewChecklistCard(title: context.isFirstHandoff ? "Do once before Atria takes over" : "Only if WHOOP grabs the strap again",
+                                                       items: setupItems,
+                                                       tint: .orange)
+
+                AtriaDisconnectedOverviewSavedStateCard(stats: stats,
+                                                        snapshot: snapshot,
+                                                        tint: tint)
+            }
+        }
+        .padding(18)
+        .atriaQuietPanel(cornerRadius: 30, emphasis: .soft)
+    }
+}
+
+private struct AtriaOverviewLeadingHost: View {
+    let heroStore: AtriaHomeModel.HeroStore
+    let snapshotStore: AtriaHomeModel.SnapshotStore
+    let hasUnlockedSecondarySections: Bool
+
+    var body: some View {
+        AtriaOverviewLeadingSection(heroStore: heroStore,
+                                    snapshotStore: snapshotStore,
+                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+    }
+}
+
+private struct AtriaOverviewTrailingHost: View {
+    let liveStore: AtriaHomeModel.CoreLiveStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let snapshotStore: AtriaHomeModel.SnapshotStore
+    let hasUnlockedSecondarySections: Bool
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        AtriaOverviewTrailingSection(liveStore: liveStore,
+                                     homeStatsStore: homeStatsStore,
+                                     snapshotStore: snapshotStore,
+                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                     onOpenCollection: onOpenCollection)
+    }
+}
+
+struct AtriaOverviewLeadingSection: View {
+    let heroStore: AtriaHomeModel.HeroStore
+    let snapshotStore: AtriaHomeModel.SnapshotStore
+    let hasUnlockedSecondarySections: Bool
+
+    var body: some View {
+        VStack(spacing: 16) {
+            AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                                             snapshotStore: snapshotStore)
+
+            AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
+
+            if hasUnlockedSecondarySections {
+                if snapshotStore.diagnosticsReady {
+                    AtriaOverviewTrendSectionHost(snapshotStore: snapshotStore)
+                } else {
+                    AtriaLoadingPanel(title: "Warming up trends",
+                                      subtitle: "Saved trends stay off the launch path and load after the first screen is stable.")
+                }
+            }
+        }
+    }
+}
+
+struct AtriaOverviewReadinessSectionHost: View {
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+
+    var body: some View {
+        AtriaOverviewReadinessSection(hero: heroStore.state,
+                                     snapshot: snapshotStore.state)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewReadinessSection: View, Equatable {
+    let hero: AtriaHomeModel.HeroSnapshot
+    let snapshot: AtriaHomeModel.Snapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AtriaPanelSectionHeader(title: "Readiness", subtitle: "What is ready right now")
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                AtriaQuickTile(title: "Recovery",
+                               value: hero.recoveryValue,
+                               detail: hero.recoveryDetail,
+                               system: "gauge.with.dots.needle.bottom.50percent",
+                               tint: .green)
+                AtriaQuickTile(title: "Strain",
+                               value: hero.strainValue,
+                               detail: hero.strainDetail,
+                               system: "flame.fill",
+                               tint: .orange)
+                AtriaQuickTile(title: "HRV",
+                               value: hero.hrvValue,
+                               detail: hero.hrvDetail,
+                               system: "waveform.path.ecg",
+                               tint: .pink)
+                AtriaQuickTile(title: "Sleep",
+                               value: snapshot.sleepValue,
+                               detail: snapshot.sleepDetail,
+                               system: "bed.double.fill",
+                               tint: .cyan)
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
+struct AtriaOverviewGuidanceSectionHost: View {
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+
+    var body: some View {
+        AtriaOverviewGuidanceSection(hero: heroStore.state)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewGuidanceSection: View, Equatable {
+    let hero: AtriaHomeModel.HeroSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Guidance", subtitle: "Daily target from today's signal")
+            AtriaGuidanceCard(guidance: hero.guidance, strain: hero.strain)
+        }
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+struct AtriaOverviewTrendSectionHost: View {
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+
+    var body: some View {
+        AtriaOverviewTrendSection(snapshot: snapshotStore.state)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewTrendSection: View, Equatable {
+    let snapshot: AtriaHomeModel.Snapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Trend", subtitle: "Local 90-day coverage")
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(snapshot.trendCoverageText)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text(snapshot.trendDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+                Spacer()
+                AtriaStatusChip(text: snapshot.trendConfidence,
+                                systemImage: "chart.line.uptrend.xyaxis",
+                                tint: snapshot.trendConfidence == "high" ? .green : .orange)
+            }
+        }
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+struct AtriaOverviewTrailingSection: View {
+    let liveStore: AtriaHomeModel.CoreLiveStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let snapshotStore: AtriaHomeModel.SnapshotStore
+    let hasUnlockedSecondarySections: Bool
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        Group {
+            if hasUnlockedSecondarySections && snapshotStore.diagnosticsReady {
+                VStack(spacing: 16) {
+                    AtriaOverviewLiveStrapSectionHost(liveStore: liveStore,
+                                                      homeStatsStore: homeStatsStore)
+
+                    AtriaOverviewCollectionSectionHost(homeStatsStore: homeStatsStore,
+                                                       snapshotStore: snapshotStore,
+                                                       onOpenCollection: onOpenCollection)
+
+                    AtriaOverviewBackupSectionHost(homeStatsStore: homeStatsStore,
+                                                   snapshotStore: snapshotStore)
+                }
+            } else {
+                AtriaLoadingPanel(title: "Loading saved insights",
+                                  subtitle: "Trends, backup state, and collection history are settling in the background.")
+            }
+        }
+    }
+}
+
+struct AtriaOverviewLiveStrapSectionHost: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+
+    var body: some View {
+        AtriaOverviewLiveStrapSection(live: liveStore.state,
+                                     stats: homeStatsStore.state)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewLiveStrapSection: View, Equatable {
+    let live: AtriaHomeModel.CoreLiveState
+    let stats: AtriaHomeModel.HomeStatsState
+
+    private var statusTint: Color {
+        switch live.status {
+        case .connected:
+            return .green
+        case .connecting, .scanning:
+            return .orange
+        case .poweredOff:
+            return .red
+        case .disconnected:
+            return .blue
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Live strap", subtitle: "Current connection and battery")
+
+                Spacer(minLength: 0)
+
+                AtriaStatusChip(text: live.status.rawValue,
+                                systemImage: "bolt.heart.fill",
+                                tint: statusTint)
+            }
+
+            Text(live.deviceName)
+                .font(.subheadline.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
+                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
+                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
+                }
+            }
+        }
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+struct AtriaOverviewCollectionSectionHost: View {
+    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        AtriaOverviewCollectionSection(stats: homeStatsStore.state,
+                                      snapshot: snapshotStore.state,
+                                      onOpenCollection: onOpenCollection)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewCollectionSection: View, Equatable {
+    let stats: AtriaHomeModel.HomeStatsState
+    let snapshot: AtriaHomeModel.Snapshot
+    let onOpenCollection: () -> Void
+
+    static func == (lhs: AtriaOverviewCollectionSection, rhs: AtriaOverviewCollectionSection) -> Bool {
+        lhs.stats == rhs.stats
+            && lhs.snapshot == rhs.snapshot
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Collection", subtitle: "Capture and validation path")
+
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    overviewCollectionTiles
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    overviewCollectionTiles
+                }
+            }
+
+            Button("Collection tools", action: onOpenCollection)
+                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+        }
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+
+    @ViewBuilder
+    private var overviewCollectionTiles: some View {
+        AtriaInlineQuickStat(label: "RR package", value: stats.rrPackageText)
+        AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+        AtriaInlineQuickStat(label: "Workout", value: snapshot.workoutText)
+        AtriaInlineQuickStat(label: "Logging", value: snapshot.loggingText)
+    }
+}
+
+private struct AtriaOverviewActionStrip: View {
+    let title: String
+    let primaryTitle: String
+    let primarySystemImage: String
+    let primaryAction: () -> Void
+    let secondaryTitle: String
+    let secondarySystemImage: String
+    let secondaryAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ViewThatFits {
+                HStack(spacing: 8) {
+                    actionButtons
+                }
+
+                VStack(spacing: 8) {
+                    actionButtons
+                }
+            }
+        }
+        .padding(12)
+        .atriaInsetTile(cornerRadius: 18, tint: .white)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        Button(action: primaryAction) {
+            Label(primaryTitle, systemImage: primarySystemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+
+        Button(action: secondaryAction) {
+            Label(secondaryTitle, systemImage: secondarySystemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+    }
+}
+
+struct AtriaOverviewBackupSectionHost: View {
+    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+
+    var body: some View {
+        AtriaOverviewBackupSection(stats: homeStatsStore.state,
+                                  snapshot: snapshotStore.state)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewBackupSection: View, Equatable {
+    let stats: AtriaHomeModel.HomeStatsState
+    let snapshot: AtriaHomeModel.Snapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Backup", subtitle: "On-device safety net")
+
+            HStack(spacing: 12) {
+                AtriaInlineQuickStat(label: "State", value: stats.backupValue)
+                AtriaInlineQuickStat(label: "Confirmed",
+                                    value: "\(snapshot.confirmedWorkouts + snapshot.confirmedSleeps)")
+            }
+
+            Text(stats.backupDetail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("\(snapshot.confirmedWorkouts) workouts and \(snapshot.confirmedSleeps) sleeps are already confirmed on device.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
+    let status: WhoopBLEManager.Status
+    let tint: Color
+    let setupDetail: String
+    let context: AtriaConnectionGuideContext
+    let onShowConnectionGuide: () -> Void
+
+    static func == (lhs: AtriaDisconnectedOverviewAutomaticCard, rhs: AtriaDisconnectedOverviewAutomaticCard) -> Bool {
+        lhs.status == rhs.status
+            && lhs.setupDetail == rhs.setupDetail
+            && lhs.context == rhs.context
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(context.isFirstHandoff ? "Automatic setup" : "Automatic reconnect")
+                        .font(.subheadline.weight(.semibold))
+                    Text(context.progressLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Text(setupDetail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                AtriaInlineQuickStat(label: "Flow", value: context.flowLabel)
+                AtriaInlineQuickStat(label: "State", value: status.rawValue)
+                AtriaInlineQuickStat(label: "Attempts", value: "\(max(context.attempts, 1))")
+            }
+
+            Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
+                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: tint))
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
+    let title: String
+    let items: [String]
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+                Text(title)
+                    .font(.headline.weight(.semibold))
+            }
+
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .top, spacing: 10) {
+                    Text("\(index + 1)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+                        .frame(width: 20, height: 20)
+                        .background(AtriaChecklistBadgeBackground(tint: tint))
+                        .overlay {
+                            Circle()
+                                .stroke(tint.opacity(0.22), lineWidth: 1)
+                        }
+
+                    Text(item)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
+    let stats: AtriaHomeModel.HomeStatsState
+    let snapshot: AtriaHomeModel.Snapshot
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "internaldrive.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Saved data stays ready")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Saved references and backup remain available while the strap reconnects.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    savedStateTiles
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    savedStateTiles
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(16)
+        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+    }
+
+    @ViewBuilder
+    private var savedStateTiles: some View {
+        AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+        AtriaInlineQuickStat(label: "Backup", value: stats.backupValue)
+        AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7 HRV")
+        AtriaInlineQuickStat(label: "Next", value: stats.nextAction)
+    }
+}
