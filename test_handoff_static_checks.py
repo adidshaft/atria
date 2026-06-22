@@ -349,6 +349,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "active_journal_reconstructed_from_segments=1",
             "active_journal_final_status=ok",
             "active_journal_final_status=missing",
+            "active_journal_continuity_status=",
+            "active_journal_interruption_class=live_stream_interrupted_saved_sessions_present",
         ]:
             assert_contains(self, script, needle)
 

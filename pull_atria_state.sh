@@ -476,8 +476,23 @@ if journal is not None:
         print(f"active_journal_updated={updated.astimezone(ist).isoformat() if updated else 'none'}")
         age = max(0, int((now - updated.astimezone(dt.timezone.utc)).total_seconds())) if updated else -1
         freshness = "fresh" if 0 <= age <= 90 else "stale"
+        continuity = "active"
+        continuity_reason = "fresh_journal"
+        if freshness == "stale":
+            continuity = "stalled"
+            continuity_reason = "stale_journal"
+        elif len(samples) < 2:
+            continuity = "stalled"
+            continuity_reason = "insufficient_active_samples"
+        elif not rr:
+            continuity = "hr_only"
+            continuity_reason = "no_active_rr"
         print(f"active_journal_age_s={age}")
         print(f"active_journal_freshness={freshness}")
+        print(f"active_journal_continuity_status={continuity}")
+        print(f"active_journal_continuity_reason={continuity_reason}")
+        if continuity == "stalled" and sessions_path.exists():
+            print("active_journal_interruption_class=live_stream_interrupted_saved_sessions_present")
         print(f"active_journal_duration_s={max(0, int((updated - started).total_seconds())) if started and updated else 0}")
         print(f"active_journal_peak_hr={max(bpms) if bpms else 0}")
         rr_window_audit("active_journal", rr, relative_times=False)
