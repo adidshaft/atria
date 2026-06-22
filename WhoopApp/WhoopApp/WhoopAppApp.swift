@@ -145,20 +145,8 @@ struct WhoopAppApp: App {
         }
 
         ble.flushActiveSessionJournal(reason: reason)
-        let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)
         store.requestPersistenceFlush(reason: reason)
         scheduleBackgroundMaintenance(reason: reason)
-
-        if syncStarted {
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(185))
-                if backgroundTask != .invalid {
-                    UIApplication.shared.endBackgroundTask(backgroundTask)
-                }
-                WHOOPDebugLog("WHOOPDBG background_flush status=ok reason=%@ offline_sync_waited=1", reason)
-            }
-            return
-        }
 
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
