@@ -114,6 +114,24 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let rawData: Data
     }
 
+    private struct LongWearSupervisorConfig {
+        let label: String
+        let rest: Int
+        let maxHR: Int
+        let checkpointInterval: TimeInterval
+        let diagnosticInterval: TimeInterval
+        let autoSaveInterval: TimeInterval
+        let noDataTimeout: TimeInterval
+        let noDataCheckInterval: TimeInterval
+        let hrContinuityTimeout: TimeInterval
+        let rrPresenceTimeout: TimeInterval
+        let acceptedHRTimeout: TimeInterval
+
+        var baseTickInterval: TimeInterval {
+            max(3, min(noDataCheckInterval, diagnosticInterval, autoSaveInterval, hrContinuityTimeout / 2, 60))
+        }
+    }
+
     private enum ParsedProprietaryUpdate {
         case realtime(ParsedRealtimePacket)
         case commandResponse(WhoopFrame)
@@ -593,6 +611,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var delayedSessionSaveTask: Task<Void, Never>?
     private var liveWorkoutDiagnosticTask: Task<Void, Never>?
     private var workoutAutoSaveTask: Task<Void, Never>?
+    private var longWearSupervisorTask: Task<Void, Never>?
     private var noDataWatchdogTask: Task<Void, Never>?
     private var hrContinuityWatchdogTask: Task<Void, Never>?
     private var rrPresenceWatchdogTask: Task<Void, Never>?
@@ -946,46 +965,34 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let noDataWatchdogTimeout = max(75, min(noDataTimeout, 600))
         let acceptedHRWatchdogTimeout = max(45, min(acceptedHRTimeout, 120))
         let hrContinuityTimeout = max(6, min(acceptedHRWatchdogTimeout / 8, 10))
-        let hrContinuityInterval = max(3, min(hrContinuityTimeout / 2, 5))
         let label = defaults.string(forKey: LongWearDefaults.label) ?? "Long wear"
         captureLabel = label
         restoreActiveSessionJournalIfNeeded(reason: reason)
-        scheduleSessionCheckpoint(every: max(10, min(checkpointSeconds, 3_600)),
-                                  fallbackLabel: label,
-                                  source: "long_wear")
-        scheduleLiveWorkoutDiagnosticsIfRequested(
+        let config = LongWearSupervisorConfig(
+            label: label,
             rest: rest,
             maxHR: maxHR,
-            arguments: ["--whoop-log-live-workout-every", String(max(5, min(diagnosticSeconds, 300)))]
+            checkpointInterval: max(10, min(checkpointSeconds, 3_600)),
+            diagnosticInterval: max(5, min(diagnosticSeconds, 300)),
+            autoSaveInterval: max(5, min(autoSaveSeconds, 300)),
+            noDataTimeout: noDataWatchdogTimeout,
+            noDataCheckInterval: max(5, min(noDataCheckInterval, 300)),
+            hrContinuityTimeout: hrContinuityTimeout,
+            rrPresenceTimeout: max(20, min(acceptedHRWatchdogTimeout * 2, 120)),
+            acceptedHRTimeout: acceptedHRWatchdogTimeout
         )
-        scheduleWorkoutAutoSaveIfRequested(
-            rest: rest,
-            maxHR: maxHR,
-            arguments: ["--whoop-auto-save-workout-when-ready", String(max(5, min(autoSaveSeconds, 300)))]
-        )
-        scheduleNoDataWatchdogIfNeeded(timeout: noDataWatchdogTimeout,
-                                       interval: max(5, min(noDataCheckInterval, 300)),
-                                       label: label)
-        scheduleHRContinuityWatchdogIfNeeded(timeout: hrContinuityTimeout,
-                                             interval: hrContinuityInterval,
-                                             label: label)
-        scheduleRRPresenceWatchdogIfNeeded(timeout: max(20, min(acceptedHRWatchdogTimeout * 2, 120)),
-                                           interval: max(15, min(noDataCheckInterval, 60)),
-                                           label: label)
-        scheduleAcceptedHRWatchdogIfNeeded(timeout: acceptedHRWatchdogTimeout,
-                                           interval: max(4, min(noDataCheckInterval, 60)),
-                                           label: label)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f hr_continuity_interval_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
+        scheduleLongWearSupervisor(config: config)
+        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
               reason,
               standardHROnlyMode ? "standard_hr_only" : "full_protocol",
-              max(10, min(checkpointSeconds, 3_600)),
-              max(5, min(diagnosticSeconds, 300)),
-              max(5, min(autoSaveSeconds, 300)),
-              noDataWatchdogTimeout,
-              max(5, min(noDataCheckInterval, 300)),
-              hrContinuityTimeout,
-              hrContinuityInterval,
-              acceptedHRWatchdogTimeout,
+              config.checkpointInterval,
+              config.diagnosticInterval,
+              config.autoSaveInterval,
+              config.noDataTimeout,
+              config.noDataCheckInterval,
+              config.hrContinuityTimeout,
+              config.baseTickInterval,
+              config.acceptedHRTimeout,
               label,
               rest,
               maxHR)
@@ -1004,6 +1011,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         delayedSessionSaveTask?.cancel()
         liveWorkoutDiagnosticTask?.cancel()
         workoutAutoSaveTask?.cancel()
+        longWearSupervisorTask?.cancel()
         noDataWatchdogTask?.cancel()
         debugNoDataWatchdogTask?.cancel()
         hrContinuityWatchdogTask?.cancel()
@@ -1012,6 +1020,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         acceptedHRWatchdogTask?.cancel()
         debugAcceptedHRWatchdogTask?.cancel()
         debugRRPresenceWatchdogTask?.cancel()
+        longWearSupervisorTask = nil
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
         WHOOPDebugLog("WHOOPDBG long_wear_mode paused=1 reason=%@ foreground_interactive=%d",
               reason,
@@ -2351,6 +2360,284 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 break
             }
         }
+    }
+
+    private func scheduleLongWearSupervisor(config: LongWearSupervisorConfig) {
+        longWearSupervisorTask?.cancel()
+        UserDefaults.standard.set(true, forKey: CheckpointDefaults.armed)
+        UserDefaults.standard.set(config.checkpointInterval, forKey: CheckpointDefaults.interval)
+        UserDefaults.standard.set(config.label, forKey: CheckpointDefaults.label)
+        UserDefaults.standard.set("long_wear_supervisor", forKey: CheckpointDefaults.source)
+        WHOOPDebugLog("WHOOPDBG long_wear_supervisor schedule base_tick_s=%.1f checkpoint_s=%.1f diagnostic_s=%.1f auto_save_s=%.1f no_data_timeout_s=%.1f hr_continuity_timeout_s=%.1f rr_presence_timeout_s=%.1f accepted_hr_timeout_s=%.1f label=%@",
+              config.baseTickInterval,
+              config.checkpointInterval,
+              config.diagnosticInterval,
+              config.autoSaveInterval,
+              config.noDataTimeout,
+              config.hrContinuityTimeout,
+              config.rrPresenceTimeout,
+              config.acceptedHRTimeout,
+              config.label)
+        longWearSupervisorTask = Task { @MainActor in
+            var checkpointIndex = 1
+            var diagnosticIndex = 1
+            var autoSaveIndex = 1
+            var rrPresenceConsecutive = 0
+            var lastCheckpointAt = Date()
+            var lastDiagnosticAt = Date()
+            var lastAutoSaveAt = Date()
+            var lastHRContinuityActionAt: Date?
+            var lastRRPresenceActionAt: Date?
+            while !Task.isCancelled {
+                let governedTick = config.baseTickInterval * powerThermalGovernor.cadenceMultiplier
+                try? await Task.sleep(for: .seconds(governedTick))
+                if Task.isCancelled { break }
+                guard longWearModeEnabled, standardHROnlyMode else { continue }
+                guard status == .connected else { continue }
+                let now = Date()
+                let cadenceMultiplier = powerThermalGovernor.cadenceMultiplier
+
+                if now.timeIntervalSince(lastCheckpointAt) >= config.checkpointInterval * cadenceMultiplier {
+                    runLongWearSupervisorCheckpoint(index: checkpointIndex, label: config.label)
+                    checkpointIndex += 1
+                    lastCheckpointAt = now
+                }
+
+                if now.timeIntervalSince(lastDiagnosticAt) >= config.diagnosticInterval * cadenceMultiplier {
+                    runLongWearSupervisorDiagnostic(index: diagnosticIndex,
+                                                    label: config.label,
+                                                    rest: config.rest,
+                                                    maxHR: config.maxHR)
+                    diagnosticIndex += 1
+                    lastDiagnosticAt = now
+                }
+
+                if now.timeIntervalSince(lastAutoSaveAt) >= config.autoSaveInterval * cadenceMultiplier {
+                    if runLongWearSupervisorAutoSave(index: autoSaveIndex,
+                                                     label: config.label,
+                                                     rest: config.rest,
+                                                     maxHR: config.maxHR) {
+                        break
+                    }
+                    autoSaveIndex += 1
+                    lastAutoSaveAt = now
+                }
+
+                if let reference = lastRawHRNotificationAt ?? connectedAt {
+                    let gap = now.timeIntervalSince(reference)
+                    if gap >= config.noDataTimeout {
+                        recoverNoDataWatchdog(label: config.label,
+                                               status: "stale",
+                                               gap: gap,
+                                               timeout: config.noDataTimeout)
+                    }
+                }
+
+                if let reference = lastRawHRNotificationAt ?? lastAcceptedHRAt ?? connectedAt {
+                    let rawGap = now.timeIntervalSince(reference)
+                    if rawGap >= config.hrContinuityTimeout,
+                       lastHRContinuityActionAt.map({ now.timeIntervalSince($0) >= config.hrContinuityTimeout * cadenceMultiplier }) ?? true {
+                        lastHRContinuityActionAt = now
+                        performHRContinuityWatchdogAction(status: "stale",
+                                                          rawGap: rawGap,
+                                                          acceptedGap: lastAcceptedHRAt.map { now.timeIntervalSince($0) },
+                                                          timeout: config.hrContinuityTimeout,
+                                                          label: config.label)
+                    }
+                }
+
+                if let reference = lastAcceptedHRAt ?? connectedAt {
+                    let acceptedGap = now.timeIntervalSince(reference)
+                    let rawGap = lastRawHRNotificationAt.map { now.timeIntervalSince($0) }
+                    let contactStatus = ["zero_contact", "hr_zero"]
+                    if acceptedGap >= config.acceptedHRTimeout {
+                        if let rawGap,
+                           rawGap < config.acceptedHRTimeout,
+                           contactStatus.contains(sampleDiagnostics.lastStatus) || contactStatus.contains(sampleDiagnostics.lastReason) {
+                            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact source=supervisor",
+                                  acceptedGap,
+                                  rawGap,
+                                  config.acceptedHRTimeout,
+                                  session.count)
+                        } else {
+                            recoverAcceptedHRWatchdog(label: config.label,
+                                                      status: "stale",
+                                                      acceptedGap: acceptedGap,
+                                                      rawGap: rawGap,
+                                                      timeout: config.acceptedHRTimeout)
+                        }
+                    }
+                }
+
+                guard session.count >= autoSaveMinSamples, let lastAcceptedHRAt else { continue }
+                let acceptedGap = now.timeIntervalSince(lastAcceptedHRAt)
+                guard acceptedGap <= max(config.baseTickInterval * cadenceMultiplier + 5, 20) else {
+                    rrPresenceConsecutive = 0
+                    continue
+                }
+                let rrReference: Date
+                let recoveryStatus: String
+                if rrArchive.isEmpty, let firstSample = session.first?.t {
+                    rrReference = firstSample
+                    recoveryStatus = "segment_hr_only"
+                } else {
+                    rrReference = lastStandardRRAt ?? lastRRBeatTime ?? session.first?.t ?? connectedAt ?? lastAcceptedHRAt
+                    recoveryStatus = "hr_only"
+                }
+                let rrGap = now.timeIntervalSince(rrReference)
+                guard rrGap >= config.rrPresenceTimeout else {
+                    rrPresenceConsecutive = 0
+                    continue
+                }
+                guard lastRRPresenceActionAt.map({ now.timeIntervalSince($0) >= config.rrPresenceTimeout * cadenceMultiplier }) ?? true else {
+                    continue
+                }
+                rrPresenceConsecutive += 1
+                lastRRPresenceActionAt = now
+                recoverRRPresenceWatchdog(label: config.label,
+                                          status: recoveryStatus,
+                                          rrGap: rrGap,
+                                          acceptedGap: acceptedGap,
+                                          timeout: config.rrPresenceTimeout,
+                                          consecutive: rrPresenceConsecutive)
+            }
+        }
+    }
+
+    private func runLongWearSupervisorCheckpoint(index: Int, label: String) {
+        guard session.count >= autoSaveMinSamples else {
+            UserDefaults.standard.set("skipped_insufficient_samples", forKey: CheckpointDefaults.lastStatus)
+            UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
+            UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
+            UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
+            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
+                  session.count, autoSaveMinSamples, label, index)
+            return
+        }
+        guard let saved = snapshotSession(label: label) else {
+            UserDefaults.standard.set("skipped_snapshot_failed", forKey: CheckpointDefaults.lastStatus)
+            UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
+            UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
+            UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
+            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
+                  session.count, label, index)
+            return
+        }
+        let checkpointPersisted = onSessionCheckpoint?(saved) == true
+        persistActiveSessionJournalIfNeeded(reason: "session_checkpoint_supervisor", force: true)
+        UserDefaults.standard.set(checkpointPersisted ? "saved" : "store_failed", forKey: CheckpointDefaults.lastStatus)
+        UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
+        UserDefaults.standard.set(saved.points.count, forKey: CheckpointDefaults.lastSamples)
+        UserDefaults.standard.set(Int(saved.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
+        WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ samples=%d rr_samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d hrv=%@ label=%@ checkpoint_index=%d mode=upsert source=long_wear_supervisor",
+              checkpointPersisted ? "saved" : "store_failed",
+              saved.points.count,
+              saved.rrSampleCount,
+              saved.duration,
+              saved.avg,
+              saved.peak,
+              saved.hrv.map(String.init) ?? "learning",
+              label,
+              index)
+    }
+
+    private func runLongWearSupervisorDiagnostic(index: Int, label: String, rest: Int, maxHR: Int) {
+        let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
+        guard session.count >= autoSaveMinSamples else {
+            WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+                  session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
+            return
+        }
+        guard let saved = snapshotSession(label: label) else {
+            WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+                  session.count, rest, maxHR, threshold, index, label)
+            return
+        }
+        persistActiveSessionJournalIfNeeded(reason: "live_workout_diagnostic_supervisor", force: true)
+        let readiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
+        let capture = workoutCaptureEvidence(for: saved, readiness: readiness)
+        WHOOPDebugLog("WHOOPDBG live_workout tick=%d status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ ready=%d capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
+              index,
+              readiness.status,
+              readiness.reason,
+              readiness.primaryBlocker,
+              readiness.streamCoveragePercent,
+              saved.points.count,
+              readiness.duration,
+              readiness.avgHR,
+              readiness.peakHR,
+              rest,
+              maxHR,
+              readiness.thresholdHR,
+              readiness.elevatedSeconds,
+              readiness.requiredElevatedSeconds,
+              readiness.nextAction,
+              readiness.ready ? 1 : 0,
+              capture.diagnosis,
+              capture.action,
+              capture.sampleFields,
+              label)
+    }
+
+    private func runLongWearSupervisorAutoSave(index: Int, label: String, rest: Int, maxHR: Int) -> Bool {
+        let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
+        guard session.count >= autoSaveMinSamples else {
+            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+                  session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
+            return false
+        }
+        guard let snapshot = snapshotSession(label: label) else {
+            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+                  session.count, rest, maxHR, threshold, index, label)
+            return false
+        }
+        persistActiveSessionJournalIfNeeded(reason: "workout_auto_save_check_supervisor", force: true)
+        let readiness = snapshot.workoutReadiness(rest: rest, maxHR: maxHR)
+        guard readiness.ready else {
+            let capture = workoutCaptureEvidence(for: snapshot, readiness: readiness)
+            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
+                  readiness.reason,
+                  readiness.primaryBlocker,
+                  readiness.streamCoveragePercent,
+                  index,
+                  snapshot.points.count,
+                  readiness.duration,
+                  readiness.avgHR,
+                  readiness.peakHR,
+                  rest,
+                  maxHR,
+                  readiness.thresholdHR,
+                  readiness.elevatedSeconds,
+                  readiness.requiredElevatedSeconds,
+                  readiness.nextAction,
+                  capture.diagnosis,
+                  capture.action,
+                  capture.sampleFields,
+                  label)
+            return false
+        }
+        guard let saved = finishSession(label: label) else {
+            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=finish_failed samples=%d label=%@ source=long_wear_supervisor", session.count, label)
+            return false
+        }
+        let persisted = persistFinishedSession(saved, reason: "workout_auto_save_supervisor")
+        let savedReadiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
+        WHOOPDebugLog("WHOOPDBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d hrv=%@ label=%@ source=long_wear_supervisor",
+              persisted ? "saved" : "store_failed",
+              savedReadiness.reason,
+              savedReadiness.primaryBlocker,
+              savedReadiness.streamCoveragePercent,
+              index,
+              saved.points.count,
+              saved.duration,
+              saved.avg,
+              saved.peak,
+              rest,
+              maxHR,
+              savedReadiness.thresholdHR,
+              saved.hrv.map(String.init) ?? "learning",
+              label)
+        return true
     }
 
     private func scheduleNoDataWatchdogIfNeeded(timeout: TimeInterval,
