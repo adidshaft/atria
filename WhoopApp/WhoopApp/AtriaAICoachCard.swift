@@ -80,7 +80,7 @@ struct AtriaAICoachCard: View, Equatable {
             SecureField(hasAPIKey ? "API key saved" : "Paste API key", text: $apiKeyDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .textContentType(.password)
+                .privacySensitive()
                 .font(.caption)
                 .padding(10)
                 .atriaInsetCard(cornerRadius: 14, tint: .indigo)
