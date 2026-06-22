@@ -546,6 +546,7 @@ struct AtriaHomeView: View {
                               heroStore: model.heroStore,
                               homeStatsStore: model.homeStatsStore,
                               profileStore: model.profileStore,
+                              profileMetricsStore: model.profileMetricsStore,
                               store: store,
                               ble: ble,
                               horizontalSizeClass: horizontalSizeClass)
@@ -1105,6 +1106,10 @@ final class AtriaHomeModel {
         let restingHeartRateText: String
     }
 
+    struct ProfileMetricsState: Equatable {
+        let vo2MaxEstimate: VO2MaxEstimateSummary
+    }
+
     final class HeroStore: ObservableObject {
         @Published fileprivate(set) var state: HeroSnapshot
 
@@ -1178,6 +1183,14 @@ final class AtriaHomeModel {
         }
     }
 
+    final class ProfileMetricsStore: ObservableObject {
+        @Published fileprivate(set) var state: ProfileMetricsState
+
+        init(state: ProfileMetricsState) {
+            self.state = state
+        }
+    }
+
     final class StatusStore: ObservableObject {
         @Published fileprivate(set) var state: StatusState
 
@@ -1196,6 +1209,7 @@ final class AtriaHomeModel {
     let snapshotStore: SnapshotStore
     let homeStatsStore: HomeStatsStore
     let profileStore: ProfileStore
+    let profileMetricsStore: ProfileMetricsStore
 
     private let ble: WhoopBLEManager
     private let store: SessionStore
@@ -1286,6 +1300,8 @@ final class AtriaHomeModel {
                                                 savedAggregate: self.savedAggregate,
                                                 deferredDetails: nil)
         let initialHomeStats = Self.makeHomeStatsState(hero: initialHero)
+        let initialProfileMetrics = Self.makeProfileMetricsState(store: store,
+                                                                 liveSessionDerived: initialLiveSessionDerived)
         self.liveSessionDerived = initialLiveSessionDerived
         self.heroStore = HeroStore(state: initialHero)
         self.heroPulseStore = HeroPulseStore(state: initialHeroPulse)
@@ -1297,6 +1313,7 @@ final class AtriaHomeModel {
         self.snapshotStore = SnapshotStore(state: Self.placeholderSnapshot)
         self.homeStatsStore = HomeStatsStore(state: initialHomeStats)
         self.profileStore = ProfileStore(profile: store.profile)
+        self.profileMetricsStore = ProfileMetricsStore(state: initialProfileMetrics)
         bind()
         coreRefreshSubject.send(())
         heroRefreshSubject.send(())
@@ -1455,6 +1472,7 @@ final class AtriaHomeModel {
                 self.refreshSavedAggregate()
                 self.coreRefreshSubject.send(())
                 self.heroRefreshSubject.send(())
+                self.publishProfileMetrics()
                 if self.diagnosticsRequested {
                     self.diagnosticsRefreshSubject.send(())
                 }
@@ -1472,6 +1490,7 @@ final class AtriaHomeModel {
                 self.refreshSavedAggregate()
                 self.publishCoreLive()
                 self.publishHeroPulse()
+                self.publishProfileMetrics()
                 if self.prefersPulseSparklineUpdates {
                     self.publishPulseLive()
                     self.publishPulseSparkline()
@@ -1552,6 +1571,14 @@ final class AtriaHomeModel {
         let next = store.profile
         guard next != profileStore.profile else { return }
         profileStore.profile = next
+    }
+
+    private func publishProfileMetrics() {
+        refreshLiveSessionDerivedIfNeeded()
+        let next = Self.makeProfileMetricsState(store: store,
+                                                liveSessionDerived: liveSessionDerived)
+        guard next != profileMetricsStore.state else { return }
+        profileMetricsStore.state = next
     }
 
     private func refreshSavedAggregate() {
@@ -1969,6 +1996,12 @@ final class AtriaHomeModel {
                        backupDetail: hero.backupDetail,
                        restingHeartRate: hero.restingHeartRate,
                        restingHeartRateText: hero.restingHeartRateText)
+    }
+
+    private static func makeProfileMetricsState(store: SessionStore,
+                                                liveSessionDerived: LiveSessionDerived) -> ProfileMetricsState {
+        ProfileMetricsState(vo2MaxEstimate: store.vo2MaxEstimateSummary(rest: liveSessionDerived.rest,
+                                                                        maxHR: store.profile.maxHR))
     }
 
     private static func makeSavedAggregate(store: SessionStore) -> SavedAggregate {

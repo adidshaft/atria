@@ -7,6 +7,7 @@ struct AtriaVitalsTabContent: View {
     let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let profileStore: AtriaHomeModel.ProfileStore
+    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let store: SessionStore
     let ble: WhoopBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
@@ -56,7 +57,7 @@ struct AtriaVitalsTabContent: View {
     private var profileCard: some View {
         AtriaVitalsProfileCardHost(pulseStore: pulseStore,
                                    profileStore: profileStore,
-                                   store: store,
+                                   profileMetricsStore: profileMetricsStore,
                                    onUpdateProfile: store.updateProfile)
     }
 }
@@ -189,15 +190,13 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
 private struct AtriaVitalsProfileCardHost: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
-    @ObservedObject var store: SessionStore
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
 
     var body: some View {
-        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? 60
         AtriaProfileCard(profile: profileStore.profile,
                          observedPeakHeartRateText: pulseStore.state.peakHeartRateText,
-                         vo2MaxEstimate: store.vo2MaxEstimateSummary(rest: rest,
-                                                                     maxHR: profileStore.profile.maxHR),
+                         vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                          onUpdateProfile: onUpdateProfile)
             .equatable()
     }
