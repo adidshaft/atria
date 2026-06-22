@@ -176,6 +176,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let networkPolicy: AtriaCoachNetworkPolicy = .cloudDisabled",
             "No data leaves this iPhone.",
             "Network requests stay disabled until a reviewed provider client is added.",
+            "provider client pending",
         ]:
             assert_contains(self, text, needle)
 

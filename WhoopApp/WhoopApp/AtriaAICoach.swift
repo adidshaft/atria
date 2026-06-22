@@ -104,7 +104,7 @@ struct AtriaCloudCoachProvider: AtriaCoachProvider {
             )
         }
         return AtriaCoachAnswer(
-            title: "\(provider.title) coach ready",
+            title: "\(provider.title) provider client pending",
             detail: "The provider seam and secure key storage are ready. Network requests stay disabled until a reviewed provider client is added.",
             disclosure: "No cloud request was sent from this build.",
             networkPolicy: networkPolicy
