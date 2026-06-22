@@ -888,6 +888,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             standardHROnlyEnabled = true
             forceFreshScanOnRestore = true
         }
+        applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
         updateSessionPointCacheMode()
         logActiveMotionIMUCheckPlanIfRequested(arguments: arguments)
         updatePhoneMotionAuditState(reason: "init")
@@ -905,6 +906,53 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                        CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier,
                                        CBCentralManagerOptionShowPowerAlertKey: true
         ])
+    }
+
+    private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
+        if arguments.contains("--whoop-disable-history-ack") {
+            historicalAckDisabled = true
+        }
+        if let modeIndex = arguments.firstIndex(of: "--whoop-history-ack-mode"),
+           arguments.indices.contains(arguments.index(after: modeIndex)) {
+            let mode = arguments[arguments.index(after: modeIndex)]
+            let supportedModes = ["trim", "enddata", "index", "unix", "zero", "none"]
+            if supportedModes.contains(mode) {
+                historyAckMode = mode
+            }
+        }
+        if arguments.contains("--whoop-history-clock-handshake") || arguments.contains("--whoop-history-clock-sync") {
+            historyClockSyncEnabled = true
+        }
+        if arguments.contains("--whoop-history-skip-range") {
+            historySkipDataRangeRequest = true
+        }
+        if let initIndex = arguments.firstIndex(of: "--whoop-history-init-sweep"),
+           arguments.indices.contains(arguments.index(after: initIndex)) {
+            historyInitSweepCommands = arguments[arguments.index(after: initIndex)]
+                .split(separator: ",")
+                .compactMap { Self.parseHexBytes(String($0)) }
+                .filter { !$0.isEmpty }
+        }
+        if let modeIndex = arguments.firstIndex(of: "--whoop-probe-command-mode"),
+           arguments.indices.contains(arguments.index(after: modeIndex)) {
+            let mode = arguments[arguments.index(after: modeIndex)]
+            if mode == CommandWriteMode.withResponse.rawValue {
+                probeCommandMode = .withResponse
+            } else if mode == CommandWriteMode.withoutResponse.rawValue {
+                probeCommandMode = .withoutResponse
+            }
+        }
+        guard arguments.contains("--whoop-history-only-probe") else { return }
+        historyOnlyProbeEnabled = true
+        historyOnlyProbeMode = true
+        realtimeStartRetries = 0
+        if !historyInitSweepCommands.isEmpty {
+            historySkipDataRangeRequest = true
+        }
+        WHOOPDebugLog("WHOOPDBG realtimeConfig history_only_probe=1 phase=early realtime_start=skipped cmd22=%d init_sweep=%d mode=%@",
+              historySkipDataRangeRequest ? 0 : 1,
+              historyInitSweepCommands.isEmpty ? 0 : 1,
+              probeCommandMode.rawValue)
     }
 
     private static func thermalStateLabel(_ state: ProcessInfo.ThermalState) -> String {
