@@ -3269,7 +3269,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             return
         }
 
-        if timeout > 0, rawGap >= max(timeout * 2, timeout + 6) {
+        // Only tear down the BLE link as a last resort. While the peripheral is
+        // still connected, a silent 2A37 gap is almost always brief skin-contact
+        // loss or radio latency — re-subscribing recovers it without the
+        // expensive scan/connect/rediscover cycle that, in the background, iOS
+        // throttles heavily (causing long collection gaps) and that churns the
+        // connection state in the foreground (causing UI lag). Reserve the
+        // fresh-scan teardown for a genuinely dead link or an extreme gap; real
+        // disconnects are already handled by didDisconnectPeripheral.
+        let linkConnected = peripheral.state == .connected
+        let teardownGap = linkConnected ? max(timeout * 4, 60) : max(timeout * 2, timeout + 6)
+        if timeout > 0, rawGap >= teardownGap {
             persistActiveSessionJournalIfNeeded(reason: "hr_continuity_watchdog_reconnect", force: true)
             if session.count < 2 {
                 clearUnsavableActiveJournalIfNeeded(reason: "hr_continuity_watchdog_unsavable")
@@ -3677,6 +3687,54 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         } else {
             clearUnsavableActiveJournalIfNeeded(reason: "accepted_hr_watchdog_unsavable")
         }
+        guard let peripheral else {
+            persistWatchdogRecovery(source: "accepted_hr",
+                                    status: recoveryStatus,
+                                    action: "wait_missing_peripheral",
+                                    rawGap: rawGap,
+                                    acceptedGap: acceptedGap,
+                                    samples: session.count,
+                                    checkpoint: snapshot == nil ? "skipped" : "saved")
+            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=wait_missing_peripheral",
+                  recoveryStatus,
+                  acceptedGap,
+                  rawGap.map { String(format: "%.1f", $0) } ?? "missing",
+                  timeout,
+                  session.count,
+                  snapshot == nil ? "skipped" : "saved")
+            return
+        }
+
+        // Keep a live link alive. If the strap is still connected and raw 2A37
+        // packets are recent, stale *accepted* HR is a data-quality issue (poor
+        // contact / artifact rejection) that a full reconnect cannot fix any
+        // faster than re-subscribing — and the teardown churns the link and
+        // drops collection. Reserve the fresh-scan teardown for a dead link or
+        // an extreme gap.
+        let linkConnected = peripheral.state == .connected
+        let rawRecent = (rawGap ?? .greatestFiniteMagnitude) < max(timeout * 4, 90)
+        if linkConnected, rawRecent {
+            if let characteristic = heartRateCharacteristic,
+               characteristic.properties.contains(.notify) {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+            persistWatchdogRecovery(source: "accepted_hr",
+                                    status: recoveryStatus,
+                                    action: "reassert_keep_connection",
+                                    rawGap: rawGap,
+                                    acceptedGap: acceptedGap,
+                                    samples: session.count,
+                                    checkpoint: snapshot == nil ? "skipped" : "saved")
+            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=reassert_keep_connection",
+                  recoveryStatus,
+                  acceptedGap,
+                  rawGap.map { String(format: "%.1f", $0) } ?? "missing",
+                  timeout,
+                  session.count,
+                  snapshot == nil ? "skipped" : "saved")
+            return
+        }
+
         persistWatchdogRecovery(source: "accepted_hr",
                                 status: recoveryStatus,
                                 action: "fresh_scan_reconnect",
@@ -3691,7 +3749,6 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               timeout,
               session.count,
               snapshot == nil ? "skipped" : "saved")
-        guard let peripheral else { return }
         requestFreshScanReconnect(peripheral: peripheral, reason: "accepted_hr_watchdog")
     }
 
