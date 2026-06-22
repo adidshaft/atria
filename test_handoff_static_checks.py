@@ -72,6 +72,8 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreater(first_write_index, guard_index)
         assert_contains(self, body, "standard_hr_only_no_strap_writes")
         assert_contains(self, body, "standard_hr_only_write_blocked")
+        self.assertEqual(text.count("writeValue("), body.count("writeValue("))
+        self.assertEqual(body.count("writeValue("), 2)
 
     def test_production_capture_defaults_land_on_balanced_profile(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
