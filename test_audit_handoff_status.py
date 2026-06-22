@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,10 +52,25 @@ def write_passing_accessibility_performance(path: Path) -> None:
         "dashboard_scroll_fps": 60.0,
         "instruments_trace": "docs/evidence/accessibility-performance/trace.trace",
         "measured_at": "2026-06-22T12:00:00Z",
-        "app_commit": "abcdef1234567890",
+        "app_commit": current_test_commit(path),
         "app_build": "Atria 1.0 (100)",
         "notes": "Measured on physical iPhone.",
     }), encoding="utf-8")
+
+
+def current_test_commit(path: Path) -> str:
+    for parent in [path.parent, *path.parents]:
+        git_dir = parent / ".git"
+        if git_dir.exists():
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=parent,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            return result.stdout.strip()
+    return "abcdef1234567890"
 
 
 class AuditHandoffStatusTests(unittest.TestCase):
@@ -274,6 +290,36 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
+
+    def test_accessibility_performance_app_commit_must_match_repo_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            touch(repo, Path("tracked.txt"))
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            data = json.loads(accessibility.read_text(encoding="utf-8"))
+            data["app_commit"] = "0" * 40
+            accessibility.write_text(json.dumps(data), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "fail")
+        self.assertIn("app_commit_mismatch", report["blockers"])
 
     def test_default_accessibility_performance_summary_is_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:

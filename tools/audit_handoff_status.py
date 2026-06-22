@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -49,6 +50,21 @@ def load_json(path: Path) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} did not contain a JSON object")
     return data
+
+
+def current_git_commit(repo: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
 
 
 def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
@@ -221,6 +237,9 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
     app_commit = str(data.get("app_commit", "")).strip()
     if not app_commit:
         blockers.append("missing_app_commit")
+    expected_commit = current_git_commit(repo)
+    if app_commit and expected_commit and app_commit != expected_commit:
+        blockers.append("app_commit_mismatch")
 
     app_build = str(data.get("app_build", "")).strip()
     if not app_build:
@@ -237,6 +256,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         "instruments_trace": instruments_trace or "missing",
         "measured_at": measured_at or "missing",
         "app_commit": app_commit or "missing",
+        "expected_app_commit": expected_commit or "missing",
         "app_build": app_build or "missing",
         "notes": notes,
     }

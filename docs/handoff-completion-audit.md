@@ -208,6 +208,7 @@ folder and fill it only from measured iPhone 15 Pro results. The audit requires:
 - Dashboard scroll performance of at least 58 fps.
 - A recorded Instruments trace path.
 - Measurement provenance: `measured_at`, `app_commit`, and `app_build`.
+  `app_commit` must match the repository commit being audited.
 
 Then run:
 
