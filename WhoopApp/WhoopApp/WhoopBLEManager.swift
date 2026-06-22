@@ -791,11 +791,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
     // Flush less often so incoming HR/RR traffic doesn't compete with disk work.
     private let activeJournalFlushSampleInterval = 60
-    // Foreground sessions can tolerate a slower crash-recovery cadence than
-    // unattended capture, which keeps disk work away from live rendering.
-    private let activeJournalInteractiveFlushSampleInterval = 300
-    private let activeJournalInteractiveFlushMinimumInterval: TimeInterval = 240
-    private let activeJournalUnattendedFlushMinimumInterval: TimeInterval = 120
+    // Keep every long-wear journal younger than ActiveSessionJournal's 90s
+    // freshness window, even while the app remains foregrounded for validation.
+    private let activeJournalInteractiveFlushSampleInterval = 60
+    private let activeJournalInteractiveFlushMinimumInterval: TimeInterval = 60
+    private let activeJournalUnattendedFlushMinimumInterval: TimeInterval = 60
+    private let activeJournalFreshnessFlushCeiling: TimeInterval = 75
     private let activeJournalMaxAge: TimeInterval = 18 * 60 * 60
     private let activeJournalMaxSamples = 90_000
     private let activeJournalSegmentGapLimit: TimeInterval = 30
@@ -1727,7 +1728,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let minimumFlushInterval = foregroundInteractiveMode
             ? activeJournalInteractiveFlushMinimumInterval
             : activeJournalUnattendedFlushMinimumInterval
-        let governedMinimumFlushInterval = minimumFlushInterval * powerThermalGovernor.cadenceMultiplier
+        let governedMinimumFlushInterval = min(minimumFlushInterval * powerThermalGovernor.cadenceMultiplier,
+                                               activeJournalFreshnessFlushCeiling)
         let now = Date()
         if !force {
             activeJournalDirtySamples += 1
