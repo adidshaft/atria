@@ -29,6 +29,28 @@ struct ActiveSessionJournalRecord: Codable {
     }
 }
 
+private struct ActiveSessionJournalSegment: Codable {
+    var schema: Int
+    var sequence: Int
+    var id: UUID
+    var label: String
+    var startedAt: Date
+    var updatedAt: Date
+    var sampleStartIndex: Int
+    var samples: [ActiveSessionJournalRecord.Sample]
+    var rrSampleStartIndex: Int
+    var rrSamples: [ActiveSessionJournalRecord.RRSample]
+    var rawHRNotifications: Int
+    var acceptedHRSamples: Int
+    var zeroHRSamples: Int
+    var heldArtifacts: Int
+    var droppedArtifacts: Int
+    var rawHRGaps: Int
+    var acceptedHRGaps: Int
+    var maxRawHRGap: Double
+    var maxAcceptedHRGap: Double
+}
+
 enum ActiveSessionJournal {
     struct Diagnostics {
         let present: Bool
@@ -67,9 +89,12 @@ enum ActiveSessionJournal {
     }
 
     static let schema = 1
+    private static let segmentSchema = 2
     private static let freshAgeLimitSeconds = 90
     private static let fileName = "atria-active-session.json"
     private static let legacyFileName = "whoop-active-session.json"
+    private static let segmentDirectoryName = "atria-active-session.segments"
+    private static let ioLock = NSLock()
     private struct LoadCache {
         let targetPath: String
         let modifiedAt: Date
@@ -95,7 +120,17 @@ enum ActiveSessionJournal {
             .appendingPathComponent(legacyFileName)
     }
 
+    private static var segmentDirectoryURL: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(segmentDirectoryName, isDirectory: true)
+    }
+
     static func load() -> ActiveSessionJournalRecord? {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        if let record = loadSegmentedRecord() {
+            return record
+        }
         let target: URL?
         if let url, FileManager.default.fileExists(atPath: url.path) {
             target = url
@@ -136,21 +171,169 @@ enum ActiveSessionJournal {
     }
 
     static func save(_ record: ActiveSessionJournalRecord) throws {
-        guard let url else { return }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(record)
-        try data.write(to: url, options: [.atomic])
+        guard let segmentDirectoryURL else { return }
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        try FileManager.default.createDirectory(at: segmentDirectoryURL, withIntermediateDirectories: true)
+        let existing = loadSegmentedRecord()
+        let sameSession = existing?.id == record.id
+        if !sameSession {
+            clearSegmentFiles()
+        }
+        let existingSampleCount = sameSession ? min(existing?.samples.count ?? 0, record.samples.count) : 0
+        let existingRRCount = sameSession ? min(existing?.rrSamples?.count ?? 0, record.rrSamples?.count ?? 0) : 0
+        let nextSequence = (latestSegmentSequence() ?? -1) + 1
+        let segment = ActiveSessionJournalSegment(
+            schema: Self.segmentSchema,
+            sequence: nextSequence,
+            id: record.id,
+            label: record.label,
+            startedAt: record.startedAt,
+            updatedAt: record.updatedAt,
+            sampleStartIndex: existingSampleCount,
+            samples: Array(record.samples.dropFirst(existingSampleCount)),
+            rrSampleStartIndex: existingRRCount,
+            rrSamples: Array((record.rrSamples ?? []).dropFirst(existingRRCount)),
+            rawHRNotifications: record.rawHRNotifications,
+            acceptedHRSamples: record.acceptedHRSamples,
+            zeroHRSamples: record.zeroHRSamples,
+            heldArtifacts: record.heldArtifacts,
+            droppedArtifacts: record.droppedArtifacts,
+            rawHRGaps: record.rawHRGaps,
+            acceptedHRGaps: record.acceptedHRGaps,
+            maxRawHRGap: record.maxRawHRGap,
+            maxAcceptedHRGap: record.maxAcceptedHRGap
+        )
+        let data = try JSONEncoder().encode(segment)
+        try data.write(to: segmentURL(sequence: nextSequence), options: [.atomic])
+        clearLegacySnapshotFileIfPresent()
         loadCache = nil
     }
 
     static func clear() {
+        ioLock.lock()
+        defer { ioLock.unlock() }
         loadCache = nil
+        clearSegmentFiles()
         for target in [url, legacyURL].compactMap({ $0 }) where FileManager.default.fileExists(atPath: target.path) {
             do {
                 try FileManager.default.removeItem(at: target)
             } catch {
                 WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
             }
+        }
+    }
+
+    private static func loadSegmentedRecord() -> ActiveSessionJournalRecord? {
+        let segments = loadSegments()
+        guard let first = segments.first else { return nil }
+        var record = ActiveSessionJournalRecord(
+            schema: Self.schema,
+            id: first.id,
+            label: first.label,
+            startedAt: first.startedAt,
+            updatedAt: first.updatedAt,
+            samples: [],
+            rrSamples: [],
+            rawHRNotifications: first.rawHRNotifications,
+            acceptedHRSamples: first.acceptedHRSamples,
+            zeroHRSamples: first.zeroHRSamples,
+            heldArtifacts: first.heldArtifacts,
+            droppedArtifacts: first.droppedArtifacts,
+            rawHRGaps: first.rawHRGaps,
+            acceptedHRGaps: first.acceptedHRGaps,
+            maxRawHRGap: first.maxRawHRGap,
+            maxAcceptedHRGap: first.maxAcceptedHRGap
+        )
+        for segment in segments where segment.id == record.id {
+            record.label = segment.label
+            record.startedAt = min(record.startedAt, segment.startedAt)
+            record.updatedAt = max(record.updatedAt, segment.updatedAt)
+            if record.samples.count == segment.sampleStartIndex {
+                record.samples.append(contentsOf: segment.samples)
+            } else if record.samples.count < segment.sampleStartIndex {
+                WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_gap sequence=%d sample_start=%d current_samples=%d",
+                      segment.sequence, segment.sampleStartIndex, record.samples.count)
+            }
+            var rr = record.rrSamples ?? []
+            if rr.count == segment.rrSampleStartIndex {
+                rr.append(contentsOf: segment.rrSamples)
+            } else if rr.count < segment.rrSampleStartIndex {
+                WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_gap sequence=%d rr_start=%d current_rr=%d",
+                      segment.sequence, segment.rrSampleStartIndex, rr.count)
+            }
+            record.rrSamples = rr
+            record.rawHRNotifications = segment.rawHRNotifications
+            record.acceptedHRSamples = segment.acceptedHRSamples
+            record.zeroHRSamples = segment.zeroHRSamples
+            record.heldArtifacts = segment.heldArtifacts
+            record.droppedArtifacts = segment.droppedArtifacts
+            record.rawHRGaps = segment.rawHRGaps
+            record.acceptedHRGaps = segment.acceptedHRGaps
+            record.maxRawHRGap = segment.maxRawHRGap
+            record.maxAcceptedHRGap = segment.maxAcceptedHRGap
+        }
+        return record
+    }
+
+    private static func loadSegments() -> [ActiveSessionJournalSegment] {
+        guard let segmentDirectoryURL,
+              FileManager.default.fileExists(atPath: segmentDirectoryURL.path) else {
+            return []
+        }
+        do {
+            return try FileManager.default.contentsOfDirectory(at: segmentDirectoryURL,
+                                                              includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "json" }
+                .compactMap { url in
+                    do {
+                        let data = try Data(contentsOf: url)
+                        let segment = try JSONDecoder().decode(ActiveSessionJournalSegment.self, from: data)
+                        guard segment.schema == Self.segmentSchema else { return nil }
+                        return segment
+                    } catch {
+                        WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_load_failed file=%@ error=%@",
+                              url.lastPathComponent, error.localizedDescription)
+                        return nil
+                    }
+                }
+                .sorted { $0.sequence < $1.sequence }
+        } catch {
+            WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_list_failed error=%@", error.localizedDescription)
+            return []
+        }
+    }
+
+    private static func latestSegmentSequence() -> Int? {
+        loadSegments().map(\.sequence).max()
+    }
+
+    private static func segmentURL(sequence: Int) -> URL {
+        segmentDirectoryURL!.appendingPathComponent(String(format: "segment-%08d.json", sequence))
+    }
+
+    private static func clearSegmentFiles() {
+        guard let segmentDirectoryURL,
+              FileManager.default.fileExists(atPath: segmentDirectoryURL.path) else {
+            return
+        }
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: segmentDirectoryURL,
+                                                                    includingPropertiesForKeys: nil)
+            for file in files where file.pathExtension == "json" {
+                try FileManager.default.removeItem(at: file)
+            }
+        } catch {
+            WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_segments_failed error=%@", error.localizedDescription)
+        }
+    }
+
+    private static func clearLegacySnapshotFileIfPresent() {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_legacy_snapshot_failed error=%@", error.localizedDescription)
         }
     }
 
