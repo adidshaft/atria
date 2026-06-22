@@ -106,7 +106,7 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var flowLabel: String {
-        isFirstHandoff ? "First handoff" : "Reconnect"
+        isFirstHandoff ? "First setup" : "Reconnect"
     }
 
     var progressLabel: String {
@@ -114,10 +114,10 @@ struct AtriaConnectionGuideContext: Equatable {
             return "Reconnect is automatic now"
         }
         if attempts == 0 {
-            return "Waiting to start first handoff"
+            return "Waiting to start first setup"
         }
         if failures == 0 {
-            return "Automatic handoff in progress"
+            return "Automatic setup in progress"
         }
         return "Still trying automatically"
     }
