@@ -23,6 +23,16 @@ REQUIRED_SOURCE_FILES = [
     Path("WhoopApp/Info.plist"),
 ]
 
+ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
+    "reduce_transparency",
+    "increase_contrast",
+    "reduce_motion",
+    "light_mode",
+    "dark_mode",
+]
+
+MIN_SCROLL_FPS = 58.0
+
 
 def load_json(path: Path) -> dict[str, object]:
     with path.open(encoding="utf-8") as handle:
@@ -41,11 +51,64 @@ def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     return summaries[-1] if summaries else None
 
 
+def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None) -> dict[str, object]:
+    if explicit is None:
+        return {
+            "status": "missing",
+            "summary": "missing",
+            "blockers": ["missing_accessibility_performance_summary"],
+        }
+
+    candidate = explicit if explicit.is_absolute() else repo / explicit
+    if not candidate.exists():
+        return {
+            "status": "missing",
+            "summary": str(candidate),
+            "blockers": ["missing_accessibility_performance_summary"],
+        }
+
+    data = load_json(candidate)
+    blockers: list[str] = []
+    device = str(data.get("device", "")).strip()
+    if device != "iPhone 15 Pro":
+        blockers.append("accessibility_performance_device")
+
+    checks = data.get("accessibility_checks", {})
+    if not isinstance(checks, dict):
+        checks = {}
+    missing_checks = [
+        check for check in ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS
+        if checks.get(check) is not True
+    ]
+    blockers.extend(f"accessibility_{check}" for check in missing_checks)
+
+    scroll_fps = data.get("dashboard_scroll_fps")
+    if not isinstance(scroll_fps, (int, float)) or float(scroll_fps) < MIN_SCROLL_FPS:
+        blockers.append("dashboard_scroll_fps")
+
+    instruments_trace = str(data.get("instruments_trace", "")).strip()
+    if not instruments_trace:
+        blockers.append("missing_instruments_trace")
+
+    notes = str(data.get("notes", "")).strip()
+
+    return {
+        "status": "pass" if not blockers else "fail",
+        "summary": str(candidate),
+        "blockers": blockers,
+        "device": device or "missing",
+        "dashboard_scroll_fps": scroll_fps if isinstance(scroll_fps, (int, float)) else "missing",
+        "instruments_trace": instruments_trace or "missing",
+        "notes": notes,
+    }
+
+
 def evaluate(
     repo: Path,
     summary_path: Path | None = None,
     *,
     skip_external_reference: bool = False,
+    accessibility_performance_path: Path | None = None,
 ) -> dict[str, object]:
     missing_local = [str(path) for path in LOCAL_CHECK_FILES if not (repo / path).exists()]
     missing_source = [str(path) for path in REQUIRED_SOURCE_FILES if not (repo / path).exists()]
@@ -83,7 +146,10 @@ def evaluate(
     if physical["status"] != "pass":
         blockers.append("physical_long_wear_acceptance")
     blockers.extend(str(item) for item in physical.get("acceptance_blockers", []) if item != "none")
-    blockers.append("accessibility_performance_proof")
+    accessibility_performance = evaluate_accessibility_performance(repo, accessibility_performance_path)
+    if accessibility_performance["status"] != "pass":
+        blockers.append("accessibility_performance_proof")
+    blockers.extend(str(item) for item in accessibility_performance.get("blockers", []))
     if not skip_external_reference:
         blockers.append("external_reference_validation")
 
@@ -93,6 +159,7 @@ def evaluate(
         "missing_local_files": missing_local,
         "missing_source_files": missing_source,
         "physical_long_wear": physical,
+        "accessibility_performance": accessibility_performance,
         "external_reference_status": "skipped" if skip_external_reference else "required",
         "blockers": sorted(set(blockers)),
     }
@@ -102,6 +169,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Atria repo root.")
     parser.add_argument("--summary", type=Path, default=None, help="Specific long-wear monitor summary JSON.")
+    parser.add_argument(
+        "--accessibility-performance",
+        type=Path,
+        default=None,
+        help="Specific accessibility/performance evidence JSON.",
+    )
     parser.add_argument(
         "--skip-external-reference",
         action="store_true",
@@ -114,6 +187,7 @@ def main() -> int:
         args.repo.resolve(),
         args.summary,
         skip_external_reference=args.skip_external_reference,
+        accessibility_performance_path=args.accessibility_performance,
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -126,6 +200,7 @@ def main() -> int:
             f"physical_status={physical['status']} "
             f"acceptance_status={physical['acceptance_status']} "
             f"acceptance_blockers={','.join(physical['acceptance_blockers']) or 'none'} "
+            f"accessibility_performance_status={report['accessibility_performance']['status']} "
             f"external_reference_status={report['external_reference_status']} "
             f"blockers={','.join(report['blockers']) or 'none'} "
             f"summary={physical['summary']}"

@@ -13,6 +13,35 @@ def touch(root: Path, rel: Path) -> None:
     target.write_text("", encoding="utf-8")
 
 
+def write_passing_long_wear_summary(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "acceptance_status": "pass",
+        "acceptance_blockers": [],
+        "thermal_states": ["nominal", "fair"],
+        "battery_delta": -12,
+        "latest_recent_session_span_s": 30_000.0,
+        "latest_recent_session_coverage_percent": 91.0,
+    }), encoding="utf-8")
+
+
+def write_passing_accessibility_performance(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "device": "iPhone 15 Pro",
+        "accessibility_checks": {
+            "reduce_transparency": True,
+            "increase_contrast": True,
+            "reduce_motion": True,
+            "light_mode": True,
+            "dark_mode": True,
+        },
+        "dashboard_scroll_fps": 60.0,
+        "instruments_trace": "docs/evidence/accessibility-performance/trace.trace",
+        "notes": "Measured on physical iPhone.",
+    }), encoding="utf-8")
+
+
 class AuditHandoffStatusTests(unittest.TestCase):
     def test_reports_physical_blockers_from_failed_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +93,73 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("session_span", report["blockers"])
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertNotIn("external_reference_validation", report["blockers"])
+
+    def test_accessibility_performance_evidence_is_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["physical_long_wear"]["status"], "pass")
+        self.assertEqual(report["accessibility_performance"]["status"], "missing")
+        self.assertIn("accessibility_performance_proof", report["blockers"])
+        self.assertIn("missing_accessibility_performance_summary", report["blockers"])
+
+    def test_accessibility_performance_evidence_must_cover_required_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            accessibility.parent.mkdir(parents=True)
+            accessibility.write_text(json.dumps({
+                "device": "iPhone 14",
+                "accessibility_checks": {"reduce_motion": True},
+                "dashboard_scroll_fps": 52.0,
+                "instruments_trace": "",
+            }), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "fail")
+        self.assertIn("accessibility_performance_device", report["blockers"])
+        self.assertIn("accessibility_reduce_transparency", report["blockers"])
+        self.assertIn("dashboard_scroll_fps", report["blockers"])
+        self.assertIn("missing_instruments_trace", report["blockers"])
+
+    def test_accessibility_performance_evidence_can_complete_non_reference_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "pass")
+        self.assertEqual(report["blockers"], [])
 
     def test_missing_summary_is_not_complete(self):
         with tempfile.TemporaryDirectory() as tmp:

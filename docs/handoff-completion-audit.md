@@ -91,6 +91,8 @@ Evidence present:
   monitor summaries into a conservative `complete` / `not_complete` result.
   Use `--skip-external-reference` when external reference validation is
   deliberately deferred for a non-reference readiness audit.
+  Use `--accessibility-performance <summary.json>` once a physical iPhone 15 Pro
+  accessibility/performance evidence manifest has been recorded.
 - `test_audit_handoff_status.sh` verifies that failed or missing physical
   acceptance evidence cannot be reported as complete.
 - `test_handoff_local.sh` runs the fast local handoff suite in one command.
@@ -151,6 +153,27 @@ The default overnight preset records:
 - Maximum accepted-HR gap of 30 seconds.
 - Thermal states limited to `nominal`/`fair`.
 - Maximum battery drop of 35 percentage points.
+
+## Deferred Accessibility / Performance Evidence
+
+When physical UI checks are allowed, copy
+`docs/evidence/accessibility-performance/summary.template.json` to an evidence
+folder and fill it only from measured iPhone 15 Pro results. The audit requires:
+
+- Reduce Transparency visual pass.
+- Increase Contrast visual pass.
+- Reduce Motion visual pass.
+- Light mode and dark mode visual pass.
+- Dashboard scroll performance of at least 58 fps.
+- A recorded Instruments trace path.
+
+Then run:
+
+```sh
+python3 tools/audit_handoff_status.py \
+  --skip-external-reference \
+  --accessibility-performance <summary.json>
+```
 
 ## Final Summary Rule
 

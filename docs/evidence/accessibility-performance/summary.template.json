@@ -1,0 +1,13 @@
+{
+  "device": "iPhone 15 Pro",
+  "accessibility_checks": {
+    "reduce_transparency": false,
+    "increase_contrast": false,
+    "reduce_motion": false,
+    "light_mode": false,
+    "dark_mode": false
+  },
+  "dashboard_scroll_fps": 0,
+  "instruments_trace": "",
+  "notes": "Fill this from a physical-device accessibility pass and Instruments dashboard scroll trace. Keep false/0/empty values until measured."
+}
