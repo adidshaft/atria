@@ -114,6 +114,25 @@ Evidence present:
   collection: `rr_frames=26`, `rr_values=30`,
   `rr_source_2a37_frames=26`, `standard_2a37_rr_frames=26`,
   `rr_truncated_frames=0`, and `rr_hr_mismatch_values=0`.
+- 2026-06-22 non-disruptive physical-iPhone pulls verified that current app
+  state can be inspected without relaunching or killing Atria. The pull script
+  now copies `Documents/atria-active-session.segments`, reconstructs
+  `atria-active-session.json` locally, and reports
+  `active_journal_final_status=ok` when segmented reconstruction succeeds.
+- The same pulls separated file durability from live-stream continuity:
+  `sessions_count=207`, the latest saved session still had `232` HR points and
+  `176` RR points, and the best saved RR segment was locally clean
+  (`best_saved_rr_segment_gate_b_local_ready=1`), while the live active journal
+  was correctly classified as
+  `active_journal_continuity_status=stalled`,
+  `active_journal_continuity_reason=stale_journal`, and
+  `active_journal_interruption_class=live_stream_interrupted_saved_sessions_present`.
+- Runtime recovery now clears unsavable stale active-journal tails before they
+  can masquerade as current data. No-data, HR-continuity, accepted-HR, and
+  disconnect recovery paths call `clearUnsavableActiveJournalIfNeeded` for
+  live segments with fewer than two samples, recording
+  `cleared_unsavable` / `drop_unsavable_stale_segment` instead of retaining a
+  one-sample stale journal.
 
 Recent physical-device smoke evidence already captured:
 
