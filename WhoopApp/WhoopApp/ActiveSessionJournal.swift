@@ -180,22 +180,37 @@ enum ActiveSessionJournal {
         }
     }
 
-    static func save(_ record: ActiveSessionJournalRecord) throws {
+    static func save(_ record: ActiveSessionJournalRecord,
+                     previousSampleCount: Int? = nil,
+                     previousRRCount: Int? = nil) throws {
         guard let segmentDirectoryURL else { return }
         ioLock.lock()
         defer { ioLock.unlock() }
         try FileManager.default.createDirectory(at: segmentDirectoryURL, withIntermediateDirectories: true)
-        var existing = loadSegmentedRecord()
-        var sameSession = existing?.id == record.id
-        if sameSession, let replayed = existing, !recordAppends(to: replayed, with: record) {
+        let latestSequence = latestSegmentSequence()
+        let latest = latestSequence.flatMap { loadSegment(sequence: $0) }
+        var existingSampleCount = previousSampleCount ?? 0
+        var existingRRCount = previousRRCount ?? 0
+        if latest?.id != record.id {
             clearSegmentFiles()
-            existing = nil
-            sameSession = false
-        } else if !sameSession {
+            existingSampleCount = 0
+            existingRRCount = 0
+        } else if existingSampleCount > record.samples.count
+                    || existingRRCount > (record.rrSamples?.count ?? 0) {
             clearSegmentFiles()
+            existingSampleCount = 0
+            existingRRCount = 0
+        } else if previousSampleCount == nil || previousRRCount == nil {
+            let existing = loadSegmentedRecord()
+            if let replayed = existing, replayed.id == record.id, recordAppends(to: replayed, with: record) {
+                existingSampleCount = min(replayed.samples.count, record.samples.count)
+                existingRRCount = min(replayed.rrSamples?.count ?? 0, record.rrSamples?.count ?? 0)
+            } else {
+                clearSegmentFiles()
+                existingSampleCount = 0
+                existingRRCount = 0
+            }
         }
-        let existingSampleCount = sameSession ? min(existing?.samples.count ?? 0, record.samples.count) : 0
-        let existingRRCount = sameSession ? min(existing?.rrSamples?.count ?? 0, record.rrSamples?.count ?? 0) : 0
         let nextSequence = (latestSegmentSequence() ?? -1) + 1
         let segment = ActiveSessionJournalSegment(
             schema: Self.segmentSchema,
@@ -355,7 +370,30 @@ enum ActiveSessionJournal {
     }
 
     private static func latestSegmentSequence() -> Int? {
-        loadSegments().map(\.sequence).max()
+        guard let segmentDirectoryURL,
+              FileManager.default.fileExists(atPath: segmentDirectoryURL.path),
+              let files = try? FileManager.default.contentsOfDirectory(at: segmentDirectoryURL,
+                                                                        includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        return files.compactMap { url -> Int? in
+            let name = url.deletingPathExtension().lastPathComponent
+            guard name.hasPrefix("segment-") else { return nil }
+            return Int(name.dropFirst("segment-".count))
+        }.max()
+    }
+
+    private static func loadSegment(sequence: Int) -> ActiveSessionJournalSegment? {
+        let target = segmentURL(sequence: sequence)
+        guard FileManager.default.fileExists(atPath: target.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: target)
+            return try JSONDecoder().decode(ActiveSessionJournalSegment.self, from: data)
+        } catch {
+            WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_load_failed file=%@ error=%@",
+                          target.lastPathComponent, error.localizedDescription)
+            return nil
+        }
     }
 
     private static func segmentURL(sequence: Int) -> URL {

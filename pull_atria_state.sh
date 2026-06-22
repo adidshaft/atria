@@ -22,6 +22,7 @@ running BLE session matters.
 Pulled files, when present:
   - sessions.json
   - atria-active-session.json
+  - atria-active-session.segments/
   - historical-archive.jsonl
   - process-check.txt
   - pull-summary.txt
@@ -106,6 +107,19 @@ else
 fi
 
 copy_from_container "Documents/sessions.json" "$evidence_dir/sessions.json" "sessions" || true
+
+if xcrun devicectl device copy from \
+  --device "$device_id" \
+  --domain-type appDataContainer \
+  --domain-identifier "$bundle_id" \
+  --source "Documents/atria-active-session.segments" \
+  --destination "$evidence_dir/atria-active-session.segments" >> "$summary" 2>&1; then
+  printf 'active_journal_segments_status=ok\n' | tee -a "$summary"
+  printf 'active_journal_segments_source=Documents/atria-active-session.segments\n' | tee -a "$summary"
+  printf 'active_journal_segments_dir=%s\n' "$evidence_dir/atria-active-session.segments" | tee -a "$summary"
+else
+  printf 'active_journal_segments_status=missing\n' | tee -a "$summary"
+fi
 
 active_status=missing
 for active_source in "Documents/atria-active-session.json" "Documents/whoop-active-session.json"; do
@@ -376,10 +390,76 @@ if sessions_path.exists():
     except Exception as exc:
         print(f"sessions_summary_error={type(exc).__name__}:{exc}")
 
+def reconstructed_segmented_journal(evidence):
+    directory = evidence / "atria-active-session.segments"
+    if not directory.exists():
+        return None
+    rows = []
+    for path in directory.glob("*.json"):
+        try:
+            segment = json.loads(path.read_text())
+        except Exception:
+            continue
+        if segment.get("schema") == 2:
+            rows.append(segment)
+    rows.sort(key=lambda row: int(row.get("sequence", 0)))
+    if not rows:
+        return None
+    first = rows[0]
+    journal = {
+        "schema": 1,
+        "id": first.get("id"),
+        "label": first.get("label", ""),
+        "startedAt": first.get("startedAt"),
+        "updatedAt": first.get("updatedAt"),
+        "samples": [],
+        "rrSamples": [],
+        "rawHRNotifications": first.get("rawHRNotifications", 0),
+        "acceptedHRSamples": first.get("acceptedHRSamples", 0),
+        "zeroHRSamples": first.get("zeroHRSamples", 0),
+        "heldArtifacts": first.get("heldArtifacts", 0),
+        "droppedArtifacts": first.get("droppedArtifacts", 0),
+        "rawHRGaps": first.get("rawHRGaps", 0),
+        "acceptedHRGaps": first.get("acceptedHRGaps", 0),
+        "maxRawHRGap": first.get("maxRawHRGap", 0),
+        "maxAcceptedHRGap": first.get("maxAcceptedHRGap", 0),
+        "batteryLevel": first.get("batteryLevel"),
+        "thermalState": first.get("thermalState"),
+        "lowPowerMode": first.get("lowPowerMode"),
+        "powerMode": first.get("powerMode"),
+        "cadenceMultiplier": first.get("cadenceMultiplier"),
+    }
+    for segment in rows:
+        if segment.get("id") != journal["id"]:
+            continue
+        if len(journal["samples"]) == int(segment.get("sampleStartIndex", len(journal["samples"]))):
+            journal["samples"].extend(segment.get("samples") or [])
+        if len(journal["rrSamples"]) == int(segment.get("rrSampleStartIndex", len(journal["rrSamples"]))):
+            journal["rrSamples"].extend(segment.get("rrSamples") or [])
+        for key in ("label", "updatedAt", "rawHRNotifications", "acceptedHRSamples", "zeroHRSamples",
+                    "heldArtifacts", "droppedArtifacts", "rawHRGaps", "acceptedHRGaps",
+                    "maxRawHRGap", "maxAcceptedHRGap", "batteryLevel", "thermalState",
+                    "lowPowerMode", "powerMode", "cadenceMultiplier"):
+            journal[key] = segment.get(key, journal.get(key))
+    return journal
+
 journal_path = evidence / "atria-active-session.json"
+journal = None
 if journal_path.exists():
     try:
         journal = json.loads(journal_path.read_text())
+    except Exception as exc:
+        print(f"active_journal_file_summary_error={type(exc).__name__}:{exc}")
+if journal is None:
+    journal = reconstructed_segmented_journal(evidence)
+    if journal is not None:
+        try:
+            journal_path.write_text(json.dumps(journal, indent=2, sort_keys=True))
+            print("active_journal_reconstructed_from_segments=1")
+        except Exception as exc:
+            print(f"active_journal_reconstruct_write_error={type(exc).__name__}:{exc}")
+if journal is not None:
+    try:
         samples = journal.get("samples") or []
         rr = journal.get("rrSamples") or []
         started = app_time(journal.get("startedAt", samples[0].get("t") if samples else 0))

@@ -33,7 +33,9 @@ struct AtriaOverviewTabContent: View {
                 }
             } else if !hasUnlockedSecondarySections {
                 LazyVStack(spacing: 18) {
-                    AtriaOverviewLeadingHost(heroStore: heroStore,
+                    AtriaOverviewLeadingHost(liveStore: liveStore,
+                                             heroStore: heroStore,
+                                             homeStatsStore: homeStatsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
                                              hasUnlockedSecondarySections: false,
@@ -41,14 +43,18 @@ struct AtriaOverviewTabContent: View {
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
                                              onAICoachSettingsChange: onAICoachSettingsChange,
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
+                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
+                                             onOpenVitals: onOpenVitals,
+                                             onOpenCollection: onOpenCollection)
                     AtriaLoadingPanel(title: "Preparing saved insights",
                                       subtitle: "Trend, backup, and collection summaries join after the first live dashboard settles.")
                 }
             } else if horizontalSizeClass == .regular {
                 HStack(alignment: .top, spacing: 18) {
                     LazyVStack(spacing: 18) {
-                        AtriaOverviewLeadingHost(heroStore: heroStore,
+                        AtriaOverviewLeadingHost(liveStore: liveStore,
+                                                 heroStore: heroStore,
+                                                 homeStatsStore: homeStatsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  hasUnlockedSecondarySections: hasUnlockedSecondarySections,
@@ -56,7 +62,9 @@ struct AtriaOverviewTabContent: View {
                                                  aiCoachHasAPIKey: aiCoachHasAPIKey,
                                                  onAICoachSettingsChange: onAICoachSettingsChange,
                                                  onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                                 onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
+                                                 onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
+                                                 onOpenVitals: onOpenVitals,
+                                                 onOpenCollection: onOpenCollection)
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
 
@@ -71,7 +79,9 @@ struct AtriaOverviewTabContent: View {
                 }
             } else {
                 LazyVStack(spacing: 18) {
-                    AtriaOverviewLeadingHost(heroStore: heroStore,
+                    AtriaOverviewLeadingHost(liveStore: liveStore,
+                                             heroStore: heroStore,
+                                             homeStatsStore: homeStatsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections,
@@ -79,7 +89,9 @@ struct AtriaOverviewTabContent: View {
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
                                              onAICoachSettingsChange: onAICoachSettingsChange,
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
+                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
+                                             onOpenVitals: onOpenVitals,
+                                             onOpenCollection: onOpenCollection)
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
                                               snapshotStore: snapshotStore,
@@ -270,7 +282,9 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
 }
 
 private struct AtriaOverviewLeadingHost: View {
+    let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
@@ -279,9 +293,13 @@ private struct AtriaOverviewLeadingHost: View {
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
     let onSaveAICoachAPIKey: (String) -> Void
     let onDeleteAICoachAPIKey: () -> Void
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
 
     var body: some View {
-        AtriaOverviewLeadingSection(heroStore: heroStore,
+        AtriaOverviewLeadingSection(liveStore: liveStore,
+                                   heroStore: heroStore,
+                                   homeStatsStore: homeStatsStore,
                                    snapshotStore: snapshotStore,
                                    store: store,
                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections,
@@ -289,7 +307,9 @@ private struct AtriaOverviewLeadingHost: View {
                                    aiCoachHasAPIKey: aiCoachHasAPIKey,
                                    onAICoachSettingsChange: onAICoachSettingsChange,
                                    onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                   onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
+                                   onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
+                                   onOpenVitals: onOpenVitals,
+                                   onOpenCollection: onOpenCollection)
     }
 }
 
@@ -310,7 +330,9 @@ private struct AtriaOverviewTrailingHost: View {
 }
 
 struct AtriaOverviewLeadingSection: View {
+    let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
@@ -319,11 +341,19 @@ struct AtriaOverviewLeadingSection: View {
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
     let onSaveAICoachAPIKey: (String) -> Void
     let onDeleteAICoachAPIKey: () -> Void
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
             AtriaOverviewReadinessSectionHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore)
+
+            AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
+                                             homeStatsStore: homeStatsStore,
+                                             snapshotStore: snapshotStore,
+                                             onOpenVitals: onOpenVitals,
+                                             onOpenCollection: onOpenCollection)
 
             AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
                                              settings: aiCoachSettings,
@@ -389,6 +419,162 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
         }
         .padding(.horizontal, 2)
+    }
+}
+
+struct AtriaOverviewLaunchChecklistHost: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
+
+    var body: some View {
+        AtriaOverviewLaunchChecklist(live: liveStore.state,
+                                     stats: homeStatsStore.state,
+                                     snapshot: snapshotStore.state,
+                                     onOpenVitals: onOpenVitals,
+                                     onOpenCollection: onOpenCollection)
+            .equatable()
+    }
+}
+
+struct AtriaOverviewLaunchChecklist: View, Equatable {
+    let live: AtriaHomeModel.CoreLiveState
+    let stats: AtriaHomeModel.HomeStatsState
+    let snapshot: AtriaHomeModel.Snapshot
+    let onOpenVitals: () -> Void
+    let onOpenCollection: () -> Void
+
+    static func == (lhs: AtriaOverviewLaunchChecklist, rhs: AtriaOverviewLaunchChecklist) -> Bool {
+        lhs.live == rhs.live
+            && lhs.stats == rhs.stats
+            && lhs.snapshot == rhs.snapshot
+    }
+
+    private var completeCount: Int {
+        checklistItems.filter(\.isComplete).count
+    }
+
+    private var checklistItems: [AtriaLaunchChecklistItem] {
+        [
+            AtriaLaunchChecklistItem(id: "connection",
+                                     title: "Strap connection",
+                                     value: live.status == .connected ? "Connected" : live.status.rawValue,
+                                     detail: live.status == .connected ? live.deviceName : "Open Vitals when the strap is nearby.",
+                                     systemImage: "bolt.heart.fill",
+                                     tint: live.status == .connected ? .green : .orange,
+                                     isComplete: live.status == .connected,
+                                     actionTitle: live.status == .connected ? nil : "Vitals",
+                                     action: live.status == .connected ? nil : onOpenVitals),
+            AtriaLaunchChecklistItem(id: "baseline",
+                                     title: "HRV baseline",
+                                     value: "\(stats.baselineSamples)/7",
+                                     detail: stats.baselineSamples >= 7 ? "Personal baseline is ready." : "Wear overnight to improve recovery confidence.",
+                                     systemImage: "waveform.path.ecg",
+                                     tint: stats.baselineSamples >= 7 ? .green : .pink,
+                                     isComplete: stats.baselineSamples >= 7,
+                                     actionTitle: nil,
+                                     action: nil),
+            AtriaLaunchChecklistItem(id: "reference",
+                                     title: "Metric validation",
+                                     value: snapshot.referenceText,
+                                     detail: snapshot.referenceText == "Validated" ? "Metric checks are matched." : "Use Collection when you have comparison data.",
+                                     systemImage: "checkmark.seal.fill",
+                                     tint: snapshot.referenceText == "Validated" ? .green : .blue,
+                                     isComplete: snapshot.referenceText == "Validated",
+                                     actionTitle: snapshot.referenceText == "Validated" ? nil : "Collection",
+                                     action: snapshot.referenceText == "Validated" ? nil : onOpenCollection),
+            AtriaLaunchChecklistItem(id: "capture",
+                                     title: "Capture path",
+                                     value: snapshot.loggingText,
+                                     detail: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? "Recent samples are available." : stats.nextAction,
+                                     systemImage: "waveform.badge.plus",
+                                     tint: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? .green : .orange,
+                                     isComplete: snapshot.loggingText.localizedCaseInsensitiveContains("samples"),
+                                     actionTitle: "Collection",
+                                     action: onOpenCollection)
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Launch checklist",
+                                        subtitle: "\(completeCount) of \(checklistItems.count) signals ready")
+
+                Spacer(minLength: 0)
+
+                AtriaStatusChip(text: completeCount == checklistItems.count ? "ready" : "learning",
+                                systemImage: completeCount == checklistItems.count ? "checkmark.circle.fill" : "hourglass",
+                                tint: completeCount == checklistItems.count ? .green : .orange)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(checklistItems) { item in
+                    AtriaLaunchChecklistRow(item: item)
+                }
+            }
+        }
+        .padding(16)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+private struct AtriaLaunchChecklistItem: Identifiable {
+    let id: String
+    let title: String
+    let value: String
+    let detail: String
+    let systemImage: String
+    let tint: Color
+    let isComplete: Bool
+    let actionTitle: String?
+    let action: (() -> Void)?
+}
+
+private struct AtriaLaunchChecklistRow: View {
+    let item: AtriaLaunchChecklistItem
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: item.isComplete ? "checkmark.circle.fill" : item.systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(item.tint)
+                .frame(width: 34, height: 34)
+                .background(AtriaIconTileBackground(cornerRadius: 11, tint: item.tint))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(item.value)
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(item.tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+
+                Text(item.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            if let actionTitle = item.actionTitle, let action = item.action {
+                Button(action: action) {
+                    Text(actionTitle)
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.glass)
+                .tint(item.tint)
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(cornerRadius: 18, tint: item.tint)
     }
 }
 

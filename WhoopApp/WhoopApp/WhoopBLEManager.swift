@@ -1787,6 +1787,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         let powerMode = powerThermalGovernor.mode.rawValue
         let cadenceMultiplier = powerThermalGovernor.cadenceMultiplier
+        let previousJournalSampleCount = lastActiveJournalSavedSessionSampleCount
+        let previousJournalRRCount = lastActiveJournalSavedRRArchiveCount
         DispatchQueue.global(qos: .utility).async {
             let record = ActiveSessionJournalRecord(
                 schema: ActiveSessionJournal.schema,
@@ -1813,7 +1815,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             )
             let duration = last.timeIntervalSince(first.t)
             do {
-                try ActiveSessionJournal.save(record)
+                try ActiveSessionJournal.save(
+                    record,
+                    previousSampleCount: previousJournalSampleCount,
+                    previousRRCount: previousJournalRRCount
+                )
                 DispatchQueue.main.async {
                     self.activeJournalSaveInFlight = false
                     self.activeJournalDirtySamples = 0
