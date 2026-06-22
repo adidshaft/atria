@@ -7106,7 +7106,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         WHOOPDebugLog("WHOOPDBG ble_restore peripherals=%d", restored.count)
         guard let restoredPeripheral = restored.first else { return }
         Task { @MainActor in
-            if self.forceFreshScanOnRestore {
+            if self.forceFreshScanOnRestore && !self.standardHROnlyMode {
                 for peripheral in restored {
                     central.cancelPeripheralConnection(peripheral)
                 }
@@ -7120,6 +7120,9 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                       restored.count)
                 self.startScan(reason: "restore_discard")
                 return
+            } else if self.forceFreshScanOnRestore && self.standardHROnlyMode {
+                WHOOPDebugLog("WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=%d",
+                      restored.count)
             }
             restoredPeripheral.delegate = self
             self.peripheral = restoredPeripheral
@@ -7193,7 +7196,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             defaults.set("disconnected", forKey: LinkDefaults.lastStatus)
             defaults.set("did_disconnect", forKey: LinkDefaults.lastReason)
             defaults.set(errorText, forKey: LinkDefaults.lastError)
-            let useFreshScan = forceFreshScanAfterDisconnect || longWearModeEnabled
+            let useFreshScan = forceFreshScanAfterDisconnect
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
             connectedAt = nil

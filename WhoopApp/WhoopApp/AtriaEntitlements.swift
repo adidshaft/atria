@@ -1,0 +1,33 @@
+import Foundation
+
+/// Single seam for future premium licensing without shipping a paywall today.
+struct AtriaEntitlements: Equatable {
+    enum Feature: String, CaseIterable {
+        case localMetrics
+        case healthKitExport
+        case backgroundCollection
+        case liveActivity
+        case mediaControls
+        case hapticAlerts
+        case aiCoachLocal
+        case aiCoachCloud
+    }
+
+    enum Tier: String, Codable {
+        case paidApp
+        case premium
+    }
+
+    var tier: Tier = .paidApp
+    var premiumOverrides: Set<Feature> = []
+
+    func isEnabled(_ feature: Feature) -> Bool {
+        switch feature {
+        case .localMetrics, .healthKitExport, .backgroundCollection:
+            return true
+        case .liveActivity, .mediaControls, .hapticAlerts, .aiCoachLocal, .aiCoachCloud:
+            return tier == .premium || premiumOverrides.contains(feature)
+        }
+    }
+}
+

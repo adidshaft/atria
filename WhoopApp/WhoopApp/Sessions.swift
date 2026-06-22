@@ -68,6 +68,16 @@ struct SavedSession: Codable, Identifiable {
     var referenceValidatedHRV: Int? {
         hrvReferenceValidated == true ? hrv : nil
     }
+    var referenceValidatedSDNN: Double? {
+        guard hrvReferenceValidated == true,
+              let rrPoints,
+              rrPoints.count >= 2 else { return nil }
+        let values = rrPoints.map { Double($0.ms) }.filter { (300...2000).contains($0) }
+        guard values.count >= 2 else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
+        return sqrt(variance)
+    }
     var motionHintCountValue: Int { motionHintCount ?? 0 }
     var motionHintKindsValue: String {
         let trimmed = (motionHintKinds ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5787,7 +5797,7 @@ final class SessionStore: ObservableObject {
                                                   fallbackRMSSD: $0.referenceValidatedHRV,
                                                   restingNow: $0.restingStable,
                                                   baseline: baseline)
-                return recovery.confidence == .high ? recovery.percent : nil
+                return recovery.percent
             }
 
             let anomalies = trendAnomalies(rollups: recentRollups)
@@ -5850,7 +5860,7 @@ final class SessionStore: ObservableObject {
                                               fallbackRMSSD: $0.referenceValidatedHRV,
                                               restingNow: $0.restingStable,
                                               baseline: baseline)
-            return recovery.confidence == .high ? recovery.percent : nil
+            return recovery.percent
         }
         let hrvState = hrvs.isEmpty ? "reference_pending" : "validated_samples_\(hrvs.count)"
         let avgRecovery = averageInt(recoveries)

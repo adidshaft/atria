@@ -1308,7 +1308,7 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             detail = "validated"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            detail = "reference pending"
+            detail = "personal baseline"
         } else {
             detail = ble.hrvQuality
         }
@@ -1317,7 +1317,7 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             narrative = "Validated HRV is ready from your reference import."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            narrative = "The live RR window is ready to measure while saved insights finish loading."
+            narrative = "The live RR window is ready; this is your own unverified RMSSD until an optional reference check passes."
         } else {
             narrative = "Atria keeps the live RR window light while the connection settles."
         }
@@ -1326,7 +1326,7 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             packageText = "Validated"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            packageText = "Preparing"
+            packageText = "Unverified"
         } else {
             packageText = "Learning"
         }
@@ -1491,7 +1491,7 @@ final class AtriaHomeModel {
         } else if rrPackage.ready {
             hrvDetail = "\(rrPackage.confidencePercent)% kept"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            hrvDetail = "reference pending"
+            hrvDetail = "personal baseline"
         } else {
             hrvDetail = ble.hrvQuality
         }
@@ -1500,9 +1500,9 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             hrvNarrative = "Validated HRV is ready from your reference import."
         } else if rrPackage.ready {
-            hrvNarrative = "A clean RR package is ready; importing an external reference will validate HRV."
+            hrvNarrative = "A clean RR package is ready; Atria can show it now as unverified personal data."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            hrvNarrative = "The live RR window is ready to measure, but it still needs a reference check."
+            hrvNarrative = "The live RR window is ready; an optional reference check can promote it to validated."
         } else {
             hrvNarrative = ble.hrvQuality
         }
@@ -1587,8 +1587,8 @@ final class AtriaHomeModel {
         let nextAction: String
         if ble.status != .connected {
             nextAction = "Keep the phone near the strap until Atria reconnects."
-        } else if recovery.percent == nil && rrPackage.ready && store.latestReferenceValidatedHRV == nil {
-            nextAction = "Import an RR reference to unlock validated HRV."
+        } else if recovery.percent == nil && rrPackage.ready {
+            nextAction = "Keep wearing while Atria finishes your personal baseline."
         } else if !collection.ready {
             nextAction = "Keep Atria open a little longer while collection settles."
         } else {

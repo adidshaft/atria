@@ -67,14 +67,14 @@ enum Coach {
 
     static func guide(recovery estimate: Metrics.RecoveryEstimate,
                       strain: Double) -> Guidance {
-        guard estimate.confidence == .high, let percent = estimate.percent else {
+        guard let percent = estimate.percent else {
             let blocker = estimate.detail.isEmpty ? "learning" : estimate.detail
             return Guidance(headline: "Guidance learning",
-                            detail: "Waiting for validated recovery: \(blocker).",
+                            detail: "Waiting for enough recovery data: \(blocker).",
                             color: .secondary,
                             target: nil,
                             state: "learning",
-                            reason: "recovery_\(estimate.confidence.rawValue)_not_high")
+                            reason: "recovery_\(estimate.confidence.rawValue)_not_ready")
         }
         return guide(recovery: percent, strain: strain)
     }

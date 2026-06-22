@@ -4,8 +4,8 @@ import SwiftUI
 ///
 /// These are honest approximations of WHOOP's proprietary scores:
 /// - **Strain** uses Banister's TRIMP (training impulse) mapped to the 0–21 scale.
-/// - **Recovery** uses validated HRV only when the app has enough personal
-///   baseline data; otherwise it stays labeled as learning/fallback.
+/// - **Recovery** uses the user's own ready RR/HRV data once enough personal
+///   baseline exists, and labels the result honestly until reference validated.
 enum Metrics {
 
     // MARK: Strain (0–21)
@@ -138,8 +138,9 @@ enum Metrics {
     struct RecoveryEstimate: Equatable {
         enum Confidence: String {
             case learning
-            case fallback
-            case high
+            case unverified
+            case personalBaseline = "personal baseline"
+            case validated
         }
 
         let percent: Int?
@@ -168,8 +169,9 @@ enum Metrics {
     }
 
     /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
-    /// with resting-HR z-score. Recovery stays learning until HRV is reference
-    /// validated and at least 7 validated HRV baseline samples exist.
+    /// with resting-HR z-score. Recovery displays after local data sufficiency;
+    /// external reference validation upgrades the confidence tier and HealthKit
+    /// writes, but does not block in-app display.
     static func recoveryV2(hrvSnapshot: HRVSnapshot?, fallbackRMSSD: Int?,
                            restingNow: Int?, baseline: PersonalBaseline,
                            hrvReferenceValidated: Bool = false) -> RecoveryEstimate {
@@ -184,16 +186,13 @@ enum Metrics {
         }
 
         let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
-        let hasReferencePendingHRV = hrvSnapshot?.isReady == true && !hrvReferenceValidated
-        let rmssdNow = (hrvSnapshot?.isReady == true && hrvReferenceValidated)
+        let rmssdNow = hrvSnapshot?.isReady == true
             ? hrvSnapshot?.rmssd
             : fallbackRMSSD.map(Double.init)
         guard let rmssdNow, rmssdNow > 0 else {
             return RecoveryEstimate(percent: nil, confidence: .learning,
                                     usesHRV: false,
-                                    detail: hasReferencePendingHRV
-                                        ? "learning: HRV reference pending"
-                                        : "learning: need validated HRV")
+                                    detail: "learning: need a clean HRV window")
         }
 
         guard let hrvStats = baseline.lnRMSSDStats, hrvStats.count >= 7 else {
@@ -205,7 +204,8 @@ enum Metrics {
         let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
         let blendedZ = 0.75 * hrvZ - 0.25 * restingZ
         let percent = Int(Swift.min(Swift.max(50 + blendedZ * 16, 1), 99).rounded())
-        return RecoveryEstimate(percent: percent, confidence: .high,
+        let confidence: RecoveryEstimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
+        return RecoveryEstimate(percent: percent, confidence: confidence,
                                 usesHRV: true,
                                 detail: String(format: "lnRMSSD z %.1f · RHR z %.1f", hrvZ, restingZ))
     }
@@ -262,7 +262,7 @@ struct RecoveryRing: View, Equatable {
             if !detail.isEmpty {
                 Text(confidence.rawValue)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(confidence == .high ? .green : .orange)
+                    .foregroundStyle(confidence == .validated ? .green : .orange)
                 Text(detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

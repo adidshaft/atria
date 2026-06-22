@@ -177,7 +177,7 @@ struct AtriaRecoveryMeter: View, Equatable {
 
             Text(estimate.confidence.rawValue)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(estimate.confidence == .high ? .green : .orange)
+                .foregroundStyle(estimate.confidence == .validated ? .green : .orange)
 
             Text(estimate.detail)
                 .font(.caption2)

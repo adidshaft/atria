@@ -294,7 +294,7 @@ struct LegacyContentView: View {
         let validatedHRV = store.sessions.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }.count
         let trend90 = store.trendSummaries(rest: rest, maxHR: store.profile.maxHR).first { $0.days == 90 }
         let hrvState = validatedHRV > 0 ? "reference partial" : "reference pending"
-        let recoveryState = recoveryEstimate.confidence == .high ? "ready" : recoveryEstimate.confidence.rawValue
+        let recoveryState = recoveryEstimate.percent == nil ? recoveryEstimate.confidence.rawValue : "ready"
         let savedMotionHintCount = store.sessions.reduce(0) { $0 + $1.motionHintCountValue }
         let totalMotionHintCount = savedMotionHintCount + ble.sleepMotionHintCount
         let motionHintKinds = combinedMotionHintKinds(saved: store.sessions.map(\.motionHintKindsValue),
@@ -502,7 +502,7 @@ struct LegacyContentView: View {
 
     private func logGuidanceDecision(recovery: Metrics.RecoveryEstimate, strain: StrainEstimate) {
         let guide = Coach.guide(recovery: recovery, strain: strain.strain)
-        let recoveryText = (recovery.confidence == .high ? recovery.percent : nil).map(String.init) ?? "learning"
+        let recoveryText = recovery.percent.map(String.init) ?? "learning"
         let targetText = guide.target.map { String(format: "%.1f", $0) } ?? "learning"
         let logKey = String(format: "%@|%@|%.1f|%@",
                             recoveryText,
@@ -1261,7 +1261,7 @@ struct LegacyContentView: View {
         let supportMetrics: [TodayMetricItem] = [
             TodayMetricItem(title: "Battery", value: ble.batteryLevel >= 0 ? "\(ble.batteryLevel)%" : "--", detail: ble.batteryLevel >= 0 ? "strap" : "waiting", system: "battery.100", color: .green, ready: ble.batteryLevel >= 0),
             TodayMetricItem(title: "RR package", value: todayRRPackageValue(rrPackage), detail: todayRRPackageDetail(rrPackage), system: "waveform.path.ecg", color: .purple, ready: rrPackage.ready),
-            TodayMetricItem(title: "Baseline", value: "\(store.baseline.hrvSampleCount)/7", detail: recovery.confidence.rawValue, system: "calendar.badge.clock", color: .indigo, ready: recovery.confidence == .high),
+            TodayMetricItem(title: "Baseline", value: "\(store.baseline.hrvSampleCount)/7", detail: recovery.confidence.rawValue, system: "calendar.badge.clock", color: .indigo, ready: recovery.percent != nil),
             TodayMetricItem(title: "Reference", value: todayReferenceValue(health), detail: todayReferenceDetail(health), system: "checkmark.seal.fill", color: .green, ready: health.referenceAudit.externalReferenceReady)
         ]
         return VStack(alignment: .leading, spacing: 14) {

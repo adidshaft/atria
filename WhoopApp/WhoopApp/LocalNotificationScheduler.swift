@@ -113,7 +113,7 @@ enum LocalNotificationScheduler {
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
                                           baseline: store.baseline)
         let recoveryDecision: NotificationDecision
-        if let percent = recovery.percent, recovery.confidence == .high {
+        if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(
                 kind: "recovery",
                 identifier: Identifier.recovery,
@@ -126,7 +126,7 @@ enum LocalNotificationScheduler {
         } else {
             let reason = recovery.percent == nil
                 ? recovery.detail.replacingOccurrences(of: " ", with: "_")
-                : "recovery_confidence_\(recovery.confidence.rawValue)_not_high"
+                : "recovery_confidence_\(recovery.confidence.rawValue)"
             recoveryDecision = NotificationDecision(
                 kind: "recovery",
                 identifier: Identifier.recovery,
@@ -148,13 +148,13 @@ enum LocalNotificationScheduler {
         let strain = Metrics.strain(fromTRIMP: savedTRIMP + liveTRIMP)
         let guide = Coach.guide(recovery: recovery.percent, strain: strain)
         let strainDecision: NotificationDecision
-        if recovery.confidence != .high {
+        if recovery.percent == nil {
             strainDecision = NotificationDecision(
                 kind: "strain",
                 identifier: Identifier.strain,
                 title: "",
                 body: "",
-                reason: "recovery_confidence_\(recovery.confidence.rawValue)_not_high",
+                reason: "recovery_learning_\(recovery.confidence.rawValue)",
                 shouldSchedule: false,
                 delay: 0
             )
