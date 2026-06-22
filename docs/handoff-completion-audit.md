@@ -61,7 +61,9 @@ Evidence present:
 - `AtriaCoachNetworkPolicy` now makes the coach network posture explicit:
   local mode is `.offlineOnly`, cloud mode is `.cloudDisabled`, the local
   disclosure says no data leaves the iPhone, and the static checks forbid
-  `URLSession`/request/http usage in `AtriaAICoach.swift`.
+  `URLSession`/request/http usage in `AtriaAICoach.swift`. The stale
+  `localModelEnabled` setting was removed so the current UI does not imply a
+  downloaded LLM runtime that is not shipped.
 
 Not yet accepted:
 

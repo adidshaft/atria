@@ -30,7 +30,6 @@ struct AtriaAICoachSettings: Codable, Equatable {
 
     var mode: Mode = .off
     var cloudProvider: CloudProvider = .openAI
-    var localModelEnabled = false
 
     private static let key = "atria.aiCoach.settings.v1"
 

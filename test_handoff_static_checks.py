@@ -170,6 +170,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for forbidden in [
             "import Network",
+            "localModelEnabled",
             "URLSession",
             "URLRequest",
             ".resume()",
