@@ -22,9 +22,7 @@ Contributions are welcome when they preserve the project contract: local-only da
 Run the fast monitor/tooling regression before touching physical-device evidence:
 
 ```sh
-./test_monitor_long_wear.sh
-./test_handoff_static_checks.sh
-./test_audit_handoff_status.sh
+./test_handoff_local.sh
 ```
 
 This py-compiles the long-wear monitor, runs its acceptance parsing tests, and

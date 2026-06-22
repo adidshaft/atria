@@ -88,6 +88,7 @@ Evidence present:
   monitor summaries into a conservative `complete` / `not_complete` result.
 - `test_audit_handoff_status.sh` verifies that failed or missing physical
   acceptance evidence cannot be reported as complete.
+- `test_handoff_local.sh` runs the fast local handoff suite in one command.
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 
