@@ -132,6 +132,54 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
+    enum CollectionProfile: String, CaseIterable, Identifiable {
+        case batterySaver
+        case balanced
+        case maxCoverage
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .batterySaver: return "Saver"
+            case .balanced: return "Balanced"
+            case .maxCoverage: return "Coverage"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .batterySaver: return "Cooler cadence, slower recovery"
+            case .balanced: return "Default overnight profile"
+            case .maxCoverage: return "Fastest stale-data response"
+            }
+        }
+
+        fileprivate var cadenceMultiplier: Double {
+            switch self {
+            case .batterySaver: return 1.75
+            case .balanced: return 1.0
+            case .maxCoverage: return 0.75
+            }
+        }
+
+        fileprivate var staleTimeoutMultiplier: Double {
+            switch self {
+            case .batterySaver: return 1.4
+            case .balanced: return 1.0
+            case .maxCoverage: return 0.85
+            }
+        }
+
+        fileprivate static func load(defaults: UserDefaults = .standard) -> CollectionProfile {
+            guard let raw = defaults.string(forKey: CollectionProfileDefaults.profile),
+                  let profile = CollectionProfile(rawValue: raw) else {
+                return .balanced
+            }
+            return profile
+        }
+    }
+
     private enum ParsedProprietaryUpdate {
         case realtime(ParsedRealtimePacket)
         case commandResponse(WhoopFrame)
@@ -473,6 +521,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let acceptedHRTimeout = "whoop.longWear.acceptedHRTimeout"
         static let label = "whoop.longWear.label"
     }
+    enum CollectionProfileDefaults {
+        static let profile = "atria.collection.profile"
+    }
 
     enum Packet {
         static let command: UInt8 = 0x23
@@ -594,6 +645,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var historyClockRef: HistoryClockRef?
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
+    @Published private(set) var collectionProfile = CollectionProfile.load()
     private nonisolated(unsafe) var standardHROnlyMode = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     private var historicalArchiveRows = 0
     private var historicalArchiveRowsSinceAck = 0
@@ -939,6 +991,18 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
+    func setCollectionProfile(_ profile: CollectionProfile, rest: Int, maxHR: Int) {
+        guard profile != collectionProfile else { return }
+        UserDefaults.standard.set(profile.rawValue, forKey: CollectionProfileDefaults.profile)
+        collectionProfile = profile
+        WHOOPDebugLog("WHOOPDBG collection_profile status=selected profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f",
+                      profile.rawValue,
+                      profile.cadenceMultiplier,
+                      profile.staleTimeoutMultiplier)
+        guard longWearModeEnabled else { return }
+        startLongWearMode(rest: rest, maxHR: maxHR, reason: "collection_profile")
+    }
+
     func applyPersistentLongWearModeIfNeeded(rest: Int, maxHR: Int) {
         guard UserDefaults.standard.bool(forKey: LongWearDefaults.enabled) else {
             longWearModeEnabled = false
@@ -964,8 +1028,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let noDataTimeout = defaults.object(forKey: LongWearDefaults.noDataTimeout) as? Double ?? 75
         let noDataCheckInterval = defaults.object(forKey: LongWearDefaults.noDataCheckInterval) as? Double ?? 15
         let acceptedHRTimeout = defaults.object(forKey: LongWearDefaults.acceptedHRTimeout) as? Double ?? 45
-        let noDataWatchdogTimeout = max(75, min(noDataTimeout, 600))
-        let acceptedHRWatchdogTimeout = max(45, min(acceptedHRTimeout, 120))
+        let profile = collectionProfile
+        let cadenceMultiplier = profile.cadenceMultiplier
+        let staleTimeoutMultiplier = profile.staleTimeoutMultiplier
+        let noDataWatchdogTimeout = max(60, min(noDataTimeout * staleTimeoutMultiplier, 600))
+        let acceptedHRWatchdogTimeout = max(35, min(acceptedHRTimeout * staleTimeoutMultiplier, 180))
         let hrContinuityTimeout = max(6, min(acceptedHRWatchdogTimeout / 8, 10))
         let label = defaults.string(forKey: LongWearDefaults.label) ?? "Long wear"
         captureLabel = label
@@ -974,19 +1041,22 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             label: label,
             rest: rest,
             maxHR: maxHR,
-            checkpointInterval: max(10, min(checkpointSeconds, 3_600)),
-            diagnosticInterval: max(5, min(diagnosticSeconds, 300)),
-            autoSaveInterval: max(5, min(autoSaveSeconds, 300)),
+            checkpointInterval: max(10, min(checkpointSeconds * cadenceMultiplier, 3_600)),
+            diagnosticInterval: max(5, min(diagnosticSeconds * cadenceMultiplier, 300)),
+            autoSaveInterval: max(5, min(autoSaveSeconds * cadenceMultiplier, 300)),
             noDataTimeout: noDataWatchdogTimeout,
-            noDataCheckInterval: max(5, min(noDataCheckInterval, 300)),
+            noDataCheckInterval: max(5, min(noDataCheckInterval * cadenceMultiplier, 300)),
             hrContinuityTimeout: hrContinuityTimeout,
             rrPresenceTimeout: max(20, min(acceptedHRWatchdogTimeout * 2, 120)),
             acceptedHRTimeout: acceptedHRWatchdogTimeout
         )
         scheduleLongWearSupervisor(config: config)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
+        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
               reason,
               standardHROnlyMode ? "standard_hr_only" : "full_protocol",
+              profile.rawValue,
+              cadenceMultiplier,
+              staleTimeoutMultiplier,
               config.checkpointInterval,
               config.diagnosticInterval,
               config.autoSaveInterval,

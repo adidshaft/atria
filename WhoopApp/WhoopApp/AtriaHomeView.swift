@@ -661,6 +661,7 @@ final class AtriaHomeModel {
         var lastCaptureFile: String
         var standardHROnlyEnabled: Bool
         var longWearModeEnabled: Bool
+        var collectionProfile: WhoopBLEManager.CollectionProfile
 
         var recordingState: String { isRecording ? "Recording" : (captureWasValidationReady ? "Ready" : "Idle") }
         var captureFileLabel: String { lastCaptureFile.isEmpty ? "None" : "Saved" }
@@ -1082,7 +1083,8 @@ final class AtriaHomeModel {
             ble.$captureWasValidationReady.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastCaptureFile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$standardHROnlyEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$longWearModeEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$longWearModeEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$collectionProfile.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -1320,7 +1322,8 @@ final class AtriaHomeModel {
                                    captureWasValidationReady: ble.captureWasValidationReady,
                                    lastCaptureFile: ble.lastCaptureFile,
                                    standardHROnlyEnabled: ble.standardHROnlyEnabled,
-                                   longWearModeEnabled: ble.longWearModeEnabled)
+                                   longWearModeEnabled: ble.longWearModeEnabled,
+                                   collectionProfile: ble.collectionProfile)
     }
 
     private static func makeHeroSnapshot(ble: WhoopBLEManager,

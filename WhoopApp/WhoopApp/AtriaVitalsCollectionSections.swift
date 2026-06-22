@@ -454,6 +454,15 @@ private struct AtriaCollectionControlsCardHost: View {
                                                        maxHR: profileStore.profile.maxHR)
                         })
                 )
+
+                AtriaCollectionProfilePicker(
+                    selected: collectionLiveStore.state.collectionProfile,
+                    onSelect: { profile in
+                        ble.setCollectionProfile(profile,
+                                                 rest: homeStatsStore.state.restingHeartRate,
+                                                 maxHR: profileStore.profile.maxHR)
+                    }
+                )
             }
 
             NavigationLink {
@@ -508,6 +517,58 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaInlineQuickStat(label: "Backup", value: homeStatsStore.state.backupValue)
         AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
         AtriaInlineQuickStat(label: "Mode", value: collectionLiveStore.state.modeLabel)
+    }
+}
+
+private struct AtriaCollectionProfilePicker: View, Equatable {
+    let selected: WhoopBLEManager.CollectionProfile
+    let onSelect: (WhoopBLEManager.CollectionProfile) -> Void
+
+    static func == (lhs: AtriaCollectionProfilePicker, rhs: AtriaCollectionProfilePicker) -> Bool {
+        lhs.selected == rhs.selected
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "speedometer")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.purple)
+                    .frame(width: 24, height: 24)
+                    .background(AtriaIconTileBackground(cornerRadius: 8, tint: .purple))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Collection profile")
+                        .font(.subheadline.weight(.semibold))
+                    Text(selected.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(WhoopBLEManager.CollectionProfile.allCases) { profile in
+                    Button {
+                        onSelect(profile)
+                    } label: {
+                        Text(profile.label)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(AtriaSegmentButtonStyle(selected: selected == profile))
+                    .accessibilityLabel("Collection profile \(profile.label)")
+                }
+            }
+            .padding(6)
+            .atriaRaisedCard(cornerRadius: 18, emphasis: .soft)
+        }
+        .padding(14)
+        .atriaRaisedCard(emphasis: .soft)
     }
 }
 
