@@ -132,6 +132,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")
+        widget = source(ROOT / "WhoopApp" / "WhoopApp" / "WidgetSnapshot.swift")
+        intents = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAppIntents.swift")
         docs = "\n".join(source(path) for path in (ROOT / "docs").rglob("*.md"))
 
         for needle in [
@@ -141,6 +143,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
             assert_contains(self, text, needle)
+
+        for needle in [
+            "let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD",
+            "fallbackRMSSD: fallbackHRV",
+            "hrvReferenceValidated: validatedHRV != nil",
+            "hrvState = recovery.confidence == .validated ? \"validated\" : \"personal_baseline\"",
+        ]:
+            assert_contains(self, widget, needle)
+
+        assert_contains(self, intents, "Read the latest local recovery, strain, and HRV snapshot.")
+        assert_contains(self, intents, "snapshot.hrvRMSSD.map")
 
         for forbidden in [
             "all HRV metrics in\n  **learning** until an external RR/IBI reference passes",
