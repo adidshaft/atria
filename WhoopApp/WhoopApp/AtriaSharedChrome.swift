@@ -75,7 +75,7 @@ struct AtriaGlassIconSegmentStyle: ButtonStyle {
             .padding(.vertical, 10)
             .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.88 : 1))
             .background {
-                AtriaInsetTileBackground(cornerRadius: 14, tint: .white)
+                AtriaInsetCardBackground(cornerRadius: 14, tint: .white)
             }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
@@ -86,7 +86,40 @@ enum AtriaPanelEmphasis {
     case strong
 }
 
-private struct AtriaQuietPanelBackground: View {
+enum AtriaDesignTokens {
+    enum Radius {
+        static let card: CGFloat = 28
+        static let inset: CGFloat = 18
+    }
+
+    enum Surface {
+        static func card(isDark: Bool, emphasis: AtriaPanelEmphasis) -> Color {
+            if isDark {
+                return Color(red: 0.060, green: 0.071, blue: 0.092)
+                    .opacity(emphasis == .strong ? 0.985 : 0.965)
+            }
+            return Color(red: 0.965, green: 0.972, blue: 0.988)
+                .opacity(emphasis == .strong ? 0.98 : 0.94)
+        }
+
+        static func raisedCard(isDark: Bool, emphasis: AtriaPanelEmphasis) -> Color {
+            if isDark {
+                return Color(red: 0.074, green: 0.088, blue: 0.116)
+                    .opacity(emphasis == .strong ? 0.975 : 0.95)
+            }
+            return Color(red: 0.985, green: 0.989, blue: 0.996)
+                .opacity(emphasis == .strong ? 0.98 : 0.95)
+        }
+
+        static func inset(isDark: Bool) -> Color {
+            isDark
+                ? Color(red: 0.085, green: 0.097, blue: 0.126).opacity(0.955)
+                : Color(red: 0.940, green: 0.950, blue: 0.970).opacity(0.96)
+        }
+    }
+}
+
+private struct AtriaCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
 
@@ -100,18 +133,7 @@ private struct AtriaQuietPanelBackground: View {
     }
 
     private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.060, green: 0.071, blue: 0.092)
-                    .opacity(emphasis == .strong ? 0.985 : 0.965)
-            )
-        }
-        return AnyShapeStyle(
-            LinearGradient(colors: [
-                Color.white.opacity(emphasis == .strong ? 0.96 : 0.92),
-                Color(red: 0.948, green: 0.958, blue: 0.982).opacity(emphasis == .strong ? 0.94 : 0.90)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
+        AnyShapeStyle(AtriaDesignTokens.Surface.card(isDark: colorScheme == .dark, emphasis: emphasis))
     }
 
     @ViewBuilder
@@ -139,7 +161,7 @@ private struct AtriaQuietPanelBackground: View {
     }
 }
 
-private struct AtriaGlassPanelBackground: View {
+private struct AtriaRaisedCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
 
@@ -153,15 +175,7 @@ private struct AtriaGlassPanelBackground: View {
     }
 
     private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.074, green: 0.088, blue: 0.116)
-                    .opacity(emphasis == .strong ? 0.975 : 0.95)
-            )
-        }
-        return AnyShapeStyle(
-            emphasis == .strong ? .regularMaterial : .thinMaterial
-        )
+        AnyShapeStyle(AtriaDesignTokens.Surface.raisedCard(isDark: colorScheme == .dark, emphasis: emphasis))
     }
 
     @ViewBuilder
@@ -196,7 +210,7 @@ private struct AtriaGlassPanelBackground: View {
     }
 }
 
-private struct AtriaInsetTileBackground: View {
+private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
 
@@ -213,12 +227,7 @@ private struct AtriaInsetTileBackground: View {
     }
 
     private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.085, green: 0.097, blue: 0.126).opacity(0.955)
-            )
-        }
-        return AnyShapeStyle(.ultraThinMaterial)
+        AnyShapeStyle(AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark))
     }
 
     @ViewBuilder
@@ -262,12 +271,7 @@ struct AtriaIconTileBackground: View {
     }
 
     private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.092, green: 0.104, blue: 0.132).opacity(0.97)
-            )
-        }
-        return AnyShapeStyle(.ultraThinMaterial)
+        AnyShapeStyle(AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark))
     }
 
     @ViewBuilder
@@ -313,7 +317,7 @@ struct AtriaSheetFooterBackground: View {
             .fill(
                 colorScheme == .dark
                     ? AnyShapeStyle(Color(red: 0.040, green: 0.048, blue: 0.066).opacity(0.98))
-                    : AnyShapeStyle(.thinMaterial)
+                    : AnyShapeStyle(Color(red: 0.965, green: 0.972, blue: 0.988).opacity(0.98))
             )
             .overlay(alignment: .top) {
                 Rectangle()
@@ -325,20 +329,20 @@ struct AtriaSheetFooterBackground: View {
 
 extension View {
     @ViewBuilder
-    func atriaGlassPanel(cornerRadius: CGFloat = 28,
+    func atriaRaisedCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
                          emphasis: AtriaPanelEmphasis = .soft) -> some View {
         self
             .background {
-                AtriaGlassPanelBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+                AtriaRaisedCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
             }
     }
 
     @ViewBuilder
-    func atriaQuietPanel(cornerRadius: CGFloat = 28,
-                         emphasis: AtriaPanelEmphasis = .soft) -> some View {
+    func atriaCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
+                   emphasis: AtriaPanelEmphasis = .soft) -> some View {
         self
             .background {
-                AtriaQuietPanelBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+                AtriaCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
             }
     }
 
@@ -353,10 +357,10 @@ extension View {
             .background(AtriaIconChromeBackground())
     }
 
-    func atriaInsetTile(cornerRadius: CGFloat = 18, tint: Color) -> some View {
+    func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset, tint: Color) -> some View {
         self
             .background {
-                AtriaInsetTileBackground(cornerRadius: cornerRadius, tint: tint)
+                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint)
             }
     }
 }
@@ -367,18 +371,10 @@ private struct AtriaCapsuleChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if #available(iOS 26, *) {
-                Capsule(style: .continuous)
-                    .fill(baseFill)
-                    .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
-                    .overlay(stroke)
-            } else {
-                Capsule(style: .continuous)
-                    .fill(baseFill)
-                    .overlay(stroke)
-            }
-        }
+        Capsule(style: .continuous)
+            .fill(baseFill)
+            .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
+            .overlay(stroke)
     }
 
     private var baseFill: some ShapeStyle {
@@ -387,7 +383,7 @@ private struct AtriaCapsuleChromeBackground: View {
                 Color(red: 0.084, green: 0.095, blue: 0.124).opacity(0.96)
             )
         }
-        return AnyShapeStyle(.ultraThinMaterial)
+        return AnyShapeStyle(Color.white.opacity(0.42))
     }
 
     private var glassTint: Color {
@@ -411,19 +407,10 @@ private struct AtriaIconChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if #available(iOS 26, *) {
-                Circle()
-                    .fill(baseFill)
-                    .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)).interactive(), in: .circle)
-                    .overlay(stroke)
-            } else {
-                Circle()
-                    .fill(baseFill)
-                    .overlay(tintWash)
-                    .overlay(stroke)
-            }
-        }
+        Circle()
+            .fill(baseFill)
+            .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)).interactive(), in: .circle)
+            .overlay(stroke)
     }
 
     private var baseFill: some ShapeStyle {
@@ -432,7 +419,7 @@ private struct AtriaIconChromeBackground: View {
                 Color(red: 0.086, green: 0.098, blue: 0.126).opacity(0.97)
             )
         }
-        return AnyShapeStyle(.ultraThinMaterial)
+        return AnyShapeStyle(Color.white.opacity(0.42))
     }
 
     @ViewBuilder

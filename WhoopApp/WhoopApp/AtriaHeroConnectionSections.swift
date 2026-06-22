@@ -156,7 +156,7 @@ private struct AtriaConnectedHeroPanel: View {
             AtriaHeroNextActionHost(heroStore: heroStore)
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 30, emphasis: .soft)
+        .atriaCard(cornerRadius: 30, emphasis: .soft)
     }
 }
 
@@ -228,7 +228,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
                 .equatable()
         }
         .padding(18)
-        .atriaQuietPanel(cornerRadius: 30, emphasis: .soft)
+        .atriaCard(cornerRadius: 30, emphasis: .soft)
     }
 }
 
@@ -412,7 +412,7 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .atriaInsetTile(cornerRadius: 17, tint: .green)
+        .atriaInsetCard(cornerRadius: 17, tint: .green)
     }
 }
 
@@ -542,7 +542,7 @@ private struct AtriaHeroNextActionRow: View, Equatable {
             .padding(.horizontal, 11)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .atriaInsetTile(cornerRadius: 15, tint: .cyan)
+            .atriaInsetCard(cornerRadius: 15, tint: .cyan)
     }
 }
 
@@ -595,7 +595,7 @@ private struct AtriaHeroMetricTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(compact ? 10 : 12)
-        .atriaInsetTile(cornerRadius: compact ? 16 : 18, tint: tint)
+        .atriaInsetCard(cornerRadius: compact ? 16 : 18, tint: tint)
     }
 }
 
@@ -633,7 +633,7 @@ private struct AtriaHeroStatusTile: View, Equatable {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .atriaInsetTile(cornerRadius: 18, tint: tint.opacity(0.65))
+        .atriaInsetCard(cornerRadius: 18, tint: tint.opacity(0.65))
     }
 }
 
@@ -892,7 +892,7 @@ private struct AtriaConnectionProgressStrip: View, Equatable {
             }
         }
         .padding(2)
-        .atriaQuietPanel(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(statusTint.opacity(0.14), lineWidth: 1)
@@ -922,7 +922,7 @@ private struct AtriaConnectionStepTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -985,7 +985,7 @@ private struct AtriaConnectionStatusCard: View, Equatable {
             Spacer(minLength: 0)
         }
         .padding(18)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -1023,6 +1023,6 @@ private struct AtriaConnectionChecklistCard: View, Equatable {
             }
         }
         .padding(18)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }

@@ -19,7 +19,7 @@ struct AtriaLoadingPanel: View, Equatable {
             Spacer(minLength: 0)
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -70,7 +70,7 @@ struct AtriaQuickTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
         .padding(12)
-        .atriaInsetTile(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: 16, tint: tint)
     }
 }
 
@@ -131,7 +131,7 @@ struct AtriaGuidanceCard: View, Equatable {
                 .foregroundStyle(.secondary)
             }
             .padding(12)
-            .atriaInsetTile(cornerRadius: 16, tint: tint)
+            .atriaInsetCard(cornerRadius: 16, tint: tint)
         }
     }
 
@@ -187,7 +187,7 @@ struct AtriaRecoveryMeter: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetTile(cornerRadius: 20, tint: .green)
+        .atriaInsetCard(cornerRadius: 20, tint: .green)
     }
 }
 
@@ -235,7 +235,7 @@ struct AtriaStrainMeter: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetTile(cornerRadius: 20, tint: .orange)
+        .atriaInsetCard(cornerRadius: 20, tint: .orange)
     }
 }
 
@@ -306,7 +306,7 @@ struct AtriaInlineQuickStat: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         .padding(10)
-        .atriaInsetTile(cornerRadius: 15, tint: .white)
+        .atriaInsetCard(cornerRadius: 15, tint: .white)
     }
 }
 
@@ -339,6 +339,6 @@ struct AtriaProfileStepperTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetTile(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(cornerRadius: 18, tint: .white)
     }
 }

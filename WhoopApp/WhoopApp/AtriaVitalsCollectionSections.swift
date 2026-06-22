@@ -222,18 +222,12 @@ private struct AtriaCollectionCaptureCardHost: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Group {
-                if #available(iOS 26, *) {
-                    GlassEffectContainer(spacing: 10) {
-                        captureActions
-                    }
-                } else {
-                    captureActions
-                }
+            GlassEffectContainer(spacing: 10) {
+                captureActions
             }
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -322,7 +316,7 @@ private struct AtriaCollectionRRReferenceCardHost: View {
             }
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -391,7 +385,7 @@ private struct AtriaCollectionHRReferenceCardHost: View {
             }
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -472,7 +466,7 @@ private struct AtriaCollectionControlsCardHost: View {
             .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
         }
         .padding(18)
-        .atriaQuietPanel()
+        .atriaCard()
     }
 }
 
@@ -505,7 +499,7 @@ private struct AtriaCollectionStatusCardHost: View {
             }
         }
         .padding(18)
-        .atriaQuietPanel()
+        .atriaCard()
     }
 
     @ViewBuilder
@@ -562,7 +556,7 @@ private struct AtriaPulseCard: View, Equatable {
             }
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -618,7 +612,7 @@ private struct AtriaHRVCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -636,11 +630,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Coach", subtitle: "Recovery and strain for today")
 
-            if #available(iOS 26, *) {
-                GlassEffectContainer(spacing: 12) {
-                    metricContent
-                }
-            } else {
+            GlassEffectContainer(spacing: 12) {
                 metricContent
             }
 
@@ -650,7 +640,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaGlassPanel(emphasis: .soft)
+        .atriaRaisedCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -705,7 +695,7 @@ private struct AtriaProfileCard: View, Equatable {
                 }
             }
             .padding(8)
-            .atriaGlassPanel(cornerRadius: 22, emphasis: .soft)
+            .atriaRaisedCard(cornerRadius: 22, emphasis: .soft)
 
             ViewThatFits {
                 HStack(spacing: 12) {
@@ -737,7 +727,7 @@ private struct AtriaProfileCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaGlassPanel(emphasis: .soft)
+        .atriaRaisedCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -807,7 +797,7 @@ private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
         .padding(14)
-        .atriaInsetTile(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(cornerRadius: 18, tint: .white)
     }
 }
 
@@ -842,6 +832,6 @@ private struct AtriaCollectionToggleCard: View {
                 .tint(tint)
         }
         .padding(14)
-        .atriaInsetTile(cornerRadius: 20, tint: tint)
+        .atriaInsetCard(cornerRadius: 20, tint: tint)
     }
 }

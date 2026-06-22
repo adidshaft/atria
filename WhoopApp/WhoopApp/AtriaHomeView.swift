@@ -397,7 +397,7 @@ struct AtriaHomeView: View {
             Spacer(minLength: 0)
         }
         .padding(18)
-        .atriaQuietPanel(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func handleRRImport(_ result: Result<[URL], Error>) {

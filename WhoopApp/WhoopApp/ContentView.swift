@@ -3917,14 +3917,9 @@ struct AtriaGlassToolbar<Content: View>: View {
         }
         .padding(8)
         .background {
-            if #available(iOS 26, *) {
-                Capsule(style: .continuous)
-                    .fill(backgroundGradient)
-                    .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
-            } else {
-                Capsule(style: .continuous)
-                    .fill(backgroundGradient)
-            }
+            Capsule(style: .continuous)
+                .fill(backgroundGradient)
+                .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
         }
         .overlay {
             Capsule(style: .continuous)

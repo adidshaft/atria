@@ -241,7 +241,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
             }
         }
         .padding(18)
-        .atriaQuietPanel(cornerRadius: 30, emphasis: .soft)
+        .atriaCard(cornerRadius: 30, emphasis: .soft)
     }
 }
 
@@ -361,7 +361,7 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
             AtriaGuidanceCard(guidance: hero.guidance, strain: hero.strain)
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -397,7 +397,7 @@ struct AtriaOverviewTrendSection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -489,7 +489,7 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -534,7 +534,7 @@ struct AtriaOverviewCollectionSection: View, Equatable {
                 .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 
     @ViewBuilder
@@ -572,7 +572,7 @@ private struct AtriaOverviewActionStrip: View {
             }
         }
         .padding(12)
-        .atriaInsetTile(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(cornerRadius: 18, tint: .white)
     }
 
     @ViewBuilder
@@ -629,7 +629,7 @@ struct AtriaOverviewBackupSection: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -682,7 +682,7 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -722,7 +722,7 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 }
 
@@ -762,7 +762,7 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaQuietPanel(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 
     @ViewBuilder
