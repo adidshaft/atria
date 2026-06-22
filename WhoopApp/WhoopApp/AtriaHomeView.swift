@@ -314,6 +314,23 @@ struct AtriaHomeView: View {
             withAnimation(.snappy(duration: 0.24)) {
                 selectedTab = .collection
             }
+        case .focus(let mode):
+            AtriaIntentCommandStore.persistFocusMode(mode)
+            let rest = model.homeStatsStore.state.restingHeartRate
+            let maxHR = model.profileStore.profile.maxHR
+            switch mode {
+            case .off:
+                ble.setLongWearModeEnabled(false, rest: rest, maxHR: maxHR)
+            case .workout:
+                ble.setCollectionProfile(.maxCoverage, rest: rest, maxHR: maxHR)
+                ble.setLongWearModeEnabled(true, rest: rest, maxHR: maxHR)
+            case .sleep:
+                ble.setCollectionProfile(.batterySaver, rest: rest, maxHR: maxHR)
+                ble.setLongWearModeEnabled(true, rest: rest, maxHR: maxHR)
+            }
+            withAnimation(.snappy(duration: 0.24)) {
+                selectedTab = .collection
+            }
         }
     }
 

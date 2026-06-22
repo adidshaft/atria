@@ -33,6 +33,23 @@ enum AtriaCaptureCommand: String, AppEnum, Codable {
     }
 }
 
+enum AtriaFocusMode: String, AppEnum, Codable {
+    case off
+    case workout
+    case sleep
+
+    static var typeDisplayName: LocalizedStringResource { "Atria Focus mode" }
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Atria Focus mode"
+
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] {
+        [
+            .off: "Off",
+            .workout: "Workout collection",
+            .sleep: "Sleep collection"
+        ]
+    }
+}
+
 struct OpenAtriaIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Atria"
     static let description = IntentDescription("Open Atria to a selected local dashboard.")
@@ -69,6 +86,56 @@ struct AtriaMetricsIntent: AppIntent {
         let hrv = snapshot.hrvRMSSD.map { "\($0) milliseconds" } ?? snapshot.hrvState
         let strain = String(format: "%.1f", snapshot.strain)
         return .result(dialog: "Recovery is \(recovery), strain is \(strain), and HRV is \(hrv).")
+    }
+}
+
+struct AtriaFocusFilterIntent: SetFocusFilterIntent {
+    static let title: LocalizedStringResource = "Atria collection"
+    static let description = IntentDescription("Automatically tune local Atria collection when a Focus is active.")
+    static let openAppWhenRun = false
+
+    @Parameter(title: "Mode")
+    var mode: AtriaFocusMode?
+
+    init() {
+        mode = .off
+    }
+
+    init(mode: AtriaFocusMode) {
+        self.mode = mode
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        switch resolvedMode {
+        case .off:
+            return DisplayRepresentation(title: "Atria off",
+                                         subtitle: "Do not change collection")
+        case .workout:
+            return DisplayRepresentation(title: "Workout collection",
+                                         subtitle: "Start low-radio live collection")
+        case .sleep:
+            return DisplayRepresentation(title: "Sleep collection",
+                                         subtitle: "Arm overnight low-radio collection")
+        }
+    }
+
+    static func suggestedFocusFilters(for context: FocusFilterSuggestionContext) async -> [AtriaFocusFilterIntent] {
+        [
+            AtriaFocusFilterIntent(mode: .workout),
+            AtriaFocusFilterIntent(mode: .sleep),
+            AtriaFocusFilterIntent(mode: .off)
+        ]
+    }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let mode = resolvedMode
+        AtriaIntentCommandStore.save(.focus(mode))
+        AtriaIntentCommandStore.persistFocusMode(mode)
+        return .result(dialog: "\(mode.dialogVerb) Atria collection.")
+    }
+
+    private var resolvedMode: AtriaFocusMode {
+        mode ?? .off
     }
 }
 
@@ -141,6 +208,7 @@ struct AtriaAppShortcuts: AppShortcutsProvider {
 enum AtriaIntentCommand: Codable, Equatable {
     case open(AtriaIntentDestination)
     case capture(AtriaCaptureCommand)
+    case focus(AtriaFocusMode)
 }
 
 enum AtriaIntentCommandStore {
@@ -163,6 +231,34 @@ enum AtriaIntentCommandStore {
         sharedDefaults?.removeObject(forKey: key)
         UserDefaults.standard.removeObject(forKey: key)
         return command
+    }
+
+    static func persistFocusMode(_ mode: AtriaFocusMode) {
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: WhoopBLEManager.CaptureDefaults.configured)
+        switch mode {
+        case .off:
+            defaults.set(false, forKey: WhoopBLEManager.LongWearDefaults.enabled)
+            defaults.set(false, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
+            defaults.set("focus_off", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+        case .workout:
+            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.enabled)
+            defaults.set(true, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
+            defaults.set("Workout Focus", forKey: WhoopBLEManager.LongWearDefaults.label)
+            defaults.set(WhoopBLEManager.CollectionProfile.maxCoverage.rawValue,
+                         forKey: WhoopBLEManager.CollectionProfileDefaults.profile)
+            defaults.set("focus_workout", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+        case .sleep:
+            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.enabled)
+            defaults.set(true, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
+            defaults.set("Sleep Focus", forKey: WhoopBLEManager.LongWearDefaults.label)
+            defaults.set(WhoopBLEManager.CollectionProfile.batterySaver.rawValue,
+                         forKey: WhoopBLEManager.CollectionProfileDefaults.profile)
+            defaults.set("focus_sleep", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+        }
     }
 }
 
@@ -196,6 +292,16 @@ private extension AtriaCaptureCommand {
         switch self {
         case .start: return "Starting"
         case .stop: return "Stopping"
+        }
+    }
+}
+
+private extension AtriaFocusMode {
+    var dialogVerb: String {
+        switch self {
+        case .off: return "Leaving"
+        case .workout: return "Starting workout"
+        case .sleep: return "Arming sleep"
         }
     }
 }
