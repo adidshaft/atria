@@ -528,13 +528,13 @@ private struct AtriaConnectionGuideSheet: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var guideTitle: String {
-        context.isFirstHandoff ? "One clean first handoff" : "Reconnect is already automatic"
+        context.isFirstHandoff ? "Connect your strap once" : "Reconnecting is automatic"
     }
 
     private var guideSubtitle: String {
         context.isFirstHandoff
-            ? "Disconnect the strap from WHOOP once, then Atria scans, connects, and keeps background logging armed on its own."
-            : "Atria already owns the strap, so this screen is mostly reassurance while it reconnects and resumes the live path."
+            ? "Disconnect the strap from WHOOP just once. After that, Atria finds it, connects, and keeps logging in the background on its own."
+            : "Atria is already connected to your strap, so there's nothing to do here — it's just reconnecting and picking your live data back up."
     }
 
     private var setupStateTitle: String {
@@ -557,9 +557,9 @@ private struct AtriaConnectionGuideSheet: View {
         case .connected:
             return "Atria has the strap and will keep reconnecting and logging automatically."
         case .connecting:
-            return "Keep the phone unlocked and the strap nearby while Atria finishes the first handoff."
+            return "Keep your phone unlocked and the strap nearby while Atria finishes connecting."
         case .scanning:
-            return "Atria is already scanning and will widen the search automatically if the first pass misses."
+            return "Atria is already searching and will widen the search on its own if the first pass misses."
         case .poweredOff:
             return "Turn Bluetooth back on, then Atria will resume the scan without extra steps."
         case .disconnected:
@@ -570,13 +570,13 @@ private struct AtriaConnectionGuideSheet: View {
     private var primaryButtonTitle: String {
         switch status {
         case .scanning, .connecting:
-            return "Keep setup running"
+            return "Keep searching"
         case .poweredOff:
             return "I turned Bluetooth on"
         case .connected:
             return "Continue"
         case .disconnected:
-            return "Keep automatic setup running"
+            return "Keep searching automatically"
         }
     }
 
@@ -612,12 +612,12 @@ private struct AtriaConnectionGuideSheet: View {
         }
 
         return [
-            AtriaConnectionGuideStep(title: "Leave Atria foregrounded",
-                                     detail: "Keep the phone unlocked for the current reconnect so the first live packets can settle cleanly.",
+            AtriaConnectionGuideStep(title: "Keep Atria on screen",
+                                     detail: "Keep your phone unlocked while it reconnects so your live data comes back cleanly.",
                                      systemImage: "iphone.radiowaves.left.and.right",
                                      tint: .blue),
-            AtriaConnectionGuideStep(title: "Wait through the retry",
-                                     detail: "Atria widens the search automatically before you need to force another scan.",
+            AtriaConnectionGuideStep(title: "Give it a moment",
+                                     detail: "Atria widens the search on its own before you need to scan again manually.",
                                      systemImage: "arrow.triangle.2.circlepath",
                                      tint: .orange),
             AtriaConnectionGuideStep(title: "Only free WHOOP if needed",
@@ -632,14 +632,14 @@ private struct AtriaConnectionGuideSheet: View {
             return [
                 "Atria starts scanning automatically as soon as Bluetooth is available.",
                 "If the first filtered scan misses, Atria widens the search on its own.",
-                "After the first takeover, reconnects and background checkpoints stay armed automatically."
+                "Once you've connected the first time, Atria reconnects and keeps saving your data automatically."
             ]
         }
 
         return [
-            "Atria resumes scanning and reconnect attempts automatically after drops.",
-            "You usually do not need to re-pair or revisit WHOOP after the first successful takeover.",
-            "Background checkpoints stay armed once the strap is back on Atria."
+            "If the connection drops, Atria starts searching and reconnecting on its own.",
+            "After the first time, you usually never need to re-pair or open WHOOP again.",
+            "Your data keeps saving in the background once the strap is back with Atria."
         ]
     }
 
@@ -720,7 +720,7 @@ private struct AtriaConnectionGuideSheet: View {
                         }
                     }
 
-                    Text("Atria keeps setup lightweight and switches to automatic reconnects after the first successful handoff.")
+                    Text("Setup is quick, and after the first connection Atria reconnects to your strap automatically.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
