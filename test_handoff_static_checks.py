@@ -95,6 +95,22 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in ["referenceValidatedRMSSD", "rmssdExported"]:
             assert_not_contains(self, text, needle)
 
+    def test_healthkit_rhr_and_respiratory_rate_export_use_correct_types(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "private var restingHeartRateType",
+            ".restingHeartRate",
+            "private var respiratoryRateType",
+            ".respiratoryRate",
+            "session.restingStable > 0",
+            "HKQuantitySample(type: restingHeartRateType",
+            "let respiratoryRate = session.respiratoryRate",
+            "HKQuantitySample(type: respiratoryRateType",
+            "HKUnit.count().unitDivided(by: .minute())",
+        ]:
+            assert_contains(self, text, needle)
+
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")
 
@@ -123,6 +139,56 @@ class HandoffStaticChecks(unittest.TestCase):
         ]
         for needle in required:
             assert_contains(self, text, needle)
+
+    def test_monetization_seam_exists_without_paywall_or_storekit(self):
+        app_text = all_swift_source()
+        entitlements = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaEntitlements.swift")
+
+        for needle in [
+            "struct AtriaEntitlements",
+            "enum Feature",
+            "enum Tier",
+            "case paidApp",
+            "case premium",
+            "EnvironmentValues",
+            "atriaEntitlements",
+        ]:
+            assert_contains(self, entitlements, needle)
+
+        for forbidden in [
+            "import StoreKit",
+            "Product.products",
+            "SubscriptionStoreView",
+            "StoreView",
+            "Purchase",
+        ]:
+            assert_not_contains(self, app_text, forbidden)
+
+    def test_background_task_plumbing_is_present(self):
+        app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
+        plist = source(ROOT / "WhoopApp" / "Info.plist")
+
+        for needle in [
+            "import BackgroundTasks",
+            "BGTaskScheduler.shared.register",
+            "BGAppRefreshTaskRequest",
+            "BGProcessingTaskRequest",
+            "requiresNetworkConnectivity = false",
+            "UIApplication.shared.beginBackgroundTask",
+            "ble.flushActiveSessionJournal(reason: reason)",
+            "store.performBackgroundMaintenance(reason: reason)",
+        ]:
+            assert_contains(self, app, needle)
+
+        for needle in [
+            "BGTaskSchedulerPermittedIdentifiers",
+            "com.adidshaft.atria.refresh",
+            "com.adidshaft.atria.processing",
+            "UIBackgroundModes",
+            "bluetooth-central",
+            "processing",
+        ]:
+            assert_contains(self, plist, needle)
 
 
 if __name__ == "__main__":

@@ -81,7 +81,9 @@ Evidence present:
   (`py_compile` plus `test_monitor_long_wear.py`).
 - `test_handoff_static_checks.sh` locks local source invariants for production
   strap-write blocking, restored-peripheral reuse, validated-only HRV export,
-  validate-later recovery display, native feature seams, and iOS 26 UI cleanup.
+  resting-HR/respiratory-rate HealthKit export, validate-later recovery display,
+  native feature seams, monetization seam/no-StoreKit scope, BG task plumbing,
+  and iOS 26 UI cleanup.
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 
