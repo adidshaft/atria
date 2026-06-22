@@ -814,7 +814,7 @@ struct ProfileOnboardingView: View {
                     .padding(.bottom, 124)
                 }
             }
-            .safeAreaInset(edge: .bottom) {
+            .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 10) {
                     Button("Use this profile") {
                         onComplete(draft)
@@ -825,9 +825,6 @@ struct ProfileOnboardingView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 16)
-                .background {
-                    ProfileOnboardingFooterBackground()
-                }
             }
         }
     }
@@ -977,32 +974,6 @@ private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
                     }
             )
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
-    }
-}
-
-private struct ProfileOnboardingFooterBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Rectangle()
-            .fill(
-                LinearGradient(colors: colorScheme == .dark
-                    ? [
-                        Color(red: 0.038, green: 0.045, blue: 0.060).opacity(0.96),
-                        Color(red: 0.020, green: 0.024, blue: 0.034).opacity(0.99)
-                    ]
-                    : [
-                        Color.white.opacity(0.94),
-                        Color(red: 0.92, green: 0.95, blue: 0.99).opacity(0.92)
-                    ],
-                               startPoint: .top,
-                               endPoint: .bottom)
-            )
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.18))
-                    .frame(height: 1)
-            }
     }
 }
 

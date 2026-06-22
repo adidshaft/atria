@@ -813,7 +813,7 @@ private struct AtriaConnectionGuideSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .background(AtriaBackdropLayer(isDark: true).ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
+            .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 10) {
                     ViewThatFits {
                         HStack(spacing: 10) {
@@ -844,7 +844,6 @@ private struct AtriaConnectionGuideSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 16)
-                .background(AtriaSheetFooterBackground())
             }
         }
     }

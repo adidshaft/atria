@@ -263,24 +263,6 @@ struct AtriaChecklistBadgeBackground: View {
     }
 }
 
-struct AtriaSheetFooterBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Rectangle()
-            .fill(
-                colorScheme == .dark
-                    ? AnyShapeStyle(Color(red: 0.040, green: 0.048, blue: 0.066).opacity(0.98))
-                    : AnyShapeStyle(Color(red: 0.965, green: 0.972, blue: 0.988).opacity(0.98))
-            )
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.14))
-                    .frame(height: 1)
-            }
-    }
-}
-
 extension View {
     @ViewBuilder
     func atriaRaisedCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
