@@ -61,14 +61,15 @@ struct WhoopAppApp: App {
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
-                        // alerts, and multitasking transitions. Delay persistence so
-                        // we avoid heavy writes unless the app actually stays away.
+                        // alerts, and multitasking transitions. Checkpoint the active
+                        // journal immediately, then delay the heavier store flush unless
+                        // the app actually stays away.
+                        ble.flushActiveSessionJournal(reason: "scene_inactive_checkpoint")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             guard !Task.isCancelled else { return }
                             guard scenePhase == .inactive else { return }
-                            ble.flushActiveSessionJournal(reason: "scene_inactive_deferred")
                             store.requestPersistenceFlush(reason: "scene_inactive_deferred")
                         }
                     case .active:

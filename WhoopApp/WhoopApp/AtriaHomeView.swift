@@ -234,22 +234,8 @@ struct AtriaHomeView: View {
             settings.save()
             refreshAICoachKeyState()
         }
-        .onReceive(model.coreLiveStore.$state) { _ in
+        .onReceive(liveSideEffectUpdates) { _ in
             updateLiveActivity()
-            updateHapticCoordinator()
-        }
-        .onReceive(model.pulseLiveStore.$state) { _ in
-            updateLiveActivity()
-            updateHapticCoordinator()
-        }
-        .onReceive(model.collectionLiveStore.$state) { _ in
-            updateLiveActivity()
-            updateHapticCoordinator()
-        }
-        .onReceive(mediaController.$state) { _ in
-            updateLiveActivity()
-        }
-        .onReceive(model.heroStore.$state) { _ in
             updateHapticCoordinator()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
@@ -269,6 +255,18 @@ struct AtriaHomeView: View {
 
     private var contentWidth: CGFloat {
         horizontalSizeClass == .regular ? 1120 : 720
+    }
+
+    private var liveSideEffectUpdates: AnyPublisher<Void, Never> {
+        Publishers.MergeMany([
+            model.coreLiveStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            model.pulseLiveStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            model.collectionLiveStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            model.heroStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            mediaController.$state.map { _ in () }.eraseToAnyPublisher()
+        ])
+        .throttle(for: .milliseconds(750), scheduler: RunLoop.main, latest: true)
+        .eraseToAnyPublisher()
     }
 
     private func scheduleOverviewDiagnosticsKickoff(reason: String,
