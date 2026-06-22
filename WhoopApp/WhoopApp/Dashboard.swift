@@ -179,6 +179,6 @@ struct DailyGuidanceCard: View {
             }
         }
         .padding()
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 }

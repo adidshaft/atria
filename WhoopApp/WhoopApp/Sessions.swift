@@ -8445,7 +8445,7 @@ struct HistoryView: View {
                                                description: Text("Finish a session to save it here."))
                             .frame(maxWidth: .infinity)
                             .padding(20)
-                            .background(AtriaQuietCardBackground())
+                            .atriaCard(cornerRadius: 22, emphasis: .soft)
                     } else {
                         historySection(title: "Trends", subtitle: "Saved readiness over time") {
                             TrendSummaryView(summaries: snapshot.trends)
@@ -8540,7 +8540,7 @@ struct HistoryView: View {
             }
         }
         .padding(18)
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 
     private func historySection<Content: View>(title: String,
@@ -8559,7 +8559,7 @@ struct HistoryView: View {
             content()
         }
         .padding(18)
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 
     private func historySessionRow(_ session: SavedSession) -> some View {
@@ -8589,7 +8589,7 @@ struct HistoryView: View {
             }
         }
         .padding(16)
-        .background(AtriaInsetSessionCardBackground())
+        .atriaInsetCard(cornerRadius: 22, tint: .white)
     }
 
     private func historySessionPill(_ label: String, value: String, tint: Color) -> some View {
@@ -8646,18 +8646,7 @@ private struct HistoryQuickStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(AtriaInsetSessionCardBackground())
-    }
-}
-
-private struct AtriaInsetSessionCardBackground: View {
-    var body: some View {
-        AtriaQuietCardBackground()
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.white.opacity(0.02))
-                    .padding(1)
-            }
+        .atriaInsetCard(cornerRadius: 22, tint: .white)
     }
 }
 
@@ -9045,7 +9034,7 @@ struct SessionDetail: View {
                     }
                     .frame(height: 220)
                     .padding()
-                    .background(AtriaQuietCardBackground())
+                    .atriaCard(cornerRadius: 22, emphasis: .soft)
 
                     HStack(spacing: 0) {
                         stat("Resting", session.resting)
@@ -9060,11 +9049,11 @@ struct SessionDetail: View {
                         .frame(maxWidth: .infinity)
                     }
                     .padding()
-                    .background(AtriaQuietCardBackground())
+                    .atriaCard(cornerRadius: 22, emphasis: .soft)
 
                     TimeInZoneView(session: session, maxHR: maxHR)
                         .padding()
-                        .background(AtriaQuietCardBackground())
+                        .atriaCard(cornerRadius: 22, emphasis: .soft)
                 }
                 .padding()
             }

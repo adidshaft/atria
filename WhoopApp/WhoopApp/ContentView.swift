@@ -112,7 +112,7 @@ private struct DailyEvidenceCard: View {
             }
         }
         .padding()
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
         .onAppear { log(summary: summary, reason: "appear") }
         .onReceive(store.$sessions) { _ in log(summary: makeSummary(), reason: "sessions_changed") }
     }
@@ -502,7 +502,7 @@ private struct CollectionReliabilityCard: View {
                 .minimumScaleFactor(0.78)
         }
         .padding()
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
         .onAppear { log(summary: summary, reason: "appear") }
         .onChange(of: ble.status) { _, _ in log(summary: makeSummary(), reason: "ble_status") }
         .onChange(of: ble.heartRate) { _, _ in log(summary: makeSummary(), reason: "hr") }
@@ -687,50 +687,6 @@ struct AtriaDashboardBackdrop: View {
     }
 }
 
-struct AtriaQuietCardBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(baseFill)
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(tintWash)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.28), lineWidth: 1)
-            }
-    }
-
-    private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                LinearGradient(colors: [
-                    Color(red: 0.070, green: 0.080, blue: 0.104).opacity(0.98),
-                    Color(red: 0.032, green: 0.040, blue: 0.058).opacity(0.96)
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-        }
-        return AnyShapeStyle(
-            LinearGradient(colors: [
-                Color.white.opacity(0.94),
-                Color(red: 0.93, green: 0.95, blue: 0.98).opacity(0.84)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-    }
-
-    private var tintWash: some ShapeStyle {
-        AnyShapeStyle(
-            LinearGradient(colors: [
-                Color.white.opacity(colorScheme == .dark ? 0.05 : 0.14),
-                colorScheme == .dark ? Color.cyan.opacity(0.035) : Color.blue.opacity(0.04),
-                Color.clear
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-    }
-}
-
 struct ProfileOnboardingView: View {
     @State private var draft: AthleteProfile
     let onComplete: (AthleteProfile) -> Void
@@ -783,7 +739,7 @@ struct ProfileOnboardingView: View {
                             }
                         }
                         .padding(18)
-                        .background(AtriaQuietCardBackground())
+                        .atriaCard(cornerRadius: 22, emphasis: .soft)
 
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(alignment: .firstTextBaseline) {
@@ -806,7 +762,7 @@ struct ProfileOnboardingView: View {
                             }
                         }
                         .padding(18)
-                        .background(AtriaQuietCardBackground())
+                        .atriaCard(cornerRadius: 22, emphasis: .soft)
                     }
 
                     .padding(.horizontal, 20)
@@ -846,7 +802,7 @@ struct ProfileOnboardingView: View {
             }
         }
         .padding(8)
-        .background(AtriaQuietCardBackground())
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 
     private func onboardingStepperCard(title: String,
@@ -983,7 +939,7 @@ private struct ProfileOnboardingStepperButtonStyle: ButtonStyle {
             .font(.headline.weight(.semibold))
             .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.88 : 1))
             .padding(.vertical, 10)
-            .background(AtriaQuietCardBackground())
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }
