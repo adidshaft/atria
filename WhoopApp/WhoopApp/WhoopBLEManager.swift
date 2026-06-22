@@ -3245,43 +3245,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             return
         }
         persistActiveSessionJournalIfNeeded(reason: "rr_presence_watchdog_checkpoint", force: true)
-        let shouldReconnect = (recoveryStatus == "segment_hr_only" && consecutive >= 2)
-            || (recoveryStatus == "hr_only" && !rrArchive.isEmpty)
-            || (recoveryStatus == "current_rr_gap" && consecutive >= 4)
-            || (recoveryStatus != "segment_hr_only" && recoveryStatus != "current_rr_gap" && consecutive >= 2)
         let action: String
-        if shouldReconnect, let peripheral {
-            action = "fresh_scan_reconnect"
-            persistRRPresenceWatchdogResult(status: recoveryStatus,
-                                            action: action,
-                                            rrGap: rrGap,
-                                            acceptedGap: acceptedGap,
-                                            timeout: timeout,
-                                            samples: session.count,
-                                            rrValues: rrArchive.count,
-                                            consecutive: consecutive,
-                                            label: label)
-            persistWatchdogRecovery(source: "rr_presence",
-                                    status: recoveryStatus,
-                                    action: action,
-                                    rawGap: rrGap,
-                                    acceptedGap: acceptedGap,
-                                    samples: session.count,
-                                    checkpoint: "journal_saved")
-            WHOOPDebugLog("WHOOPDBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=%@ hrv_policy=learning_only label=%@",
-                  recoveryStatus,
-                  rrGap,
-                  acceptedGap,
-                  timeout,
-                  session.count,
-                  rrArchive.count,
-                  consecutive,
-                  action,
-                  label)
-            requestFreshScanReconnect(peripheral: peripheral, reason: "rr_presence_watchdog")
-            return
-        }
-
         guard let peripheral, let characteristic = heartRateCharacteristic else {
             if let peripheral, peripheral.state == .connected {
                 lastMissingHeartRateDiscoveryAt = Date()
