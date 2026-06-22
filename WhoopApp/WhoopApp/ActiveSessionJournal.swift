@@ -175,9 +175,13 @@ enum ActiveSessionJournal {
         ioLock.lock()
         defer { ioLock.unlock() }
         try FileManager.default.createDirectory(at: segmentDirectoryURL, withIntermediateDirectories: true)
-        let existing = loadSegmentedRecord()
-        let sameSession = existing?.id == record.id
-        if !sameSession {
+        var existing = loadSegmentedRecord()
+        var sameSession = existing?.id == record.id
+        if sameSession, let replayed = existing, !recordAppends(to: replayed, with: record) {
+            clearSegmentFiles()
+            existing = nil
+            sameSession = false
+        } else if !sameSession {
             clearSegmentFiles()
         }
         let existingSampleCount = sameSession ? min(existing?.samples.count ?? 0, record.samples.count) : 0
@@ -274,6 +278,27 @@ enum ActiveSessionJournal {
             record.maxAcceptedHRGap = segment.maxAcceptedHRGap
         }
         return record
+    }
+
+    private static func recordAppends(to existing: ActiveSessionJournalRecord,
+                                      with record: ActiveSessionJournalRecord) -> Bool {
+        guard existing.samples.count <= record.samples.count,
+              (existing.rrSamples ?? []).count <= (record.rrSamples ?? []).count else {
+            return false
+        }
+        for index in existing.samples.indices {
+            let lhs = existing.samples[index]
+            let rhs = record.samples[index]
+            guard lhs.t == rhs.t, lhs.bpm == rhs.bpm else { return false }
+        }
+        let existingRR = existing.rrSamples ?? []
+        let recordRR = record.rrSamples ?? []
+        for index in existingRR.indices {
+            let lhs = existingRR[index]
+            let rhs = recordRR[index]
+            guard lhs.t == rhs.t, lhs.ms == rhs.ms else { return false }
+        }
+        return true
     }
 
     private static func loadSegments() -> [ActiveSessionJournalSegment] {
