@@ -2790,6 +2790,7 @@ final class SessionStore: ObservableObject {
     }
 
     func completeOnboardingFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard AtriaDeveloperMode.isEnabled else { return }
         guard arguments.contains("--whoop-complete-onboarding") else { return }
         completeOnboarding(with: profile)
     }

@@ -10,7 +10,8 @@ struct ContentView: View {
         AtriaHomeContainer(ble: ble, store: store)
             .equatable()
             .onAppear {
-                let debugCompletesOnboarding = ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
+                let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
+                    && ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
                 showOnboarding = !store.profile.hasCompletedOnboarding && !debugCompletesOnboarding
             }
             .sheet(isPresented: $showOnboarding) {

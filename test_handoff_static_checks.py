@@ -229,6 +229,8 @@ class HandoffStaticChecks(unittest.TestCase):
         developer_mode = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaDeveloperMode.swift")
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
         collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
 
         for needle in [
             "enum AtriaDeveloperMode",
@@ -261,6 +263,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaInlineQuickStat(label: \"RR package\"",
         ]:
             assert_not_contains(self, collection, forbidden)
+
+        assert_contains(self, content, "let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled")
+        assert_contains(self, content, "&& ProcessInfo.processInfo.arguments.contains(\"--whoop-complete-onboarding\")")
+        assert_contains(self, sessions, "func completeOnboardingFromLaunchIfRequested")
+        assert_contains(self, sessions, "guard AtriaDeveloperMode.isEnabled else { return }\n        guard arguments.contains(\"--whoop-complete-onboarding\") else { return }")
 
     def test_live_activity_uses_end_user_reading_language(self):
         app_attributes = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityAttributes.swift")
