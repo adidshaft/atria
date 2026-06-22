@@ -209,6 +209,7 @@ folder and fill it only from measured iPhone 15 Pro results. The audit requires:
 - A recorded Instruments trace path, and the referenced trace artifact must
   exist in the evidence folder.
 - Measurement provenance: `measured_at`, `app_commit`, and `app_build`.
+  `measured_at` must be an ISO-8601 UTC timestamp ending in `Z`, and
   `app_commit` must match the repository commit being audited.
 
 Then run:

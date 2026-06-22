@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -65,6 +66,16 @@ def current_git_commit(repo: Path) -> str:
     except (OSError, subprocess.CalledProcessError):
         return ""
     return result.stdout.strip()
+
+
+def is_utc_timestamp(value: str) -> bool:
+    if not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError:
+        return False
+    return parsed.tzinfo == timezone.utc
 
 
 def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
@@ -239,6 +250,8 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
     measured_at = str(data.get("measured_at", "")).strip()
     if not measured_at:
         blockers.append("missing_measured_at")
+    elif not is_utc_timestamp(measured_at):
+        blockers.append("invalid_measured_at")
 
     app_commit = str(data.get("app_commit", "")).strip()
     if not app_commit:

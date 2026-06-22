@@ -318,6 +318,30 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("missing_instruments_trace_file", report["blockers"])
         self.assertFalse(report["accessibility_performance"]["instruments_trace_exists"])
 
+    def test_accessibility_performance_measured_at_must_be_utc_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            data = json.loads(accessibility.read_text(encoding="utf-8"))
+            data["measured_at"] = "June 22"
+            accessibility.write_text(json.dumps(data), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "fail")
+        self.assertIn("invalid_measured_at", report["blockers"])
+
     def test_accessibility_performance_app_commit_must_match_repo_head(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

@@ -12,5 +12,5 @@
   "measured_at": "",
   "app_commit": "",
   "app_build": "",
-  "notes": "Fill this from a physical-device accessibility pass and Instruments dashboard scroll trace. Keep false/0/empty values until measured."
+  "notes": "Fill this from a physical-device accessibility pass and Instruments dashboard scroll trace. measured_at must be an ISO-8601 UTC timestamp ending in Z. Keep false/0/empty values until measured."
 }
