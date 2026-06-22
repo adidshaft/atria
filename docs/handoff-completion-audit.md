@@ -84,6 +84,10 @@ Evidence present:
   resting-HR/respiratory-rate HealthKit export, validate-later recovery display,
   native feature seams, monetization seam/no-StoreKit scope, BG task plumbing,
   and iOS 26 UI cleanup.
+- `tools/audit_handoff_status.py` summarizes local artifacts and long-wear
+  monitor summaries into a conservative `complete` / `not_complete` result.
+- `test_audit_handoff_status.sh` verifies that failed or missing physical
+  acceptance evidence cannot be reported as complete.
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 

@@ -112,6 +112,7 @@ Fast local tooling checks:
 ```sh
 ./test_monitor_long_wear.sh
 ./test_handoff_static_checks.sh
+./test_audit_handoff_status.sh
 ```
 
 Long-wear acceptance, when extended physical-device checks are allowed:
@@ -127,6 +128,12 @@ That monitor is non-invasive: it uses `live_device_debug.sh --pull-only` to samp
 sessions and the active journal without relaunching Atria. The handoff is not
 accepted until the final summary reports `acceptance_status=pass` and
 `acceptance_blockers=none`.
+
+To summarize the current handoff evidence without running the device:
+
+```sh
+python3 tools/audit_handoff_status.py
+```
 
 ## Repository Layout
 
