@@ -88,6 +88,21 @@ def run_pull(repo: Path, device_id: str, out_dir: Path, log_path: Path) -> tuple
     return result.returncode, result.stdout
 
 
+def current_git_commit(repo: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "missing"
+    return result.stdout.strip()
+
+
 def value_from(args: argparse.Namespace, name: str) -> object:
     preset = PRESETS.get(args.preset, {})
     value = getattr(args, name)
@@ -252,6 +267,7 @@ def main() -> int:
     jsonl_path = out_root / "samples.jsonl"
     summary_path = out_root / "summary.json"
     samples: list[dict[str, object]] = []
+    monitor_started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     for index in range(samples_count):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -290,6 +306,9 @@ def main() -> int:
     final["planned_samples"] = samples_count
     final["planned_interval_s"] = interval_seconds
     final["planned_duration_s"] = max(0, samples_count - 1) * interval_seconds
+    final["monitor_started_at"] = monitor_started_at
+    final["monitor_finished_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    final["app_commit"] = current_git_commit(repo)
     final["out_dir"] = str(out_root)
     final["jsonl"] = str(jsonl_path)
     summary_path.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")

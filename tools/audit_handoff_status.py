@@ -130,6 +130,22 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
     diagnostics = data.get("acceptance_diagnostics", {})
     if not isinstance(diagnostics, dict) or not diagnostics:
         diagnostics = synthesized_long_wear_diagnostics(data, criteria)
+    app_commit = str(data.get("app_commit", "")).strip()
+    expected_commit = current_git_commit(repo)
+    if not app_commit:
+        audit_blockers.append("missing_long_wear_app_commit")
+    elif expected_commit and app_commit != expected_commit:
+        audit_blockers.append("long_wear_app_commit_mismatch")
+    monitor_started_at = str(data.get("monitor_started_at", "")).strip()
+    if not monitor_started_at:
+        audit_blockers.append("missing_long_wear_monitor_started_at")
+    elif not is_utc_timestamp(monitor_started_at):
+        audit_blockers.append("invalid_long_wear_monitor_started_at")
+    monitor_finished_at = str(data.get("monitor_finished_at", "")).strip()
+    if not monitor_finished_at:
+        audit_blockers.append("missing_long_wear_monitor_finished_at")
+    elif not is_utc_timestamp(monitor_finished_at):
+        audit_blockers.append("invalid_long_wear_monitor_finished_at")
 
     return {
         "status": "pass" if acceptance_status == "pass" and not audit_blockers else "fail",
@@ -145,6 +161,10 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "preset": data.get("preset", criteria.get("preset", "missing")),
         "planned_samples": data.get("planned_samples", "missing"),
         "planned_duration_s": data.get("planned_duration_s", "missing"),
+        "app_commit": app_commit or "missing",
+        "expected_app_commit": expected_commit or "missing",
+        "monitor_started_at": monitor_started_at or "missing",
+        "monitor_finished_at": monitor_finished_at or "missing",
     }
 
 

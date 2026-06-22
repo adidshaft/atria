@@ -35,6 +35,9 @@ def write_passing_long_wear_summary(path: Path) -> None:
         "battery_delta": -12,
         "latest_recent_session_span_s": 30_000.0,
         "latest_recent_session_coverage_percent": 91.0,
+        "app_commit": current_test_commit(path),
+        "monitor_started_at": "2026-06-22T00:00:00Z",
+        "monitor_finished_at": "2026-06-22T10:00:00Z",
     }), encoding="utf-8")
 
 
@@ -159,6 +162,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("overnight_preset", report["blockers"])
         self.assertIn("overnight_planned_duration", report["blockers"])
         self.assertIn("overnight_min_span", report["blockers"])
+        self.assertIn("missing_long_wear_app_commit", report["blockers"])
 
     def test_missing_long_wear_diagnostics_are_synthesized(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,6 +200,34 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(diagnostics["session_coverage"]["observed_percent"], 50.0)
         self.assertEqual(diagnostics["thermal"]["observed"], ["serious"])
         self.assertFalse(diagnostics["thermal"]["ok"])
+        self.assertIn("missing_long_wear_app_commit", report["blockers"])
+        self.assertIn("missing_long_wear_monitor_started_at", report["blockers"])
+        self.assertIn("missing_long_wear_monitor_finished_at", report["blockers"])
+
+    def test_long_wear_app_commit_must_match_repo_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            touch(repo, Path("tracked.txt"))
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            data = json.loads(summary.read_text(encoding="utf-8"))
+            data["app_commit"] = "0" * 40
+            summary.write_text(json.dumps(data), encoding="utf-8")
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["physical_long_wear"]["status"], "fail")
+        self.assertIn("long_wear_app_commit_mismatch", report["blockers"])
 
     def test_external_reference_can_be_explicitly_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
