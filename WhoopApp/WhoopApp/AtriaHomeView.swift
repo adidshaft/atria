@@ -1767,6 +1767,8 @@ final class AtriaHomeModel {
             value = "\(validated)"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             value = "\(Int(snapshot.rmssd.rounded()))"
+        } else if let local = store.latestLocalRMSSD {
+            value = "\(local)"
         } else {
             value = "Learning"
         }
@@ -1775,6 +1777,8 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             detail = "validated"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
+            detail = "personal baseline"
+        } else if store.latestLocalRMSSD != nil {
             detail = "personal baseline"
         } else {
             detail = ble.hrvQuality
@@ -1785,6 +1789,8 @@ final class AtriaHomeModel {
             narrative = "Validated HRV is ready from your reference import."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             narrative = "The live RR window is ready; this is your own unverified RMSSD until an optional reference check passes."
+        } else if store.latestLocalRMSSD != nil {
+            narrative = "Saved local RMSSD is ready as personal-baseline HRV; an optional reference check can promote it."
         } else {
             narrative = "Atria keeps the live RR window light while the connection settles."
         }
@@ -1794,6 +1800,8 @@ final class AtriaHomeModel {
             packageText = "Validated"
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             packageText = "Unverified"
+        } else if store.latestLocalRMSSD != nil {
+            packageText = "Personal"
         } else {
             packageText = "Learning"
         }
