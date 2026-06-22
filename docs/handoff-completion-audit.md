@@ -224,6 +224,18 @@ python3 tools/audit_handoff_status.py --skip-external-reference
 Use `--accessibility-performance <summary.json>` only when checking an
 alternate measured evidence file.
 
+To prefill the current commit/build provenance without creating passing
+evidence, run:
+
+```sh
+python3 tools/prepare_accessibility_performance_evidence.py
+```
+
+This writes `docs/evidence/accessibility-performance/summary.draft.json`.
+Rename it to `summary.json` only after the iPhone 15 Pro accessibility pass and
+Instruments dashboard scroll trace have been measured and the false/zero fields
+have been replaced with real results.
+
 ## Final Summary Rule
 
 Do not claim the handoff is complete until:
