@@ -386,6 +386,55 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let motionValidated: Bool
 }
 
+struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
+    enum Tag: String, Codable, CaseIterable, Identifiable {
+        case sleep
+        case alcohol
+        case caffeine
+        case training
+        case stress
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .sleep: return "Sleep"
+            case .alcohol: return "Alcohol"
+            case .caffeine: return "Caffeine"
+            case .training: return "Training"
+            case .stress: return "Stress"
+            }
+        }
+    }
+
+    let id: String
+    let day: Date
+    let createdAt: Date
+    var tags: [Tag]
+}
+
+struct BehaviorCorrelationSummary: Equatable {
+    let tag: BehaviorJournalEntry.Tag
+    let days: Int
+    let recoveryDelta: Double?
+    let hrvDelta: Double?
+
+    var recoveryText: String {
+        recoveryDelta.map { String(format: "%+.0f%%", $0) } ?? "Learning"
+    }
+
+    var hrvText: String {
+        hrvDelta.map { String(format: "%+.0f ms", $0) } ?? "Learning"
+    }
+
+    var detail: String {
+        guard recoveryDelta != nil || hrvDelta != nil else {
+            return "\(days) tagged days"
+        }
+        return "\(days) tagged days · local correlation"
+    }
+}
+
 struct GateEWorkoutTrainingStatus: Equatable {
     let present: Bool
     let confirmedID: String
@@ -1887,6 +1936,7 @@ final class SessionStore: ObservableObject {
     private var cachedLatestReferenceValidatedHRV: Int?
     private var cachedConfirmedWorkouts: [UserConfirmedWorkout]
     private var cachedConfirmedSleeps: [UserConfirmedSleep]
+    private var cachedBehaviorJournalEntries: [BehaviorJournalEntry]
     private var cachedSessionBackupStatus: SessionBackupStatus
     private var cachedCanonicalSessions: [SavedSession]
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
@@ -1900,6 +1950,10 @@ final class SessionStore: ObservableObject {
 
     private enum ConfirmedSleepDefaults {
         static let key = "atria.confirmedSleeps.v1"
+    }
+
+    private enum BehaviorJournalDefaults {
+        static let key = "atria.behaviorJournal.v1"
     }
 
     private enum ExternalReferenceDefaults {
@@ -1927,6 +1981,7 @@ final class SessionStore: ObservableObject {
     init() {
         self.cachedConfirmedWorkouts = Self.readConfirmedWorkouts()
         self.cachedConfirmedSleeps = Self.readConfirmedSleeps()
+        self.cachedBehaviorJournalEntries = Self.readBehaviorJournalEntries()
         self.cachedSessionBackupStatus = .missing
         self.cachedLatestReferenceValidatedHRV = nil
         self.cachedCanonicalSessions = []
@@ -1947,6 +2002,10 @@ final class SessionStore: ObservableObject {
 
     var confirmedSleeps: [UserConfirmedSleep] {
         cachedConfirmedSleeps
+    }
+
+    var behaviorJournalEntries: [BehaviorJournalEntry] {
+        cachedBehaviorJournalEntries
     }
 
     private func refreshSessionDerivedCaches() {
@@ -4523,6 +4582,98 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
         cachedConfirmedSleeps = sorted
+    }
+
+    func behaviorJournalEntry(for day: Date = Date(), calendar: Calendar = .current) -> BehaviorJournalEntry {
+        let start = calendar.startOfDay(for: day)
+        if let entry = cachedBehaviorJournalEntries.first(where: { calendar.isDate($0.day, inSameDayAs: start) }) {
+            return entry
+        }
+        return BehaviorJournalEntry(id: behaviorJournalID(for: start),
+                                    day: start,
+                                    createdAt: Date(),
+                                    tags: [])
+    }
+
+    func toggleBehaviorTag(_ tag: BehaviorJournalEntry.Tag, day: Date = Date(), calendar: Calendar = .current) {
+        var entry = behaviorJournalEntry(for: day, calendar: calendar)
+        if entry.tags.contains(tag) {
+            entry.tags.removeAll { $0 == tag }
+        } else {
+            entry.tags.append(tag)
+        }
+        entry.tags.sort { $0.rawValue < $1.rawValue }
+
+        var entries = cachedBehaviorJournalEntries.filter { !calendar.isDate($0.day, inSameDayAs: entry.day) }
+        if !entry.tags.isEmpty {
+            entries.append(entry)
+        }
+        saveBehaviorJournalEntries(entries)
+        dashboardRevision += 1
+        WHOOPDebugLog("WHOOPDBG behavior_journal status=updated day=%@ tag=%@ active=%d tags=%@ local_only=1",
+              isoString(entry.day),
+              tag.rawValue,
+              entry.tags.contains(tag) ? 1 : 0,
+              entry.tags.map(\.rawValue).joined(separator: ","))
+    }
+
+    func behaviorCorrelationSummaries(rest: Int,
+                                      maxHR: Int,
+                                      calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
+        let rollupsByDay = Dictionary(uniqueKeysWithValues: dailyRollups(rest: rest, maxHR: maxHR, calendar: calendar).map {
+            (calendar.startOfDay(for: $0.day), $0)
+        })
+        guard !rollupsByDay.isEmpty else {
+            return BehaviorJournalEntry.Tag.allCases.map {
+                BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
+            }
+        }
+        let allRecovery = averageDouble(rollupsByDay.values.map(\.strain).map { max(0, 100 - $0 * 4) })
+        let allHRV = averageDouble(rollupsByDay.values.compactMap { $0.avgHRV.map(Double.init) })
+
+        return BehaviorJournalEntry.Tag.allCases.map { tag in
+            let taggedRollups = cachedBehaviorJournalEntries.compactMap { entry -> DailyRollup? in
+                guard entry.tags.contains(tag) else { return nil }
+                return rollupsByDay[calendar.startOfDay(for: entry.day)]
+            }
+            let taggedRecovery = averageDouble(taggedRollups.map(\.strain).map { max(0, 100 - $0 * 4) })
+            let taggedHRV = averageDouble(taggedRollups.compactMap { $0.avgHRV.map(Double.init) })
+            let recoveryDelta: Double?
+            if taggedRollups.count >= 3, let taggedRecovery, let allRecovery {
+                recoveryDelta = taggedRecovery - allRecovery
+            } else {
+                recoveryDelta = nil
+            }
+            let hrvDelta: Double?
+            if taggedRollups.count >= 3, let taggedHRV, let allHRV {
+                hrvDelta = taggedHRV - allHRV
+            } else {
+                hrvDelta = nil
+            }
+            return BehaviorCorrelationSummary(tag: tag,
+                                              days: taggedRollups.count,
+                                              recoveryDelta: recoveryDelta,
+                                              hrvDelta: hrvDelta)
+        }
+    }
+
+    private static func readBehaviorJournalEntries() -> [BehaviorJournalEntry] {
+        guard let data = UserDefaults.standard.data(forKey: BehaviorJournalDefaults.key),
+              let decoded = try? JSONDecoder().decode([BehaviorJournalEntry].self, from: data) else {
+            return []
+        }
+        return decoded.sorted { $0.day > $1.day }
+    }
+
+    private func saveBehaviorJournalEntries(_ entries: [BehaviorJournalEntry]) {
+        let sorted = entries.sorted(by: { $0.day > $1.day })
+        guard let data = try? JSONEncoder().encode(sorted) else { return }
+        UserDefaults.standard.set(data, forKey: BehaviorJournalDefaults.key)
+        cachedBehaviorJournalEntries = sorted
+    }
+
+    private func behaviorJournalID(for day: Date) -> String {
+        "\(Int(day.timeIntervalSince1970.rounded()))-behavior"
     }
 
     private func confirmedSleepID(start: Date, end: Date, source: String) -> String {

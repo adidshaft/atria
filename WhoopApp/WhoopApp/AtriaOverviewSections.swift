@@ -6,6 +6,7 @@ struct AtriaOverviewTabContent: View {
     let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
+    let store: SessionStore
     let hasUnlockedSecondarySections: Bool
     let horizontalSizeClass: UserInterfaceSizeClass?
     let connectionContext: AtriaConnectionGuideContext
@@ -29,6 +30,7 @@ struct AtriaOverviewTabContent: View {
                 LazyVStack(spacing: 18) {
                     AtriaOverviewLeadingHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore,
+                                             store: store,
                                              hasUnlockedSecondarySections: false)
                     AtriaLoadingPanel(title: "Preparing saved insights",
                                       subtitle: "Trend, backup, and collection summaries join after the first live dashboard settles.")
@@ -38,6 +40,7 @@ struct AtriaOverviewTabContent: View {
                     LazyVStack(spacing: 18) {
                         AtriaOverviewLeadingHost(heroStore: heroStore,
                                                  snapshotStore: snapshotStore,
+                                                 store: store,
                                                  hasUnlockedSecondarySections: hasUnlockedSecondarySections)
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -55,6 +58,7 @@ struct AtriaOverviewTabContent: View {
                 LazyVStack(spacing: 18) {
                     AtriaOverviewLeadingHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore,
+                                             store: store,
                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections)
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
@@ -248,11 +252,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
 private struct AtriaOverviewLeadingHost: View {
     let heroStore: AtriaHomeModel.HeroStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
+    let store: SessionStore
     let hasUnlockedSecondarySections: Bool
 
     var body: some View {
         AtriaOverviewLeadingSection(heroStore: heroStore,
                                     snapshotStore: snapshotStore,
+                                    store: store,
                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections)
     }
 }
@@ -276,6 +282,7 @@ private struct AtriaOverviewTrailingHost: View {
 struct AtriaOverviewLeadingSection: View {
     let heroStore: AtriaHomeModel.HeroStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
+    let store: SessionStore
     let hasUnlockedSecondarySections: Bool
 
     var body: some View {
@@ -286,6 +293,8 @@ struct AtriaOverviewLeadingSection: View {
             AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
 
             if hasUnlockedSecondarySections {
+                AtriaOverviewBehaviorJournalSection(store: store)
+
                 if snapshotStore.diagnosticsReady {
                     AtriaOverviewTrendSectionHost(snapshotStore: snapshotStore)
                 } else {
@@ -398,6 +407,94 @@ struct AtriaOverviewTrendSection: View, Equatable {
         }
         .padding(16)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+struct AtriaOverviewBehaviorJournalSection: View {
+    @ObservedObject var store: SessionStore
+
+    private var todayEntry: BehaviorJournalEntry {
+        store.behaviorJournalEntry()
+    }
+
+    private var summaries: [BehaviorCorrelationSummary] {
+        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? 60
+        return store.behaviorCorrelationSummaries(rest: rest, maxHR: store.profile.maxHR)
+            .filter { $0.days > 0 }
+            .sorted { lhs, rhs in
+                if lhs.days != rhs.days { return lhs.days > rhs.days }
+                return lhs.tag.rawValue < rhs.tag.rawValue
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Journal", subtitle: "Tag today and learn local patterns")
+
+                Spacer(minLength: 0)
+
+                AtriaStatusChip(text: todayEntry.tags.isEmpty ? "empty" : "\(todayEntry.tags.count) tags",
+                                systemImage: "tag.fill",
+                                tint: todayEntry.tags.isEmpty ? .gray : .purple)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(BehaviorJournalEntry.Tag.allCases) { tag in
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            store.toggleBehaviorTag(tag)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: todayEntry.tags.contains(tag) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(todayEntry.tags.contains(tag) ? .purple : .secondary)
+                            Text(tag.label)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.78)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 9)
+                        .padding(.horizontal, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(AtriaSegmentButtonStyle(selected: todayEntry.tags.contains(tag)))
+                }
+            }
+
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    correlationTiles
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    correlationTiles
+                }
+            }
+
+            Text("Correlations are computed only on this device and stay in learning mode until a tag has at least three matching days.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+
+    @ViewBuilder
+    private var correlationTiles: some View {
+        let visible = Array(summaries.prefix(2))
+        if visible.isEmpty {
+            AtriaInlineQuickStat(label: "Tagged days", value: "\(store.behaviorJournalEntries.count)")
+            AtriaInlineQuickStat(label: "Pattern", value: "Learning")
+        } else {
+            ForEach(visible, id: \.tag) { summary in
+                AtriaInlineQuickStat(label: summary.tag.label,
+                                     value: summary.recoveryText,
+                                     detail: summary.detail)
+            }
+        }
     }
 }
 

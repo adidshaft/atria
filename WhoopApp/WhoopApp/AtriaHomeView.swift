@@ -335,6 +335,7 @@ struct AtriaHomeView: View {
                                 heroStore: model.heroStore,
                                 homeStatsStore: model.homeStatsStore,
                                 snapshotStore: model.snapshotStore,
+                                store: store,
                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                 horizontalSizeClass: horizontalSizeClass,
                                 connectionContext: connectionGuideContext,
