@@ -57,6 +57,10 @@ private final class PowerThermalGovernor {
         mode == .critical
     }
 
+    var shouldDeferNonEssentialAnalysis: Bool {
+        mode == .serious || mode == .critical
+    }
+
     private func refresh(notify: Bool) {
         let next = Self.mode(thermalState: ProcessInfo.processInfo.thermalState,
                              lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
@@ -2512,6 +2516,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             var lastCheckpointAt = Date()
             var lastDiagnosticAt = Date()
             var lastAutoSaveAt = Date()
+            var lastThermalAnalysisDeferralLogAt: Date?
+            var lastThermalCheckpointDeferralLogAt: Date?
             var lastHRContinuityActionAt: Date?
             var lastRRPresenceActionAt: Date?
             while !Task.isCancelled {
@@ -2524,12 +2530,38 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 let cadenceMultiplier = powerThermalGovernor.cadenceMultiplier
 
                 if now.timeIntervalSince(lastCheckpointAt) >= config.checkpointInterval * cadenceMultiplier {
-                    runLongWearSupervisorCheckpoint(index: checkpointIndex, label: config.label)
+                    if powerThermalGovernor.shouldSuspendNonEssentialWork {
+                        persistActiveSessionJournalIfNeeded(reason: "thermal_critical_minimal_checkpoint", force: true)
+                        if lastThermalCheckpointDeferralLogAt.map({ now.timeIntervalSince($0) >= 300 }) ?? true {
+                            lastThermalCheckpointDeferralLogAt = now
+                            WHOOPDebugLog("WHOOPDBG long_wear_supervisor thermal_checkpoint_deferral status=minimal_journal_only mode=%@ multiplier=%.1f samples=%d label=%@",
+                                  powerThermalGovernor.mode.rawValue,
+                                  cadenceMultiplier,
+                                  session.count,
+                                  config.label)
+                        }
+                    } else {
+                        runLongWearSupervisorCheckpoint(index: checkpointIndex, label: config.label)
+                    }
                     checkpointIndex += 1
                     lastCheckpointAt = now
                 }
 
-                if now.timeIntervalSince(lastDiagnosticAt) >= config.diagnosticInterval * cadenceMultiplier {
+                let deferSessionAnalysis = powerThermalGovernor.shouldDeferNonEssentialAnalysis
+                if deferSessionAnalysis,
+                   (lastThermalAnalysisDeferralLogAt.map { now.timeIntervalSince($0) >= 300 } ?? true) {
+                    lastThermalAnalysisDeferralLogAt = now
+                    WHOOPDebugLog("WHOOPDBG long_wear_supervisor thermal_analysis_deferral status=deferred mode=%@ multiplier=%.1f low_power=%d thermal=%@ samples=%d label=%@",
+                          powerThermalGovernor.mode.rawValue,
+                          cadenceMultiplier,
+                          ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0,
+                          Self.thermalStateLabel(ProcessInfo.processInfo.thermalState),
+                          session.count,
+                          config.label)
+                }
+
+                if !deferSessionAnalysis,
+                   now.timeIntervalSince(lastDiagnosticAt) >= config.diagnosticInterval * cadenceMultiplier {
                     runLongWearSupervisorDiagnostic(index: diagnosticIndex,
                                                     label: config.label,
                                                     rest: config.rest,
@@ -2538,7 +2570,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     lastDiagnosticAt = now
                 }
 
-                if now.timeIntervalSince(lastAutoSaveAt) >= config.autoSaveInterval * cadenceMultiplier {
+                if !deferSessionAnalysis,
+                   now.timeIntervalSince(lastAutoSaveAt) >= config.autoSaveInterval * cadenceMultiplier {
                     if runLongWearSupervisorAutoSave(index: autoSaveIndex,
                                                      label: config.label,
                                                      rest: config.rest,
@@ -4659,6 +4692,16 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         if lastEventDrivenCheckpointAt == nil,
            now.timeIntervalSince(sessionStart) < checkpointInterval {
+            return
+        }
+        if powerThermalGovernor.shouldSuspendNonEssentialWork {
+            lastEventDrivenCheckpointAt = now
+            persistActiveSessionJournalIfNeeded(reason: "thermal_critical_ble_event_checkpoint", force: true)
+            WHOOPDebugLog("WHOOPDBG session_checkpoint status=deferred reason=thermal_critical_minimal_journal samples=%d rr_samples=%d source=ble_event mode=%@ interval_s=%.0f",
+                  session.count,
+                  rrArchive.count,
+                  powerThermalGovernor.mode.rawValue,
+                  checkpointInterval)
             return
         }
         let label = captureLabel.isEmpty ? "Unattended workout checkpoint" : captureLabel
