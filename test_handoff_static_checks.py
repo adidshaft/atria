@@ -75,6 +75,51 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(text.count("writeValue("), body.count("writeValue("))
         self.assertEqual(body.count("writeValue("), 2)
 
+    def test_offline_historical_sync_is_bounded_standard_hr_exception(self):
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
+
+        for needle in [
+            "enum OfflineSyncDefaults",
+            "defaults.set(true, forKey: OfflineSyncDefaults.enabled)",
+            "private func migrateOfflineSyncDefaultIfNeeded(arguments: [String])",
+            "stored_session_backfill_default",
+            "@discardableResult",
+            "func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false)",
+            "private func startOfflineHistoricalSync(reason: String)",
+            "historyOnlyProbeEnabled = true",
+            "historyOnlyProbeMode = true",
+            "historyClockSyncEnabled = true",
+            "historicalAckDisabled = false",
+            "historyAckMode = \"enddata\"",
+            "probeCommandMode = .withResponse",
+            "[Cmd.abortHistoricalTransmits, 0x00]",
+            "[Cmd.enterHighFreqSync, 0x00]",
+            "[Cmd.sendHistoricalData, 0x00]",
+            "historySkipDataRangeRequest = true",
+            "WHOOPDBG offline_sync status=armed",
+            "live_realtime=skipped metrics_fail_closed=1",
+            "private func finishOfflineHistoricalSync(reason: String)",
+            "applyStandardHROnly(enabled: true, persist: true, reconnect: true, reason: \"offline_sync_complete\")",
+            "central.cancelPeripheralConnection(peripheral)",
+        ]:
+            assert_contains(self, ble, needle)
+
+        for needle in [
+            "let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)",
+            "if syncStarted",
+            "try? await Task.sleep(for: .seconds(185))",
+            "offline_sync_waited=1",
+            "case .background:",
+            "handleBackgroundTask",
+            "performSceneBackgroundMaintenance",
+        ]:
+            assert_contains(self, app, needle)
+
+        assert_contains(self, ble, "currentSessionUsable: false")
+        assert_contains(self, ble, "metricUsable: false")
+        assert_contains(self, ble, "usabilityReason: \"provisional_historical_layout_old_or_unvalidated\"")
+
     def test_production_capture_defaults_land_on_balanced_profile(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 

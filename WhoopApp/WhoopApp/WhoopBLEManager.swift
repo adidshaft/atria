@@ -533,6 +533,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let acceptedHRTimeout = "whoop.longWear.acceptedHRTimeout"
         static let label = "whoop.longWear.label"
     }
+    enum OfflineSyncDefaults {
+        static let enabled = "whoop.offlineSync.enabled"
+        static let lastAttemptAt = "whoop.offlineSync.lastAttemptAt"
+        static let lastStatus = "whoop.offlineSync.lastStatus"
+        static let lastReason = "whoop.offlineSync.lastReason"
+        static let attempts = "whoop.offlineSync.attempts"
+    }
     enum CollectionProfileDefaults {
         static let profile = "atria.collection.profile"
     }
@@ -655,6 +662,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private nonisolated(unsafe) var historyOnlyProbeMode = false
     private var historyClockSyncEnabled = false
     private var historyClockRef: HistoryClockRef?
+    private var offlineHistoricalSyncInProgress = false
+    private var pendingOfflineHistoricalSyncReason: String?
+    private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
@@ -865,6 +875,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         } else {
             bootstrapProductionCaptureDefaultsIfNeeded(arguments: arguments)
             migrateAutomaticLongWearDefaultIfNeeded(arguments: arguments)
+            migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             if arguments.contains("--whoop-long-wear-mode") {
                 UserDefaults.standard.set(true, forKey: CaptureDefaults.configured)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.enabled)
@@ -939,6 +950,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(true, forKey: CaptureDefaults.configured)
         defaults.set(true, forKey: LongWearDefaults.enabled)
         defaults.set(true, forKey: RadioDefaults.standardHROnly)
+        defaults.set(true, forKey: OfflineSyncDefaults.enabled)
         if defaults.object(forKey: LongWearDefaults.checkpointInterval) == nil {
             defaults.set(60.0, forKey: LongWearDefaults.checkpointInterval)
         }
@@ -988,6 +1000,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         standardHROnlyEnabled = true
         forceFreshScanOnRestore = true
         WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=enabled reason=background_capture_default")
+    }
+
+    private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
+        guard !arguments.contains("--whoop-full-protocol-mode") else { return }
+        guard UserDefaults.standard.object(forKey: OfflineSyncDefaults.enabled) == nil else { return }
+        UserDefaults.standard.set(true, forKey: OfflineSyncDefaults.enabled)
+        WHOOPDebugLog("WHOOPDBG offline_sync status=migrated_default action=enabled reason=stored_session_backfill_default")
     }
 
     func setStandardHROnlyEnabled(_ enabled: Bool) {
@@ -1151,10 +1170,113 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         updatePhoneMotionAuditState(reason: reason)
         startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
+        requestOfflineHistoricalSyncIfNeeded(reason: reason)
         WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=resume_automation reason=%@ rest_hr=%d max_hr=%d",
               reason,
               rest,
               maxHR)
+    }
+
+    @discardableResult
+    func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else {
+            defaults.set("disabled", forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            WHOOPDebugLog("WHOOPDBG offline_sync status=skipped reason=%@ detail=disabled", reason)
+            return false
+        }
+        guard !offlineHistoricalSyncInProgress else {
+            pendingOfflineHistoricalSyncReason = reason
+            defaults.set("coalesced", forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            WHOOPDebugLog("WHOOPDBG offline_sync status=coalesced reason=%@", reason)
+            return false
+        }
+        let now = Date()
+        let lastAttempt = defaults.object(forKey: OfflineSyncDefaults.lastAttemptAt) as? Date
+        if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < offlineHistoricalSyncMinimumInterval {
+            defaults.set("throttled", forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            WHOOPDebugLog("WHOOPDBG offline_sync status=skipped reason=%@ detail=throttled age_s=%.0f min_s=%.0f",
+                  reason,
+                  now.timeIntervalSince(lastAttempt),
+                  offlineHistoricalSyncMinimumInterval)
+            return false
+        }
+        defaults.set(now, forKey: OfflineSyncDefaults.lastAttemptAt)
+        defaults.set(defaults.integer(forKey: OfflineSyncDefaults.attempts) + 1, forKey: OfflineSyncDefaults.attempts)
+        defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
+        defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        startOfflineHistoricalSync(reason: reason)
+        return true
+    }
+
+    private func startOfflineHistoricalSync(reason: String) {
+        flushActiveSessionJournal(reason: "offline_sync_preflight_\(reason)")
+        offlineHistoricalSyncInProgress = true
+        historyOnlyProbeEnabled = true
+        historyOnlyProbeMode = true
+        historyOnlyProbeArmed = false
+        historyClockSyncEnabled = true
+        historicalAckDisabled = false
+        historyAckMode = "enddata"
+        probeCommandMode = .withResponse
+        historyInitSweepCommands = [
+            [Cmd.abortHistoricalTransmits, 0x00],
+            [Cmd.enterHighFreqSync, 0x00],
+            [Cmd.sendHistoricalData, 0x00],
+        ]
+        historySkipDataRangeRequest = true
+        historyDataRangeSweepEnabled = false
+        historyDataRangePendingRequests.removeAll()
+        ackedHistoryAckKeys.removeAll()
+        txCharacteristic = nil
+        realtimeArmed = false
+        realtimeOn = false
+        UserDefaults.standard.set("armed", forKey: OfflineSyncDefaults.lastStatus)
+        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        WHOOPDebugLog("WHOOPDBG offline_sync status=armed reason=%@ mode=noop_backfill init_sweep=1400,6000,1600 ack_mode=enddata live_realtime=skipped metrics_fail_closed=1",
+              reason)
+
+        if let peripheral {
+            dbgLast = "offline sync reconnect"
+            central.cancelPeripheralConnection(peripheral)
+        } else if central.state == .poweredOn {
+            startScan(reason: "offline_sync_\(reason)")
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(180))
+            finishOfflineHistoricalSync(reason: reason)
+        }
+    }
+
+    private func finishOfflineHistoricalSync(reason: String) {
+        let rows = historicalArchiveRows
+        historyOnlyProbeEnabled = false
+        historyOnlyProbeMode = false
+        historyOnlyProbeArmed = false
+        historyClockSyncEnabled = false
+        historyInitSweepCommands.removeAll()
+        historySkipDataRangeRequest = false
+        probeCommandMode = .withoutResponse
+        offlineHistoricalSyncInProgress = false
+        UserDefaults.standard.set(rows > 0 ? "archived" : "no_rows", forKey: OfflineSyncDefaults.lastStatus)
+        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        WHOOPDebugLog("WHOOPDBG offline_sync status=%@ reason=%@ rows=%d failures=%d action=return_standard_hr metrics_fail_closed=1",
+              rows > 0 ? "archived" : "no_rows",
+              reason,
+              rows,
+              historicalArchiveWriteFailures)
+        applyStandardHROnly(enabled: true, persist: true, reconnect: true, reason: "offline_sync_complete")
+        if let peripheral {
+            central.cancelPeripheralConnection(peripheral)
+        }
+        if let pending = pendingOfflineHistoricalSyncReason {
+            pendingOfflineHistoricalSyncReason = nil
+            requestOfflineHistoricalSyncIfNeeded(reason: pending)
+        }
     }
 
     private func resumeForegroundScanIfNeeded(reason: String) {
@@ -1175,6 +1297,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             realtimeStartRetries = 0
             historicalAckDisabled = true
             forceFreshScanOnRestore = true
+        } else if !historyOnlyProbeEnabled {
+            historicalAckDisabled = false
         }
         WHOOPDebugLog("WHOOPDBG radio_mode mode=%@ persist=%d reconnect=%d reason=%@",
               enabled ? "standard_hr_only" : "full_protocol",
