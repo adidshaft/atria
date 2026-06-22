@@ -225,6 +225,23 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, app_text, forbidden)
 
+    def test_local_first_core_has_no_network_or_browser_clients(self):
+        app_text = all_swift_source()
+
+        for forbidden in [
+            "URLSession",
+            "URLRequest",
+            "NSURLConnection",
+            "import Network",
+            "NWConnection",
+            "http://",
+            "https://",
+            "WKWebView",
+            "SFSafariViewController",
+            "ASWebAuthenticationSession",
+        ]:
+            assert_not_contains(self, app_text, forbidden)
+
     def test_developer_only_surfaces_are_hidden_by_default(self):
         developer_mode = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaDeveloperMode.swift")
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
