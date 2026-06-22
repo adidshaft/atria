@@ -13,7 +13,7 @@
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache--2.0-0A1A3E" alt="Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/iOS-physical%20device%20required-0A1A3E" alt="Physical iPhone required">
   <img src="https://img.shields.io/badge/data-local%20only-2B6BE0" alt="Local-only data">
-  <img src="https://img.shields.io/badge/HRV-reference%20pending-D97706" alt="HRV reference pending">
+  <img src="https://img.shields.io/badge/HRV-personal%20baseline-D97706" alt="HRV personal baseline">
 </p>
 
 <p align="center">
@@ -45,18 +45,18 @@ Atria is usable for local collection and honest diagnostics on a physical iPhone
 | Gate | Area | Status | What works | What remains |
 |---|---|---:|---|---|
 | A | BLE connection and live collection | Partial | Fresh scan/connect, standard `2A37` HR, battery, long-wear logging, reconnect watchdogs | Proprietary realtime stream remains diagnostic; custom RR stream is not reliable enough to be primary |
-| B | HRV | Reference pending | Clean saved 5-minute RR package exists; RMSSD shown only with reference warning; RR correction/confidence enforced | Independent RR/IBI reference comparison within tolerance |
-| C | Recovery | Learning | Recovery fails closed until validated HRV baseline exists | 7-day validated baseline and morning capture confidence |
+| B | HRV | Personal baseline | Clean saved 5-minute RR package exists; RMSSD is shown with an honest personal-baseline/unverified badge; RR correction/confidence enforced | Optional independent RR/IBI reference comparison within tolerance promotes the badge to validated |
+| C | Recovery | Personal baseline | Recovery appears once local HRV and resting baselines are mature, with a personal-baseline/unverified confidence state | Optional validated HRV baseline and morning capture confidence promote validated status |
 | D | Strain and onboarding | Partial | HR-reserve TRIMP, learned resting HR, HRmax/profile controls, explainable strain | External HR reference validation and workout-intensity calibration |
 | E | Sleep and workout detection | User-confirmed evidence | Sleep/workout candidates, user-confirmed examples, daily rollups, honest blockers | Fully automatic workout detection from cleaner sustained coverage |
-| F | Trends and insights | Local progress | 7/30/90-day trend surfaces and anomaly routing from saved rollups | More history and HRV reference-backed trend confidence |
+| F | Trends and insights | Local progress | 7/30/90-day trend surfaces and anomaly routing from saved rollups | More history and optional HRV reference-backed trend confidence |
 | G | Platform polish | Metric-gated | HealthKit HR/workout/sleep export, backups, notifications, widget/complication plumbing | HealthKit HRV write waits for validated HRV |
 | H | Protocol expansion | Research-ready | Historical/archive decoder evidence and protocol diagnostics | Additional sensor validation and broader strap-history decoding |
 
 ## Principles
 
 - **Local first:** no WHOOP account, no cloud dependency, no subscription requirement.
-- **No fake metrics:** HRV and recovery stay in learning/reference-pending states unless real RR evidence is sufficient.
+- **No fake metrics:** HRV and recovery stay learning until real local RR/baseline evidence is sufficient, then appear as personal-baseline/unverified; only an independent reference can promote them to validated.
 - **Physical-device verified:** BLE work must be tested on a real iPhone; the Simulator does not count.
 - **Explainable outputs:** metrics expose source, confidence, and blockers instead of hiding uncertainty.
 - **Conservative by default:** when data is missing, gappy, or unvalidated, Atria reports that clearly.
@@ -73,14 +73,14 @@ Atria is usable for local collection and honest diagnostics on a physical iPhone
   - report confidence as kept/raw RR percentage
 - Local strain from personalized HR-reserve TRIMP.
 - Sleep and workout candidate summaries with explicit blockers.
-- HealthKit export for supported validated/local-safe data.
+- HealthKit export for supported validated/local-safe data; HealthKit HRV remains gated on validated SDNN.
 - Widget/complication data plumbing.
 - Protocol research tools for BLE capture and frame analysis.
 
 ## What Does Not Work Yet
 
-- Clinically passed HRV. Atria has a clean local RR package, but independent RR/IBI reference validation is still missing.
-- Fully validated recovery. Recovery depends on validated HRV baseline.
+- Clinically validated HRV. Atria can show local RMSSD as a personal baseline, but independent RR/IBI reference validation is still optional and missing by default.
+- Fully validated recovery. Recovery can display as a personal baseline; validated status depends on a validated HRV baseline.
 - Fully automatic workout detection in all gym conditions. Current logic is honest about stream coverage and HR-intensity blockers.
 - Any claim that requires WHOOP cloud data. This project intentionally stays local.
 
