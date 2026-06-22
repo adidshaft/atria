@@ -2285,7 +2285,7 @@ final class SessionStore: ObservableObject {
                                                                                                anomalySource: "none",
                                                                                                anomalySampleDays: 0,
                                                                                                hrvState: "learning",
-                                                                                               detail: "Saved trends are loading.",
+                                                                                               detail: "Saved trends are preparing.",
                                                                                                blockers: "loading"))
     }
 

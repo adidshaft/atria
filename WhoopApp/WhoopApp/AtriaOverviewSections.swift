@@ -788,7 +788,7 @@ struct AtriaOverviewTrailingSection: View {
                                                    snapshotStore: snapshotStore)
                 }
             } else {
-                AtriaLoadingPanel(title: "Loading saved insights",
+                AtriaLoadingPanel(title: "Preparing saved insights",
                                   subtitle: "Trends, backup state, and collection history are settling in the background.")
             }
         }

@@ -1235,13 +1235,13 @@ final class AtriaHomeModel {
     }
 
     private static let placeholderSnapshot = Snapshot(referenceText: "Waiting",
-                                                      sleepValue: "Loading",
+                                                      sleepValue: "Preparing",
                                                       sleepDetail: "saved history",
-                                                      workoutText: "Loading",
-                                                      loggingText: "warming up",
+                                                      workoutText: "Preparing",
+                                                      loggingText: "settling",
                                                       trendCoverageText: "--",
                                                       trendConfidence: "learning",
-                                                      trendDetail: "Saved trends are loading.",
+                                                      trendDetail: "Saved trends are preparing.",
                                                       confirmedWorkouts: 0,
                                                       confirmedSleeps: 0)
 
@@ -1732,7 +1732,7 @@ final class AtriaHomeModel {
                             headline: headline,
                             sessionsCount: savedAggregate.sessionsCount,
                             baselineSamples: savedAggregate.baselineSamples,
-                            backupValue: deferredDetails?.backupValue ?? "Loading",
+                            backupValue: deferredDetails?.backupValue ?? "Preparing",
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
                             restingHeartRate: rest,
                             restingHeartRateText: "\(rest)",
@@ -1939,13 +1939,13 @@ final class AtriaHomeModel {
         let defaultReferenceText = store.externalHRReferenceValidated ? "Validated" : "Waiting"
 
         return Snapshot(referenceText: deferredDetails?.referenceText ?? defaultReferenceText,
-                        sleepValue: deferredDetails?.sleepValue ?? "Loading",
+                        sleepValue: deferredDetails?.sleepValue ?? "Preparing",
                         sleepDetail: deferredDetails?.sleepDetail ?? "saved history",
-                        workoutText: deferredDetails?.workoutText ?? "Loading",
-                        loggingText: deferredDetails?.loggingText ?? "warming up",
+                        workoutText: deferredDetails?.workoutText ?? "Preparing",
+                        loggingText: deferredDetails?.loggingText ?? "settling",
                         trendCoverageText: deferredDetails?.trendCoverageText ?? "--",
                         trendConfidence: deferredDetails?.trendConfidence ?? "learning",
-                        trendDetail: deferredDetails?.trendDetail ?? "Saved trends are loading.",
+                        trendDetail: deferredDetails?.trendDetail ?? "Saved trends are preparing.",
                         confirmedWorkouts: deferredDetails?.confirmedWorkouts ?? store.confirmedWorkouts.count,
                         confirmedSleeps: deferredDetails?.confirmedSleeps ?? store.confirmedSleeps.count)
     }
