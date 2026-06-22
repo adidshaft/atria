@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools import monitor_long_wear
 
@@ -128,6 +131,32 @@ class MonitorLongWearTests(unittest.TestCase):
         self.assertEqual(result["acceptance_diagnostics"]["thermal"]["observed"], ["serious"])
         self.assertEqual(result["acceptance_diagnostics"]["thermal"]["allowed"], ["nominal", "fair"])
         self.assertFalse(result["acceptance_diagnostics"]["session_coverage"]["ok"])
+
+    def test_stamp_run_provenance_records_commit_and_utc_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Initial"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            expected_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+            final = {}
+
+            monitor_long_wear.stamp_run_provenance(final, repo, "2026-06-22T00:00:00Z")
+
+            self.assertEqual(final["monitor_started_at"], "2026-06-22T00:00:00Z")
+            self.assertEqual(final["app_commit"], expected_commit)
+            self.assertIsInstance(final["monitor_finished_at"], str)
+            self.assertIn("T", final["monitor_finished_at"])
+            self.assertTrue(final["monitor_finished_at"].endswith("Z"))
 
 
 if __name__ == "__main__":
