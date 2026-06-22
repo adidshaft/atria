@@ -103,6 +103,9 @@ class MonitorLongWearTests(unittest.TestCase):
 
         self.assertEqual(result["acceptance_status"], "pass")
         self.assertEqual(result["acceptance_blockers"], [])
+        self.assertEqual(result["acceptance_diagnostics"]["session_span"]["observed_s"], 9 * 60 * 60)
+        self.assertEqual(result["acceptance_diagnostics"]["session_span"]["required_min_s"], 8 * 60 * 60)
+        self.assertTrue(result["acceptance_diagnostics"]["thermal"]["ok"])
 
     def test_acceptance_fails_for_known_current_blockers(self):
         final = {
@@ -120,6 +123,11 @@ class MonitorLongWearTests(unittest.TestCase):
 
         self.assertEqual(result["acceptance_status"], "fail")
         self.assertEqual(result["acceptance_blockers"], ["session_span", "session_coverage", "thermal"])
+        self.assertEqual(result["acceptance_diagnostics"]["session_span"]["observed_s"], 2731.1)
+        self.assertEqual(result["acceptance_diagnostics"]["session_span"]["required_min_s"], 8 * 60 * 60)
+        self.assertEqual(result["acceptance_diagnostics"]["thermal"]["observed"], ["serious"])
+        self.assertEqual(result["acceptance_diagnostics"]["thermal"]["allowed"], ["nominal", "fair"])
+        self.assertFalse(result["acceptance_diagnostics"]["session_coverage"]["ok"])
 
 
 if __name__ == "__main__":

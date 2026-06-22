@@ -87,7 +87,9 @@ Evidence present:
 - Pull-only harness mode can copy sessions and active journal without
   restarting Atria.
 - `tools/monitor_long_wear.py` provides a non-invasive monitor with an
-  `overnight` preset and explicit acceptance checks.
+  `overnight` preset, explicit acceptance checks, and
+  `acceptance_diagnostics` fields that record observed-versus-required values
+  for every blocker.
 - `test_monitor_long_wear.sh` runs the fast local monitor regression path
   (`py_compile` plus `test_monitor_long_wear.py`).
 - `test_handoff_static_checks.sh` locks local source invariants for production

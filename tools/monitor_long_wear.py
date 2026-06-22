@@ -108,13 +108,19 @@ def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> d
         battery_ok = False
     else:
         battery_ok = battery_delta >= -max_battery_drop
+    observed_samples = int(final.get("samples", 0))
+    observed_active_ok_samples = int(final.get("active_ok_samples", 0))
+    observed_session_span = float(final.get("latest_recent_session_span_s", 0) or 0)
+    observed_session_coverage = float(final.get("latest_recent_session_coverage_percent", 0) or 0)
+    observed_active_gap = float(final.get("max_active_accepted_gap_s", 0) or 0)
+    observed_recent_gap = float(final.get("max_recent_accepted_gap_s", 0) or 0)
     checks = {
-        "samples": int(final.get("samples", 0)) >= min_samples,
-        "active_ok_samples": int(final.get("active_ok_samples", 0)) >= min_samples,
-        "session_span": float(final.get("latest_recent_session_span_s", 0) or 0) >= min_span,
-        "session_coverage": float(final.get("latest_recent_session_coverage_percent", 0) or 0) >= min_coverage,
-        "active_gap": float(final.get("max_active_accepted_gap_s", 0) or 0) <= max_gap,
-        "recent_gap": float(final.get("max_recent_accepted_gap_s", 0) or 0) <= max_gap,
+        "samples": observed_samples >= min_samples,
+        "active_ok_samples": observed_active_ok_samples >= min_samples,
+        "session_span": observed_session_span >= min_span,
+        "session_coverage": observed_session_coverage >= min_coverage,
+        "active_gap": observed_active_gap <= max_gap,
+        "recent_gap": observed_recent_gap <= max_gap,
         "thermal": bool(thermal_states) and thermal_states.issubset(allowed_thermal),
         "battery": battery_ok,
     }
@@ -123,6 +129,48 @@ def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> d
         "acceptance_status": "pass" if not blockers else "fail",
         "acceptance_checks": checks,
         "acceptance_blockers": blockers,
+        "acceptance_diagnostics": {
+            "samples": {
+                "observed": observed_samples,
+                "required_min": min_samples,
+                "ok": checks["samples"],
+            },
+            "active_ok_samples": {
+                "observed": observed_active_ok_samples,
+                "required_min": min_samples,
+                "ok": checks["active_ok_samples"],
+            },
+            "session_span": {
+                "observed_s": observed_session_span,
+                "required_min_s": min_span,
+                "ok": checks["session_span"],
+            },
+            "session_coverage": {
+                "observed_percent": observed_session_coverage,
+                "required_min_percent": min_coverage,
+                "ok": checks["session_coverage"],
+            },
+            "active_gap": {
+                "observed_s": observed_active_gap,
+                "required_max_s": max_gap,
+                "ok": checks["active_gap"],
+            },
+            "recent_gap": {
+                "observed_s": observed_recent_gap,
+                "required_max_s": max_gap,
+                "ok": checks["recent_gap"],
+            },
+            "thermal": {
+                "observed": sorted(thermal_states),
+                "allowed": allowed_thermal_list,
+                "ok": checks["thermal"],
+            },
+            "battery": {
+                "observed_delta_percent": battery_delta,
+                "required_min_delta_percent": -max_battery_drop,
+                "ok": checks["battery"],
+            },
+        },
         "criteria": {
             "preset": args.preset,
             "min_samples": min_samples,
