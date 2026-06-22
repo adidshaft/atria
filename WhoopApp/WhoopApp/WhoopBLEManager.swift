@@ -794,6 +794,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var reconnectWatchdogTask: Task<Void, Never>?
     private var scanRetryTask: Task<Void, Never>?
     private var scanWideningTask: Task<Void, Never>?
+    private var pendingScanReason: String?
     private var freshScanFallbackTask: Task<Void, Never>?
     private var recoveryReconnectAttempt = 0
     private var pendingRecoveryReconnectReason: String?
@@ -878,6 +879,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             if arguments.contains("--whoop-long-wear-mode") {
                 UserDefaults.standard.set(true, forKey: CaptureDefaults.configured)
+                UserDefaults.standard.set(true, forKey: LongWearDefaults.userSelected)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.enabled)
                 longWearModeEnabled = true
             }
@@ -996,8 +998,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: CaptureDefaults.configured) else { return }
         defaults.set(true, forKey: CaptureDefaults.configured)
-        defaults.set(true, forKey: LongWearDefaults.enabled)
-        defaults.set(true, forKey: RadioDefaults.standardHROnly)
+        defaults.set(false, forKey: LongWearDefaults.enabled)
+        defaults.set(false, forKey: RadioDefaults.standardHROnly)
         defaults.set(true, forKey: OfflineSyncDefaults.enabled)
         if defaults.object(forKey: LongWearDefaults.checkpointInterval) == nil {
             defaults.set(60.0, forKey: LongWearDefaults.checkpointInterval)
@@ -1024,12 +1026,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             defaults.set(CollectionProfile.balanced.rawValue, forKey: CollectionProfileDefaults.profile)
         }
         collectionProfile = CollectionProfile.load(defaults: defaults)
-        longWearModeEnabled = true
+        longWearModeEnabled = false
         updateSessionPointCacheMode()
-        standardHROnlyMode = true
-        standardHROnlyEnabled = true
+        standardHROnlyMode = false
+        standardHROnlyEnabled = false
         let explicitMode = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 1 : 0
-        WHOOPDebugLog("WHOOPDBG capture_defaults status=enabled mode=standard_hr_only_interactive_default long_wear_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
+        WHOOPDebugLog("WHOOPDBG capture_defaults status=enabled mode=full_protocol_interactive_default long_wear_default=0 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
               explicitMode)
     }
 
@@ -1038,16 +1040,16 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard !arguments.contains("--whoop-full-protocol-mode") else { return }
         guard defaults.bool(forKey: CaptureDefaults.configured) else { return }
         guard !defaults.bool(forKey: LongWearDefaults.userSelected) else { return }
-        guard !defaults.bool(forKey: LongWearDefaults.enabled) else { return }
+        guard defaults.bool(forKey: LongWearDefaults.enabled) || defaults.bool(forKey: RadioDefaults.standardHROnly) else { return }
 
-        defaults.set(true, forKey: LongWearDefaults.enabled)
-        defaults.set(true, forKey: RadioDefaults.standardHROnly)
-        longWearModeEnabled = true
+        defaults.set(false, forKey: LongWearDefaults.enabled)
+        defaults.set(false, forKey: RadioDefaults.standardHROnly)
+        longWearModeEnabled = false
         updateSessionPointCacheMode()
-        standardHROnlyMode = true
-        standardHROnlyEnabled = true
+        standardHROnlyMode = false
+        standardHROnlyEnabled = false
         forceFreshScanOnRestore = true
-        WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=enabled reason=background_capture_default")
+        WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=disabled reason=full_protocol_default")
     }
 
     private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
@@ -1186,11 +1188,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     func handleInteractiveForeground(rest: Int, maxHR: Int) {
+        resumeForegroundScanIfNeeded(reason: "scene_active")
         if foregroundInteractiveMode {
             return
         }
         foregroundInteractiveMode = true
-        resumeForegroundScanIfNeeded(reason: "scene_active")
         guard longWearModeEnabled else {
             updatePhoneMotionAuditState(reason: "interactive_foreground_without_long_wear")
             return
@@ -1218,7 +1220,6 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         updatePhoneMotionAuditState(reason: reason)
         startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
-        requestOfflineHistoricalSyncIfNeeded(reason: reason)
         WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=resume_automation reason=%@ rest_hr=%d max_hr=%d",
               reason,
               rest,
@@ -1328,9 +1329,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func resumeForegroundScanIfNeeded(reason: String) {
-        guard central.state == .poweredOn else { return }
         guard peripheral == nil else { return }
-        guard status == .disconnected else { return }
+        guard status == .disconnected || status == .poweredOff else { return }
         startScan(reason: "\(reason)_resume")
     }
 
@@ -4329,11 +4329,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     func startScan(reason: String = "manual") {
         guard central.state == .poweredOn else {
+            pendingScanReason = reason
             WHOOPDebugLog("WHOOPDBG ble_scan status=skipped reason=%@ central_state=%d",
                   reason,
                   central.state.rawValue)
             return
         }
+        pendingScanReason = nil
         if peripheral == nil,
            let restored = central.retrieveConnectedPeripherals(withServices: UUIDs.scanServices).first {
             attach(to: restored, name: restored.name ?? "Strap")
@@ -7912,10 +7914,12 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             switch central.state {
             case .poweredOn:
+                let reason = pendingScanReason ?? "central_powered_on"
+                pendingScanReason = nil
                 if let peripheral, peripheral.state == .connected {
                     peripheral.discoverServices(Self.UUIDs.discoveryServices)
                 } else {
-                    startScan(reason: "central_powered_on")
+                    startScan(reason: reason)
                 }
             case .poweredOff:
                 self.assignIfChanged(\.status, .poweredOff)
@@ -7930,21 +7934,11 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         WHOOPDebugLog("WHOOPDBG ble_restore peripherals=%d", restored.count)
         guard let restoredPeripheral = restored.first else { return }
         Task { @MainActor in
-            if self.forceFreshScanOnRestore && !self.standardHROnlyMode {
-                for peripheral in restored {
-                    central.cancelPeripheralConnection(peripheral)
-                }
-                self.peripheral = nil
-                self.assignIfChanged(\.status, .disconnected)
-                self.realtimeArmed = false
-                self.txCharacteristic = nil
-                self.heartRateCharacteristic = nil
-                self.dbgTxReady = false
-                WHOOPDebugLog("WHOOPDBG ble_restore status=discarded reason=full_protocol_fresh_scan peripherals=%d",
-                      restored.count)
-                self.startScan(reason: "restore_discard")
-                return
-            } else if self.forceFreshScanOnRestore && self.standardHROnlyMode {
+            if self.forceFreshScanOnRestore {
+                WHOOPDebugLog("WHOOPDBG ble_restore status=reuse_restored reason=fresh_scan_deferred peripherals=%d standard_hr_only=%d",
+                      restored.count,
+                      self.standardHROnlyMode ? 1 : 0)
+            } else if self.standardHROnlyMode {
                 WHOOPDebugLog("WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=%d",
                       restored.count)
             }

@@ -3099,19 +3099,11 @@ if not replay_log and pull_reference_package_dir:
             emit(f"{prefix}={destination_file}")
 
 if not replay_log and leave_running and not pull_only:
-    keepalive_label = "Long_wear"
     keepalive_cmd = [
         "xcrun", "devicectl", "device", "process", "launch",
         "--device", device_id,
         "--terminate-existing",
         bundle_id,
-        "--whoop-capture-label", keepalive_label,
-        "--whoop-standard-hr-only",
-        "--whoop-long-wear-mode",
-        "--whoop-checkpoint-session-every", "60",
-        "--whoop-auto-save-session-every", "900",
-        "--whoop-log-live-workout-every", "60",
-        "--whoop-auto-save-workout-when-ready", "60",
     ]
     emit("HARNESS_LEAVE_RUNNING_ARGS=" + " ".join(shlex.quote(part) for part in keepalive_cmd))
     result = subprocess.run(
@@ -3125,7 +3117,7 @@ if not replay_log and leave_running and not pull_only:
     if result.returncode != 0:
         emit(f"HARNESS_ERROR=leave_running_launch_failed code={result.returncode}")
         raise SystemExit(result.returncode)
-    emit("HARNESS_LEAVE_RUNNING status=launched mode=standard_hr_only_long_wear checkpoint_s=60 autosave_s=900 workout_check_s=60")
+    emit("HARNESS_LEAVE_RUNNING status=launched mode=normal_end_user")
 
 if pull_only:
     sys.exit(0)

@@ -120,12 +120,26 @@ class HandoffStaticChecks(unittest.TestCase):
             "let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)",
             "if syncStarted",
             "try? await Task.sleep(for: .seconds(185))",
-            "offline_sync_waited=1",
             "case .background:",
             "handleBackgroundTask",
             "performSceneBackgroundMaintenance",
         ]:
             assert_contains(self, app, needle)
+
+        scene_background = re.search(
+            r"private func performSceneBackgroundMaintenance\(reason: String\) \{(?P<body>.*?)\n    \}",
+            app,
+            re.S,
+        )
+        self.assertIsNotNone(scene_background)
+        self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", scene_background.group("body"))
+        unattended_mode = re.search(
+            r"func handleUnattendedMode\(rest: Int, maxHR: Int, reason: String\) \{(?P<body>.*?)\n    \}",
+            ble,
+            re.S,
+        )
+        self.assertIsNotNone(unattended_mode)
+        self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", unattended_mode.group("body"))
 
         assert_contains(self, ble, "currentSessionUsable: false")
         assert_contains(self, ble, "metricUsable: false")
@@ -145,18 +159,29 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
-    def test_state_restoration_reuses_standard_hr_only_peripheral(self):
+    def test_state_restoration_reuses_restored_peripheral(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 
         for needle in [
-            "self.forceFreshScanOnRestore && !self.standardHROnlyMode",
-            "self.forceFreshScanOnRestore && self.standardHROnlyMode",
+            "private var pendingScanReason: String?",
+            "pendingScanReason = reason",
+            "let reason = pendingScanReason ?? \"central_powered_on\"",
+            "WHOOPDBG ble_restore status=reuse_restored reason=fresh_scan_deferred",
             "WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only",
-            "WHOOPDBG ble_restore status=discarded reason=full_protocol_fresh_scan",
             "recordLinkObservedConnected(reason: \"state_restore_connected\"",
             "central.connect(restoredPeripheral, options: nil)",
         ]:
             assert_contains(self, text, needle)
+
+        restore_method = re.search(
+            r"nonisolated func centralManager\(_ central: CBCentralManager, willRestoreState dict: \[String: Any\]\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(restore_method)
+        body = restore_method.group("body")
+        self.assertNotIn("cancelPeripheralConnection", body)
+        self.assertNotIn("full_protocol_fresh_scan", body)
 
     def test_healthkit_hrv_export_uses_validated_sdnn_only(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
