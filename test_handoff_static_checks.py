@@ -351,6 +351,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, "Connection state: \\(context.userStatusLabel)")
         assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
         assert_contains(self, overview, "AtriaLoadingPanel(title: \"Preparing saved insights\"")
+        assert_contains(self, overview, "AtriaLoadingPanel(title: \"Preparing trends\"")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"Validation\"")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"HRV window\"")
         assert_contains(self, home, "sleepValue: \"Preparing\"")
@@ -367,6 +368,7 @@ class HandoffStaticChecks(unittest.TestCase):
                 "Rest candidates are diagnostic only; they do not count as sleep.",
                 "Latest status:",
                 "Loading saved insights",
+                "Warming up trends",
                 "Saved trends are loading.",
                 "loggingText: \"warming up\"",
             ]:

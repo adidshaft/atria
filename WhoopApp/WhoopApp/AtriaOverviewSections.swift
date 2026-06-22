@@ -368,7 +368,7 @@ struct AtriaOverviewLeadingSection: View {
                 if snapshotStore.diagnosticsReady {
                     AtriaOverviewTrendSectionHost(snapshotStore: snapshotStore)
                 } else {
-                    AtriaLoadingPanel(title: "Warming up trends",
+                    AtriaLoadingPanel(title: "Preparing trends",
                                       subtitle: "Saved trends stay off the launch path and load after the first screen is stable.")
                 }
             }
