@@ -18,7 +18,8 @@ validation that is intentionally skipped for now:
 - Acceptable iPhone thermal state (`nominal`/`fair`) and "not warm" evidence.
 - Broad accessibility/performance proof, including Instruments evidence.
 - External-reference validation for the `validated` tier is explicitly skipped
-  for this pass and remains gated/unvalidated by design.
+  for this single-strap pass and remains gated/unvalidated by design. Personal
+  baseline is the terminal end-user HRV/recovery state for this handoff.
 
 ## Local Implementation Evidence
 
@@ -30,7 +31,7 @@ Evidence present:
   source.
 - Design-token files and renamed content-card surfaces are present.
 - External reference import/export cards and the standard-HR radio toggle are
-  hidden from the default end-user Collection tab behind `AtriaDeveloperMode`.
+  hidden from the default end-user Data tab behind `AtriaDeveloperMode`.
 - Media controls are surfaced in app chrome and Live Activity paths.
 - Dead legacy identifiers were not found by local scan for:
   `LegacyContentView`, `DashboardSection`, `AtriaGlassToolbar`,
@@ -67,8 +68,9 @@ Evidence present:
 
 Not yet accepted:
 
-- External-reference HRV validation is intentionally skipped for this pass, so
-  `validated` tier and HealthKit HRV writes remain gated.
+- External-reference HRV validation is intentionally skipped for this pass.
+  Personal baseline is accepted for end-user display, while the `validated` tier
+  and HealthKit HRV writes remain gated.
 - End-to-end UI/accessibility proof for all new feature surfaces is not present.
 - Optional downloaded local LLM runtime proof is not present; current local
   coach answers are deterministic on-device summaries with explicit offline
@@ -257,5 +259,5 @@ Do not claim the handoff is complete until:
 
 - The monitor overnight summary passes.
 - Accessibility/performance checks are recorded.
-- External-reference-dependent items are either validated or explicitly left as
-  gated/unvalidated by design.
+- External-reference-dependent items remain skipped/gated by design; do not
+  require them for the single-strap handoff acceptance.
