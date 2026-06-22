@@ -58,9 +58,7 @@ struct WhoopAppApp: App {
                         ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,
                                                 maxHR: store.profile.maxHR,
                                                 reason: "scene_background")
-                        ble.flushActiveSessionJournal(reason: "scene_background")
-                        store.requestPersistenceFlush(reason: "scene_background")
-                        scheduleBackgroundMaintenance(reason: "scene_background")
+                        performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
                         // alerts, and multitasking transitions. Delay persistence so
@@ -129,6 +127,26 @@ struct WhoopAppApp: App {
     private func scheduleBackgroundMaintenance(reason: String) {
         Self.scheduleBackgroundRefresh(reason: reason)
         Self.scheduleBackgroundProcessing(reason: reason)
+    }
+
+    private func performSceneBackgroundMaintenance(reason: String) {
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Atria background flush") {
+            WHOOPDebugLog("WHOOPDBG background_flush status=expired reason=%@", reason)
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+        }
+
+        ble.flushActiveSessionJournal(reason: reason)
+        store.requestPersistenceFlush(reason: reason)
+        scheduleBackgroundMaintenance(reason: reason)
+
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+        }
+        WHOOPDebugLog("WHOOPDBG background_flush status=ok reason=%@", reason)
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {
