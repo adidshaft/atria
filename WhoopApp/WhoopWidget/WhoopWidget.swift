@@ -211,6 +211,11 @@ struct AtriaLiveActivityWidget: Widget {
                         Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
                         Spacer(minLength: 10)
                         Label(context.state.batteryLevel >= 0 ? "\(context.state.batteryLevel)%" : "Battery", systemImage: "battery.100")
+                        Button(intent: AtriaControlCaptureIntent(command: .stop)) {
+                            Label("Stop", systemImage: "stop.circle")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .tint(.red)
                     }
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -262,24 +267,33 @@ private struct AtriaLiveActivityLockScreenView: View {
     let context: ActivityViewContext<AtriaLiveActivityAttributes>
 
     var body: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Atria live")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(context.state.heartRate > 0 ? "\(context.state.heartRate) BPM" : "Reading BPM")
-                    .font(.title3.monospacedDigit().weight(.bold))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Atria live")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(context.state.heartRate > 0 ? "\(context.state.heartRate) BPM" : "Reading BPM")
+                        .font(.title3.monospacedDigit().weight(.bold))
+                }
+
+                Spacer(minLength: 10)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(String(format: "Strain %.1f", context.state.strain))
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                    Text("\(context.state.sampleCount) samples · \(elapsedText(since: context.attributes.startedAt))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Spacer(minLength: 10)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(String(format: "Strain %.1f", context.state.strain))
-                    .font(.subheadline.monospacedDigit().weight(.semibold))
-                Text("\(context.state.sampleCount) samples · \(elapsedText(since: context.attributes.startedAt))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            Button(intent: AtriaControlCaptureIntent(command: .stop)) {
+                Label("Stop capture", systemImage: "stop.circle")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
         }
         .padding(.vertical, 4)
     }
