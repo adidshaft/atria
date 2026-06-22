@@ -336,6 +336,7 @@ struct DailyRollup {
     let strain: Double
     let avgHRV: Int?
     let restingHR: Int?
+    let avgRespiratoryRate: Double?
 }
 
 struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
@@ -1065,6 +1066,7 @@ struct TrendSummary: Identifiable, Equatable {
     let avgHRV: Int?
     let avgRHR: Int?
     let avgStrain: Double?
+    let avgRespiratoryRate: Double?
     let anomalies: [String]
     let anomalySource: String
     let anomalySampleDays: Int
@@ -2118,6 +2120,7 @@ final class SessionStore: ObservableObject {
                                                                                                avgHRV: nil,
                                                                                                avgRHR: nil,
                                                                                                avgStrain: nil,
+                                                                                               avgRespiratoryRate: nil,
                                                                                                anomalies: [],
                                                                                                anomalySource: "none",
                                                                                                anomalySampleDays: 0,
@@ -5138,6 +5141,7 @@ final class SessionStore: ObservableObject {
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let respiratoryRates = daySessions.compactMap(\.respiratoryRate).filter { $0 > 0 }
             let sleepRHRs = daySessions.compactMap { session -> Int? in
                 guard session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate else {
                     return nil
@@ -5156,7 +5160,8 @@ final class SessionStore: ObservableObject {
                                duration: duration,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
-                               restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min())
+                               restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min(),
+                               avgRespiratoryRate: averageDouble(respiratoryRates))
         }
         .sorted { $0.day > $1.day }
     }
@@ -5795,6 +5800,7 @@ final class SessionStore: ObservableObject {
             }
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
             let hrvs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
             let recoveries = recent.compactMap {
                 let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
                                                   fallbackRMSSD: $0.referenceValidatedHRV,
@@ -5831,6 +5837,7 @@ final class SessionStore: ObservableObject {
                                 avgHRV: avgHRV,
                                 avgRHR: averageInt(rhrs),
                                 avgStrain: averageDouble(strains),
+                                avgRespiratoryRate: averageDouble(respiratoryRates),
                                 anomalies: anomalies,
                                 anomalySource: "daily_rollups",
                                 anomalySampleDays: recentRollups.count,
@@ -5858,6 +5865,7 @@ final class SessionStore: ObservableObject {
         }
         let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
         let hrvs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+        let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
         let recoveries = recent.compactMap {
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
                                               fallbackRMSSD: $0.referenceValidatedHRV,
@@ -5892,6 +5900,7 @@ final class SessionStore: ObservableObject {
                             avgHRV: avgHRV,
                             avgRHR: averageInt(rhrs),
                             avgStrain: averageDouble(strains),
+                            avgRespiratoryRate: averageDouble(respiratoryRates),
                             anomalies: [],
                             anomalySource: "bounded_recent_sessions",
                             anomalySampleDays: coverageDays,
@@ -5909,7 +5918,7 @@ final class SessionStore: ObservableObject {
         for summary in summaries {
             let anomalyFlags = trendAnomalyFlags(summary.anomalies)
             let detail = summary.detail.replacingOccurrences(of: " ", with: "_")
-            WHOOPDebugLog("WHOOPDBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
+            WHOOPDebugLog("WHOOPDBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ respiratory_rate=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
                   summary.days,
                   summary.sessions,
                   summary.coverageDays,
@@ -5921,6 +5930,7 @@ final class SessionStore: ObservableObject {
                   summary.hrvState,
                   formatInt(summary.avgRHR),
                   formatDouble(summary.avgStrain),
+                  formatDouble(summary.avgRespiratoryRate),
                   summary.anomalies.count,
                   anomalyFlags,
                   summary.anomalySource,
@@ -5947,7 +5957,7 @@ final class SessionStore: ObservableObject {
         formatter.calendar = Calendar.current
         formatter.dateFormat = "yyyy-MM-dd"
         for rollup in rollups.prefix(14) {
-            WHOOPDebugLog("WHOOPDBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
+            WHOOPDebugLog("WHOOPDBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ respiratory_rate=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
                   formatter.string(from: rollup.day),
                   rollup.sessions,
                   rollup.activityCandidates,
@@ -5959,7 +5969,8 @@ final class SessionStore: ObservableObject {
                   rollup.duration,
                   rollup.strain,
                   formatInt(rollup.avgHRV),
-                  formatInt(rollup.restingHR))
+                  formatInt(rollup.restingHR),
+                  formatDouble(rollup.avgRespiratoryRate))
         }
         let aggregateWorkouts = aggregateWorkoutCandidates(rest: rest, maxHR: profile.maxHR, calendar: Calendar.current)
         let readyAggregateWorkouts = aggregateWorkouts.filter { $0.readiness.ready }.count
@@ -8396,6 +8407,7 @@ struct TrendSummaryView: View {
                         trendMetric("Rec", value: summary.avgRecovery.map { "\($0)%" })
                         trendMetric("HRV", value: summary.avgHRV.map { "\($0)" })
                         trendMetric("RHR", value: summary.avgRHR.map { "\($0)" })
+                        trendMetric("Resp", value: summary.avgRespiratoryRate.map { String(format: "%.1f", $0) })
                         trendMetric("Strain", value: summary.avgStrain.map { String(format: "%.1f", $0) })
                     }
                     Text(summary.detail)
@@ -8443,6 +8455,7 @@ struct TrendSummaryView: View {
         let hrvPoints = summaries.filter { $0.avgHRV != nil }.count
         let rhrPoints = summaries.filter { $0.avgRHR != nil }.count
         let strainPoints = summaries.filter { $0.avgStrain != nil }.count
+        let respiratoryRatePoints = summaries.filter { $0.avgRespiratoryRate != nil }.count
         let coverageMin = summaries.map(\.coveragePercent).min() ?? 0
         let confidence = summaries.map(\.confidence).joined(separator: ",")
         let windows = summaries.map { "\($0.days)d" }.joined(separator: ",")
@@ -8454,12 +8467,13 @@ struct TrendSummaryView: View {
                                      coverageMin: coverageMin,
                                      hrvStates: summaries.map(\.hrvState),
                                      confidence: summaries.map(\.confidence))
-        WHOOPDebugLog("WHOOPDBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
+        WHOOPDebugLog("WHOOPDBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d respiratory_rate_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
               windows,
               recoveryPoints,
               hrvPoints,
               rhrPoints,
               strainPoints,
+              respiratoryRatePoints,
               coverageMin,
               requiredCoverageDays,
               confidence,
@@ -8515,6 +8529,10 @@ private struct TrendChartOverview: View {
                                  unit: "bpm",
                                  color: .teal,
                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRHR.map(Double.init)) })
+                TrendMetricChart(title: "Resp",
+                                 unit: "/min",
+                                 color: .cyan,
+                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRespiratoryRate) })
                 TrendMetricChart(title: "Strain",
                                  unit: "",
                                  color: .orange,

@@ -11,6 +11,7 @@ final class HealthKitExporter {
         let restingHRSamples: Int
         let workouts: Int
         let hrvSamples: Int
+        let respiratoryRateSamples: Int
         let sleeps: Int
     }
 
@@ -92,6 +93,7 @@ final class HealthKitExporter {
         var hrPointCount: Int
         var restingHRExported: Bool?
         var hrvExported: Bool
+        var respiratoryRateExported: Bool?
         var workoutExported: Bool
         var end: TimeInterval
     }
@@ -120,6 +122,10 @@ final class HealthKitExporter {
 
     private var hrvType: HKQuantityType {
         HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!
+    }
+
+    private var respiratoryRateType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .respiratoryRate)!
     }
 
     private var workoutType: HKWorkoutType {
@@ -205,8 +211,8 @@ final class HealthKitExporter {
                                          ledger: ledger,
                                          rest: rest,
                                          maxHR: maxHR)
-        guard deltaPlanned.hrSamples > 0 || deltaPlanned.restingHRSamples > 0 || deltaPlanned.workouts > 0 || deltaPlanned.hrvSamples > 0 || deltaPlanned.sleeps > 0 else {
-            NSLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 sleeps=0 ledger_entries=%d idempotent=1",
+        guard deltaPlanned.hrSamples > 0 || deltaPlanned.restingHRSamples > 0 || deltaPlanned.workouts > 0 || deltaPlanned.hrvSamples > 0 || deltaPlanned.respiratoryRateSamples > 0 || deltaPlanned.sleeps > 0 else {
+            NSLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=0 ledger_entries=%d idempotent=1",
                   sessions.count,
                   ledger.count)
             verifyHeartRateExportReadback(sessions: sessions,
@@ -234,9 +240,10 @@ final class HealthKitExporter {
                                             restingHRSamples: deltaPlanned.restingHRSamples,
                                             workouts: deltaPlanned.workouts,
                                             hrvSamples: deltaPlanned.hrvSamples,
+                                            respiratoryRateSamples: deltaPlanned.respiratoryRateSamples,
                                             sleeps: sleepShareDenied ? 0 : deltaPlanned.sleeps)
-        guard writablePlanned.hrSamples > 0 || writablePlanned.restingHRSamples > 0 || writablePlanned.workouts > 0 || writablePlanned.hrvSamples > 0 || writablePlanned.sleeps > 0 else {
-            NSLog("WHOOPDBG healthkit_export status=sleep_permission_required sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 sleeps=%d ledger_entries=%d idempotent=1 action=grant_health_sleep_analysis",
+        guard writablePlanned.hrSamples > 0 || writablePlanned.restingHRSamples > 0 || writablePlanned.workouts > 0 || writablePlanned.hrvSamples > 0 || writablePlanned.respiratoryRateSamples > 0 || writablePlanned.sleeps > 0 else {
+            NSLog("WHOOPDBG healthkit_export status=sleep_permission_required sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=%d ledger_entries=%d idempotent=1 action=grant_health_sleep_analysis",
                   sessions.count,
                   deltaPlanned.sleeps,
                   ledger.count)
@@ -257,21 +264,23 @@ final class HealthKitExporter {
         }
         let writeAuthorization = writeAuthorizationState(for: writeTypes)
         if !writeAuthorization.denied.isEmpty {
-            NSLog("WHOOPDBG healthkit_export status=share_permission_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d denied=%@ action=grant_health_write_permissions",
+            NSLog("WHOOPDBG healthkit_export status=share_permission_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d denied=%@ action=grant_health_write_permissions",
                   sessions.count,
                   writablePlanned.hrSamples,
                   writablePlanned.workouts,
                   writablePlanned.hrvSamples,
+                  writablePlanned.respiratoryRateSamples,
                   writablePlanned.sleeps,
                   writeAuthorization.denied.joined(separator: ","))
             return
         }
         if writeAuthorization.cached {
-            NSLog("WHOOPDBG healthkit_export status=authorization_cached sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
+            NSLog("WHOOPDBG healthkit_export status=authorization_cached sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
                   sessions.count,
                   writablePlanned.hrSamples,
                   writablePlanned.workouts,
                   writablePlanned.hrvSamples,
+                  writablePlanned.respiratoryRateSamples,
                   writablePlanned.sleeps,
                   writablePlanned.sleeps > 0 ? 1 : 0)
             writeAuthorizedSessions(sessions,
@@ -289,11 +298,12 @@ final class HealthKitExporter {
 
         let requestID = UUID()
         pendingAuthorizationRequestID = requestID
-        NSLog("WHOOPDBG healthkit_export status=authorization_requested sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
+        NSLog("WHOOPDBG healthkit_export status=authorization_requested sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
               sessions.count,
               writablePlanned.hrSamples,
               writablePlanned.workouts,
               writablePlanned.hrvSamples,
+              writablePlanned.respiratoryRateSamples,
               writablePlanned.sleeps,
               writablePlanned.sleeps > 0 ? 1 : 0)
         scheduleAuthorizationWatchdog(requestID: requestID, sessions: sessions.count, planned: writablePlanned)
@@ -360,6 +370,9 @@ final class HealthKitExporter {
         }
         if planned.hrvSamples > 0 {
             types.insert(hrvType)
+        }
+        if planned.respiratoryRateSamples > 0 {
+            types.insert(respiratoryRateType)
         }
         if planned.workouts > 0 {
             types.insert(workoutType)
@@ -575,6 +588,7 @@ final class HealthKitExporter {
         var restingHRSamples = 0
         var workouts = 0
         var hrvSamples = 0
+        var respiratoryRateSamples = 0
         var sleeps = 0
 
         for session in sessions where session.end > session.start {
@@ -588,6 +602,9 @@ final class HealthKitExporter {
             if let sdnn = session.referenceValidatedSDNN, sdnn > 0 {
                 hrvSamples += 1
             }
+            if let respiratoryRate = session.respiratoryRate, respiratoryRate > 0 {
+                respiratoryRateSamples += 1
+            }
         }
         workouts += confirmedWorkouts.count
         sleeps += confirmedSleeps.count
@@ -596,6 +613,7 @@ final class HealthKitExporter {
                              restingHRSamples: restingHRSamples,
                              workouts: workouts,
                              hrvSamples: hrvSamples,
+                             respiratoryRateSamples: respiratoryRateSamples,
                              sleeps: sleeps)
     }
 
@@ -609,6 +627,7 @@ final class HealthKitExporter {
         var restingHRSamples = 0
         var workouts = 0
         var hrvSamples = 0
+        var respiratoryRateSamples = 0
         var sleeps = 0
 
         for session in sessions where session.end > session.start {
@@ -624,6 +643,11 @@ final class HealthKitExporter {
             if let sdnn = session.referenceValidatedSDNN, sdnn > 0, snapshot?.hrvExported != true {
                 hrvSamples += 1
             }
+            if let respiratoryRate = session.respiratoryRate,
+               respiratoryRate > 0,
+               snapshot?.respiratoryRateExported != true {
+                respiratoryRateSamples += 1
+            }
         }
         for workout in confirmedWorkouts where ledger[Self.confirmedWorkoutLedgerKey(workout.id)]?.workoutExported != true {
             workouts += 1
@@ -636,6 +660,7 @@ final class HealthKitExporter {
                              restingHRSamples: restingHRSamples,
                              workouts: workouts,
                              hrvSamples: hrvSamples,
+                             respiratoryRateSamples: respiratoryRateSamples,
                              sleeps: sleeps)
     }
 
@@ -681,6 +706,7 @@ final class HealthKitExporter {
             repairLedger[key] = ExportSnapshot(hrPointCount: 0,
                                                restingHRExported: existing?.restingHRExported ?? true,
                                                hrvExported: existing?.hrvExported ?? true,
+                                               respiratoryRateExported: existing?.respiratoryRateExported ?? true,
                                                workoutExported: existing?.workoutExported ?? true,
                                                end: gap.session.end.timeIntervalSince1970)
         }
@@ -757,6 +783,7 @@ final class HealthKitExporter {
                 hrPointCount: session.points.count,
                 restingHRExported: session.restingStable > 0,
                 hrvExported: (session.referenceValidatedSDNN ?? 0) > 0,
+                respiratoryRateExported: (session.respiratoryRate ?? 0) > 0,
                 workoutExported: readiness.ready,
                 end: session.end.timeIntervalSince1970
             )
@@ -766,6 +793,7 @@ final class HealthKitExporter {
                 hrPointCount: 0,
                 restingHRExported: true,
                 hrvExported: true,
+                respiratoryRateExported: true,
                 workoutExported: true,
                 end: workout.end.timeIntervalSince1970
             )
@@ -775,6 +803,7 @@ final class HealthKitExporter {
                 hrPointCount: 0,
                 restingHRExported: true,
                 hrvExported: true,
+                respiratoryRateExported: true,
                 workoutExported: true,
                 end: sleep.end.timeIntervalSince1970
             )
@@ -788,6 +817,7 @@ final class HealthKitExporter {
                 hrPointCount: session.points.count,
                 restingHRExported: existing?.restingHRExported ?? false,
                 hrvExported: existing?.hrvExported ?? false,
+                respiratoryRateExported: existing?.respiratoryRateExported ?? false,
                 workoutExported: existing?.workoutExported ?? false,
                 end: session.end.timeIntervalSince1970
             )
@@ -840,6 +870,9 @@ final class HealthKitExporter {
         let hrvSamples = samples.compactMap { $0 as? HKQuantitySample }
             .filter { $0.quantityType == hrvType }
             .count
+        let respiratoryRateSamples = samples.compactMap { $0 as? HKQuantitySample }
+            .filter { $0.quantityType == respiratoryRateType }
+            .count
         let workouts = samples.compactMap { $0 as? HKWorkout }.count
         let sleeps = samples.compactMap { $0 as? HKCategorySample }
             .filter { $0.categoryType == sleepType }
@@ -847,11 +880,12 @@ final class HealthKitExporter {
 
         store.save(samples) { [weak self] success, error in
             if let error {
-                NSLog("WHOOPDBG healthkit_export status=save_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d ledger_entries=%d reason=%@ error=%@",
+                NSLog("WHOOPDBG healthkit_export status=save_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d reason=%@ error=%@",
                       sessions.count,
                       hrSamples,
                       workouts,
                       hrvSamples,
+                      respiratoryRateSamples,
                       sleeps,
                       ledger.count,
                       reason,
@@ -859,11 +893,12 @@ final class HealthKitExporter {
                 return
             }
             guard success else {
-                NSLog("WHOOPDBG healthkit_export status=failed sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
+                NSLog("WHOOPDBG healthkit_export status=failed sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
                       sessions.count,
                       hrSamples,
                       workouts,
                       hrvSamples,
+                      respiratoryRateSamples,
                       sleeps,
                       updatedLedger.count,
                       reason)
@@ -882,11 +917,12 @@ final class HealthKitExporter {
                                               ledger: &updatedLedger)
                 }
                 self.saveExportLedger(updatedLedger)
-                NSLog("WHOOPDBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
+                NSLog("WHOOPDBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
                       sessions.count,
                       hrSamples,
                       workouts,
                       hrvSamples,
+                      respiratoryRateSamples,
                       sleeps,
                       updatedLedger.count,
                       reason)
@@ -1332,6 +1368,7 @@ final class HealthKitExporter {
             rebuildLedger[key] = ExportSnapshot(hrPointCount: 0,
                                                 restingHRExported: existing?.restingHRExported ?? false,
                                                 hrvExported: existing?.hrvExported ?? false,
+                                                respiratoryRateExported: existing?.respiratoryRateExported ?? false,
                                                 workoutExported: existing?.workoutExported ?? false,
                                                 end: session.end.timeIntervalSince1970)
         }
@@ -1596,6 +1633,18 @@ final class HealthKitExporter {
             let quantity = HKQuantity(unit: .secondUnit(with: .milli),
                                       doubleValue: sdnn)
             samples.append(HKQuantitySample(type: hrvType,
+                                            quantity: quantity,
+                                            start: session.start,
+                                            end: session.end,
+                                            metadata: metadata))
+        }
+
+        if snapshot?.respiratoryRateExported != true,
+           let respiratoryRate = session.respiratoryRate,
+           respiratoryRate > 0 {
+            let quantity = HKQuantity(unit: HKUnit.count().unitDivided(by: .minute()),
+                                      doubleValue: respiratoryRate)
+            samples.append(HKQuantitySample(type: respiratoryRateType,
                                             quantity: quantity,
                                             start: session.start,
                                             end: session.end,
