@@ -6,10 +6,10 @@ final class AtriaMediaController: ObservableObject {
     struct State: Equatable {
         var title: String = "Media"
         var artist: String = "System player"
-        var playbackState: MPMusicPlaybackState = .stopped
+        var isPlaying = false
         var hasNowPlayingInfo = false
+        var commandRoute = "system_music_player"
 
-        var isPlaying: Bool { playbackState == .playing }
         var accessibilitySummary: String {
             hasNowPlayingInfo ? "\(title), \(artist)" : "System media controls"
         }
@@ -43,41 +43,53 @@ final class AtriaMediaController: ObservableObject {
     func refresh() {
         let item = player.nowPlayingItem
         let nowPlaying = MPNowPlayingInfoCenter.default().nowPlayingInfo
-        let title = item?.title ?? nowPlaying?[MPMediaItemPropertyTitle] as? String
-        let artist = item?.artist ?? nowPlaying?[MPMediaItemPropertyArtist] as? String
+        let title = nowPlaying?[MPMediaItemPropertyTitle] as? String ?? item?.title
+        let artist = nowPlaying?[MPMediaItemPropertyArtist] as? String ?? item?.artist
+        let playbackRate = nowPlaying?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber
 
         state = State(title: title?.nonEmptyMediaText ?? "Media",
                       artist: artist?.nonEmptyMediaText ?? "System player",
-                      playbackState: player.playbackState,
-                      hasNowPlayingInfo: title != nil || artist != nil)
+                      isPlaying: playbackRate.map { $0.doubleValue > 0 } ?? (player.playbackState == .playing),
+                      hasNowPlayingInfo: title != nil || artist != nil,
+                      commandRoute: "system_music_player")
     }
 
     func playPause() {
         if state.isPlaying {
             player.pause()
-            WHOOPDebugLog("WHOOPDBG media_control command=pause source=system_music_player local_only=1")
+            WHOOPDebugLog("WHOOPDBG media_control command=pause route=%@ now_playing=%d local_only=1",
+                  state.commandRoute,
+                  state.hasNowPlayingInfo ? 1 : 0)
         } else {
             player.play()
-            WHOOPDebugLog("WHOOPDBG media_control command=play source=system_music_player local_only=1")
+            WHOOPDebugLog("WHOOPDBG media_control command=play route=%@ now_playing=%d local_only=1",
+                  state.commandRoute,
+                  state.hasNowPlayingInfo ? 1 : 0)
         }
         refresh()
     }
 
     func stop() {
         player.stop()
-        WHOOPDebugLog("WHOOPDBG media_control command=stop source=system_music_player local_only=1")
+        WHOOPDebugLog("WHOOPDBG media_control command=stop route=%@ now_playing=%d local_only=1",
+              state.commandRoute,
+              state.hasNowPlayingInfo ? 1 : 0)
         refresh()
     }
 
     func nextTrack() {
         player.skipToNextItem()
-        WHOOPDebugLog("WHOOPDBG media_control command=next source=system_music_player local_only=1")
+        WHOOPDebugLog("WHOOPDBG media_control command=next route=%@ now_playing=%d local_only=1",
+              state.commandRoute,
+              state.hasNowPlayingInfo ? 1 : 0)
         refresh()
     }
 
     func previousTrack() {
         player.skipToPreviousItem()
-        WHOOPDebugLog("WHOOPDBG media_control command=previous source=system_music_player local_only=1")
+        WHOOPDebugLog("WHOOPDBG media_control command=previous route=%@ now_playing=%d local_only=1",
+              state.commandRoute,
+              state.hasNowPlayingInfo ? 1 : 0)
         refresh()
     }
 
