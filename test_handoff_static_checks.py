@@ -236,7 +236,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaDeveloperMode",
             "defaultsKey = \"atria.developerMode.enabled\"",
             "launchArgument = \"--atria-developer-mode\"",
-            "UserDefaults.standard.bool(forKey: defaultsKey)",
+            "let enabledByLaunchArgument = ProcessInfo.processInfo.arguments.contains(launchArgument)",
+            "UserDefaults.standard.removeObject(forKey: defaultsKey)",
+            "return enabledByLaunchArgument",
         ]:
             assert_contains(self, developer_mode, needle)
 

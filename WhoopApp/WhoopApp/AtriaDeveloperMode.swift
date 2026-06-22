@@ -5,7 +5,10 @@ enum AtriaDeveloperMode {
     static let launchArgument = "--atria-developer-mode"
 
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.arguments.contains(launchArgument)
-        || UserDefaults.standard.bool(forKey: defaultsKey)
+        let enabledByLaunchArgument = ProcessInfo.processInfo.arguments.contains(launchArgument)
+        if !enabledByLaunchArgument, UserDefaults.standard.bool(forKey: defaultsKey) {
+            UserDefaults.standard.removeObject(forKey: defaultsKey)
+        }
+        return enabledByLaunchArgument
     }
 }
