@@ -525,6 +525,7 @@ private struct AtriaConnectionGuideSheet: View {
     let context: AtriaConnectionGuideContext
     let continueSetup: () -> Void
     let retry: () -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var guideTitle: String {
         context.isFirstHandoff ? "One clean first handoff" : "Reconnect is already automatic"
@@ -695,7 +696,7 @@ private struct AtriaConnectionGuideSheet: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .background(AtriaBackdropLayer(isDark: true).ignoresSafeArea())
+            .background(AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency).ignoresSafeArea())
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 10) {
                     ViewThatFits {

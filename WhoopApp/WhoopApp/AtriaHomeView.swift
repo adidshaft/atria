@@ -48,6 +48,7 @@ struct AtriaHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var model: AtriaHomeModel
     @State private var selectedTab: HomeTab = .overview
     @State private var showRRImporter = false
@@ -90,7 +91,7 @@ struct AtriaHomeView: View {
 
     var body: some View {
         ZStack {
-            AtriaBackdropLayer(isDark: isDark)
+            AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 

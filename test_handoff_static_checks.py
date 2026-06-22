@@ -287,6 +287,23 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, coordinator, needle)
 
+    def test_backdrop_respects_reduce_transparency(self):
+        shell = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeShellSupport.swift")
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        guide = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
+
+        for needle in [
+            "let reduceTransparency: Bool",
+            "if reduceTransparency",
+            "private var reducedTransparencyFill: Color",
+        ]:
+            assert_contains(self, shell, needle)
+
+        assert_contains(self, home, "@Environment(\\.accessibilityReduceTransparency) private var reduceTransparency")
+        assert_contains(self, home, "AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)")
+        assert_contains(self, guide, "@Environment(\\.accessibilityReduceTransparency) private var reduceTransparency")
+        assert_contains(self, guide, "AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency)")
+
     def test_end_user_copy_avoids_lab_only_language(self):
         content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
         hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")

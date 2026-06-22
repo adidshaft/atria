@@ -2,44 +2,55 @@ import SwiftUI
 
 struct AtriaBackdropLayer: View, Equatable {
     let isDark: Bool
+    let reduceTransparency: Bool
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: gradientColors,
-                           startPoint: .topLeading,
-                           endPoint: .bottomTrailing)
-
-            if isDark {
-                Rectangle()
-                    .fill(
-                        RadialGradient(colors: [accentOne, .clear],
-                                       center: .topTrailing,
-                                       startRadius: 18,
-                                       endRadius: 210)
-                    )
-
-                Rectangle()
-                    .fill(
-                        RadialGradient(colors: [accentTwo, .clear],
-                                       center: .bottomLeading,
-                                       startRadius: 22,
-                                       endRadius: 220)
-                    )
-
-                LinearGradient(colors: [
-                    Color.white.opacity(0.025),
-                    Color.clear,
-                    Color.black.opacity(0.22)
-                ], startPoint: .top, endPoint: .bottom)
+            if reduceTransparency {
+                reducedTransparencyFill
             } else {
-                RadialGradient(colors: [accentOne, accentOne.opacity(0.10), .clear],
-                               center: .center,
-                               startRadius: 12,
-                               endRadius: 180)
-                    .frame(width: 240, height: 240)
-                    .offset(x: 74, y: -78)
+                LinearGradient(colors: gradientColors,
+                               startPoint: .topLeading,
+                               endPoint: .bottomTrailing)
+
+                if isDark {
+                    Rectangle()
+                        .fill(
+                            RadialGradient(colors: [accentOne, .clear],
+                                           center: .topTrailing,
+                                           startRadius: 18,
+                                           endRadius: 210)
+                        )
+
+                    Rectangle()
+                        .fill(
+                            RadialGradient(colors: [accentTwo, .clear],
+                                           center: .bottomLeading,
+                                           startRadius: 22,
+                                           endRadius: 220)
+                        )
+
+                    LinearGradient(colors: [
+                        Color.white.opacity(0.025),
+                        Color.clear,
+                        Color.black.opacity(0.22)
+                    ], startPoint: .top, endPoint: .bottom)
+                } else {
+                    RadialGradient(colors: [accentOne, accentOne.opacity(0.10), .clear],
+                                   center: .center,
+                                   startRadius: 12,
+                                   endRadius: 180)
+                        .frame(width: 240, height: 240)
+                        .offset(x: 74, y: -78)
+                }
             }
         }
+    }
+
+    private var reducedTransparencyFill: Color {
+        isDark
+            ? Color(red: 0.018, green: 0.023, blue: 0.032)
+            : Color(red: 0.950, green: 0.960, blue: 0.990)
     }
 
     private var gradientColors: [Color] {
