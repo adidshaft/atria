@@ -678,6 +678,9 @@ final class AtriaHomeModel {
         let hrvValue: String
         let hrvDetail: String
         let hrvNarrative: String
+        let stressValue: String
+        let stressDetail: String
+        let stressNarrative: String
         let rrPackageText: String
         let nextAction: String
         let headline: String
@@ -714,6 +717,9 @@ final class AtriaHomeModel {
                 && lhs.hrvValue == rhs.hrvValue
                 && lhs.hrvDetail == rhs.hrvDetail
                 && lhs.hrvNarrative == rhs.hrvNarrative
+                && lhs.stressValue == rhs.stressValue
+                && lhs.stressDetail == rhs.stressDetail
+                && lhs.stressNarrative == rhs.stressNarrative
                 && lhs.rrPackageText == rhs.rrPackageText
                 && lhs.nextAction == rhs.nextAction
                 && lhs.headline == rhs.headline
@@ -1350,6 +1356,7 @@ final class AtriaHomeModel {
                                           fallbackRMSSD: store.latestReferenceValidatedHRV,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
                                           baseline: store.baseline)
+        let stress = stressState(ble: ble, baseline: store.baseline)
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = savedAggregate.savedTodayTRIMP + liveTRIMP
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
@@ -1370,6 +1377,9 @@ final class AtriaHomeModel {
                             hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
                             hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
                             hrvNarrative: deferredDetails?.hrvNarrative ?? fallbackHrv.narrative,
+                            stressValue: stress.value,
+                            stressDetail: stress.detail,
+                            stressNarrative: stress.narrative,
                             rrPackageText: deferredDetails?.rrPackageText ?? fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,
@@ -1387,6 +1397,47 @@ final class AtriaHomeModel {
         let detail: String
         let narrative: String
         let packageText: String
+    }
+
+    private struct StressState {
+        let value: String
+        let detail: String
+        let narrative: String
+    }
+
+    private static func stressState(ble: WhoopBLEManager, baseline: PersonalBaseline) -> StressState {
+        guard let snapshot = ble.hrvSnapshot else {
+            return StressState(value: "Learning",
+                               detail: "RR window",
+                               narrative: "Stress appears after a clean live RR window is ready.")
+        }
+        guard snapshot.isReady else {
+            return StressState(value: "Learning",
+                               detail: snapshot.readinessReason,
+                               narrative: snapshot.readinessMessage)
+        }
+        guard let stats = baseline.lnRMSSDStats, stats.count >= 3 else {
+            return StressState(value: "Learning",
+                               detail: "\(baseline.hrvSampleCount)/3 baseline",
+                               narrative: "Atria needs a few personal HRV samples before comparing stress to your norm.")
+        }
+
+        let spread = max(stats.sd, 0.15)
+        let z = (stats.mean - snapshot.lnRMSSD) / spread
+        let index: Int
+        if z < 0.5 {
+            index = 0
+        } else if z < 1.0 {
+            index = 1
+        } else if z < 2.0 {
+            index = 2
+        } else {
+            index = 3
+        }
+        let badge = stats.count >= 7 ? "personal baseline" : "unverified"
+        return StressState(value: "\(index)/3",
+                           detail: badge,
+                           narrative: String(format: "Live lnRMSSD is %.1f SD from your baseline.", z))
     }
 
     private static func fallbackHeroHRVState(ble: WhoopBLEManager,
@@ -1504,6 +1555,9 @@ final class AtriaHomeModel {
                             hrvValue: fallbackHrv.value,
                             hrvDetail: fallbackHrv.detail,
                             hrvNarrative: fallbackHrv.narrative,
+                            stressValue: "Learning",
+                            stressDetail: "RR window",
+                            stressNarrative: "Stress appears after the strap reconnects and RR is ready.",
                             rrPackageText: fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,

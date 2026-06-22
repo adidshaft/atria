@@ -671,6 +671,11 @@ private struct AtriaHRVCard: View, Equatable {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Text(hero.stressNarrative)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
@@ -681,6 +686,7 @@ private struct AtriaHRVCard: View, Equatable {
         AtriaInlineQuickStat(label: "Display", value: hero.hrvValue)
         AtriaInlineQuickStat(label: "RR package", value: hero.rrPackageText)
         AtriaInlineQuickStat(label: "Reference", value: hero.hrvDetail)
+        AtriaInlineQuickStat(label: "Stress", value: hero.stressValue, detail: hero.stressDetail)
     }
 }
 

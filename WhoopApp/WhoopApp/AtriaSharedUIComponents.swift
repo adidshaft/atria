@@ -292,6 +292,7 @@ struct AtriaSectionDivider: View {
 struct AtriaInlineQuickStat: View, Equatable {
     let label: String
     let value: String
+    var detail: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -303,6 +304,13 @@ struct AtriaInlineQuickStat: View, Equatable {
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         .padding(10)
