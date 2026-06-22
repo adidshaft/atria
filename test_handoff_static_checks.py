@@ -323,6 +323,7 @@ class HandoffStaticChecks(unittest.TestCase):
         hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
         overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        intents = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAppIntents.swift")
 
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
         assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
@@ -343,6 +344,9 @@ class HandoffStaticChecks(unittest.TestCase):
                 assert_not_contains(self, text, forbidden)
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"RR package\"")
+        assert_contains(self, intents, "subtitle: \"Start live collection\"")
+        assert_contains(self, intents, "subtitle: \"Arm overnight collection\"")
+        assert_not_contains(self, intents, "low-radio")
 
     def test_user_path_debug_logs_are_gated(self):
         for rel in [

@@ -112,10 +112,10 @@ struct AtriaFocusFilterIntent: SetFocusFilterIntent {
                                          subtitle: "Do not change collection")
         case .workout:
             return DisplayRepresentation(title: "Workout collection",
-                                         subtitle: "Start low-radio live collection")
+                                         subtitle: "Start live collection")
         case .sleep:
             return DisplayRepresentation(title: "Sleep collection",
-                                         subtitle: "Arm overnight low-radio collection")
+                                         subtitle: "Arm overnight collection")
         }
     }
 
