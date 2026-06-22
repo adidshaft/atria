@@ -216,6 +216,23 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, widget, "readings ·")
         assert_not_contains(self, widget, "samples ·")
 
+    def test_end_user_copy_avoids_lab_only_language(self):
+        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
+        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+
+        assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
+        assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
+        assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
+
+        for text in [content, overview, sessions]:
+            for forbidden in [
+                "Not counted as workout until HR/reference evidence is stronger.",
+                "Saved references and backup remain available while the strap reconnects.",
+                "Rest candidates are diagnostic only; they do not count as sleep.",
+            ]:
+                assert_not_contains(self, text, forbidden)
+
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
         plist = source(ROOT / "WhoopApp" / "Info.plist")

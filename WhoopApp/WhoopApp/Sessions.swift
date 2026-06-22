@@ -8722,7 +8722,7 @@ private struct DailyRollupRow: View {
                         .minimumScaleFactor(0.75)
                 }
                 if rollup.restCandidates > 0 {
-                    Text("Rest candidates are diagnostic only; they do not count as sleep.")
+                    Text("Rest candidates are recovery context only; they do not count as sleep.")
                         .font(.caption2)
                         .foregroundStyle(.cyan)
                         .lineLimit(2)

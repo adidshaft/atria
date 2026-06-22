@@ -278,7 +278,7 @@ private struct DailyEvidenceCard: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.75)
                 if !workout.ready {
-                    Text("Not counted as workout until HR/reference evidence is stronger.")
+                    Text("Not counted as workout until activity evidence is stronger.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

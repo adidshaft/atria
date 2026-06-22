@@ -921,7 +921,7 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Saved data stays ready")
                         .font(.subheadline.weight(.semibold))
-                    Text("Saved references and backup remain available while the strap reconnects.")
+                    Text("Saved metrics and backup remain available while the strap reconnects.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
