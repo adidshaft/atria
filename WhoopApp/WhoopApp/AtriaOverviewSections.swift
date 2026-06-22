@@ -476,19 +476,10 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
                                      isComplete: stats.baselineSamples >= 7,
                                      actionTitle: nil,
                                      action: nil),
-            AtriaLaunchChecklistItem(id: "reference",
-                                     title: "Metric validation",
-                                     value: snapshot.referenceText,
-                                     detail: snapshot.referenceText == "Validated" ? "Metric checks are matched." : "Use Collection when you have comparison data.",
-                                     systemImage: "checkmark.seal.fill",
-                                     tint: snapshot.referenceText == "Validated" ? .green : .blue,
-                                     isComplete: snapshot.referenceText == "Validated",
-                                     actionTitle: snapshot.referenceText == "Validated" ? nil : "Collection",
-                                     action: snapshot.referenceText == "Validated" ? nil : onOpenCollection),
             AtriaLaunchChecklistItem(id: "capture",
-                                     title: "Capture path",
+                                     title: "Live recording",
                                      value: snapshot.loggingText,
-                                     detail: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? "Recent samples are available." : stats.nextAction,
+                                     detail: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? "Atria is saving your readings." : stats.nextAction,
                                      systemImage: "waveform.badge.plus",
                                      tint: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? .green : .orange,
                                      isComplete: snapshot.loggingText.localizedCaseInsensitiveContains("samples"),
@@ -500,8 +491,8 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Launch checklist",
-                                        subtitle: "\(completeCount) of \(checklistItems.count) signals ready")
+                AtriaPanelSectionHeader(title: "Getting set up",
+                                        subtitle: "\(completeCount) of \(checklistItems.count) ready")
 
                 Spacer(minLength: 0)
 
