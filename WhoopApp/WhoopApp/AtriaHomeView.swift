@@ -1875,36 +1875,36 @@ final class AtriaHomeModel {
         let guidance: Coach.Guidance
         switch live.status {
         case .scanning:
-            guidance = Coach.Guidance(headline: "Scanning in the background",
-                                      detail: "Atria keeps the first screen responsive while it looks for the strap nearby.",
+            guidance = Coach.Guidance(headline: "Looking for your strap",
+                                      detail: "Your dashboard stays responsive while Atria searches for your strap nearby.",
                                       color: .orange,
                                       target: nil,
                                       state: "learning",
                                       reason: "disconnected_scanning_fast_path")
         case .connecting:
-            guidance = Coach.Guidance(headline: "Finishing the handoff",
-                                      detail: "Atria is finishing connection setup first, then the fuller live cards will settle in.",
+            guidance = Coach.Guidance(headline: "Connecting to your strap",
+                                      detail: "Atria is finishing the connection. Your live readings appear right after.",
                                       color: .orange,
                                       target: nil,
                                       state: "learning",
                                       reason: "disconnected_connecting_fast_path")
         case .poweredOff:
-            guidance = Coach.Guidance(headline: "Bluetooth needs to come back first",
-                                      detail: "Atria is holding the dashboard steady until Bluetooth is available again.",
+            guidance = Coach.Guidance(headline: "Turn Bluetooth on to continue",
+                                      detail: "Your data is safe. Atria reconnects automatically once Bluetooth is back on.",
                                       color: .orange,
                                       target: nil,
                                       state: "learning",
                                       reason: "disconnected_powered_off_fast_path")
         case .disconnected:
-            guidance = Coach.Guidance(headline: "Ready for a clean reconnect",
-                                      detail: "Saved data stays available right away while Atria keeps trying quietly in the background.",
+            guidance = Coach.Guidance(headline: "Ready to reconnect",
+                                      detail: "Your saved data is here right away while Atria keeps trying to reconnect in the background.",
                                       color: .blue,
                                       target: nil,
                                       state: "learning",
                                       reason: "disconnected_idle_fast_path")
         case .connected:
-            guidance = Coach.Guidance(headline: "Live connection is active.",
-                                      detail: "Live scoring settles in after the first screen becomes interactive.",
+            guidance = Coach.Guidance(headline: "Connected and reading live",
+                                      detail: "Your live scores fill in moments after the screen is ready.",
                                       color: .green,
                                       target: nil,
                                       state: "learning",

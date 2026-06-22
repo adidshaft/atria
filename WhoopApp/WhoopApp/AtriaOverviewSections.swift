@@ -171,13 +171,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     private var title: String {
         switch status {
         case .connecting:
-            return "Finishing the first handoff"
+            return "Connecting to your strap"
         case .scanning:
-            return "Searching nearby"
+            return "Looking for your strap"
         case .poweredOff:
-            return "Bluetooth is paused"
+            return "Bluetooth is off"
         case .disconnected:
-            return "Waiting for the strap"
+            return "Waiting for your strap"
         case .connected:
             return "Live data is flowing"
         }
@@ -186,13 +186,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     private var detail: String {
         switch status {
         case .connecting:
-            return "Atria already has the first-run path and is trying to attach with the lightweight connection flow."
+            return "Almost there — Atria is linking up with your strap. The first connection takes a moment."
         case .scanning:
-            return "The radio is scanning quietly in the background while the rest of the dashboard stays fast."
+            return "Atria is searching for your strap in the background. The rest of your dashboard stays ready while it looks."
         case .poweredOff:
-            return "Turn Bluetooth back on and Atria will resume its automatic scan without extra setup."
+            return "Turn Bluetooth back on and Atria will start looking for your strap again automatically."
         case .disconnected:
-            return "Atria is keeping the disconnected state light while it waits for the strap to be free from the WHOOP app."
+            return "Atria is waiting for your strap. Keep it nearby, and make sure it isn't still connected in the WHOOP app."
         case .connected:
             return "Saved insights prepare after the live connection settles."
         }
@@ -201,15 +201,15 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     private var setupDetail: String {
         switch status {
         case .connecting:
-            return "Keep the phone unlocked and nearby while Atria finishes the first connection."
+            return "Keep your phone unlocked and nearby while Atria finishes connecting."
         case .scanning:
-            return "Atria is already trying automatically. Use Scan now only if WHOOP just released the strap."
+            return "Atria is already searching automatically. Tap Scan now only if you just freed the strap from WHOOP."
         case .poweredOff:
-            return "Bluetooth must come back first. Once it does, Atria resumes scanning on its own."
+            return "Turn Bluetooth on first. Atria then starts looking for your strap on its own."
         case .disconnected:
-            return "If WHOOP still owns the strap, disconnect it there first, then leave Atria open for the handoff."
+            return "If the strap is still connected in the WHOOP app, disconnect it there first, then leave Atria open."
         case .connected:
-            return "Automatic reconnects are armed after the first successful handoff."
+            return "From now on, Atria reconnects to your strap automatically."
         }
     }
 
