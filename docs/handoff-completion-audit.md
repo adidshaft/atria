@@ -99,6 +99,9 @@ Evidence present:
   and iOS 26 UI cleanup.
 - `tools/audit_handoff_status.py` summarizes local artifacts and long-wear
   monitor summaries into a conservative `complete` / `not_complete` result.
+  The top-level audit carries through long-wear `acceptance_diagnostics`, so a
+  failed physical summary includes observed-versus-required values without
+  manually opening the monitor JSON.
   Use `--skip-external-reference` when external reference validation is
   deliberately deferred for a non-reference readiness audit.
   By default, it discovers

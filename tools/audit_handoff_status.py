@@ -100,12 +100,16 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
     allowed_thermal = criteria.get("allowed_thermal", [])
     if not isinstance(allowed_thermal, list) or not set(str(item) for item in allowed_thermal).issubset(ALLOWED_OVERNIGHT_THERMAL):
         audit_blockers.append("overnight_allowed_thermal")
+    diagnostics = data.get("acceptance_diagnostics", {})
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        diagnostics = synthesized_long_wear_diagnostics(data, criteria)
 
     return {
         "status": "pass" if acceptance_status == "pass" and not audit_blockers else "fail",
         "summary": str(selected_summary),
         "acceptance_status": acceptance_status,
         "acceptance_blockers": blockers,
+        "acceptance_diagnostics": diagnostics,
         "audit_blockers": sorted(set(audit_blockers)),
         "thermal_states": data.get("thermal_states", []),
         "battery_delta": data.get("battery_delta", "missing"),
@@ -114,6 +118,59 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "preset": data.get("preset", criteria.get("preset", "missing")),
         "planned_samples": data.get("planned_samples", "missing"),
         "planned_duration_s": data.get("planned_duration_s", "missing"),
+    }
+
+
+def synthesized_long_wear_diagnostics(data: dict[str, object], criteria: dict[str, object]) -> dict[str, object]:
+    min_samples = int(criteria.get("min_samples", 0) or 0)
+    min_span = float(criteria.get("min_span_s", 0) or 0)
+    min_coverage = float(criteria.get("min_coverage_percent", 0) or 0)
+    max_gap = float(criteria.get("max_gap_s", 0) or 0)
+    max_battery_drop = float(criteria.get("max_battery_drop_percent", 0) or 0)
+    allowed_thermal = criteria.get("allowed_thermal", [])
+    if not isinstance(allowed_thermal, list):
+        allowed_thermal = []
+    thermal_states = data.get("thermal_states", [])
+    if not isinstance(thermal_states, list):
+        thermal_states = []
+    battery_delta = data.get("battery_delta", "missing")
+    battery_ok = isinstance(battery_delta, (int, float)) and battery_delta >= -max_battery_drop
+    samples = int(data.get("samples", 0) or 0)
+    active_ok_samples = int(data.get("active_ok_samples", 0) or 0)
+    session_span = float(data.get("latest_recent_session_span_s", 0) or 0)
+    session_coverage = float(data.get("latest_recent_session_coverage_percent", 0) or 0)
+    active_gap = float(data.get("max_active_accepted_gap_s", 0) or 0)
+    recent_gap = float(data.get("max_recent_accepted_gap_s", 0) or 0)
+
+    return {
+        "samples": {"observed": samples, "required_min": min_samples, "ok": samples >= min_samples},
+        "active_ok_samples": {
+            "observed": active_ok_samples,
+            "required_min": min_samples,
+            "ok": active_ok_samples >= min_samples,
+        },
+        "session_span": {
+            "observed_s": session_span,
+            "required_min_s": min_span,
+            "ok": session_span >= min_span,
+        },
+        "session_coverage": {
+            "observed_percent": session_coverage,
+            "required_min_percent": min_coverage,
+            "ok": session_coverage >= min_coverage,
+        },
+        "active_gap": {"observed_s": active_gap, "required_max_s": max_gap, "ok": active_gap <= max_gap},
+        "recent_gap": {"observed_s": recent_gap, "required_max_s": max_gap, "ok": recent_gap <= max_gap},
+        "thermal": {
+            "observed": sorted(str(item) for item in thermal_states),
+            "allowed": [str(item) for item in allowed_thermal],
+            "ok": bool(thermal_states) and set(str(item) for item in thermal_states).issubset(str(item) for item in allowed_thermal),
+        },
+        "battery": {
+            "observed_delta_percent": battery_delta,
+            "required_min_delta_percent": -max_battery_drop,
+            "ok": battery_ok,
+        },
     }
 
 

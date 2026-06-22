@@ -65,6 +65,18 @@ class AuditHandoffStatusTests(unittest.TestCase):
             summary.write_text(json.dumps({
                 "acceptance_status": "fail",
                 "acceptance_blockers": ["session_span", "thermal"],
+                "acceptance_diagnostics": {
+                    "session_span": {
+                        "observed_s": 2731.1,
+                        "required_min_s": 28800,
+                        "ok": False,
+                    },
+                    "thermal": {
+                        "observed": ["serious"],
+                        "allowed": ["nominal", "fair"],
+                        "ok": False,
+                    },
+                },
                 "thermal_states": ["serious"],
                 "battery_delta": 0,
                 "latest_recent_session_span_s": 2731.1,
@@ -78,6 +90,14 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["physical_long_wear"]["status"], "fail")
         self.assertIn("session_span", report["blockers"])
         self.assertIn("thermal", report["blockers"])
+        self.assertEqual(
+            report["physical_long_wear"]["acceptance_diagnostics"]["session_span"]["observed_s"],
+            2731.1,
+        )
+        self.assertEqual(
+            report["physical_long_wear"]["acceptance_diagnostics"]["thermal"]["allowed"],
+            ["nominal", "fair"],
+        )
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertIn("external_reference_validation", report["blockers"])
         self.assertEqual(report["external_reference_status"], "required")
@@ -117,6 +137,43 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("overnight_preset", report["blockers"])
         self.assertIn("overnight_planned_duration", report["blockers"])
         self.assertIn("overnight_min_span", report["blockers"])
+
+    def test_missing_long_wear_diagnostics_are_synthesized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            summary.parent.mkdir(parents=True)
+            summary.write_text(json.dumps({
+                "acceptance_status": "fail",
+                "acceptance_blockers": ["session_span", "session_coverage", "thermal"],
+                "samples": 1,
+                "active_ok_samples": 1,
+                "criteria": {
+                    "min_samples": 1,
+                    "min_span_s": 28800,
+                    "min_coverage_percent": 85.0,
+                    "max_gap_s": 30.0,
+                    "allowed_thermal": ["nominal", "fair"],
+                    "max_battery_drop_percent": 35.0,
+                },
+                "thermal_states": ["serious"],
+                "battery_delta": 0,
+                "latest_recent_session_span_s": 2731.1,
+                "latest_recent_session_coverage_percent": 50.0,
+                "max_active_accepted_gap_s": 0.0,
+                "max_recent_accepted_gap_s": 0.0,
+            }), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+
+        diagnostics = report["physical_long_wear"]["acceptance_diagnostics"]
+        self.assertEqual(diagnostics["session_span"]["observed_s"], 2731.1)
+        self.assertEqual(diagnostics["session_span"]["required_min_s"], 28800)
+        self.assertEqual(diagnostics["session_coverage"]["observed_percent"], 50.0)
+        self.assertEqual(diagnostics["thermal"]["observed"], ["serious"])
+        self.assertFalse(diagnostics["thermal"]["ok"])
 
     def test_external_reference_can_be_explicitly_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
