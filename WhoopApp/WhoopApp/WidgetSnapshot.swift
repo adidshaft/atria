@@ -77,11 +77,12 @@ enum WidgetSnapshotPublisher {
         } else {
             hrvRMSSD = nil
         }
-        let hasReferencePendingHRV = ble.hrvSnapshot?.isReady == true
-            || store.sessions.contains { ($0.hrv ?? 0) > 0 && $0.hrvReferenceValidated != true }
-        let hrvState = hrvRMSSD == nil
-            ? (hasReferencePendingHRV ? "reference_pending" : "learning")
-            : "validated"
+        let hrvState: String
+        if hrvRMSSD == nil {
+            hrvState = "learning"
+        } else {
+            hrvState = recovery.confidence == .validated ? "validated" : "personal_baseline"
+        }
         let widgetDiagnostics = Self.diagnostics
         let snapshot = WidgetSnapshot(schema: 1,
                                       createdAt: Date(),

@@ -149,7 +149,7 @@ struct WhoopWidgetEntryView: View {
     }
 
     private var footerText: String {
-        guard let snapshot = entry.snapshot else { return "HRV reference pending" }
+        guard let snapshot = entry.snapshot else { return "HRV learning" }
         if let hrv = snapshot.hrvRMSSD {
             return "HRV \(hrv) ms · RHR \(snapshot.restingHR.map(String.init) ?? "learning")"
         }
