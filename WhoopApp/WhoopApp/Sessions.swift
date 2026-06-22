@@ -13,6 +13,9 @@ struct SavedSession: Codable, Identifiable {
     /// Representative HRV (RMSSD, ms) for the session, if the realtime channel
     /// produced RR intervals. Optional so older saved sessions still decode.
     var hrv: Int?
+    /// True SDNN (ms) from the same RR window that passed external validation.
+    /// HealthKit's HRV type is SDNN, while Atria displays RMSSD in-app.
+    var hrvSDNN: Double? = nil
     /// Respiratory rate inferred from RR modulation, in breaths per minute.
     /// Optional because older sessions and insufficient RR windows have none.
     var respiratoryRate: Double? = nil
@@ -72,8 +75,11 @@ struct SavedSession: Codable, Identifiable {
         hrvReferenceValidated == true ? hrv : nil
     }
     var referenceValidatedSDNN: Double? {
-        guard hrvReferenceValidated == true,
-              let rrPoints,
+        guard hrvReferenceValidated == true else { return nil }
+        if let hrvSDNN, hrvSDNN > 0 {
+            return hrvSDNN
+        }
+        guard let rrPoints,
               rrPoints.count >= 2 else { return nil }
         let values = rrPoints.map { Double($0.ms) }.filter { (300...2000).contains($0) }
         guard values.count >= 2 else { return nil }
@@ -6847,6 +6853,7 @@ final class SessionStore: ObservableObject {
             if metricPassed {
                 persistRRReferenceValidation(for: best.session,
                                              rmssd: best.snapshot.rmssd,
+                                             sdnn: best.snapshot.sdnn,
                                              delta: delta ?? 0)
             }
             return metricPassed
@@ -7023,6 +7030,7 @@ final class SessionStore: ObservableObject {
 
     private func persistRRReferenceValidation(for session: SavedSession,
                                               rmssd: Double,
+                                              sdnn: Double,
                                               delta: Double) {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else {
             WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_not_found session_id=%@ reference_validated=0",
@@ -7030,6 +7038,7 @@ final class SessionStore: ObservableObject {
             return
         }
         sessions[index].hrv = Int(rmssd.rounded())
+        sessions[index].hrvSDNN = sdnn
         sessions[index].hrvReferenceValidated = true
         guard save() else {
             WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_store_save session_id=%@ reference_validated=0",
@@ -7040,10 +7049,11 @@ final class SessionStore: ObservableObject {
         refreshSessionDerivedCaches()
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=ok session_id=%@ label=%@ hrv=%d rmssd_delta_ms=%.1f reference_validated=1",
+        WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=ok session_id=%@ label=%@ rmssd=%d sdnn=%.1f rmssd_delta_ms=%.1f reference_validated=1",
               session.id.uuidString,
               session.label,
               sessions[index].referenceValidatedHRV ?? 0,
+              sessions[index].referenceValidatedSDNN ?? 0,
               delta)
     }
 
