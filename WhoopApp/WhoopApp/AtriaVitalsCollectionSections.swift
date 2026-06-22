@@ -729,6 +729,50 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         AtriaStrainMeter(strain: hero.strain,
                          detail: hero.strainNarrative,
                          confidence: hero.strainConfidence)
+        AtriaTrainingLoadTile(ratio: hero.loadRatioText,
+                              target: hero.loadTargetText,
+                              confidence: hero.loadConfidence,
+                              narrative: hero.loadNarrative)
+    }
+}
+
+private struct AtriaTrainingLoadTile: View, Equatable {
+    let ratio: String
+    let target: String
+    let confidence: String
+    let narrative: String
+
+    private var confidenceTint: Color {
+        confidence == "local" ? .green : .orange
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Load ratio", systemImage: "chart.line.uptrend.xyaxis")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.blue)
+
+            Text(ratio)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            AtriaInlineQuickStat(label: "Target", value: target)
+
+            Text(confidence)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(confidenceTint)
+
+            Text(narrative)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .atriaInsetCard(cornerRadius: 20, tint: .blue)
     }
 }
 

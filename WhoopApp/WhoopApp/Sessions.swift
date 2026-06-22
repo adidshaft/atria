@@ -1081,6 +1081,24 @@ struct TrendSummary: Identifiable, Equatable {
     let blockers: String
 }
 
+struct TrainingLoadSummary: Equatable {
+    let acuteLoad: Double
+    let chronicLoad: Double
+    let ratio: Double?
+    let confidence: String
+    let targetBand: ClosedRange<Double>?
+    let detail: String
+
+    var ratioText: String {
+        ratio.map { String(format: "%.2f", $0) } ?? "Learning"
+    }
+
+    var targetBandText: String {
+        guard let targetBand else { return "Learning" }
+        return String(format: "%.1f-%.1f", targetBand.lowerBound, targetBand.upperBound)
+    }
+}
+
 private struct RRLedgerReplaySummary {
     let sessionsWithRR: Int
     let rrSamples: Int
@@ -5872,6 +5890,55 @@ final class SessionStore: ObservableObject {
                                 detail: detail,
                                 blockers: blockers)
         }
+    }
+
+    func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {
+        let rollups = dailyRollups(rest: rest, maxHR: maxHR)
+        let acuteRollups = Array(rollups.prefix(7))
+        let chronicRollups = Array(rollups.prefix(28))
+        let acute = averageDouble(acuteRollups.map(\.strain)) ?? 0
+        let chronic = averageDouble(chronicRollups.map(\.strain)) ?? 0
+        let ratio = chronic > 0 ? acute / chronic : nil
+        let enoughAcute = acuteRollups.count >= 3
+        let enoughChronic = chronicRollups.count >= 14
+        let confidence: String
+        if enoughChronic {
+            confidence = "local"
+        } else if enoughAcute {
+            confidence = "partial"
+        } else {
+            confidence = "learning"
+        }
+        let targetBand: ClosedRange<Double>? = {
+            guard enoughAcute else { return nil }
+            if let ratio {
+                if ratio > 1.30 {
+                    return max(0, acute - 4)...max(0, acute - 1)
+                }
+                if ratio < 0.80 {
+                    return acute...(min(21, acute + 3))
+                }
+            }
+            return max(0, acute - 1.5)...min(21, acute + 1.5)
+        }()
+        let detail: String
+        if let ratio {
+            if ratio > 1.30 {
+                detail = "Acute load is running ahead of your 28-day base."
+            } else if ratio < 0.80 {
+                detail = "Recent strain is below your longer baseline."
+            } else {
+                detail = "Recent strain is aligned with your longer baseline."
+            }
+        } else {
+            detail = "Atria needs more local strain history for load ratio."
+        }
+        return TrainingLoadSummary(acuteLoad: acute,
+                                   chronicLoad: chronic,
+                                   ratio: ratio,
+                                   confidence: confidence,
+                                   targetBand: targetBand,
+                                   detail: detail)
     }
 
     func trendSummaryFast(rest: Int,

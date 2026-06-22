@@ -691,6 +691,10 @@ final class AtriaHomeModel {
         let restingHeartRate: Int
         let restingHeartRateText: String
         let strainNarrative: String
+        let loadRatioText: String
+        let loadTargetText: String
+        let loadConfidence: String
+        let loadNarrative: String
 
         var recoveryValue: String {
             recoveryEstimate.percent.map { "\($0)%" } ?? "Learning"
@@ -730,6 +734,10 @@ final class AtriaHomeModel {
                 && lhs.restingHeartRate == rhs.restingHeartRate
                 && lhs.restingHeartRateText == rhs.restingHeartRateText
                 && lhs.strainNarrative == rhs.strainNarrative
+                && lhs.loadRatioText == rhs.loadRatioText
+                && lhs.loadTargetText == rhs.loadTargetText
+                && lhs.loadConfidence == rhs.loadConfidence
+                && lhs.loadNarrative == rhs.loadNarrative
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
         }
 
@@ -1360,6 +1368,7 @@ final class AtriaHomeModel {
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = savedAggregate.savedTodayTRIMP + liveTRIMP
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
+        let load = store.trainingLoadSummary(rest: rest, maxHR: maxHR)
         let strainConfidence: String
         if maxHR <= rest {
             strainConfidence = "learning"
@@ -1389,7 +1398,11 @@ final class AtriaHomeModel {
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
                             restingHeartRate: rest,
                             restingHeartRateText: "\(rest)",
-                            strainNarrative: String(format: "TRIMP %.1f from saved %.1f + live %.1f", totalTRIMP, savedAggregate.savedTodayTRIMP, liveTRIMP))
+                            strainNarrative: String(format: "TRIMP %.1f from saved %.1f + live %.1f", totalTRIMP, savedAggregate.savedTodayTRIMP, liveTRIMP),
+                            loadRatioText: load.ratioText,
+                            loadTargetText: load.targetBandText,
+                            loadConfidence: load.confidence,
+                            loadNarrative: load.detail)
     }
 
     private struct FallbackHeroHRVState {
@@ -1567,7 +1580,11 @@ final class AtriaHomeModel {
                             backupDetail: hasSavedBackup ? "saved on device" : "no backup yet",
                             restingHeartRate: rest,
                             restingHeartRateText: "\(rest)",
-                            strainNarrative: "Live strain resumes after the strap reconnects.")
+                            strainNarrative: "Live strain resumes after the strap reconnects.",
+                            loadRatioText: "Learning",
+                            loadTargetText: "Learning",
+                            loadConfidence: "learning",
+                            loadNarrative: "Training load appears after local strain history builds.")
     }
 
     private static func makeSnapshot(store: SessionStore,
