@@ -272,6 +272,21 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, widget, "readings ·")
         assert_not_contains(self, widget, "samples ·")
 
+    def test_live_activity_updates_are_throttled_off_the_sample_hot_path(self):
+        coordinator = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityCoordinator.swift")
+
+        for needle in [
+            "private var lastActivitySnapshot: Snapshot?",
+            "private var lastActivityUpdateAt: Date?",
+            "private var pendingActivityUpdateTask: Task<Void, Never>?",
+            "private let minimumActivityUpdateInterval: TimeInterval = 15",
+            "enqueueActivityUpdate(snapshot, now: now)",
+            "shouldSendActivityUpdateImmediately",
+            "nextActivityUpdateDelay",
+            "pendingActivityUpdateTask?.cancel()",
+        ]:
+            assert_contains(self, coordinator, needle)
+
     def test_end_user_copy_avoids_lab_only_language(self):
         content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
         hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
