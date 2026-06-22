@@ -23,9 +23,13 @@ Run the fast monitor/tooling regression before touching physical-device evidence
 
 ```sh
 ./test_monitor_long_wear.sh
+./test_handoff_static_checks.sh
 ```
 
-This py-compiles the long-wear monitor and runs its acceptance parsing tests.
+This py-compiles the long-wear monitor, runs its acceptance parsing tests, and
+checks static handoff invariants such as production strap-write blocking,
+validated HRV export gating, restored-peripheral reuse, and iOS 26-only UI
+cleanup.
 It does not replace physical iPhone validation for BLE, background collection,
 thermal, or battery behavior.
 

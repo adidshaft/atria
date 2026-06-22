@@ -79,6 +79,9 @@ Evidence present:
   `overnight` preset and explicit acceptance checks.
 - `test_monitor_long_wear.sh` runs the fast local monitor regression path
   (`py_compile` plus `test_monitor_long_wear.py`).
+- `test_handoff_static_checks.sh` locks local source invariants for production
+  strap-write blocking, restored-peripheral reuse, validated-only HRV export,
+  validate-later recovery display, native feature seams, and iOS 26 UI cleanup.
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 

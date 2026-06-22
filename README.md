@@ -111,6 +111,7 @@ Fast local tooling checks:
 
 ```sh
 ./test_monitor_long_wear.sh
+./test_handoff_static_checks.sh
 ```
 
 Long-wear acceptance, when extended physical-device checks are allowed:
