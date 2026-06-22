@@ -1777,6 +1777,77 @@ def summarize_active_journal_segments(directory: Path) -> None:
          f"label={str(latest.get('label', '')).replace(' ', '_')}")
 
 
+def summarize_sessions_file(path: Path) -> None:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        emit(f"WHOOPDBG_SESSIONS_SUMMARY status=decode_error error={str(error)!r}")
+        return
+    if isinstance(payload, list):
+        sessions = [item for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict):
+        sessions = [item for item in payload.get("sessions", []) if isinstance(item, dict)]
+    else:
+        sessions = []
+    if not sessions:
+        emit("WHOOPDBG_SESSIONS_SUMMARY status=empty sessions=0")
+        return
+
+    def number(value, default=0.0):
+        return value if isinstance(value, (int, float)) else default
+
+    def duration(session: dict) -> float:
+        start = number(session.get("start"))
+        end = number(session.get("end"))
+        if end > start:
+            return end - start
+        points = session.get("points", [])
+        if isinstance(points, list) and points:
+            return max(number(point.get("t")) for point in points if isinstance(point, dict))
+        return 0.0
+
+    def rr_count(session: dict) -> int:
+        rr = session.get("rrPoints")
+        return len(rr) if isinstance(rr, list) else 0
+
+    ordered = sorted(sessions, key=lambda session: number(session.get("end")), reverse=True)
+    latest = ordered[0]
+    latest_end = number(latest.get("end"))
+    recent_window_s = 12 * 60 * 60
+    recent = [
+        session for session in sessions
+        if latest_end <= 0 or number(session.get("end")) >= latest_end - recent_window_s
+    ]
+    recent_starts = [number(session.get("start")) for session in recent if number(session.get("start")) > 0]
+    recent_ends = [number(session.get("end")) for session in recent if number(session.get("end")) > 0]
+    recent_span = (max(recent_ends) - min(recent_starts)) if recent_starts and recent_ends else 0.0
+    recent_duration = sum(duration(session) for session in recent)
+    recent_samples = sum(len(session.get("points", [])) for session in recent if isinstance(session.get("points"), list))
+    recent_rr = sum(rr_count(session) for session in recent)
+    recent_raw_gaps = sum(int(number(session.get("hrRawGaps"), 0)) for session in recent)
+    recent_accepted_gaps = sum(int(number(session.get("hrAcceptedGaps"), 0)) for session in recent)
+    max_raw_gap = max((number(session.get("hrMaxRawGap")) for session in recent), default=0.0)
+    max_accepted_gap = max((number(session.get("hrMaxAcceptedGap")) for session in recent), default=0.0)
+    recent_coverage = (recent_duration / recent_span * 100) if recent_span > 0 else 0.0
+    latest_samples = len(latest.get("points", [])) if isinstance(latest.get("points"), list) else 0
+    latest_rr = rr_count(latest)
+    latest_bpm = "none"
+    latest_points = latest.get("points", [])
+    if isinstance(latest_points, list) and latest_points:
+        last_point = latest_points[-1]
+        if isinstance(last_point, dict):
+            latest_bpm = last_point.get("bpm", "none")
+    emit("WHOOPDBG_SESSIONS_SUMMARY "
+         f"status=ok sessions={len(sessions)} recent_sessions={len(recent)} recent_window_s={recent_window_s} "
+         f"recent_span_s={recent_span:.1f} recent_duration_s={recent_duration:.1f} recent_coverage_percent={recent_coverage:.1f} "
+         f"recent_samples={recent_samples} recent_rr={recent_rr} "
+         f"recent_raw_gaps={recent_raw_gaps} recent_accepted_gaps={recent_accepted_gaps} "
+         f"recent_max_raw_gap_s={max_raw_gap:.1f} recent_max_accepted_gap_s={max_accepted_gap:.1f} "
+         f"latest_duration_s={duration(latest):.1f} latest_samples={latest_samples} latest_rr={latest_rr} "
+         f"latest_bpm={latest_bpm} latest_label={str(latest.get('label', '')).replace(' ', '_')}")
+
+
 def frame_payload_from_frame_hex(line: str) -> tuple[str, bytes, bool] | None:
     tokens = tokens_after("WHOOPDBG frame", line)
     channel = tokens.get("ch", "")
@@ -2903,6 +2974,7 @@ if not replay_log and pull_sessions_dir:
     if result.returncode != 0:
         raise SystemExit(result.returncode)
     emit(f"WHOOPDBG_SESSIONS_PULL_FILE={destination_file}")
+    summarize_sessions_file(destination_file)
     active_destination_file = destination / "atria-active-session.json"
     last_active_result = None
     for source_path in [
