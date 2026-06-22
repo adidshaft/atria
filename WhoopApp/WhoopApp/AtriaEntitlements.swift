@@ -23,10 +23,15 @@ struct AtriaEntitlements: Equatable {
 
     func isEnabled(_ feature: Feature) -> Bool {
         switch feature {
-        case .localMetrics, .healthKitExport, .backgroundCollection:
+        case .localMetrics,
+             .healthKitExport,
+             .backgroundCollection,
+             .liveActivity,
+             .mediaControls,
+             .hapticAlerts,
+             .aiCoachLocal,
+             .aiCoachCloud:
             return true
-        case .liveActivity, .mediaControls, .hapticAlerts, .aiCoachLocal, .aiCoachCloud:
-            return tier == .premium || premiumOverrides.contains(feature)
         }
     }
 }
