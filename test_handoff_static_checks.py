@@ -179,6 +179,11 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
+        card = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAICoachCard.swift")
+        assert_contains(self, card, "does not send metrics until a reviewed")
+        assert_contains(self, card, "Enable local mode for an offline summary")
+        assert_not_contains(self, card, "sends selected local metrics")
+
         for forbidden in [
             "import Network",
             "localModelEnabled",

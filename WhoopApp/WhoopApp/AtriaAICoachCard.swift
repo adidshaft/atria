@@ -9,7 +9,7 @@ struct AtriaAICoachCard: View, Equatable {
     let onDeleteAPIKey: () -> Void
 
     @State private var answer = AtriaCoachAnswer(title: "Coach off",
-                                                 detail: "Enable local or bring-your-own-key cloud mode when you want an AI layer over your local metrics.",
+                                                 detail: "Enable local mode for an offline summary, or review bring-your-own-key cloud mode when a provider client is available.",
                                                  disclosure: "Off by default.",
                                                  networkPolicy: .none)
     @State private var apiKeyDraft = ""
@@ -103,7 +103,7 @@ struct AtriaAICoachCard: View, Equatable {
                 }
             }
 
-            Text("Cloud mode is opt-in and sends selected local metrics to \(settings.cloudProvider.title) only when a provider client is enabled.")
+            Text("Cloud mode is opt-in. This build stores your key locally and does not send metrics until a reviewed \(settings.cloudProvider.title) client is enabled.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -140,7 +140,7 @@ struct AtriaAICoachCard: View, Equatable {
     private func refreshAnswer() async {
         guard let provider = AtriaCoachProviderFactory.make(settings: settings, hasAPIKey: hasAPIKey) else {
             answer = AtriaCoachAnswer(title: "Coach off",
-                                      detail: "Enable local mode for an offline summary, or cloud mode with your own key.",
+                                      detail: "Enable local mode for an offline summary, or keep cloud mode off until a reviewed provider client is available.",
                                       disclosure: "Off by default.",
                                       networkPolicy: .none)
             return
