@@ -236,13 +236,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
 
             ViewThatFits {
                 HStack(spacing: 12) {
-                    AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+                    AtriaInlineQuickStat(label: "Validation", value: snapshot.referenceText)
                     AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
                     AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
                 }
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+                    AtriaInlineQuickStat(label: "Validation", value: snapshot.referenceText)
                     AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
                     AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
                 }
@@ -714,8 +714,8 @@ struct AtriaOverviewCollectionSection: View, Equatable {
 
     @ViewBuilder
     private var overviewCollectionTiles: some View {
-        AtriaInlineQuickStat(label: "RR package", value: stats.rrPackageText)
-        AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+        AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
+        AtriaInlineQuickStat(label: "Validation", value: snapshot.referenceText)
         AtriaInlineQuickStat(label: "Workout", value: snapshot.workoutText)
         AtriaInlineQuickStat(label: "Logging", value: snapshot.loggingText)
     }
@@ -945,7 +945,7 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
 
     @ViewBuilder
     private var savedStateTiles: some View {
-        AtriaInlineQuickStat(label: "Reference", value: snapshot.referenceText)
+        AtriaInlineQuickStat(label: "Validation", value: snapshot.referenceText)
         AtriaInlineQuickStat(label: "Backup", value: stats.backupValue)
         AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7 HRV")
         AtriaInlineQuickStat(label: "Next", value: stats.nextAction)

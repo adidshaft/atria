@@ -264,16 +264,22 @@ class HandoffStaticChecks(unittest.TestCase):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
 
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
+        assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
         assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
+        assert_contains(self, overview, "AtriaInlineQuickStat(label: \"Validation\"")
+        assert_contains(self, overview, "AtriaInlineQuickStat(label: \"HRV window\"")
         assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
 
         for text in [content, overview, sessions]:
             for forbidden in [
                 "Not counted as workout until HR/reference evidence is stronger.",
+                "saved RR package stays ready.",
                 "Saved references and backup remain available while the strap reconnects.",
                 "Rest candidates are diagnostic only; they do not count as sleep.",
             ]:
                 assert_not_contains(self, text, forbidden)
+        assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
+        assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"RR package\"")
 
     def test_user_path_debug_logs_are_gated(self):
         for rel in [

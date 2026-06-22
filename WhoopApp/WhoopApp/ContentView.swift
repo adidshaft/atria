@@ -450,7 +450,7 @@ private struct CollectionReliabilityCard: View {
             if !connected { return "Keep the phone near the strap until BLE reconnects." }
             if !longWear || !checkpointArmed { return "Keep Atria open so long-wear checkpoints arm." }
             if !journal.fresh && !checkpointSaved { return "Waiting for the first protected checkpoint." }
-            if !rrPresent && savedRRPresent { return "Current segment is HR-only; saved RR package stays ready." }
+            if !rrPresent && savedRRPresent { return "Current segment is HR-only; saved HRV window stays ready." }
             if !rrPresent { return "HR is protected; HRV stays learning until real RR returns." }
             return "Collection is protected; keep wearing while Atria logs locally."
         }
