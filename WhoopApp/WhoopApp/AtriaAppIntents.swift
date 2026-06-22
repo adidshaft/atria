@@ -145,17 +145,22 @@ enum AtriaIntentCommand: Codable, Equatable {
 
 enum AtriaIntentCommandStore {
     private static let key = "atria.intent.pendingCommand.v1"
+    private static let appGroupID = "group.com.adidshaft.atria"
 
     static func save(_ command: AtriaIntentCommand) {
         guard let data = try? JSONEncoder().encode(command) else { return }
         UserDefaults.standard.set(data, forKey: key)
+        UserDefaults(suiteName: appGroupID)?.set(data, forKey: key)
     }
 
     static func consume() -> AtriaIntentCommand? {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        let sharedDefaults = UserDefaults(suiteName: appGroupID)
+        let data = sharedDefaults?.data(forKey: key) ?? UserDefaults.standard.data(forKey: key)
+        guard let data,
               let command = try? JSONDecoder().decode(AtriaIntentCommand.self, from: data) else {
             return nil
         }
+        sharedDefaults?.removeObject(forKey: key)
         UserDefaults.standard.removeObject(forKey: key)
         return command
     }

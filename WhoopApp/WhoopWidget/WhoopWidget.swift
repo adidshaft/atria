@@ -1,6 +1,7 @@
 import SwiftUI
 import WidgetKit
 import ActivityKit
+import AppIntents
 
 private let snapshotKey = "atria.widgetSnapshot.v1"
 private let appGroupID = "group.com.adidshaft.atria"
@@ -208,6 +209,34 @@ struct AtriaLiveActivityWidget: Widget {
     }
 }
 
+struct AtriaStartCaptureControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "AtriaStartCaptureControl") {
+            ControlWidgetButton(action: AtriaControlCaptureIntent(command: .start)) {
+                Label("Start Atria", systemImage: "record.circle")
+            } actionLabel: { isRunning in
+                Text(isRunning ? "Starting" : "Start")
+            }
+        }
+        .displayName("Start Atria capture")
+        .description("Start local Atria collection from Control Center, Lock Screen, or the Action button.")
+    }
+}
+
+struct AtriaStopCaptureControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "AtriaStopCaptureControl") {
+            ControlWidgetButton(action: AtriaControlCaptureIntent(command: .stop)) {
+                Label("Stop Atria", systemImage: "stop.circle")
+            } actionLabel: { isRunning in
+                Text(isRunning ? "Stopping" : "Stop")
+            }
+        }
+        .displayName("Stop Atria capture")
+        .description("Stop local Atria collection from Control Center, Lock Screen, or the Action button.")
+    }
+}
+
 private struct AtriaLiveActivityLockScreenView: View {
     let context: ActivityViewContext<AtriaLiveActivityAttributes>
 
@@ -250,5 +279,7 @@ struct WhoopWidgetBundle: WidgetBundle {
     var body: some Widget {
         WhoopStatusWidget()
         AtriaLiveActivityWidget()
+        AtriaStartCaptureControl()
+        AtriaStopCaptureControl()
     }
 }
