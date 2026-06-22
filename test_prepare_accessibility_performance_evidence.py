@@ -38,6 +38,33 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
         self.assertTrue(manifest["instruments_trace"])
         self.assertTrue(all(value is False for value in manifest["accessibility_checks"].values()))
 
+    def test_build_string_falls_back_to_xcode_project_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "WhoopApp" / "WhoopApp.xcodeproj").mkdir(parents=True)
+            (repo / "WhoopApp" / "Info.plist").write_text(
+                """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Atria</string>
+</dict>
+</plist>
+""",
+                encoding="utf-8",
+            )
+            (repo / "WhoopApp" / "WhoopApp.xcodeproj" / "project.pbxproj").write_text(
+                """
+                MARKETING_VERSION = 1.2;
+                CURRENT_PROJECT_VERSION = 45;
+                """,
+                encoding="utf-8",
+            )
+
+            build = prepare_accessibility_performance_evidence.read_build_string(repo)
+
+        self.assertEqual(build, "Atria 1.2 (45)")
+
     def test_cli_refuses_to_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

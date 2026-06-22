@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import plistlib
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,14 +42,42 @@ def current_git_commit(repo: Path) -> str:
 
 def read_build_string(repo: Path) -> str:
     project_plist = repo / "WhoopApp" / "Info.plist"
+    display_name = "Atria"
+    version = ""
+    build = ""
     if not project_plist.exists():
-        return ""
-    with project_plist.open("rb") as handle:
-        data = plistlib.load(handle)
-    display_name = str(data.get("CFBundleDisplayName") or data.get("CFBundleName") or "Atria")
-    version = str(data.get("CFBundleShortVersionString") or "unknown")
-    build = str(data.get("CFBundleVersion") or "unknown")
+        return project_build_string(repo, display_name)
+    try:
+        with project_plist.open("rb") as handle:
+            data = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException):
+        return project_build_string(repo, display_name)
+    display_name = str(data.get("CFBundleDisplayName") or data.get("CFBundleName") or display_name)
+    version = str(data.get("CFBundleShortVersionString") or "")
+    build = str(data.get("CFBundleVersion") or "")
+    if not version or not build:
+        return project_build_string(repo, display_name)
     return f"{display_name} {version} ({build})"
+
+
+def project_build_string(repo: Path, display_name: str) -> str:
+    settings = project_build_settings(repo)
+    version = settings.get("MARKETING_VERSION", "unknown")
+    build = settings.get("CURRENT_PROJECT_VERSION", "unknown")
+    return f"{display_name} {version} ({build})"
+
+
+def project_build_settings(repo: Path) -> dict[str, str]:
+    project = repo / "WhoopApp" / "WhoopApp.xcodeproj" / "project.pbxproj"
+    if not project.exists():
+        return {}
+    text = project.read_text(encoding="utf-8", errors="replace")
+    settings: dict[str, str] = {}
+    for key in ("MARKETING_VERSION", "CURRENT_PROJECT_VERSION"):
+        match = re.search(rf"\b{key}\s*=\s*([^;]+);", text)
+        if match:
+            settings[key] = match.group(1).strip().strip('"')
+    return settings
 
 
 def default_manifest(repo: Path, measured_at: str) -> dict[str, object]:
