@@ -77,6 +77,8 @@ Evidence present:
   restarting Atria.
 - `tools/monitor_long_wear.py` provides a non-invasive monitor with an
   `overnight` preset and explicit acceptance checks.
+- `test_monitor_long_wear.sh` runs the fast local monitor regression path
+  (`py_compile` plus `test_monitor_long_wear.py`).
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 

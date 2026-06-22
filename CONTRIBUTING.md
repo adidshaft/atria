@@ -17,6 +17,31 @@ Contributions are welcome when they preserve the project contract: local-only da
 3. Run on a physical iPhone.
 4. Use `./live_device_debug.sh` for repeatable device verification when changing BLE, metrics, HealthKit, or app-state behavior.
 
+## Local Checks
+
+Run the fast monitor/tooling regression before touching physical-device evidence:
+
+```sh
+./test_monitor_long_wear.sh
+```
+
+This py-compiles the long-wear monitor and runs its acceptance parsing tests.
+It does not replace physical iPhone validation for BLE, background collection,
+thermal, or battery behavior.
+
+For long-wear proof after Atria is already running on a plugged-in physical
+iPhone with the strap connected:
+
+```sh
+ATRIA_DEVICE_ID=<physical-device-id> \
+  python3 tools/monitor_long_wear.py \
+  --preset overnight \
+  --label overnight-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Only treat the run as accepted when the monitor summary says
+`acceptance_status=pass` and `acceptance_blockers=none`.
+
 ## Pull Request Checklist
 
 - The change is scoped to one logical behavior.

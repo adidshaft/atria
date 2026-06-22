@@ -107,6 +107,26 @@ For command-line physical-device verification:
 ./live_device_debug.sh --seconds 45 --log logs/live-device/run.log --log-gate-status --standard-hr-only --long-wear-mode --leave-running
 ```
 
+Fast local tooling checks:
+
+```sh
+./test_monitor_long_wear.sh
+```
+
+Long-wear acceptance, when extended physical-device checks are allowed:
+
+```sh
+ATRIA_DEVICE_ID=<physical-device-id> \
+  python3 tools/monitor_long_wear.py \
+  --preset overnight \
+  --label overnight-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+That monitor is non-invasive: it uses `live_device_debug.sh --pull-only` to sample
+sessions and the active journal without relaunching Atria. The handoff is not
+accepted until the final summary reports `acceptance_status=pass` and
+`acceptance_blockers=none`.
+
 ## Repository Layout
 
 | Path | Purpose |
