@@ -98,6 +98,13 @@ final class HealthKitExporter {
         var end: TimeInterval
     }
 
+    private struct WorkoutExportPlan {
+        let activityType: HKWorkoutActivityType
+        let start: Date
+        let end: Date
+        let metadata: [String: Any]
+    }
+
     private struct HRBackfillGap {
         let session: SavedSession
         let expected: Int
@@ -844,11 +851,18 @@ final class HealthKitExporter {
                                  maxHR: maxHR,
                                  snapshot: snapshot)
         }
+        var workoutPlans: [WorkoutExportPlan] = []
         if !hrOnly {
-            samples.append(contentsOf: confirmedWorkouts.compactMap { workout in
+            workoutPlans.append(contentsOf: sessions.compactMap { session in
+                workoutExportPlan(for: session,
+                                  rest: rest,
+                                  maxHR: maxHR,
+                                  snapshot: ledger[session.id.uuidString])
+            })
+            workoutPlans.append(contentsOf: confirmedWorkouts.compactMap { workout in
                 let key = Self.confirmedWorkoutLedgerKey(workout.id)
                 guard ledger[key]?.workoutExported != true else { return nil }
-                return confirmedWorkoutSample(for: workout)
+                return confirmedWorkoutExportPlan(for: workout)
             })
             samples.append(contentsOf: confirmedSleeps.compactMap { sleep in
                 let key = Self.confirmedSleepLedgerKey(sleep.id)
@@ -856,7 +870,7 @@ final class HealthKitExporter {
                 return confirmedSleepSample(for: sleep)
             })
         }
-        guard !samples.isEmpty else {
+        guard !samples.isEmpty || !workoutPlans.isEmpty else {
             NSLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 workouts=0 hrv_samples=0 sleeps=0 ledger_entries=%d idempotent=1 reason=%@",
                   sessions.count,
                   ledger.count,
@@ -873,13 +887,17 @@ final class HealthKitExporter {
         let respiratoryRateSamples = samples.compactMap { $0 as? HKQuantitySample }
             .filter { $0.quantityType == respiratoryRateType }
             .count
-        let workouts = samples.compactMap { $0 as? HKWorkout }.count
+        let workouts = workoutPlans.count
         let sleeps = samples.compactMap { $0 as? HKCategorySample }
             .filter { $0.categoryType == sleepType }
             .count
 
-        store.save(samples) { [weak self] success, error in
-            if let error {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.save(samples: samples)
+                try await self.saveWorkoutPlans(workoutPlans)
+            } catch {
                 NSLog("WHOOPDBG healthkit_export status=save_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d reason=%@ error=%@",
                       sessions.count,
                       hrSamples,
@@ -892,58 +910,86 @@ final class HealthKitExporter {
                       String(describing: error))
                 return
             }
-            guard success else {
-                NSLog("WHOOPDBG healthkit_export status=failed sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
-                      sessions.count,
-                      hrSamples,
-                      workouts,
-                      hrvSamples,
-                      respiratoryRateSamples,
-                      sleeps,
-                      updatedLedger.count,
-                      reason)
-                return
+            if hrOnly {
+                self.markSessionsHeartRateExported(sessions, ledger: &updatedLedger)
+            } else {
+                self.markSessionsExported(sessions,
+                                          confirmedWorkouts: confirmedWorkouts,
+                                          confirmedSleeps: confirmedSleeps,
+                                          rest: rest,
+                                          maxHR: maxHR,
+                                          ledger: &updatedLedger)
             }
-            Task { @MainActor in
-                guard let self else { return }
-                if hrOnly {
-                    self.markSessionsHeartRateExported(sessions, ledger: &updatedLedger)
-                } else {
-                    self.markSessionsExported(sessions,
-                                              confirmedWorkouts: confirmedWorkouts,
-                                              confirmedSleeps: confirmedSleeps,
-                                              rest: rest,
-                                              maxHR: maxHR,
-                                              ledger: &updatedLedger)
-                }
-                self.saveExportLedger(updatedLedger)
-                NSLog("WHOOPDBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
-                      sessions.count,
-                      hrSamples,
-                      workouts,
-                      hrvSamples,
-                      respiratoryRateSamples,
-                      sleeps,
-                      updatedLedger.count,
-                      reason)
-                self.verifyHeartRateExportReadback(sessions: sessions,
-                                                   verificationSessions: verificationSessions,
-                                                   expectedDeltaHRSamples: hrSamples,
-                                                   expectedTotalAtriaHRSamples: Self.plannedCounts(for: verificationSessions,
-                                                                                                  rest: rest,
-                                                                                                  maxHR: maxHR,
-                                                                                                  confirmedWorkouts: [],
-                                                                                                  confirmedSleeps: []).hrSamples,
-                                                   rest: rest,
-                                                   maxHR: maxHR,
-                                                   reason: reason)
-                self.verifySleepExportReadback(confirmedSleeps: confirmedSleeps,
-                                               expectedDeltaSleeps: sleeps,
+            self.saveExportLedger(updatedLedger)
+            NSLog("WHOOPDBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
+                  sessions.count,
+                  hrSamples,
+                  workouts,
+                  hrvSamples,
+                  respiratoryRateSamples,
+                  sleeps,
+                  updatedLedger.count,
+                  reason)
+            self.verifyHeartRateExportReadback(sessions: sessions,
+                                               verificationSessions: verificationSessions,
+                                               expectedDeltaHRSamples: hrSamples,
+                                               expectedTotalAtriaHRSamples: Self.plannedCounts(for: verificationSessions,
+                                                                                              rest: rest,
+                                                                                              maxHR: maxHR,
+                                                                                              confirmedWorkouts: [],
+                                                                                              confirmedSleeps: []).hrSamples,
+                                               rest: rest,
+                                               maxHR: maxHR,
                                                reason: reason)
-                if reason == "hr_reset_rebuild" {
-                    NSLog("WHOOPDBG healthkit_reset_rebuild status=complete sessions=%d rebuilt_hr_samples=%d metric_promotions=0",
-                          sessions.count,
-                          hrSamples)
+            self.verifySleepExportReadback(confirmedSleeps: confirmedSleeps,
+                                           expectedDeltaSleeps: sleeps,
+                                           reason: reason)
+            if reason == "hr_reset_rebuild" {
+                NSLog("WHOOPDBG healthkit_reset_rebuild status=complete sessions=%d rebuilt_hr_samples=%d metric_promotions=0",
+                      sessions.count,
+                      hrSamples)
+            }
+        }
+    }
+
+    private func save(samples: [HKSample]) async throws {
+        guard !samples.isEmpty else { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            store.save(samples) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: CocoaError(.coderInvalidValue))
+                }
+            }
+        }
+    }
+
+    private func saveWorkoutPlans(_ plans: [WorkoutExportPlan]) async throws {
+        for plan in plans {
+            try await saveWorkoutPlan(plan)
+        }
+    }
+
+    private func saveWorkoutPlan(_ plan: WorkoutExportPlan) async throws {
+        let configuration = HKWorkoutConfiguration()
+        configuration.activityType = plan.activityType
+        let builder = HKWorkoutBuilder(healthStore: store,
+                                       configuration: configuration,
+                                       device: nil)
+        try await builder.beginCollection(at: plan.start)
+        try await builder.addMetadata(plan.metadata)
+        try await builder.endCollection(at: plan.end)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            builder.finishWorkout { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
                 }
             }
         }
@@ -1651,26 +1697,32 @@ final class HealthKitExporter {
                                             metadata: metadata))
         }
 
-        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
-        if readiness.ready, snapshot?.workoutExported != true {
-            var workoutMetadata = metadata
-            workoutMetadata["atria_workout_detector"] = "hrr50"
-            workoutMetadata["atria_workout_confidence"] = "ready"
-            workoutMetadata["atria_workout_threshold_hr"] = readiness.thresholdHR
-            workoutMetadata["atria_workout_stream_coverage_percent"] = readiness.streamCoveragePercent
-            let workout = HKWorkout(activityType: .other,
-                                    start: session.start,
-                                    end: session.end,
-                                    duration: session.duration,
-                                    totalEnergyBurned: nil,
-                                    totalDistance: nil,
-                                    metadata: workoutMetadata)
-            samples.append(workout)
-        }
         return samples
     }
 
-    private func confirmedWorkoutSample(for workout: UserConfirmedWorkout) -> HKWorkout? {
+    private func workoutExportPlan(for session: SavedSession,
+                                   rest: Int,
+                                   maxHR: Int,
+                                   snapshot: ExportSnapshot?) -> WorkoutExportPlan? {
+        guard session.end > session.start else { return nil }
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+        guard readiness.ready, snapshot?.workoutExported != true else { return nil }
+        var metadata: [String: Any] = [
+            HKMetadataKeyWasUserEntered: false,
+            "atria_session_id": session.id.uuidString,
+            "atria_label": session.label
+        ]
+        metadata["atria_workout_detector"] = "hrr50"
+        metadata["atria_workout_confidence"] = "ready"
+        metadata["atria_workout_threshold_hr"] = readiness.thresholdHR
+        metadata["atria_workout_stream_coverage_percent"] = readiness.streamCoveragePercent
+        return WorkoutExportPlan(activityType: .other,
+                                 start: session.start,
+                                 end: session.end,
+                                 metadata: metadata)
+    }
+
+    private func confirmedWorkoutExportPlan(for workout: UserConfirmedWorkout) -> WorkoutExportPlan? {
         guard workout.end > workout.start else { return nil }
         let metadata: [String: Any] = [
             HKMetadataKeyWasUserEntered: false,
@@ -1684,13 +1736,10 @@ final class HealthKitExporter {
             "atria_workout_peak_hr": workout.peakHR,
             "atria_auto_gate_e_unchanged": true
         ]
-        return HKWorkout(activityType: .traditionalStrengthTraining,
-                         start: workout.start,
-                         end: workout.end,
-                         duration: workout.duration,
-                         totalEnergyBurned: nil,
-                         totalDistance: nil,
-                         metadata: metadata)
+        return WorkoutExportPlan(activityType: .traditionalStrengthTraining,
+                                 start: workout.start,
+                                 end: workout.end,
+                                 metadata: metadata)
     }
 
     private func confirmedSleepSample(for sleep: UserConfirmedSleep) -> HKCategorySample? {
