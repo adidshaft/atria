@@ -233,10 +233,28 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum Tier",
             "case paidApp",
             "case premium",
+            "var tier: Tier = .paidApp",
+            "var premiumOverrides: Set<Feature> = []",
             "EnvironmentValues",
             "atriaEntitlements",
         ]:
             assert_contains(self, entitlements, needle)
+
+        for feature in [
+            ".localMetrics",
+            ".healthKitExport",
+            ".backgroundCollection",
+            ".liveActivity",
+            ".mediaControls",
+            ".hapticAlerts",
+            ".aiCoachLocal",
+            ".aiCoachCloud",
+        ]:
+            assert_contains(self, entitlements, feature)
+
+        assert_contains(self, entitlements, "return true")
+        assert_not_contains(self, entitlements, "return tier == .premium")
+        assert_not_contains(self, entitlements, "premiumOverrides.contains")
 
         for forbidden in [
             "import StoreKit",
