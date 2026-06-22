@@ -36,7 +36,8 @@ private struct AtriaConnectedHeroPanel: View {
                                         pulseStore: pulseStore)
             AtriaHeroMetricRowHost(statusStore: statusStore,
                                    heroStore: heroStore)
-            AtriaHeroNextActionHost(heroStore: heroStore)
+            AtriaHeroNextActionHost(statusStore: statusStore,
+                                    heroStore: heroStore)
         }
         .padding(16)
         .atriaCard(cornerRadius: 30, emphasis: .soft)
@@ -165,10 +166,36 @@ private struct AtriaHeroHeadlineHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
 
     var body: some View {
-        AtriaHeroHeadlineBlock(guidance: heroStore.state.guidance,
+        AtriaHeroHeadlineBlock(guidance: displayGuidance,
                                status: statusStore.state.status,
                                heroStatusTint: heroStatusTint)
             .equatable()
+    }
+
+    private var displayGuidance: Coach.Guidance {
+        let guidance = heroStore.state.guidance
+        guard statusStore.state.status == .connected,
+              needsConnectedDisplayGuidance(guidance) else {
+            return guidance
+        }
+
+        return Coach.Guidance(headline: "Connected and reading live",
+                              detail: "Atria is using the WHOOP strap as your primary signal while your personal baseline finishes.",
+                              color: .green,
+                              target: guidance.target,
+                              state: guidance.state,
+                              reason: "connected_display_reconciled")
+    }
+
+    private func needsConnectedDisplayGuidance(_ guidance: Coach.Guidance) -> Bool {
+        let combinedText = "\(guidance.headline) \(guidance.detail)".lowercased()
+        return combinedText.contains("looking for your strap")
+            || combinedText.contains("searches for your strap")
+            || combinedText.contains("reconnect")
+            || combinedText.contains("bluetooth")
+            || combinedText.contains("guidance learning")
+            || combinedText.contains("learning:")
+            || combinedText.contains("need baseline")
     }
 
     private var heroStatusTint: Color {
@@ -430,11 +457,21 @@ private struct AtriaHeroNextActionRow: View, Equatable {
 }
 
 private struct AtriaHeroNextActionHost: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
 
     var body: some View {
-        AtriaHeroNextActionRow(nextAction: heroStore.state.nextAction)
+        AtriaHeroNextActionRow(nextAction: displayNextAction)
             .equatable()
+    }
+
+    private var displayNextAction: String {
+        let nextAction = heroStore.state.nextAction
+        guard statusStore.state.status == .connected,
+              nextAction.localizedCaseInsensitiveContains("reconnect") else {
+            return nextAction
+        }
+        return "Keep wearing while Atria finishes your personal baseline."
     }
 }
 
