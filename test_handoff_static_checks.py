@@ -446,6 +446,7 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
         intents = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAppIntents.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
         assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
@@ -463,9 +464,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "sleepValue: \"Preparing\"")
         assert_contains(self, home, "loggingText: \"settling\"")
         assert_contains(self, home, "Saved trends are preparing.")
+        assert_contains(self, ble, "@Published var captureSummary = \"No backup yet\"")
+        assert_contains(self, ble, "Personal baseline ready")
+        assert_contains(self, ble, "Recording a clean heart-rate window")
         assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
 
-        for text in [content, hero, home, overview, sessions]:
+        for text in [content, hero, home, overview, sessions, ble]:
             for forbidden in [
                 "Not counted as workout until HR/reference evidence is stronger.",
                 "saved RR package stays ready.",
@@ -478,6 +482,8 @@ class HandoffStaticChecks(unittest.TestCase):
                 "Warming up trends",
                 "Saved trends are loading.",
                 "loggingText: \"warming up\"",
+                "Validation-ready",
+                "Not validation-ready",
             ]:
                 assert_not_contains(self, text, forbidden)
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
