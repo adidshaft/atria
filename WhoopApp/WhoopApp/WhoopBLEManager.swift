@@ -3,6 +3,84 @@ import CoreBluetooth
 import CoreMotion
 import UIKit
 
+@MainActor
+private final class PowerThermalGovernor {
+    enum Mode: String {
+        case nominal
+        case fair
+        case serious
+        case critical
+    }
+
+    private(set) var mode: Mode = .nominal
+    private var observers: [NSObjectProtocol] = []
+    var onChange: ((Mode) -> Void)?
+
+    init() {
+        refresh(notify: false)
+        observers.append(NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh(notify: true) }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh(notify: true) }
+        })
+    }
+
+    deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    var cadenceMultiplier: Double {
+        switch mode {
+        case .nominal:
+            return 1
+        case .fair:
+            return 1.5
+        case .serious:
+            return 2.5
+        case .critical:
+            return 4
+        }
+    }
+
+    var shouldSuspendNonEssentialWork: Bool {
+        mode == .critical
+    }
+
+    private func refresh(notify: Bool) {
+        let next = Self.mode(thermalState: ProcessInfo.processInfo.thermalState,
+                             lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+        guard next != mode else { return }
+        mode = next
+        if notify {
+            onChange?(next)
+        }
+    }
+
+    private static func mode(thermalState: ProcessInfo.ThermalState, lowPower: Bool) -> Mode {
+        if thermalState == .critical {
+            return .critical
+        }
+        if thermalState == .serious || lowPower {
+            return .serious
+        }
+        if thermalState == .fair {
+            return .fair
+        }
+        return .nominal
+    }
+}
+
 /// Connects to a WHOOP strap over BLE and publishes the reliable, relevant data:
 /// live heart rate, battery level, connection state — plus a raw log of the
 /// proprietary stream for later protocol decoding.
@@ -648,6 +726,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var lastActiveJournalSavedRRArchiveCount = 0
     private var foregroundInteractiveMode = true
     private var foregroundHighFrequencyDisplayMode = false
+    private let powerThermalGovernor = PowerThermalGovernor()
 
     private enum CommandWriteMode: String {
         case withoutResponse = "wwr"
@@ -715,12 +794,35 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         updateSessionPointCacheMode()
         logActiveMotionIMUCheckPlanIfRequested(arguments: arguments)
         updatePhoneMotionAuditState(reason: "init")
+        powerThermalGovernor.onChange = { [weak self] mode in
+            guard let self else { return }
+            WHOOPDebugLog("WHOOPDBG power_thermal_governor mode=%@ multiplier=%.1f low_power=%d thermal=%@",
+                  mode.rawValue,
+                  self.powerThermalGovernor.cadenceMultiplier,
+                  ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0,
+                  Self.thermalStateLabel(ProcessInfo.processInfo.thermalState))
+        }
         central = CBCentralManager(delegate: self,
                                    queue: centralQueue,
                                    options: [
                                        CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier,
                                        CBCentralManagerOptionShowPowerAlertKey: true
-                                   ])
+        ])
+    }
+
+    private static func thermalStateLabel(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal:
+            return "nominal"
+        case .fair:
+            return "fair"
+        case .serious:
+            return "serious"
+        case .critical:
+            return "critical"
+        @unknown default:
+            return "unknown"
+        }
     }
 
     private func resetProductionCaptureDefaultsForDebug() {
@@ -1535,12 +1637,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let minimumFlushInterval = foregroundInteractiveMode
             ? activeJournalInteractiveFlushMinimumInterval
             : activeJournalUnattendedFlushMinimumInterval
+        let governedMinimumFlushInterval = minimumFlushInterval * powerThermalGovernor.cadenceMultiplier
         let now = Date()
         if !force {
             activeJournalDirtySamples += 1
             guard activeJournalDirtySamples >= flushSampleInterval else { return }
             if let lastActiveJournalSaveAt,
-               now.timeIntervalSince(lastActiveJournalSaveAt) < minimumFlushInterval {
+               now.timeIntervalSince(lastActiveJournalSaveAt) < governedMinimumFlushInterval {
                 activeJournalPendingSave = true
                 return
             }
@@ -1635,6 +1738,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func currentEventDrivenCheckpointInterval() -> TimeInterval {
         max(minimumEventDrivenCheckpointInterval, configuredLongWearCheckpointInterval())
+            * powerThermalGovernor.cadenceMultiplier
     }
 
     private nonisolated static func prunedJournalSamples(from samples: [HRSample],
@@ -4576,13 +4680,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 ? Self.liveHeartDisplayMinimumInterval
                 : Self.reducedForegroundLiveHeartDisplayMinimumInterval)
             : Self.backgroundLiveHeartDisplayMinimumInterval
+        let governedMinimumInterval = minimumInterval * powerThermalGovernor.cadenceMultiplier
         let shouldPublish: Bool
         if force || heartRate == 0 || liveHeartWindow.sparkline.isEmpty {
             shouldPublish = true
         } else if abs(displayRate - heartRate) >= 4 {
             shouldPublish = true
         } else if let lastPublish = lastLiveHeartDisplayPublishAt {
-            shouldPublish = sampleTime.timeIntervalSince(lastPublish) >= minimumInterval
+            shouldPublish = sampleTime.timeIntervalSince(lastPublish) >= governedMinimumInterval
         } else {
             shouldPublish = true
         }
@@ -5241,11 +5346,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func shouldRefreshHRVSnapshot(now: Date, force: Bool = false) -> Bool {
+        if powerThermalGovernor.shouldSuspendNonEssentialWork && !force {
+            return false
+        }
         guard !force, let lastHRVRefreshAt else { return true }
         let minimumInterval = foregroundInteractiveMode || isRecording
             ? liveHRVRefreshMinimumInterval
             : Self.backgroundLiveHRVRefreshMinimumInterval
-        return now.timeIntervalSince(lastHRVRefreshAt) >= minimumInterval
+        return now.timeIntervalSince(lastHRVRefreshAt) >= minimumInterval * powerThermalGovernor.cadenceMultiplier
     }
 
     private var shouldMaintainLiveTachogram: Bool {
@@ -5568,7 +5676,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let minimumInterval = foregroundInteractiveMode
                 ? Self.liveRRContinuityPublishMinimumInterval
                 : Self.backgroundRRContinuityPublishMinimumInterval
-            if now.timeIntervalSince(lastRRContinuityPublishAt) < minimumInterval {
+            if now.timeIntervalSince(lastRRContinuityPublishAt) < minimumInterval * powerThermalGovernor.cadenceMultiplier {
                 return
             }
         }
