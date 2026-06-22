@@ -59,22 +59,33 @@ struct AtriaCoachContext: Equatable {
 }
 
 protocol AtriaCoachProvider {
+    var networkPolicy: AtriaCoachNetworkPolicy { get }
     func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer
+}
+
+enum AtriaCoachNetworkPolicy: String, Equatable {
+    case none
+    case offlineOnly
+    case cloudDisabled
 }
 
 struct AtriaCoachAnswer: Equatable {
     let title: String
     let detail: String
     let disclosure: String
+    let networkPolicy: AtriaCoachNetworkPolicy
 }
 
 struct AtriaLocalCoachProvider: AtriaCoachProvider {
+    let networkPolicy: AtriaCoachNetworkPolicy = .offlineOnly
+
     func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer {
         let target = context.guidance.target.map { String(format: "%.1f", $0) } ?? "learning"
         return AtriaCoachAnswer(
             title: context.guidance.headline,
             detail: "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), stress \(context.stressText). \(context.guidance.detail)",
-            disclosure: "Local mode uses only on-device Atria metrics. No data leaves this iPhone."
+            disclosure: "Local mode uses only on-device Atria metrics. No data leaves this iPhone.",
+            networkPolicy: networkPolicy
         )
     }
 }
@@ -82,19 +93,22 @@ struct AtriaLocalCoachProvider: AtriaCoachProvider {
 struct AtriaCloudCoachProvider: AtriaCoachProvider {
     let provider: AtriaAICoachSettings.CloudProvider
     let hasAPIKey: Bool
+    let networkPolicy: AtriaCoachNetworkPolicy = .cloudDisabled
 
     func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer {
         guard hasAPIKey else {
             return AtriaCoachAnswer(
                 title: "Cloud coach disabled",
                 detail: "Paste your own \(provider.title) API key before cloud answers can run.",
-                disclosure: "Cloud mode is opt-in. When enabled, Atria will send selected local metrics to \(provider.title)."
+                disclosure: "Cloud mode is opt-in. Atria will not send data until a reviewed provider client is added.",
+                networkPolicy: networkPolicy
             )
         }
         return AtriaCoachAnswer(
             title: "\(provider.title) coach ready",
             detail: "The provider seam and secure key storage are ready. Network requests stay disabled until a reviewed provider client is added.",
-            disclosure: "No cloud request was sent from this build."
+            disclosure: "No cloud request was sent from this build.",
+            networkPolicy: networkPolicy
         )
     }
 }

@@ -10,7 +10,8 @@ struct AtriaAICoachCard: View, Equatable {
 
     @State private var answer = AtriaCoachAnswer(title: "Coach off",
                                                  detail: "Enable local or bring-your-own-key cloud mode when you want an AI layer over your local metrics.",
-                                                 disclosure: "Off by default.")
+                                                 disclosure: "Off by default.",
+                                                 networkPolicy: .none)
     @State private var apiKeyDraft = ""
 
     static func == (lhs: AtriaAICoachCard, rhs: AtriaAICoachCard) -> Bool {
@@ -140,7 +141,8 @@ struct AtriaAICoachCard: View, Equatable {
         guard let provider = AtriaCoachProviderFactory.make(settings: settings, hasAPIKey: hasAPIKey) else {
             answer = AtriaCoachAnswer(title: "Coach off",
                                       detail: "Enable local mode for an offline summary, or cloud mode with your own key.",
-                                      disclosure: "Off by default.")
+                                      disclosure: "Off by default.",
+                                      networkPolicy: .none)
             return
         }
         answer = await provider.answer(context: context)

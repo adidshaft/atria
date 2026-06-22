@@ -154,6 +154,30 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in required:
             assert_contains(self, text, needle)
 
+    def test_ai_coach_local_mode_is_explicitly_offline(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAICoach.swift")
+
+        for needle in [
+            "enum AtriaCoachNetworkPolicy",
+            "case offlineOnly",
+            "case cloudDisabled",
+            "let networkPolicy: AtriaCoachNetworkPolicy = .offlineOnly",
+            "let networkPolicy: AtriaCoachNetworkPolicy = .cloudDisabled",
+            "No data leaves this iPhone.",
+            "Network requests stay disabled until a reviewed provider client is added.",
+        ]:
+            assert_contains(self, text, needle)
+
+        for forbidden in [
+            "import Network",
+            "URLSession",
+            "URLRequest",
+            ".resume()",
+            "http://",
+            "https://",
+        ]:
+            assert_not_contains(self, text, forbidden)
+
     def test_monetization_seam_exists_without_paywall_or_storekit(self):
         app_text = all_swift_source()
         entitlements = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaEntitlements.swift")
