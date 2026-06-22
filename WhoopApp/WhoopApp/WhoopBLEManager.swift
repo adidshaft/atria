@@ -721,6 +721,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var scanRetryTask: Task<Void, Never>?
     private var scanWideningTask: Task<Void, Never>?
     private var freshScanFallbackTask: Task<Void, Never>?
+    private var recoveryReconnectAttempt = 0
+    private var pendingRecoveryReconnectReason: String?
     private var scanRetryCount = 0
     private let maxScanRetries = 4
     private var forceFreshScanOnRestore = false
@@ -1288,6 +1290,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func recordLinkConnected(peripheral: CBPeripheral) {
+        resetRecoveryReconnectBackoff(reason: "did_connect")
         let defaults = UserDefaults.standard
         let successes = defaults.integer(forKey: LinkDefaults.successes) + 1
         defaults.set(successes, forKey: LinkDefaults.successes)
@@ -1807,38 +1810,71 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func requestFreshScanReconnect(peripheral target: CBPeripheral, reason: String) {
-        forceFreshScanAfterDisconnect = true
-        realtimeArmed = false
-        txCharacteristic = nil
-        heartRateCharacteristic = nil
-        dbgTxReady = false
-        freshScanFallbackTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_request reason=%@ action=cancel_then_fresh_scan",
-              reason)
+        pendingRecoveryReconnectReason = reason
+        if freshScanFallbackTask != nil {
+            WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_coalesced reason=%@ pending_reason=%@ attempt=%d action=wait_existing_backoff",
+                  reason,
+                  pendingRecoveryReconnectReason ?? "unknown",
+                  recoveryReconnectAttempt)
+            return
+        }
+        recoveryReconnectAttempt += 1
+        let delay = recoveryReconnectDelay(attempt: recoveryReconnectAttempt)
+        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_request reason=%@ attempt=%d delay_s=%.2f action=backoff_connect_known_then_scan",
+              reason,
+              recoveryReconnectAttempt,
+              delay)
         freshScanFallbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: .seconds(delay))
             if Task.isCancelled { return }
+            let scheduledReason = self.pendingRecoveryReconnectReason ?? reason
+            self.pendingRecoveryReconnectReason = nil
+            self.freshScanFallbackTask = nil
             guard self.status != .connecting else {
-                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_fallback_skipped reason=%@ current_status=connecting",
-                      reason)
+                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_skipped reason=%@ current_status=connecting",
+                      scheduledReason)
                 return
             }
+            self.realtimeArmed = false
+            self.txCharacteristic = nil
+            self.heartRateCharacteristic = nil
+            self.dbgTxReady = false
+            if target.state == .disconnected || target.state == .disconnecting {
+                self.peripheral = target
+                self.recordLinkAttempt(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
+                self.assignIfChanged(\.status, .connecting)
+                self.central.connect(target, options: nil)
+                self.startReconnectWatchdog(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
+                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=connect_known_peripheral",
+                      scheduledReason,
+                      self.recoveryReconnectAttempt)
+                return
+            }
+            self.forceFreshScanAfterDisconnect = true
+            self.central.cancelPeripheralConnection(target)
             if self.peripheral === target {
                 self.peripheral = nil
             }
             self.assignIfChanged(\.status, .disconnected)
-            WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_fallback reason=%@ action=fresh_scan",
-                  reason)
-            self.startScan(reason: "\(reason)_fallback")
+            WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=fresh_scan_fallback",
+                  scheduledReason,
+                  self.recoveryReconnectAttempt)
+            self.startScan(reason: "\(scheduledReason)_fallback")
         }
-        central.cancelPeripheralConnection(target)
-        if self.peripheral === target {
-            self.peripheral = nil
-        }
-        self.assignIfChanged(\.status, .disconnected)
-        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_immediate reason=%@ action=fresh_scan",
-              reason)
-        self.startScan(reason: "\(reason)_immediate")
+    }
+
+    private func recoveryReconnectDelay(attempt: Int) -> TimeInterval {
+        let cappedAttempt = min(max(attempt, 1), 6)
+        let base = min(60, pow(2.0, Double(cappedAttempt - 1)))
+        let jitter = Double.random(in: 0.8...1.2)
+        return base * jitter * powerThermalGovernor.cadenceMultiplier
+    }
+
+    private func resetRecoveryReconnectBackoff(reason: String) {
+        guard recoveryReconnectAttempt > 0 || pendingRecoveryReconnectReason != nil else { return }
+        recoveryReconnectAttempt = 0
+        pendingRecoveryReconnectReason = nil
+        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff_reset reason=%@", reason)
     }
 
     func applyLaunchAutomation(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -7570,6 +7606,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             reconnectWatchdogTask?.cancel()
             freshScanFallbackTask?.cancel()
+            freshScanFallbackTask = nil
             assignIfChanged(\.status, .connected)
             connectedAt = Date()
             dbgMTU = mtu
@@ -7583,6 +7620,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             assignIfChanged(\.status, .disconnected)
             freshScanFallbackTask?.cancel()
+            freshScanFallbackTask = nil
             realtimeArmed = false        // re-arm realtime after reconnect
             let defaults = UserDefaults.standard
             let disconnects = defaults.integer(forKey: LinkDefaults.disconnects) + 1
@@ -7648,6 +7686,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             reconnectWatchdogTask?.cancel()
             freshScanFallbackTask?.cancel()
+            freshScanFallbackTask = nil
             recordLinkFailure(reason: "did_fail_to_connect", error: error)
             connectedAt = nil
             if self.peripheral === peripheral {
