@@ -2037,6 +2037,10 @@ final class SessionStore: ObservableObject {
         cachedLatestReferenceValidatedHRV
     }
 
+    var latestLocalRMSSD: Int? {
+        sessions.first(where: { $0.localRMSSD != nil })?.localRMSSD
+    }
+
     var confirmedWorkouts: [UserConfirmedWorkout] {
         cachedConfirmedWorkouts
     }

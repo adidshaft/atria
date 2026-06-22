@@ -108,10 +108,12 @@ enum LocalNotificationScheduler {
 
     private static func makeDecisions(store: SessionStore,
                                       ble: WhoopBLEManager) -> [NotificationDecision] {
+        let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
-                                          fallbackRMSSD: store.latestReferenceValidatedHRV,
+                                          fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
-                                          baseline: store.baseline)
+                                          baseline: store.baseline,
+                                          hrvReferenceValidated: validatedHRV != nil)
         let recoveryDecision: NotificationDecision
         if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(

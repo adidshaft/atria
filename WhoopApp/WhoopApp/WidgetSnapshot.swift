@@ -61,11 +61,13 @@ enum WidgetSnapshotPublisher {
                         ble: WhoopBLEManager,
                         reason: String = "update") -> WidgetSnapshot {
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable
-        let fallbackHRV = store.latestReferenceValidatedHRV
+        let validatedHRV = store.latestReferenceValidatedHRV
+        let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
                                           fallbackRMSSD: fallbackHRV,
                                           restingNow: rest,
-                                          baseline: store.baseline)
+                                          baseline: store.baseline,
+                                          hrvReferenceValidated: validatedHRV != nil)
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let hrvRMSSD: Int?
         if recovery.usesHRV {

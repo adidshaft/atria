@@ -1665,10 +1665,12 @@ final class AtriaHomeModel {
         }
 
         let maxHR = store.profile.maxHR
+        let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
-                                          fallbackRMSSD: store.latestReferenceValidatedHRV,
+                                          fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
-                                          baseline: store.baseline)
+                                          baseline: store.baseline,
+                                          hrvReferenceValidated: validatedHRV != nil)
         let stress = stressState(ble: ble, baseline: store.baseline)
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = savedAggregate.savedTodayTRIMP + liveTRIMP
@@ -1935,10 +1937,12 @@ final class AtriaHomeModel {
 
     private static func makeDeferredDetails(ble: WhoopBLEManager, store: SessionStore) -> DeferredDetails {
         let diagnostics = store.homeDashboardDiagnostics()
+        let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
-                                          fallbackRMSSD: store.latestReferenceValidatedHRV,
+                                          fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
-                                          baseline: store.baseline)
+                                          baseline: store.baseline,
+                                          hrvReferenceValidated: validatedHRV != nil)
         let rrPackage = diagnostics.rrPackage
         let sleep = diagnostics.sleep
         let workout = diagnostics.workout
