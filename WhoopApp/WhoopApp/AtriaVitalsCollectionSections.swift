@@ -244,7 +244,7 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureStats: some View {
-        AtriaInlineQuickStat(label: "Samples", value: "\(collectionLiveStore.state.capturedRows)")
+        AtriaInlineQuickStat(label: "Readings", value: "\(collectionLiveStore.state.capturedRows)")
         AtriaInlineQuickStat(label: "Backup", value: collectionLiveStore.state.recordingState)
         AtriaInlineQuickStat(label: "Export", value: collectionLiveStore.state.captureFileLabel)
     }
@@ -546,7 +546,7 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaInlineQuickStat(label: "Logging", value: snapshotStore.state.loggingText)
         AtriaInlineQuickStat(label: "Backup", value: homeStatsStore.state.backupValue)
         AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
-        AtriaInlineQuickStat(label: "Profile", value: collectionLiveStore.state.modeLabel)
+        AtriaInlineQuickStat(label: "Saving mode", value: collectionLiveStore.state.modeLabel)
     }
 }
 
@@ -568,7 +568,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                     .background(AtriaIconTileBackground(cornerRadius: 8, tint: .purple))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Backup profile")
+                    Text("Saving mode")
                         .font(.subheadline.weight(.semibold))
                     Text(selected.detail)
                         .font(.caption)
@@ -591,7 +591,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                             .padding(.vertical, 10)
                     }
                     .buttonStyle(AtriaSegmentButtonStyle(selected: selected == profile))
-                    .accessibilityLabel("Backup profile \(profile.label)")
+                    .accessibilityLabel("Saving mode \(profile.label)")
                 }
             }
             .padding(6)
