@@ -15,6 +15,12 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.adidshaft.atria.refresh</string>
+		<string>com.adidshaft.atria.processing</string>
 	</array>
 </dict>
 </plist>

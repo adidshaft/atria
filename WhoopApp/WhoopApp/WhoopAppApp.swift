@@ -1,8 +1,12 @@
 import SwiftUI
 import UIKit
+import BackgroundTasks
 
 @main
 struct WhoopAppApp: App {
+    private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
+    private static let processingTaskIdentifier = "com.adidshaft.atria.processing"
+
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var ble: WhoopBLEManager
     @StateObject private var store: SessionStore
@@ -17,6 +21,7 @@ struct WhoopAppApp: App {
         ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
         _ble = StateObject(wrappedValue: ble)
         _store = StateObject(wrappedValue: store)
+        Self.registerBackgroundTasks(store: store, ble: ble)
     }
 
     var body: some Scene {
@@ -55,6 +60,7 @@ struct WhoopAppApp: App {
                                                 reason: "scene_background")
                         ble.flushActiveSessionJournal(reason: "scene_background")
                         store.requestPersistenceFlush(reason: "scene_background")
+                        scheduleBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
                         // alerts, and multitasking transitions. Delay persistence so
@@ -85,6 +91,71 @@ struct WhoopAppApp: App {
                     ble.flushActiveSessionJournal(reason: "app_will_terminate")
                     store.flushScheduledPersistence(reason: "app_will_terminate")
                 }
+        }
+    }
+
+    private static func registerBackgroundTasks(store: SessionStore, ble: WhoopBLEManager) {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: appRefreshTaskIdentifier, using: nil) { task in
+            handleBackgroundTask(task,
+                                 store: store,
+                                 ble: ble,
+                                 reason: "bg_app_refresh")
+        }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: processingTaskIdentifier, using: nil) { task in
+            handleBackgroundTask(task,
+                                 store: store,
+                                 ble: ble,
+                                 reason: "bg_processing")
+        }
+    }
+
+    private static func handleBackgroundTask(_ task: BGTask,
+                                             store: SessionStore,
+                                             ble: WhoopBLEManager,
+                                             reason: String) {
+        scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
+        scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
+        let work = Task { @MainActor in
+            ble.flushActiveSessionJournal(reason: reason)
+            store.performBackgroundMaintenance(reason: reason)
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = {
+            work.cancel()
+            task.setTaskCompleted(success: false)
+        }
+    }
+
+    private func scheduleBackgroundMaintenance(reason: String) {
+        Self.scheduleBackgroundRefresh(reason: reason)
+        Self.scheduleBackgroundProcessing(reason: reason)
+    }
+
+    private static func scheduleBackgroundRefresh(reason: String) {
+        let request = BGAppRefreshTaskRequest(identifier: appRefreshTaskIdentifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 30 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=ok kind=refresh reason=%@", reason)
+        } catch {
+            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=failed kind=refresh reason=%@ error=%@",
+                          reason,
+                          String(describing: error))
+        }
+    }
+
+    private static func scheduleBackgroundProcessing(reason: String) {
+        let request = BGProcessingTaskRequest(identifier: processingTaskIdentifier)
+        request.requiresNetworkConnectivity = false
+        request.requiresExternalPower = false
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=ok kind=processing reason=%@", reason)
+        } catch {
+            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=failed kind=processing reason=%@ error=%@",
+                          reason,
+                          String(describing: error))
         }
     }
 

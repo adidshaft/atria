@@ -2043,6 +2043,27 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func performBackgroundMaintenance(reason: String) {
+        flushScheduledPersistence(reason: "\(reason)_persistence")
+        _ = dailyRollups(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
+        _ = trendSummaries(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
+        writeAutomaticSessionBackup(reason: reason)
+        let health = HealthKitExporter.diagnostics(for: sessions,
+                                                    rest: baseline.restingInt ?? 60,
+                                                    maxHR: profile.maxHR,
+                                                    confirmedWorkouts: confirmedWorkouts,
+                                                    confirmedSleeps: confirmedSleeps)
+        WHOOPDebugLog("WHOOPDBG bg_maintenance status=ok reason=%@ sessions=%d healthkit_hr_samples=%d healthkit_resting_hr_samples=%d healthkit_hrv_samples=%d healthkit_respiratory_rate_samples=%d healthkit_workouts=%d healthkit_sleeps=%d",
+              reason,
+              sessions.count,
+              health.planned.hrSamples,
+              health.planned.restingHRSamples,
+              health.planned.hrvSamples,
+              health.planned.respiratoryRateSamples,
+              health.planned.workouts,
+              health.planned.sleeps)
+    }
+
     private static func persistSessionsSnapshot(_ sessions: [SavedSession], to url: URL, reason: String) {
         do {
             let data = try JSONEncoder().encode(sessions)
