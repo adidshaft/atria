@@ -274,21 +274,24 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_end_user_copy_avoids_lab_only_language(self):
         content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
+        hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
         overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
 
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
         assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
+        assert_contains(self, hero, "Saved metrics and backup remain on device while Atria waits for the strap again.")
         assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"Validation\"")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"HRV window\"")
         assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
 
-        for text in [content, overview, sessions]:
+        for text in [content, hero, overview, sessions]:
             for forbidden in [
                 "Not counted as workout until HR/reference evidence is stronger.",
                 "saved RR package stays ready.",
                 "Saved references and backup remain available while the strap reconnects.",
+                "Saved references and backup remain on device while Atria waits for the strap again.",
                 "Rest candidates are diagnostic only; they do not count as sleep.",
             ]:
                 assert_not_contains(self, text, forbidden)

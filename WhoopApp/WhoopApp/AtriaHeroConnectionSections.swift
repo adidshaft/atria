@@ -100,7 +100,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
             }
 
             AtriaHeroStatusTile(title: "Saved data stays ready",
-                                detail: "Saved references and backup remain on device while Atria waits for the strap again.",
+                                detail: "Saved metrics and backup remain on device while Atria waits for the strap again.",
                                 systemImage: "internaldrive.fill",
                                 tint: tint)
 
