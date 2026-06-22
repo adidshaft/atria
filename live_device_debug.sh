@@ -243,8 +243,8 @@ Options:
                        reconnect without waiting for a natural BLE stall.
   --force-rr-presence-watchdog-after N
                        Debug launch arg: force the RR-presence watchdog recovery
-                       path after N seconds, proving checkpoint + fresh-scan
-                       reconnect without waiting for a natural HR-only segment.
+                       path after N seconds, proving checkpoint plus 2A37
+                       read/re-notify without interrupting a healthy HR stream.
   --force-missing-2a37-after N
                        Debug launch arg: clear the cached standard HR
                        characteristic after N seconds, proving rediscovery on
@@ -2627,6 +2627,7 @@ else:
     emit("HARNESS_LAUNCH_ARGS=" + " ".join(shlex.quote(part) for part in cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     stopped_for_deadline = False
+    app_exit_code = None
     try:
         while time.time() < deadline:
             line = ""
@@ -2675,6 +2676,7 @@ else:
                     if post_gate_side_effects and not (log_gate_status or log_gate_status_deep) and requested_post_gate_work_complete():
                         break
             elif proc.poll() is not None:
+                app_exit_code = proc.returncode
                 break
             else:
                 time.sleep(0.1)
@@ -2702,6 +2704,10 @@ else:
             emit(line)
             if "WHOOPDBG" in line:
                 ingest_whoopdbg(line)
+    if app_exit_code is None and proc.returncode is not None and not stopped_for_deadline:
+        app_exit_code = proc.returncode
+    if app_exit_code is not None:
+        emit(f"HARNESS_APP_EXIT code={app_exit_code} before_deadline={int(not stopped_for_deadline)}")
     if devicectl_log_path and os.path.exists(devicectl_log_path):
         with open(devicectl_log_path, encoding="utf-8", errors="replace") as handle:
             for raw in handle:
@@ -2944,6 +2950,35 @@ if not replay_log and pull_reference_package_dir:
             prefix = "WHOOPDBG_HR_REFERENCE_PULL_FILE" if "hr-reference" in name else "WHOOPDBG_RR_REFERENCE_PULL_FILE"
             emit(f"{prefix}={destination_file}")
 
+if not replay_log and leave_running:
+    keepalive_label = "Long_wear"
+    keepalive_cmd = [
+        "xcrun", "devicectl", "device", "process", "launch",
+        "--device", device_id,
+        "--terminate-existing",
+        bundle_id,
+        "--whoop-capture-label", keepalive_label,
+        "--whoop-standard-hr-only",
+        "--whoop-long-wear-mode",
+        "--whoop-checkpoint-session-every", "60",
+        "--whoop-auto-save-session-every", "900",
+        "--whoop-log-live-workout-every", "60",
+        "--whoop-auto-save-workout-when-ready", "60",
+    ]
+    emit("HARNESS_LEAVE_RUNNING_ARGS=" + " ".join(shlex.quote(part) for part in keepalive_cmd))
+    result = subprocess.run(
+        keepalive_cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    for line in result.stdout.splitlines():
+        emit(line)
+    if result.returncode != 0:
+        emit(f"HARNESS_ERROR=leave_running_launch_failed code={result.returncode}")
+        raise SystemExit(result.returncode)
+    emit("HARNESS_LEAVE_RUNNING status=launched mode=standard_hr_only_long_wear checkpoint_s=60 autosave_s=900 workout_check_s=60")
+
 if until_realtime and not flags["frame_61080005"]:
     raise SystemExit(2)
 if until_ready and not (flags["hrv_ready"] or flags["capture_summary_ready"]):
@@ -3002,34 +3037,6 @@ if verify_sleep and not flags["sleep_validation_complete"]:
 if log_gate_status and (healthkit_export or healthkit_reference_audit or healthkit_reset_rebuild) and not flags["post_healthkit_gate_status_complete"]:
     emit("HARNESS_ERROR=post_healthkit_gate_status_incomplete")
     raise SystemExit(2)
-if not replay_log and leave_running:
-    keepalive_label = "Long_wear"
-    keepalive_cmd = [
-        "xcrun", "devicectl", "device", "process", "launch",
-        "--device", device_id,
-        "--terminate-existing",
-        bundle_id,
-        "--whoop-capture-label", keepalive_label,
-        "--whoop-standard-hr-only",
-        "--whoop-long-wear-mode",
-        "--whoop-checkpoint-session-every", "60",
-        "--whoop-auto-save-session-every", "900",
-        "--whoop-log-live-workout-every", "60",
-        "--whoop-auto-save-workout-when-ready", "60",
-    ]
-    emit("HARNESS_LEAVE_RUNNING_ARGS=" + " ".join(shlex.quote(part) for part in keepalive_cmd))
-    result = subprocess.run(
-        keepalive_cmd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    for line in result.stdout.splitlines():
-        emit(line)
-    if result.returncode != 0:
-        emit(f"HARNESS_ERROR=leave_running_launch_failed code={result.returncode}")
-        raise SystemExit(result.returncode)
-    emit("HARNESS_LEAVE_RUNNING status=launched mode=standard_hr_only_long_wear checkpoint_s=60 autosave_s=900 workout_check_s=60")
 if log_file is not None:
     log_file.close()
 PY
