@@ -75,6 +75,8 @@ struct AtriaHomeView: View {
     @State private var hapticCoordinator = AtriaHapticAlertCoordinator()
     @StateObject private var mediaController = AtriaMediaController()
     @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
+    @State private var aiCoachSettings = AtriaAICoachSettings.load()
+    @State private var aiCoachHasAPIKey = false
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -159,6 +161,7 @@ struct AtriaHomeView: View {
             ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
             model.setPulseDetailMode(active: selectedTab == .vitals)
             consumePendingIntentCommandIfNeeded()
+            refreshAICoachKeyState()
             updateLiveActivity()
             updateHapticCoordinator()
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
@@ -199,11 +202,16 @@ struct AtriaHomeView: View {
             guard phase == .active else { return }
             consumePendingIntentCommandIfNeeded()
             mediaController.refresh()
+            refreshAICoachKeyState()
             updateHapticCoordinator()
         }
         .onChange(of: hapticSettings) { _, settings in
             settings.save()
             updateHapticCoordinator()
+        }
+        .onChange(of: aiCoachSettings) { _, settings in
+            settings.save()
+            refreshAICoachKeyState()
         }
         .onReceive(model.coreLiveStore.$state) { _ in
             updateLiveActivity()
@@ -310,6 +318,10 @@ struct AtriaHomeView: View {
             batteryLevel: model.coreLiveStore.state.batteryLevel,
             sampleCount: model.coreLiveStore.state.sessionSampleCount
         ))
+    }
+
+    private func refreshAICoachKeyState() {
+        aiCoachHasAPIKey = AtriaCoachKeychain.hasAPIKey(provider: aiCoachSettings.cloudProvider)
     }
 
     private var isDark: Bool {
@@ -421,8 +433,21 @@ struct AtriaHomeView: View {
                                 snapshotStore: model.snapshotStore,
                                 store: store,
                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                aiCoachSettings: aiCoachSettings,
+                                aiCoachHasAPIKey: aiCoachHasAPIKey,
                                 horizontalSizeClass: horizontalSizeClass,
                                 connectionContext: connectionGuideContext,
+                                onAICoachSettingsChange: { settings in
+                                    aiCoachSettings = settings
+                                },
+                                onSaveAICoachAPIKey: { key in
+                                    AtriaCoachKeychain.saveAPIKey(key, provider: aiCoachSettings.cloudProvider)
+                                    refreshAICoachKeyState()
+                                },
+                                onDeleteAICoachAPIKey: {
+                                    AtriaCoachKeychain.deleteAPIKey(provider: aiCoachSettings.cloudProvider)
+                                    refreshAICoachKeyState()
+                                },
                                 onShowConnectionGuide: {
                                     connectionGuideSnoozedUntil = nil
                                     showConnectionGuide = true

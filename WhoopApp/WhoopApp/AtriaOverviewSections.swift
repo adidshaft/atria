@@ -8,8 +8,13 @@ struct AtriaOverviewTabContent: View {
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
+    let aiCoachSettings: AtriaAICoachSettings
+    let aiCoachHasAPIKey: Bool
     let horizontalSizeClass: UserInterfaceSizeClass?
     let connectionContext: AtriaConnectionGuideContext
+    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
+    let onSaveAICoachAPIKey: (String) -> Void
+    let onDeleteAICoachAPIKey: () -> Void
     let onShowConnectionGuide: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
@@ -31,7 +36,12 @@ struct AtriaOverviewTabContent: View {
                     AtriaOverviewLeadingHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
-                                             hasUnlockedSecondarySections: false)
+                                             hasUnlockedSecondarySections: false,
+                                             aiCoachSettings: aiCoachSettings,
+                                             aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                             onAICoachSettingsChange: onAICoachSettingsChange,
+                                             onSaveAICoachAPIKey: onSaveAICoachAPIKey,
+                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
                     AtriaLoadingPanel(title: "Preparing saved insights",
                                       subtitle: "Trend, backup, and collection summaries join after the first live dashboard settles.")
                 }
@@ -41,7 +51,12 @@ struct AtriaOverviewTabContent: View {
                         AtriaOverviewLeadingHost(heroStore: heroStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
-                                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+                                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                                 aiCoachSettings: aiCoachSettings,
+                                                 aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                                 onAICoachSettingsChange: onAICoachSettingsChange,
+                                                 onSaveAICoachAPIKey: onSaveAICoachAPIKey,
+                                                 onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
 
@@ -59,7 +74,12 @@ struct AtriaOverviewTabContent: View {
                     AtriaOverviewLeadingHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
-                                             hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+                                             hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                             aiCoachSettings: aiCoachSettings,
+                                             aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                             onAICoachSettingsChange: onAICoachSettingsChange,
+                                             onSaveAICoachAPIKey: onSaveAICoachAPIKey,
+                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
                                               snapshotStore: snapshotStore,
@@ -254,12 +274,22 @@ private struct AtriaOverviewLeadingHost: View {
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
+    let aiCoachSettings: AtriaAICoachSettings
+    let aiCoachHasAPIKey: Bool
+    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
+    let onSaveAICoachAPIKey: (String) -> Void
+    let onDeleteAICoachAPIKey: () -> Void
 
     var body: some View {
         AtriaOverviewLeadingSection(heroStore: heroStore,
-                                    snapshotStore: snapshotStore,
-                                    store: store,
-                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections)
+                                   snapshotStore: snapshotStore,
+                                   store: store,
+                                   hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                   aiCoachSettings: aiCoachSettings,
+                                   aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                   onAICoachSettingsChange: onAICoachSettingsChange,
+                                   onSaveAICoachAPIKey: onSaveAICoachAPIKey,
+                                   onDeleteAICoachAPIKey: onDeleteAICoachAPIKey)
     }
 }
 
@@ -284,13 +314,23 @@ struct AtriaOverviewLeadingSection: View {
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
+    let aiCoachSettings: AtriaAICoachSettings
+    let aiCoachHasAPIKey: Bool
+    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
+    let onSaveAICoachAPIKey: (String) -> Void
+    let onDeleteAICoachAPIKey: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
             AtriaOverviewReadinessSectionHost(heroStore: heroStore,
                                              snapshotStore: snapshotStore)
 
-            AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
+            AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
+                                             settings: aiCoachSettings,
+                                             hasAPIKey: aiCoachHasAPIKey,
+                                             onSettingsChange: onAICoachSettingsChange,
+                                             onSaveAPIKey: onSaveAICoachAPIKey,
+                                             onDeleteAPIKey: onDeleteAICoachAPIKey)
 
             if hasUnlockedSecondarySections {
                 AtriaOverviewBehaviorJournalSection(store: store)
@@ -354,23 +394,60 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
 struct AtriaOverviewGuidanceSectionHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    let settings: AtriaAICoachSettings
+    let hasAPIKey: Bool
+    let onSettingsChange: (AtriaAICoachSettings) -> Void
+    let onSaveAPIKey: (String) -> Void
+    let onDeleteAPIKey: () -> Void
 
     var body: some View {
-        AtriaOverviewGuidanceSection(hero: heroStore.state)
+        AtriaOverviewGuidanceSection(hero: heroStore.state,
+                                     settings: settings,
+                                     hasAPIKey: hasAPIKey,
+                                     onSettingsChange: onSettingsChange,
+                                     onSaveAPIKey: onSaveAPIKey,
+                                     onDeleteAPIKey: onDeleteAPIKey)
             .equatable()
     }
 }
 
 struct AtriaOverviewGuidanceSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
+    let settings: AtriaAICoachSettings
+    let hasAPIKey: Bool
+    let onSettingsChange: (AtriaAICoachSettings) -> Void
+    let onSaveAPIKey: (String) -> Void
+    let onDeleteAPIKey: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Guidance", subtitle: "Daily target from today's signal")
             AtriaGuidanceCard(guidance: hero.guidance, strain: hero.strain)
+            AtriaAICoachCard(context: coachContext,
+                             settings: settings,
+                             hasAPIKey: hasAPIKey,
+                             onSettingsChange: onSettingsChange,
+                             onSaveAPIKey: onSaveAPIKey,
+                             onDeleteAPIKey: onDeleteAPIKey)
         }
         .padding(16)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+
+    static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
+        lhs.hero == rhs.hero
+            && lhs.settings == rhs.settings
+            && lhs.hasAPIKey == rhs.hasAPIKey
+    }
+
+    private var coachContext: AtriaCoachContext {
+        AtriaCoachContext(guidance: hero.guidance,
+                          strain: hero.strain,
+                          recoveryText: hero.recoveryEstimate.percent.map { "\($0)%" } ?? hero.recoveryEstimate.confidence.rawValue,
+                          hrvText: hero.hrvValue,
+                          stressText: hero.stressValue,
+                          baselineSamples: hero.baselineSamples,
+                          sessionsCount: hero.sessionsCount)
     }
 }
 
