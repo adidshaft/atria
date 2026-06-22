@@ -91,10 +91,10 @@ final class AtriaMediaController: ObservableObject {
 
     private func startRefreshLoop() {
         refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
+        refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                await self?.refresh()
+                self?.refresh()
             }
         }
     }
