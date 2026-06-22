@@ -87,8 +87,29 @@ struct WhoopWidgetEntryView: View {
                 .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+            if family == .systemMedium {
+                controlButtons
+            }
         }
         .containerBackground(.background, for: .widget)
+    }
+
+    private var controlButtons: some View {
+        HStack(spacing: 8) {
+            Button(intent: AtriaControlCaptureIntent(command: .start)) {
+                Label("Start", systemImage: "record.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .tint(.green)
+
+            Button(intent: AtriaControlCaptureIntent(command: .stop)) {
+                Label("Stop", systemImage: "stop.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .tint(.red)
+        }
+        .font(.caption.weight(.semibold))
+        .labelStyle(.titleAndIcon)
     }
 
     private var accessoryCircular: some View {
