@@ -84,6 +84,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "defaults.set(true, forKey: OfflineSyncDefaults.enabled)",
             "private func migrateOfflineSyncDefaultIfNeeded(arguments: [String])",
             "stored_session_backfill_default",
+            "applyEarlyHistoricalLaunchConfiguration(arguments: arguments)",
+            "private func applyEarlyHistoricalLaunchConfiguration(arguments: [String])",
+            "WHOOPDBG realtimeConfig history_only_probe=1 phase=early",
             "@discardableResult",
             "func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false)",
             "private func startOfflineHistoricalSync(reason: String)",
@@ -104,6 +107,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "central.cancelPeripheralConnection(peripheral)",
         ]:
             assert_contains(self, ble, needle)
+
+        init_body = re.search(r"override init\(\) \{(?P<body>.*?)\n    \}", ble, re.S)
+        self.assertIsNotNone(init_body)
+        body = init_body.group("body")
+        early_config = body.find("applyEarlyHistoricalLaunchConfiguration(arguments: arguments)")
+        central_create = body.find("central = CBCentralManager")
+        self.assertGreaterEqual(early_config, 0)
+        self.assertGreater(central_create, early_config)
 
         for needle in [
             "let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)",
