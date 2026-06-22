@@ -47,7 +47,7 @@ struct AtriaOverviewTabContent: View {
                                              onOpenVitals: onOpenVitals,
                                              onOpenCollection: onOpenCollection)
                     AtriaLoadingPanel(title: "Preparing saved insights",
-                                      subtitle: "Trend, backup, and collection summaries join after the first live dashboard settles.")
+                                      subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
                 }
             } else if horizontalSizeClass == .regular {
                 HStack(alignment: .top, spacing: 18) {
@@ -217,7 +217,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
         [
             "Disconnect the strap inside the WHOOP app if WHOOP still owns the live connection.",
             "Fully quit the WHOOP app so it does not quietly reclaim the strap.",
-            "Keep this phone unlocked and the strap nearby until Atria completes the first handoff."
+            "Keep this phone unlocked and the strap nearby until Atria completes the first setup."
         ]
     }
 
@@ -780,7 +780,7 @@ struct AtriaOverviewTrailingSection: View {
                 }
             } else {
                 AtriaLoadingPanel(title: "Preparing saved insights",
-                                  subtitle: "Trends, backup state, and collection history are settling in the background.")
+                                  subtitle: "Trends, backup state, and saved data are settling in the background.")
             }
         }
     }

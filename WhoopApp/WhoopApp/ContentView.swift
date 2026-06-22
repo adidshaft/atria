@@ -80,7 +80,7 @@ private struct DailyEvidenceCard: View {
             }
 
             if summary.detections.isEmpty && !summary.workoutSignalPresent && !summary.sleepSignalPresent {
-                Label("No saved activity or sleep candidate yet; keep Atria open while wearing the strap.",
+                Label("No saved activity or sleep signal yet; keep Atria open while wearing the strap.",
                       systemImage: "record.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -208,7 +208,7 @@ private struct DailyEvidenceCard: View {
 
     private func sleepSignalRow(_ sleep: SleepEvidenceStatus) -> some View {
         let ready = sleep.ready
-        let title = ready ? "Sleep detected" : "Sleep candidate"
+        let title = ready ? "Sleep detected" : "Possible sleep"
         let detail = "\(formatMinutes(sleep.fallbackDuration)) · span \(formatMinutes(sleep.fallbackSpan)) · chunks \(sleep.fallbackSessions) · \(sleep.fallbackSource.replacingOccurrences(of: "_", with: " "))"
         let rowColor: Color = ready ? .green : .cyan
         return HStack(alignment: .top, spacing: 9) {
@@ -241,7 +241,7 @@ private struct DailyEvidenceCard: View {
                         if let confirmed = store.confirmBestSleepCandidateForUI(rest: rest) {
                             sleepConfirmationStatus = "Confirmed sleep as \(confirmed.confidence.replacingOccurrences(of: "_", with: " "))."
                         } else {
-                            sleepConfirmationStatus = "No confirmable sleep candidate yet."
+                            sleepConfirmationStatus = "No confirmable sleep signal yet."
                         }
                     } label: {
                         Label("Confirm Sleep", systemImage: "checkmark.circle")
@@ -290,7 +290,7 @@ private struct DailyEvidenceCard: View {
                                                                                   maxHR: store.profile.maxHR) {
                             confirmationStatus = "Confirmed for Health as \(confirmed.confidence.replacingOccurrences(of: "_", with: " "))."
                         } else {
-                            confirmationStatus = "No confirmable activity candidate yet."
+                            confirmationStatus = "No confirmable activity signal yet."
                         }
                     } label: {
                         Label("Confirm Activity", systemImage: "checkmark.circle")
@@ -472,7 +472,7 @@ private struct CollectionReliabilityCard: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 miniMetric("Long wear",
                            summary.longWear ? "on" : "off",
-                           summary.checkpointArmed ? "\(summary.checkpointInterval)s" : "not armed",
+                           summary.checkpointArmed ? "\(summary.checkpointInterval)s" : "not ready",
                            "record.circle.fill",
                            .teal,
                            summary.longWear && summary.checkpointArmed)

@@ -490,7 +490,7 @@ struct AtriaHomeView: View {
         case .connected:
             return "Live connection active"
         case .connecting:
-            return "Finishing handoff"
+            return "Connecting to strap"
         case .scanning:
             return "Searching nearby"
         case .poweredOff:
@@ -1826,11 +1826,11 @@ final class AtriaHomeModel {
 
         let narrative: String
         if store.latestReferenceValidatedHRV != nil {
-            narrative = "Validated HRV is ready from your reference import."
+            narrative = "Reference-checked HRV is ready."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            narrative = "The live RR window is ready; this is your own unverified RMSSD until an optional reference check passes."
+            narrative = "The live RR window is ready as personal-baseline HRV."
         } else if store.latestLocalRMSSD != nil {
-            narrative = "Saved local RMSSD is ready as personal-baseline HRV; an optional reference check can promote it."
+            narrative = "Saved local RMSSD is ready as personal-baseline HRV."
         } else {
             narrative = "Atria keeps the live RR window light while the connection settles."
         }
@@ -2022,11 +2022,11 @@ final class AtriaHomeModel {
 
         let hrvNarrative: String
         if store.latestReferenceValidatedHRV != nil {
-            hrvNarrative = "Validated HRV is ready from your reference import."
+            hrvNarrative = "Reference-checked HRV is ready."
         } else if rrPackage.ready {
-            hrvNarrative = "A clean RR package is ready; Atria can show it now as unverified personal data."
+            hrvNarrative = "A clean RR window is ready as personal-baseline HRV."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            hrvNarrative = "The live RR window is ready; an optional reference check can promote it to validated."
+            hrvNarrative = "The live RR window is ready as personal-baseline HRV."
         } else {
             hrvNarrative = ble.hrvQuality
         }
@@ -2037,7 +2037,7 @@ final class AtriaHomeModel {
             sleepValue = "Ready"
             sleepDetail = sleep.confidence
         } else if sleep.fallbackAvailable {
-            sleepValue = "Candidate"
+            sleepValue = "Maybe"
             sleepDetail = "\(Int((sleep.fallbackDuration / 60).rounded()))m saved"
         } else if sleep.candidates > 0 {
             sleepValue = "\(sleep.candidates)"
@@ -2051,7 +2051,7 @@ final class AtriaHomeModel {
         if workout.ready {
             workoutText = "Ready"
         } else if workout.strengthCandidate {
-            workoutText = "Strength candidate"
+            workoutText = "Strength-like"
         } else if workout.nearMiss {
             workoutText = "Near miss"
         } else if workout.source != "none" {
@@ -2108,9 +2108,9 @@ final class AtriaHomeModel {
         } else if recovery.percent == nil && rrPackage.ready {
             nextAction = "Keep wearing while Atria finishes your personal baseline."
         } else if !collection.ready {
-            nextAction = "Keep Atria open a little longer while collection settles."
+            nextAction = "Keep Atria open a little longer while backup settles."
         } else {
-            nextAction = "Keep wearing; collection is active."
+            nextAction = "Keep wearing; local backup is active."
         }
 
         return DeferredDetails(hrvValue: hrvValue,
