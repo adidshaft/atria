@@ -2709,7 +2709,7 @@ final class SessionStore: ObservableObject {
         } else {
             cachedHomeDashboardDiagnostics = nil
         }
-        WHOOPDebugLog("WHOOPDBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_validated_samples=%d",
+        WHOOPDebugLog("WHOOPDBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
               skipped,
@@ -2796,8 +2796,9 @@ final class SessionStore: ObservableObject {
         let hrvStats = baseline.lnRMSSDStats
         let latestValidated = latestReferenceValidatedHRV ?? 0
         let hrvReady = baseline.hrvSampleCount >= 7
-        let recoveryHighReady = hrvReady && latestValidated > 0
-        WHOOPDebugLog("WHOOPDBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_validated_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_high_ready=%d",
+        let recoveryPersonalReady = hrvReady && baseline.restingStats != nil
+        let recoveryValidatedReady = recoveryPersonalReady && latestValidated > 0
+        WHOOPDebugLog("WHOOPDBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_baseline_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_personal_ready=%d recovery_validated_ready=%d",
               baseline.sessions,
               baseline.restingSampleCount,
               restingStats.map { String(format: "%.1f", $0.mean) } ?? "learning",
@@ -2805,12 +2806,13 @@ final class SessionStore: ObservableObject {
               baseline.hrvSampleCount,
               hrvReady ? 1 : 0,
               latestValidated,
-              recoveryHighReady ? 1 : 0)
+              recoveryPersonalReady ? 1 : 0,
+              recoveryValidatedReady ? 1 : 0)
         WHOOPDebugLog("WHOOPDBG baseline_hrv_stats count=%d lnrmssd_mean=%@ lnrmssd_sd=%@ state=%@",
               hrvStats?.count ?? 0,
               hrvStats.map { String(format: "%.3f", $0.mean) } ?? "learning",
               hrvStats.map { String(format: "%.3f", $0.sd) } ?? "learning",
-              recoveryHighReady ? "ready" : "learning")
+              recoveryPersonalReady ? "personal_baseline" : "learning")
     }
 
     func logCollectionHealthFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
