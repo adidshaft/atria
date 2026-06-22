@@ -13,7 +13,7 @@ enum AtriaIntentDestination: String, AppEnum, Codable {
         [
             .today: "Today",
             .vitals: "Vitals",
-            .collection: "Collection"
+            .collection: "Data"
         ]
     }
 }
@@ -22,8 +22,8 @@ enum AtriaCaptureCommand: String, AppEnum, Codable {
     case start
     case stop
 
-    static var typeDisplayName: LocalizedStringResource { "Capture command" }
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Capture command"
+    static var typeDisplayName: LocalizedStringResource { "Backup command" }
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Backup command"
 
     static var caseDisplayRepresentations: [Self: DisplayRepresentation] {
         [
@@ -44,8 +44,8 @@ enum AtriaFocusMode: String, AppEnum, Codable {
     static var caseDisplayRepresentations: [Self: DisplayRepresentation] {
         [
             .off: "Off",
-            .workout: "Workout collection",
-            .sleep: "Sleep collection"
+            .workout: "Workout backup",
+            .sleep: "Sleep backup"
         ]
     }
 }
@@ -90,8 +90,8 @@ struct AtriaMetricsIntent: AppIntent {
 }
 
 struct AtriaFocusFilterIntent: SetFocusFilterIntent {
-    static let title: LocalizedStringResource = "Atria collection"
-    static let description = IntentDescription("Automatically tune local Atria collection when a Focus is active.")
+    static let title: LocalizedStringResource = "Atria data backup"
+    static let description = IntentDescription("Automatically tune local Atria backup when a Focus is active.")
     static let openAppWhenRun = false
 
     @Parameter(title: "Mode")
@@ -109,13 +109,13 @@ struct AtriaFocusFilterIntent: SetFocusFilterIntent {
         switch resolvedMode {
         case .off:
             return DisplayRepresentation(title: "Atria off",
-                                         subtitle: "Do not change collection")
+                                         subtitle: "Do not change backup")
         case .workout:
-            return DisplayRepresentation(title: "Workout collection",
-                                         subtitle: "Start live collection")
+            return DisplayRepresentation(title: "Workout backup",
+                                         subtitle: "Start live backup")
         case .sleep:
-            return DisplayRepresentation(title: "Sleep collection",
-                                         subtitle: "Arm overnight collection")
+            return DisplayRepresentation(title: "Sleep backup",
+                                         subtitle: "Arm overnight backup")
         }
     }
 
@@ -131,7 +131,7 @@ struct AtriaFocusFilterIntent: SetFocusFilterIntent {
         let mode = resolvedMode
         AtriaIntentCommandStore.save(.focus(mode))
         AtriaIntentCommandStore.persistFocusMode(mode)
-        return .result(dialog: "\(mode.dialogVerb) Atria collection.")
+        return .result(dialog: "\(mode.dialogVerb) Atria backup.")
     }
 
     private var resolvedMode: AtriaFocusMode {
@@ -140,8 +140,8 @@ struct AtriaFocusFilterIntent: SetFocusFilterIntent {
 }
 
 struct AtriaCaptureIntent: AppIntent {
-    static let title: LocalizedStringResource = "Control Atria capture"
-    static let description = IntentDescription("Start or stop Atria's local capture when the app opens.")
+    static let title: LocalizedStringResource = "Control Atria backup"
+    static let description = IntentDescription("Start or stop Atria's local backup when the app opens.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Command")
@@ -157,7 +157,7 @@ struct AtriaCaptureIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         AtriaIntentCommandStore.save(.capture(command))
-        return .result(dialog: "\(command.dialogVerb) Atria capture.")
+        return .result(dialog: "\(command.dialogVerb) Atria backup.")
     }
 }
 
@@ -186,20 +186,20 @@ struct AtriaAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: AtriaCaptureIntent(command: .start),
             phrases: [
-                "Start capture in \(.applicationName)",
+                "Start backup in \(.applicationName)",
                 "Start Atria session with \(.applicationName)"
             ],
-            shortTitle: "Start capture",
+            shortTitle: "Start backup",
             systemImageName: "record.circle"
         )
 
         AppShortcut(
             intent: AtriaCaptureIntent(command: .stop),
             phrases: [
-                "Stop capture in \(.applicationName)",
+                "Stop backup in \(.applicationName)",
                 "Stop Atria session with \(.applicationName)"
             ],
-            shortTitle: "Stop capture",
+            shortTitle: "Stop backup",
             systemImageName: "stop.circle"
         )
     }
@@ -282,7 +282,7 @@ private extension AtriaIntentDestination {
         switch self {
         case .today: return "Today"
         case .vitals: return "Vitals"
-        case .collection: return "Collection"
+        case .collection: return "Data"
         }
     }
 }

@@ -29,7 +29,7 @@ struct AtriaHomeView: View {
             switch self {
             case .overview: return "Overview"
             case .vitals: return "Vitals"
-            case .collection: return "Collection"
+            case .collection: return "Data"
             }
         }
 
@@ -114,8 +114,8 @@ struct AtriaHomeView: View {
                     }
                 }
 
-                Tab("Collection", systemImage: "waveform.badge.magnifyingglass", value: HomeTab.collection) {
-                    tabNavigation(title: "Collection") {
+                Tab("Data", systemImage: "waveform.badge.magnifyingglass", value: HomeTab.collection) {
+                    tabNavigation(title: "Data") {
                         collectionContent
                     }
                 }

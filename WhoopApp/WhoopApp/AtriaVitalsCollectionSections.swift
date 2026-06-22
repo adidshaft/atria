@@ -211,7 +211,7 @@ private struct AtriaCollectionCaptureCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Capture", subtitle: "Start quickly and keep exports local")
+                AtriaPanelSectionHeader(title: "Saved readings", subtitle: "Keep a local backup and export when you need it")
 
                 Spacer(minLength: 0)
 
@@ -246,7 +246,7 @@ private struct AtriaCollectionCaptureCardHost: View {
     @ViewBuilder
     private var captureStats: some View {
         AtriaInlineQuickStat(label: "Samples", value: "\(collectionLiveStore.state.capturedRows)")
-        AtriaInlineQuickStat(label: "State", value: collectionLiveStore.state.recordingState)
+        AtriaInlineQuickStat(label: "Backup", value: collectionLiveStore.state.recordingState)
         AtriaInlineQuickStat(label: "Export", value: collectionLiveStore.state.captureFileLabel)
     }
 
@@ -265,7 +265,7 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureActionButtons: some View {
-        Button(collectionLiveStore.state.isRecording ? "Stop capture" : "Start capture") {
+        Button(collectionLiveStore.state.isRecording ? "Stop backup" : "Start backup") {
             ble.toggleRecording()
         }
         .buttonStyle(.glassProminent)
@@ -443,7 +443,7 @@ private struct AtriaCollectionControlsCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Collection controls", subtitle: "Tune how Atria collects while you wear the strap")
+                AtriaPanelSectionHeader(title: "Data settings", subtitle: "Choose how Atria saves readings while you wear the strap")
 
                 Spacer(minLength: 0)
 
@@ -469,7 +469,7 @@ private struct AtriaCollectionControlsCardHost: View {
 
                 AtriaCollectionToggleCard(
                     title: "Long wear",
-                    subtitle: "Bias collection toward longer background runs using your current rest and max HR.",
+                    subtitle: "Keep local backup running longer using your current rest and max HR.",
                     systemImage: "record.circle",
                     tint: .green,
                     isOn: Binding(
@@ -519,7 +519,7 @@ private struct AtriaCollectionStatusCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Collection status", subtitle: "Show useful state fast")
+                AtriaPanelSectionHeader(title: "Data status", subtitle: "Current local backup and export state")
 
                 Spacer(minLength: 0)
 
@@ -569,7 +569,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                     .background(AtriaIconTileBackground(cornerRadius: 8, tint: .purple))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Collection profile")
+                    Text("Backup profile")
                         .font(.subheadline.weight(.semibold))
                     Text(selected.detail)
                         .font(.caption)
@@ -592,7 +592,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                             .padding(.vertical, 10)
                     }
                     .buttonStyle(AtriaSegmentButtonStyle(selected: selected == profile))
-                    .accessibilityLabel("Collection profile \(profile.label)")
+                    .accessibilityLabel("Backup profile \(profile.label)")
                 }
             }
             .padding(6)

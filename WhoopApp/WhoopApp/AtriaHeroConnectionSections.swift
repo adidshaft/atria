@@ -706,7 +706,7 @@ private struct AtriaConnectionGuideSheet: View {
         .tint(.blue)
                                 .frame(maxWidth: .infinity)
                             Button("Retry scan now", action: retry)
-                                .buttonStyle(.glassProminent)
+                                .buttonStyle(.glass)
         .tint(.gray)
                         }
 
@@ -715,7 +715,7 @@ private struct AtriaConnectionGuideSheet: View {
                                 .buttonStyle(.glassProminent)
         .tint(.blue)
                             Button("Retry scan now", action: retry)
-                                .buttonStyle(.glassProminent)
+                                .buttonStyle(.glass)
         .tint(.gray)
                         }
                     }

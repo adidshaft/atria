@@ -453,7 +453,7 @@ private struct CollectionReliabilityCard: View {
             if !journal.fresh && !checkpointSaved { return "Waiting for the first protected checkpoint." }
             if !rrPresent && savedRRPresent { return "Current segment is HR-only; saved HRV window stays ready." }
             if !rrPresent { return "HR is protected; HRV stays learning until real RR returns." }
-            return "Collection is protected; keep wearing while Atria logs locally."
+            return "Local backup is protected; keep wearing while Atria logs on device."
         }
     }
 
@@ -461,7 +461,7 @@ private struct CollectionReliabilityCard: View {
         let summary = makeSummary()
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Collection", systemImage: "shield.lefthalf.filled")
+                Label("Local backup", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                 Spacer()
                 Text(summary.statusText)
