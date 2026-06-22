@@ -19,6 +19,7 @@ final class AtriaMediaController: ObservableObject {
 
     private let player = MPMusicPlayerController.systemMusicPlayer
     private var refreshTask: Task<Void, Never>?
+    private var isRefreshLoopActive = false
 
     init() {
         NotificationCenter.default.addObserver(self,
@@ -31,13 +32,24 @@ final class AtriaMediaController: ObservableObject {
                                                object: player)
         player.beginGeneratingPlaybackNotifications()
         refresh()
-        startRefreshLoop()
     }
 
     deinit {
         refreshTask?.cancel()
         NotificationCenter.default.removeObserver(self)
         player.endGeneratingPlaybackNotifications()
+    }
+
+    func setRefreshLoopActive(_ active: Bool) {
+        guard isRefreshLoopActive != active else { return }
+        isRefreshLoopActive = active
+        if active {
+            refresh()
+            startRefreshLoop()
+        } else {
+            refreshTask?.cancel()
+            refreshTask = nil
+        }
     }
 
     func refresh() {
@@ -94,10 +106,12 @@ final class AtriaMediaController: ObservableObject {
     }
 
     @objc private func handleNowPlayingItemChanged() {
+        guard isRefreshLoopActive else { return }
         refresh()
     }
 
     @objc private func handlePlaybackStateChanged() {
+        guard isRefreshLoopActive else { return }
         refresh()
     }
 
@@ -106,7 +120,8 @@ final class AtriaMediaController: ObservableObject {
         refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                self?.refresh()
+                guard let self, self.isRefreshLoopActive else { return }
+                self.refresh()
             }
         }
     }

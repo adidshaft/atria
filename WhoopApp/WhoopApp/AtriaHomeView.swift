@@ -183,6 +183,7 @@ struct AtriaHomeView: View {
             model.setPulseDetailMode(active: selectedTab == .vitals)
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
+            updateMediaRefreshLoop()
             updateLiveActivity()
             updateHapticCoordinator()
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
@@ -220,9 +221,9 @@ struct AtriaHomeView: View {
             logSecondaryContentReadyIfNeeded()
         }
         .onChange(of: scenePhase) { _, phase in
+            updateMediaRefreshLoop()
             guard phase == .active else { return }
             consumePendingIntentCommandIfNeeded()
-            mediaController.refresh()
             refreshAICoachKeyState()
             updateHapticCoordinator()
         }
@@ -250,6 +251,7 @@ struct AtriaHomeView: View {
             overviewDiagnosticsKickoffTask = nil
             automaticConnectionSetupTask?.cancel()
             automaticConnectionSetupTask = nil
+            mediaController.setRefreshLoopActive(false)
         }
     }
 
@@ -374,6 +376,12 @@ struct AtriaHomeView: View {
             mediaIsPlaying: mediaController.state.isPlaying,
             mediaHasNowPlayingInfo: mediaController.state.hasNowPlayingInfo
         ))
+    }
+
+    private func updateMediaRefreshLoop() {
+        let isActive = scenePhase == .active
+        let isConnected = model.coreLiveStore.state.status == .connected
+        mediaController.setRefreshLoopActive(isActive && isConnected)
     }
 
     private func refreshAICoachKeyState() {
@@ -673,6 +681,7 @@ struct AtriaHomeView: View {
     }
 
     private func handleStatusChange(_ status: WhoopBLEManager.Status) {
+        updateMediaRefreshLoop()
         if status == .connected {
             automaticConnectionSetupTask?.cancel()
             automaticConnectionSetupTask = nil

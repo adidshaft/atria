@@ -293,6 +293,29 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, coordinator, needle)
 
+    def test_media_refresh_loop_is_scene_and_connection_scoped(self):
+        media = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaMediaControls.swift")
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+
+        for needle in [
+            "private var isRefreshLoopActive = false",
+            "func setRefreshLoopActive(_ active: Bool)",
+            "guard isRefreshLoopActive else { return }",
+            "guard let self, self.isRefreshLoopActive else { return }",
+        ]:
+            assert_contains(self, media, needle)
+
+        assert_not_contains(self, media, "startRefreshLoop()\n    }")
+        for needle in [
+            "private func updateMediaRefreshLoop()",
+            "let isActive = scenePhase == .active",
+            "let isConnected = model.coreLiveStore.state.status == .connected",
+            "mediaController.setRefreshLoopActive(isActive && isConnected)",
+            ".onChange(of: scenePhase)",
+            "mediaController.setRefreshLoopActive(false)",
+        ]:
+            assert_contains(self, home, needle)
+
     def test_deferred_home_diagnostics_do_not_overlap(self):
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
 
