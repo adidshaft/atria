@@ -363,6 +363,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, debug_logging, "guard WhoopDebugLogging.isEnabled else { return }")
         assert_contains(self, debug_logging, "NSLogv(String(describing: format), pointer)")
 
+    def test_diagnostic_notifications_are_not_production_active(self):
+        notifications = source(ROOT / "WhoopApp" / "WhoopApp" / "LocalNotificationScheduler.swift")
+
+        assert_contains(self, notifications, "static let active = [recovery, strain, battery]")
+        assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
+        assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
+        assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, diagnostic]")
+
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
         plist = source(ROOT / "WhoopApp" / "Info.plist")

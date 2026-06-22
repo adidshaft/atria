@@ -13,9 +13,10 @@ enum LocalNotificationScheduler {
         static let legacyBattery = "whoop.battery.low"
         static let legacyDiagnostic = "whoop.diagnostic.delivery"
 
-        static let active = [recovery, strain, battery, diagnostic]
+        static let active = [recovery, strain, battery]
+        static let diagnosticOnly = [diagnostic]
         static let legacy = [legacyRecovery, legacyStrain, legacyBattery, legacyDiagnostic]
-        static let removable = active + legacy
+        static let removable = active + diagnosticOnly + legacy
     }
 
     static func scheduleFromLaunchIfRequested(store: SessionStore,
