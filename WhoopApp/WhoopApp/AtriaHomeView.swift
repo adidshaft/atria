@@ -1200,6 +1200,7 @@ final class AtriaHomeModel {
     private var diagnosticsRequested = false
     private var liveSessionDerived: LiveSessionDerived
     private var diagnosticsWorkItem: DispatchWorkItem?
+    private var diagnosticsWorkInFlight = false
     private var diagnosticsRefreshToken = UUID()
     private var prefersPulseSparklineUpdates = false
 
@@ -1575,15 +1576,25 @@ final class AtriaHomeModel {
     }
 
     private func scheduleDeferredDiagnosticsRefresh() {
+        guard !diagnosticsWorkInFlight else {
+            WHOOPDebugLog("WHOOPDBG home_diagnostics status=skipped reason=refresh_in_flight")
+            return
+        }
         diagnosticsWorkItem?.cancel()
         let token = UUID()
         diagnosticsRefreshToken = token
+        diagnosticsWorkInFlight = true
         let workItem = DispatchWorkItem(qos: .utility) { [weak self] in
             guard let self else { return }
             let details = Self.makeDeferredDetails(ble: self.ble, store: self.store)
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.diagnosticsRefreshToken == token else { return }
+                guard let self else { return }
+                guard self.diagnosticsRefreshToken == token else {
+                    self.diagnosticsWorkInFlight = false
+                    return
+                }
                 self.deferredDetails = details
+                self.diagnosticsWorkInFlight = false
                 if !self.snapshotStore.diagnosticsReady {
                     self.snapshotStore.diagnosticsReady = true
                 }

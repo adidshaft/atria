@@ -293,6 +293,19 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, coordinator, needle)
 
+    def test_deferred_home_diagnostics_do_not_overlap(self):
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+
+        for needle in [
+            "private var diagnosticsWorkInFlight = false",
+            "guard !diagnosticsWorkInFlight else",
+            "reason=refresh_in_flight",
+            "diagnosticsWorkInFlight = true",
+            "diagnosticsWorkInFlight = false",
+            "Self.makeDeferredDetails(ble: self.ble, store: self.store)",
+        ]:
+            assert_contains(self, home, needle)
+
     def test_backdrop_respects_reduce_transparency(self):
         shell = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeShellSupport.swift")
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
