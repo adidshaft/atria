@@ -282,7 +282,8 @@ Options:
   --pull-backups DIR    Copy the backup JSON logged by --backup-sessions from
                        the app container to DIR on this Mac.
   --pull-sessions DIR   Copy the app's current Documents/sessions.json from
-                       the app container to DIR on this Mac.
+                       the app container to DIR on this Mac. Also pulls the
+                       active-session journal and segmented active journal when present.
   --pull-historical DIR
                        Copy the app's historical JSONL archive from
                        Documents/atria-historical into DIR on this Mac.
@@ -2871,6 +2872,22 @@ if not replay_log and pull_sessions_dir:
             for line in last_active_result.stdout.splitlines():
                 emit(line)
         emit("WHOOPDBG_ACTIVE_JOURNAL_PULL_STATUS=missing")
+    active_segments_destination = destination / "atria-active-session.segments"
+    copy_cmd = [
+        "xcrun", "devicectl", "device", "copy", "from",
+        "--device", device_id,
+        "--domain-type", "appDataContainer",
+        "--domain-identifier", bundle_id,
+        "--source", "Documents/atria-active-session.segments",
+        "--destination", str(active_segments_destination),
+    ]
+    result = subprocess.run(copy_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            emit(line)
+        emit(f"WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_FILE={active_segments_destination}")
+    else:
+        emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_STATUS=missing")
     gate_status_destination_file = destination / "atria-gate-status.txt"
     copy_cmd = [
         "xcrun", "devicectl", "device", "copy", "from",
