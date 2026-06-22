@@ -51,11 +51,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "TabView(selection:",
             ".tabBarMinimizeBehavior(.onScrollDown)",
             ".tabViewBottomAccessory",
+            ".scrollEdgeEffectStyle(.soft, for: .top)",
             "enum AtriaDesignTokens",
             "func atriaCard(",
             "func atriaRaisedCard(",
         ]:
             assert_contains(self, text, needle)
+
+        assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
 
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")

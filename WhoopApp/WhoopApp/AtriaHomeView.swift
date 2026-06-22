@@ -398,6 +398,7 @@ struct AtriaHomeView: View {
                 .padding(.bottom, 40)
                 .frame(maxWidth: .infinity)
             }
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .navigationTitle(title)
             .toolbar {
                 toolbarContent

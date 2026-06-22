@@ -270,18 +270,8 @@ private struct AtriaCapsuleChromeBackground: View {
 
     var body: some View {
         Capsule(style: .continuous)
-            .fill(baseFill)
             .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
             .overlay(stroke)
-    }
-
-    private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.084, green: 0.095, blue: 0.124).opacity(0.96)
-            )
-        }
-        return AnyShapeStyle(Color.white.opacity(0.42))
     }
 
     private var glassTint: Color {
@@ -306,18 +296,8 @@ private struct AtriaIconChromeBackground: View {
 
     var body: some View {
         Circle()
-            .fill(baseFill)
             .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)).interactive(), in: .circle)
             .overlay(stroke)
-    }
-
-    private var baseFill: some ShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.086, green: 0.098, blue: 0.126).opacity(0.97)
-            )
-        }
-        return AnyShapeStyle(Color.white.opacity(0.42))
     }
 
     @ViewBuilder
