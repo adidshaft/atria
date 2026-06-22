@@ -77,6 +77,7 @@ struct AtriaCollectionTabContent: View {
     @Binding var captureShareURL: URL?
     @Binding var rrImportStatus: String
     @Binding var hrImportStatus: String
+    @Binding var hapticSettings: AtriaHapticAlertSettings
 
     var body: some View {
         Group {
@@ -134,7 +135,8 @@ struct AtriaCollectionTabContent: View {
                                         homeStatsStore: homeStatsStore,
                                         profileStore: profileStore,
                                         store: store,
-                                        ble: ble)
+                                        ble: ble,
+                                        hapticSettings: $hapticSettings)
     }
 
     private var collectionStatusCard: some View {
@@ -420,6 +422,7 @@ private struct AtriaCollectionControlsCardHost: View {
     @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
     let store: SessionStore
     let ble: WhoopBLEManager
+    @Binding var hapticSettings: AtriaHapticAlertSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -468,6 +471,10 @@ private struct AtriaCollectionControlsCardHost: View {
                                                  maxHR: profileStore.profile.maxHR)
                     }
                 )
+
+                AtriaHapticAlertSettingsCard(settings: hapticSettings) { settings in
+                    hapticSettings = settings
+                }
             }
 
             NavigationLink {

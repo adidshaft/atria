@@ -71,6 +71,8 @@ struct AtriaHomeView: View {
     @State private var hasLoggedSecondaryReady = false
     @State private var hasLoggedDiagnosticsReady = false
     @State private var entitlements = AtriaEntitlements()
+    @State private var hapticSettings = AtriaHapticAlertSettings.load()
+    @State private var hapticCoordinator = AtriaHapticAlertCoordinator()
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -154,6 +156,7 @@ struct AtriaHomeView: View {
             ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
             model.setPulseDetailMode(active: selectedTab == .vitals)
             consumePendingIntentCommandIfNeeded()
+            updateHapticCoordinator()
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
                                                      delayNanoseconds: 60_000_000)
             hasUnlockedPrimaryContent = true
@@ -191,6 +194,23 @@ struct AtriaHomeView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             consumePendingIntentCommandIfNeeded()
+            updateHapticCoordinator()
+        }
+        .onChange(of: hapticSettings) { _, settings in
+            settings.save()
+            updateHapticCoordinator()
+        }
+        .onReceive(model.coreLiveStore.$state) { _ in
+            updateHapticCoordinator()
+        }
+        .onReceive(model.pulseLiveStore.$state) { _ in
+            updateHapticCoordinator()
+        }
+        .onReceive(model.collectionLiveStore.$state) { _ in
+            updateHapticCoordinator()
+        }
+        .onReceive(model.heroStore.$state) { _ in
+            updateHapticCoordinator()
         }
         .onDisappear {
             connectionGuidePresentationTask?.cancel()
@@ -258,6 +278,20 @@ struct AtriaHomeView: View {
                 selectedTab = .collection
             }
         }
+    }
+
+    private func updateHapticCoordinator() {
+        hapticCoordinator.update(AtriaHapticAlertCoordinator.Snapshot(
+            status: model.coreLiveStore.state.status,
+            isRecording: model.collectionLiveStore.state.isRecording,
+            heartRate: model.pulseLiveStore.state.heartRate,
+            maxHR: model.profileStore.profile.maxHR,
+            batteryLevel: model.coreLiveStore.state.batteryLevel,
+            recoveryPercent: model.heroStore.state.recoveryEstimate.percent,
+            strain: model.heroStore.state.strain,
+            strainTarget: model.heroStore.state.guidance.target,
+            settings: hapticSettings
+        ))
     }
 
     private var isDark: Bool {
@@ -414,7 +448,8 @@ struct AtriaHomeView: View {
                                   hrShareURL: $hrShareURL,
                                   captureShareURL: $captureShareURL,
                                   rrImportStatus: $rrImportStatus,
-                                  hrImportStatus: $hrImportStatus)
+                                  hrImportStatus: $hrImportStatus,
+                                  hapticSettings: $hapticSettings)
     }
 
     private func secondaryLoadingCard(title: String, subtitle: String) -> some View {
