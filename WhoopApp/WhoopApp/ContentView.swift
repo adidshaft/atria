@@ -691,6 +691,7 @@ struct ProfileOnboardingView: View {
     @State private var draft: AthleteProfile
     let onComplete: (AthleteProfile) -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(profile: AthleteProfile, onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
@@ -789,8 +790,12 @@ struct ProfileOnboardingView: View {
         HStack(spacing: 8) {
             ForEach(AthleteProfile.HRMaxSource.allCases) { source in
                 Button {
-                    withAnimation(.snappy(duration: 0.22)) {
+                    if reduceMotion {
                         draft.maxHRSource = source
+                    } else {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            draft.maxHRSource = source
+                        }
                     }
                 } label: {
                     Text(source.label)

@@ -675,6 +675,7 @@ struct AtriaOverviewTrendSection: View, Equatable {
 
 struct AtriaOverviewBehaviorJournalSection: View {
     @ObservedObject var store: SessionStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var todayEntry: BehaviorJournalEntry {
         store.behaviorJournalEntry()
@@ -705,8 +706,12 @@ struct AtriaOverviewBehaviorJournalSection: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(BehaviorJournalEntry.Tag.allCases) { tag in
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        if reduceMotion {
                             store.toggleBehaviorTag(tag)
+                        } else {
+                            withAnimation(.snappy(duration: 0.2)) {
+                                store.toggleBehaviorTag(tag)
+                            }
                         }
                     } label: {
                         HStack(spacing: 8) {

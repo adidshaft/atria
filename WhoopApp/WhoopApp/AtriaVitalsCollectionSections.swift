@@ -812,6 +812,7 @@ private struct AtriaProfileCard: View, Equatable {
     let observedPeakHeartRateText: String
     let vo2MaxEstimate: VO2MaxEstimateSummary
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaProfileCard, rhs: AtriaProfileCard) -> Bool {
         lhs.profile == rhs.profile
@@ -826,8 +827,12 @@ private struct AtriaProfileCard: View, Equatable {
             HStack(spacing: 8) {
                 ForEach(AthleteProfile.HRMaxSource.allCases) { source in
                     Button {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        if reduceMotion {
                             onUpdateProfile { $0.maxHRSource = source }
+                        } else {
+                            withAnimation(.snappy(duration: 0.22)) {
+                                onUpdateProfile { $0.maxHRSource = source }
+                            }
                         }
                     } label: {
                         Text(source.label)

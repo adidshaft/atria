@@ -48,6 +48,7 @@ struct AtriaHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var model: AtriaHomeModel
     @State private var selectedTab: HomeTab = .overview
@@ -300,7 +301,7 @@ struct AtriaHomeView: View {
         guard let command = AtriaIntentCommandStore.consume() else { return }
         switch command {
         case .open(let destination):
-            withAnimation(.snappy(duration: 0.24)) {
+            performMotionAwareUpdate {
                 switch destination {
                 case .today:
                     selectedTab = .overview
@@ -316,7 +317,7 @@ struct AtriaHomeView: View {
             } else if command == .stop && ble.isRecording {
                 ble.toggleRecording()
             }
-            withAnimation(.snappy(duration: 0.24)) {
+            performMotionAwareUpdate {
                 selectedTab = .collection
             }
         case .focus(let mode):
@@ -333,8 +334,18 @@ struct AtriaHomeView: View {
                 ble.setCollectionProfile(.batterySaver, rest: rest, maxHR: maxHR)
                 ble.setLongWearModeEnabled(true, rest: rest, maxHR: maxHR)
             }
-            withAnimation(.snappy(duration: 0.24)) {
+            performMotionAwareUpdate {
                 selectedTab = .collection
+            }
+        }
+    }
+
+    private func performMotionAwareUpdate(_ update: () -> Void) {
+        if reduceMotion {
+            update()
+        } else {
+            withAnimation(.snappy(duration: 0.24)) {
+                update()
             }
         }
     }
@@ -511,12 +522,12 @@ struct AtriaHomeView: View {
                                     showConnectionGuide = true
                                 },
                                 onOpenVitals: {
-                                    withAnimation(.snappy(duration: 0.24)) {
+                                    performMotionAwareUpdate {
                                         selectedTab = .vitals
                                     }
                                 },
                                 onOpenCollection: {
-                                    withAnimation(.snappy(duration: 0.24)) {
+                                    performMotionAwareUpdate {
                                         selectedTab = .collection
                                     }
                                 })

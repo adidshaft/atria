@@ -83,6 +83,7 @@ struct HRChart: View {
 /// Horizontal zone indicator with the current zone highlighted.
 struct ZoneBar: View {
     let current: HRZone
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -96,7 +97,7 @@ struct ZoneBar: View {
                         .frame(height: z == current ? 14 : 8)
                 }
             }
-            .animation(.easeInOut(duration: 0.25), value: current)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: current)
         }
     }
 }

@@ -304,6 +304,20 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, guide, "@Environment(\\.accessibilityReduceTransparency) private var reduceTransparency")
         assert_contains(self, guide, "AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency)")
 
+    def test_user_flow_animations_respect_reduce_motion(self):
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
+        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
+        heart_rate = source(ROOT / "WhoopApp" / "WhoopApp" / "HeartRate.swift")
+
+        for text in [home, overview, collection, content, heart_rate]:
+            assert_contains(self, text, "accessibilityReduceMotion")
+
+        assert_contains(self, home, "private func performMotionAwareUpdate")
+        assert_contains(self, home, "if reduceMotion")
+        assert_contains(self, heart_rate, ".animation(reduceMotion ? nil")
+
     def test_end_user_copy_avoids_lab_only_language(self):
         content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
         hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
