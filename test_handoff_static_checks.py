@@ -355,10 +355,12 @@ class HandoffStaticChecks(unittest.TestCase):
             ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift",
             ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift",
             ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift",
+            ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift",
         ]:
             text = source(rel)
             assert_not_contains(self, text, "NSLog(\"WHOOPDBG")
 
+        assert_not_contains(self, all_swift_source(), "NSLog(\"WHOOPDBG")
         debug_logging = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopDebugLogging.swift")
         assert_contains(self, debug_logging, "guard WhoopDebugLogging.isEnabled else { return }")
         assert_contains(self, debug_logging, "NSLogv(String(describing: format), pointer)")
