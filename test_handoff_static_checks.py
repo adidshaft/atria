@@ -167,6 +167,28 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in required:
             assert_contains(self, text, needle)
 
+    def test_haptic_alerts_are_phone_side_only(self):
+        haptics = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHapticAlerts.swift")
+
+        for needle in [
+            "import CallKit",
+            "UINotificationFeedbackGenerator()",
+            "UIImpactFeedbackGenerator",
+            "Text(\"Phone haptics\")",
+            "phone_side=1 strap_write=0",
+        ]:
+            assert_contains(self, haptics, needle)
+
+        for forbidden in [
+            "sendCommand(",
+            "writeValue(",
+            "CoreBluetooth",
+            "CBPeripheral",
+            "strap_side=1",
+            "strap_write=1",
+        ]:
+            assert_not_contains(self, haptics, forbidden)
+
     def test_ai_coach_local_mode_is_explicitly_offline(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAICoach.swift")
 
