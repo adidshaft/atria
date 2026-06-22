@@ -135,7 +135,7 @@ struct SavedSession: Codable, Identifiable {
     var phoneStepEvidenceClause: String? {
         guard phoneStepCountValue > 0 else { return nil }
         let distanceClause = phoneStepDistanceMeters.map { String(format: ", %.0fm", $0) } ?? ""
-        return "phone steps \(phoneStepCountValue)\(distanceClause); phone-side adjunct, not wrist validated"
+        return "phone steps \(phoneStepCountValue)\(distanceClause); WHOOP HR/RR remains primary, phone motion is adjunct only"
     }
     var hrRaw2A37Value: Int { hrRaw2A37 ?? 0 }
     var hrAcceptedValue: Int { hrAccepted ?? 0 }

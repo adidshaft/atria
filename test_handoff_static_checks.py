@@ -470,6 +470,31 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
+    def test_phone_motion_remains_adjunct_to_whoop_primary_data(self):
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        pull = source(ROOT / "pull_atria_state.sh")
+
+        for needle in [
+            "WHOOP HR/RR remains primary, phone motion is adjunct only",
+            "var phoneMotionValidatedValue: Bool { phoneMotionValidated == true }",
+            "var phoneStepValidatedValue: Bool { phoneStepValidated == true }",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "phone_motion_validated=0 wrist_motion_validated=0",
+            "source=phone_coremotion_audit_only",
+            "action=activity_adjunct_only",
+            "phoneStepValidated: phoneSteps.validated",
+        ]:
+            assert_contains(self, ble, needle)
+
+        assert_contains(self, pull, "whoop_primary_data_source=saved_sessions_hr_rr")
+        assert_not_contains(self, sessions, "phone motion is primary")
+        assert_not_contains(self, sessions, "phoneMotionValidated: true")
+        assert_not_contains(self, sessions, "phoneStepValidated: true")
+
 
 if __name__ == "__main__":
     unittest.main()
