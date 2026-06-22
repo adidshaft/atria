@@ -392,7 +392,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "static let active = [recovery, strain, battery]")
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
         assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
+        assert_contains(self, notifications, "title: \"Atria notification test\"")
+        assert_contains(self, notifications, "body: \"Local notification delivery is working.\"")
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, diagnostic]")
+        assert_not_contains(self, notifications, "title: \"Atria diagnostic\"")
 
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")

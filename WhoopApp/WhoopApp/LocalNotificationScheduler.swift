@@ -80,8 +80,8 @@ enum LocalNotificationScheduler {
             decisions.append(NotificationDecision(
                 kind: "diagnostic",
                 identifier: Identifier.diagnostic,
-                title: "Atria diagnostic",
-                body: "Local notification delivery test.",
+                title: "Atria notification test",
+                body: "Local notification delivery is working.",
                 reason: "debug_delivery_probe",
                 shouldSchedule: true,
                 delay: 3
