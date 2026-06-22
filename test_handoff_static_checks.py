@@ -233,6 +233,21 @@ class HandoffStaticChecks(unittest.TestCase):
             ]:
                 assert_not_contains(self, text, forbidden)
 
+    def test_user_path_debug_logs_are_gated(self):
+        for rel in [
+            ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift",
+            ROOT / "WhoopApp" / "WhoopApp" / "WidgetSnapshot.swift",
+            ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift",
+            ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift",
+            ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift",
+        ]:
+            text = source(rel)
+            assert_not_contains(self, text, "NSLog(\"WHOOPDBG")
+
+        debug_logging = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopDebugLogging.swift")
+        assert_contains(self, debug_logging, "guard WhoopDebugLogging.isEnabled else { return }")
+        assert_contains(self, debug_logging, "NSLogv(String(describing: format), pointer)")
+
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
         plist = source(ROOT / "WhoopApp" / "Info.plist")

@@ -105,38 +105,38 @@ enum WidgetSnapshotPublisher {
                 ? (UserDefaults(suiteName: appGroupID) ?? .standard)
                 : .standard
             defaults.set(data, forKey: key)
-            NSLog("WHOOPDBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
-                  reason,
-                  snapshot.schema,
-                  formatInt(snapshot.recoveryPercent),
-                  snapshot.recoveryConfidence,
-                  hrvState,
-                  snapshot.strain,
-                  formatInt(snapshot.restingHR),
-                  snapshot.maxHR,
-                  data.count,
-                  snapshot.storage,
-                  snapshot.appGroupEnabled ? 1 : 0,
-                  snapshot.widgetTargetPresent ? 1 : 0,
-                  snapshot.complicationTargetPresent ? 1 : 0)
+            WHOOPDebugLog("WHOOPDBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
+                          reason,
+                          snapshot.schema,
+                          formatInt(snapshot.recoveryPercent),
+                          snapshot.recoveryConfidence,
+                          hrvState,
+                          snapshot.strain,
+                          formatInt(snapshot.restingHR),
+                          snapshot.maxHR,
+                          data.count,
+                          snapshot.storage,
+                          snapshot.appGroupEnabled ? 1 : 0,
+                          snapshot.widgetTargetPresent ? 1 : 0,
+                          snapshot.complicationTargetPresent ? 1 : 0)
             let readinessAction = widgetReadinessAction(diagnostics: widgetDiagnostics)
             let readinessStatus = widgetDiagnostics.appGroupEnabled
                 && widgetDiagnostics.widgetTargetPresent
                 && widgetDiagnostics.complicationTargetPresent ? "ready" : "diagnostic_only"
-            NSLog("WHOOPDBG widget_readiness status=%@ storage=%@ app_group=%d widget_target=%d complication_target=%d action=%@",
-                  readinessStatus,
-                  snapshot.storage,
-                  snapshot.appGroupEnabled ? 1 : 0,
-                  snapshot.widgetTargetPresent ? 1 : 0,
-                  snapshot.complicationTargetPresent ? 1 : 0,
-                  readinessAction)
+            WHOOPDebugLog("WHOOPDBG widget_readiness status=%@ storage=%@ app_group=%d widget_target=%d complication_target=%d action=%@",
+                          readinessStatus,
+                          snapshot.storage,
+                          snapshot.appGroupEnabled ? 1 : 0,
+                          snapshot.widgetTargetPresent ? 1 : 0,
+                          snapshot.complicationTargetPresent ? 1 : 0,
+                          readinessAction)
 #if canImport(WidgetKit)
             if widgetDiagnostics.appGroupEnabled {
                 WidgetCenter.shared.reloadAllTimelines()
             }
 #endif
         } else {
-            NSLog("WHOOPDBG widget_snapshot status=error reason=encode_failed")
+            WHOOPDebugLog("WHOOPDBG widget_snapshot status=error reason=encode_failed")
         }
         return snapshot
     }
