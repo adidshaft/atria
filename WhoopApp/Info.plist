@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.adidshaft.atria.refresh</string>
+		<string>com.adidshaft.atria.processing</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Atria</string>
 	<key>CFBundleName</key>
@@ -12,15 +17,12 @@
 	<string>This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you explicitly enable export.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Atria samples this iPhone's motion only to label local diagnostic evidence; wrist and sleep metrics still require validated strap motion.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
 		<string>processing</string>
-	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>com.adidshaft.atria.refresh</string>
-		<string>com.adidshaft.atria.processing</string>
 	</array>
 </dict>
 </plist>

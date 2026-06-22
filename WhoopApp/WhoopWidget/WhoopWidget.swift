@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import ActivityKit
 
 private let snapshotKey = "atria.widgetSnapshot.v1"
 private let appGroupID = "group.com.adidshaft.atria"
@@ -144,8 +145,7 @@ struct WhoopWidgetEntryView: View {
     }
 }
 
-@main
-struct WhoopWidget: Widget {
+struct WhoopStatusWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "WhoopWidget", provider: WhoopWidgetProvider()) { entry in
             WhoopWidgetEntryView(entry: entry)
@@ -153,5 +153,102 @@ struct WhoopWidget: Widget {
         .configurationDisplayName("Atria")
         .description("Shows local recovery and strain status when shared widget storage is enabled.")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
+    }
+}
+
+struct AtriaLiveActivityWidget: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: AtriaLiveActivityAttributes.self) { context in
+            AtriaLiveActivityLockScreenView(context: context)
+                .activityBackgroundTint(Color(.systemBackground))
+                .activitySystemActionForegroundColor(.primary)
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("BPM", systemImage: "heart.fill")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "--")
+                            .font(.title3.monospacedDigit().weight(.bold))
+                    }
+                }
+
+                DynamicIslandExpandedRegion(.trailing) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Strain")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "%.1f", context.state.strain))
+                            .font(.title3.monospacedDigit().weight(.bold))
+                    }
+                }
+
+                DynamicIslandExpandedRegion(.bottom) {
+                    HStack {
+                        Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
+                        Spacer(minLength: 10)
+                        Label(context.state.batteryLevel >= 0 ? "\(context.state.batteryLevel)%" : "Battery", systemImage: "battery.100")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+            } compactLeading: {
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(.red)
+            } compactTrailing: {
+                Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "--")
+                    .font(.caption.monospacedDigit().weight(.bold))
+            } minimal: {
+                Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "A")
+                    .font(.caption2.monospacedDigit().weight(.bold))
+            }
+            .keylineTint(.red)
+        }
+    }
+}
+
+private struct AtriaLiveActivityLockScreenView: View {
+    let context: ActivityViewContext<AtriaLiveActivityAttributes>
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Atria live")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(context.state.heartRate > 0 ? "\(context.state.heartRate) BPM" : "Reading BPM")
+                    .font(.title3.monospacedDigit().weight(.bold))
+            }
+
+            Spacer(minLength: 10)
+
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(String(format: "Strain %.1f", context.state.strain))
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                Text("\(context.state.sampleCount) samples · \(elapsedText(since: context.attributes.startedAt))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private func elapsedText(since start: Date) -> String {
+    let seconds = max(0, Int(Date().timeIntervalSince(start)))
+    let minutes = seconds / 60
+    let hours = minutes / 60
+    if hours > 0 {
+        return "\(hours)h \(minutes % 60)m"
+    }
+    return "\(minutes)m"
+}
+
+@main
+struct WhoopWidgetBundle: WidgetBundle {
+    var body: some Widget {
+        WhoopStatusWidget()
+        AtriaLiveActivityWidget()
     }
 }

@@ -74,6 +74,7 @@ struct AtriaHomeView: View {
     @State private var hapticSettings = AtriaHapticAlertSettings.load()
     @State private var hapticCoordinator = AtriaHapticAlertCoordinator()
     @StateObject private var mediaController = AtriaMediaController()
+    @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -158,6 +159,7 @@ struct AtriaHomeView: View {
             ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
             model.setPulseDetailMode(active: selectedTab == .vitals)
             consumePendingIntentCommandIfNeeded()
+            updateLiveActivity()
             updateHapticCoordinator()
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
                                                      delayNanoseconds: 60_000_000)
@@ -204,12 +206,15 @@ struct AtriaHomeView: View {
             updateHapticCoordinator()
         }
         .onReceive(model.coreLiveStore.$state) { _ in
+            updateLiveActivity()
             updateHapticCoordinator()
         }
         .onReceive(model.pulseLiveStore.$state) { _ in
+            updateLiveActivity()
             updateHapticCoordinator()
         }
         .onReceive(model.collectionLiveStore.$state) { _ in
+            updateLiveActivity()
             updateHapticCoordinator()
         }
         .onReceive(model.heroStore.$state) { _ in
@@ -294,6 +299,16 @@ struct AtriaHomeView: View {
             strain: model.heroStore.state.strain,
             strainTarget: model.heroStore.state.guidance.target,
             settings: hapticSettings
+        ))
+    }
+
+    private func updateLiveActivity() {
+        liveActivityCoordinator.update(AtriaLiveActivityCoordinator.Snapshot(
+            isRecording: model.collectionLiveStore.state.isRecording,
+            heartRate: model.pulseLiveStore.state.heartRate,
+            strain: Metrics.strain(fromTRIMP: model.coreLiveStore.state.liveTRIMP),
+            batteryLevel: model.coreLiveStore.state.batteryLevel,
+            sampleCount: model.coreLiveStore.state.sessionSampleCount
         ))
     }
 
