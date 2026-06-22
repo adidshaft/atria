@@ -307,12 +307,12 @@ private struct AtriaCollectionRRReferenceCardHost: View {
             }
 
             AtriaCollectionReferenceSummaryCard(
-                leadingTitle: "RR package",
+                leadingTitle: "RR window",
                 leadingValue: homeStatsStore.state.rrPackageText,
                 leadingDetail: homeStatsStore.state.hrvDetail,
                 trailingTitle: "Flow",
                 trailingValue: "Export or import",
-                trailingDetail: "local file handoff"
+                trailingDetail: "local file flow"
             )
 
             if !rrImportStatus.isEmpty {
