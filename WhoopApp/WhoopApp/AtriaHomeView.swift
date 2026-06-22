@@ -73,6 +73,7 @@ struct AtriaHomeView: View {
     @State private var entitlements = AtriaEntitlements()
     @State private var hapticSettings = AtriaHapticAlertSettings.load()
     @State private var hapticCoordinator = AtriaHapticAlertCoordinator()
+    @StateObject private var mediaController = AtriaMediaController()
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -112,7 +113,8 @@ struct AtriaHomeView: View {
             }
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: model.coreLiveStore.state.status == .connected) {
-                AtriaLiveTabAccessory(liveStore: model.coreLiveStore)
+                AtriaLiveTabAccessory(liveStore: model.coreLiveStore,
+                                      mediaController: mediaController)
             }
 
             AtriaHomeObservers(statusStore: model.statusStore,
@@ -194,6 +196,7 @@ struct AtriaHomeView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             consumePendingIntentCommandIfNeeded()
+            mediaController.refresh()
             updateHapticCoordinator()
         }
         .onChange(of: hapticSettings) { _, settings in
@@ -635,6 +638,7 @@ struct AtriaHomeView: View {
 
 private struct AtriaLiveTabAccessory: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var mediaController: AtriaMediaController
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
     @Environment(\.atriaEntitlements) private var entitlements
 
@@ -664,10 +668,7 @@ private struct AtriaLiveTabAccessory: View {
             if !isInline {
                 Spacer(minLength: 0)
                 if showsPremiumControls {
-                    Image(systemName: "playpause.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                    mediaControls
                 }
                 Label(liveStore.state.batteryText, systemImage: "battery.100")
                     .font(.caption.weight(.semibold))
@@ -678,6 +679,46 @@ private struct AtriaLiveTabAccessory: View {
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Live strap connected")
+    }
+
+    private var mediaControls: some View {
+        HStack(spacing: 4) {
+            Text(mediaController.state.hasNowPlayingInfo ? mediaController.state.title : "Media")
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 88, alignment: .trailing)
+                .accessibilityHidden(true)
+
+            mediaButton(systemImage: "backward.fill",
+                        label: "Previous track",
+                        action: mediaController.previousTrack)
+            mediaButton(systemImage: mediaController.state.isPlaying ? "pause.fill" : "play.fill",
+                        label: mediaController.state.isPlaying ? "Pause media" : "Play media",
+                        action: mediaController.playPause)
+            mediaButton(systemImage: "stop.fill",
+                        label: "Stop media",
+                        action: mediaController.stop)
+            mediaButton(systemImage: "forward.fill",
+                        label: "Next track",
+                        action: mediaController.nextTrack)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(mediaController.state.accessibilitySummary)
+    }
+
+    private func mediaButton(systemImage: String,
+                             label: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.bold))
+                .frame(width: 24, height: 24)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityLabel(label)
     }
 }
 
