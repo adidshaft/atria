@@ -74,6 +74,40 @@ def run_pull(repo: Path, device_id: str, out_dir: Path, log_path: Path) -> tuple
     return result.returncode, result.stdout
 
 
+def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    thermal_states = set(final.get("thermal_states", []))
+    allowed_thermal = set(args.allowed_thermal)
+    battery_delta = final.get("battery_delta")
+    if not isinstance(battery_delta, (int, float)):
+        battery_ok = False
+    else:
+        battery_ok = battery_delta >= -args.max_battery_drop
+    checks = {
+        "samples": int(final.get("samples", 0)) >= args.min_samples,
+        "active_ok_samples": int(final.get("active_ok_samples", 0)) >= args.min_samples,
+        "session_span": float(final.get("latest_recent_session_span_s", 0) or 0) >= args.min_span,
+        "session_coverage": float(final.get("latest_recent_session_coverage_percent", 0) or 0) >= args.min_coverage,
+        "active_gap": float(final.get("max_active_accepted_gap_s", 0) or 0) <= args.max_gap,
+        "recent_gap": float(final.get("max_recent_accepted_gap_s", 0) or 0) <= args.max_gap,
+        "thermal": bool(thermal_states) and thermal_states.issubset(allowed_thermal),
+        "battery": battery_ok,
+    }
+    blockers = [name for name, ok in checks.items() if not ok]
+    return {
+        "acceptance_status": "pass" if not blockers else "fail",
+        "acceptance_checks": checks,
+        "acceptance_blockers": blockers,
+        "criteria": {
+            "min_samples": args.min_samples,
+            "min_span_s": args.min_span,
+            "min_coverage_percent": args.min_coverage,
+            "max_gap_s": args.max_gap,
+            "allowed_thermal": args.allowed_thermal,
+            "max_battery_drop_percent": args.max_battery_drop,
+        },
+    }
+
+
 def rollup(samples: list[dict[str, object]]) -> dict[str, object]:
     active_samples = [item.get("active_journal", {}) for item in samples if isinstance(item.get("active_journal"), dict)]
     session_samples = [item.get("sessions", {}) for item in samples if isinstance(item.get("sessions"), dict)]
@@ -107,7 +141,7 @@ def rollup(samples: list[dict[str, object]]) -> dict[str, object]:
         "power_modes": power_modes,
         "battery_first": batteries[0] if batteries else "missing",
         "battery_latest": batteries[-1] if batteries else "missing",
-        "battery_delta": (batteries[-1] - batteries[0]) if len(batteries) >= 2 else "missing",
+        "battery_delta": (batteries[-1] - batteries[0]) if batteries else "missing",
     }
 
 
@@ -119,6 +153,12 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=2, help="Number of pull-only samples to collect.")
     parser.add_argument("--interval", type=float, default=300, help="Seconds between samples.")
     parser.add_argument("--label", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), help="Run label.")
+    parser.add_argument("--min-samples", type=int, default=2, help="Minimum successful pull samples required for acceptance.")
+    parser.add_argument("--min-span", type=float, default=8 * 60 * 60, help="Minimum recent persisted-session span in seconds.")
+    parser.add_argument("--min-coverage", type=float, default=85.0, help="Minimum recent persisted-session coverage percent.")
+    parser.add_argument("--max-gap", type=float, default=30.0, help="Maximum accepted-HR gap in seconds.")
+    parser.add_argument("--allowed-thermal", nargs="+", default=["nominal", "fair"], help="Thermal states allowed for acceptance.")
+    parser.add_argument("--max-battery-drop", type=float, default=35.0, help="Maximum allowed battery percentage drop.")
     args = parser.parse_args()
 
     if not args.device:
@@ -165,6 +205,7 @@ def main() -> int:
             time.sleep(args.interval)
 
     final = rollup(samples)
+    final.update(evaluate_acceptance(final, args))
     final["label"] = args.label
     final["out_dir"] = str(out_root)
     final["jsonl"] = str(jsonl_path)
@@ -178,6 +219,8 @@ def main() -> int:
         f"latest_recent_session_coverage_percent={final['latest_recent_session_coverage_percent']} "
         f"thermal_states={','.join(final['thermal_states'])} "
         f"battery_first={final['battery_first']} battery_latest={final['battery_latest']} "
+        f"acceptance_status={final['acceptance_status']} "
+        f"acceptance_blockers={','.join(final['acceptance_blockers']) or 'none'} "
         f"summary={summary_path}",
         flush=True,
     )
