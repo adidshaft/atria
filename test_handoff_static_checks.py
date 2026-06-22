@@ -591,6 +591,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "source=phone_coremotion_audit_only",
             "action=activity_adjunct_only",
             "phoneStepValidated: phoneSteps.validated",
+            "private func phoneMotionAuditSummary() -> (source: String, validated: Bool",
+            "return (\"phone_coremotion_audit_only\", false",
+            "private func phoneStepEvidenceSummary() -> (source: String, validated: Bool",
+            "return (\"phone_coremotion_pedometer\", false",
         ]:
             assert_contains(self, ble, needle)
 
