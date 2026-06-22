@@ -17,7 +17,7 @@ struct AtriaHomeContainer: View, Equatable {
 }
 
 struct AtriaHomeView: View {
-    private enum Tab: String, CaseIterable, Identifiable {
+    private enum HomeTab: String, CaseIterable, Identifiable {
         case overview
         case vitals
         case collection
@@ -47,7 +47,7 @@ struct AtriaHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var model: AtriaHomeModel
-    @State private var selectedTab: Tab = .overview
+    @State private var selectedTab: HomeTab = .overview
     @State private var showRRImporter = false
     @State private var showHRImporter = false
     @State private var rrShareURL: URL?
@@ -77,110 +77,122 @@ struct AtriaHomeView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AtriaBackdropLayer(isDark: isDark)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
+        ZStack {
+            AtriaBackdropLayer(isDark: isDark)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 18) {
-                        header
-                        hero
-                        tabPicker
-                        tabContent
+            TabView(selection: $selectedTab) {
+                Tab("Today", systemImage: "sparkles", value: HomeTab.overview) {
+                    tabNavigation(title: "Today") {
+                        if hasUnlockedPrimaryContent {
+                            overviewContent
+                        } else {
+                            secondaryLoadingCard(title: "Preparing overview",
+                                                 subtitle: "Getting the first live readout on screen before the deeper cards load.")
+                        }
                     }
-                    .frame(maxWidth: contentWidth)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 40)
-                        .frame(maxWidth: .infinity)
                 }
 
-                AtriaHomeObservers(statusStore: model.statusStore,
-                                   snapshotStore: model.snapshotStore) { status in
-                    handleStatusChange(status)
-                } onDiagnosticsReady: {
-                    overviewDiagnosticsKickoffTask?.cancel()
-                    overviewDiagnosticsKickoffTask = nil
-                    logDiagnosticsReadyIfNeeded()
-                }
-            }
-            .navigationBarHidden(true)
-            .fileImporter(isPresented: $showRRImporter,
-                          allowedContentTypes: [.commaSeparatedText, .plainText, .data],
-                          allowsMultipleSelection: false,
-                          onCompletion: handleRRImport)
-            .fileImporter(isPresented: $showHRImporter,
-                          allowedContentTypes: [.commaSeparatedText, .plainText, .data],
-                          allowsMultipleSelection: false,
-                          onCompletion: handleHRImport)
-            .sheet(isPresented: $showConnectionGuide) {
-                AtriaConnectionGuideSheetHost(statusStore: model.statusStore,
-                                              context: connectionGuideContext) {
-                    connectionGuideSnoozedUntil = Date().addingTimeInterval(90)
-                    showConnectionGuide = false
-                    if model.statusStore.state.status != .connected {
-                        ble.startScan(reason: "connection_guide_continue")
+                Tab("Vitals", systemImage: "heart.text.square", value: HomeTab.vitals) {
+                    tabNavigation(title: "Vitals") {
+                        vitalsContent
                     }
-                } retry: {
-                    connectionGuideSnoozedUntil = nil
-                    ble.startScan(reason: "connection_guide_retry")
                 }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
-            .onAppear {
-                guard !hasUnlockedPrimaryContent else { return }
-                if homeAppearedAt == nil {
-                    homeAppearedAt = Date()
-                }
-                ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
-                model.setPulseDetailMode(active: selectedTab == .vitals)
-                scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
-                                                         delayNanoseconds: 60_000_000)
-                hasUnlockedPrimaryContent = true
-                logPrimaryContentReadyIfNeeded()
-                secondaryUnlockTask?.cancel()
-                secondaryUnlockTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: secondaryUnlockDelayNanoseconds(for: model.coreLiveStore.state.status))
-                    guard !Task.isCancelled else { return }
-                    hasUnlockedSecondarySections = true
-                }
-                scheduleOverviewDiagnosticsKickoff(reason: "home_overview_idle",
-                                                   delayNanoseconds: 6_800_000_000)
-                presentConnectionGuideIfNeeded()
-            }
-            .onChange(of: selectedTab) { _, tab in
-                ble.setForegroundHighFrequencyDisplayMode(tab == .vitals)
-                model.setPulseDetailMode(active: tab == .vitals)
-                if tab != .overview {
-                    overviewDiagnosticsKickoffTask?.cancel()
-                    overviewDiagnosticsKickoffTask = nil
-                    hasUnlockedPrimaryContent = true
-                    hasUnlockedSecondarySections = true
-                    if tab == .collection {
-                        model.loadDeferredDiagnosticsIfNeeded(reason: "tab_\(tab.rawValue)")
+
+                Tab("Collection", systemImage: "waveform.badge.magnifyingglass", value: HomeTab.collection) {
+                    tabNavigation(title: "Collection") {
+                        collectionContent
                     }
-                } else if !model.snapshotStore.diagnosticsReady {
-                    scheduleOverviewDiagnosticsKickoff(reason: "overview_return_idle",
-                                                       delayNanoseconds: 6_800_000_000)
                 }
             }
-            .onChange(of: hasUnlockedSecondarySections) { _, unlocked in
-                guard unlocked else { return }
-                logSecondaryContentReadyIfNeeded()
+            .tabBarMinimizeBehavior(.onScrollDown)
+            .tabViewBottomAccessory(isEnabled: model.coreLiveStore.state.status == .connected) {
+                AtriaLiveTabAccessory(liveStore: model.coreLiveStore)
             }
-            .onDisappear {
-                connectionGuidePresentationTask?.cancel()
-                connectionGuidePresentationTask = nil
-                secondaryUnlockTask?.cancel()
-                secondaryUnlockTask = nil
+
+            AtriaHomeObservers(statusStore: model.statusStore,
+                               snapshotStore: model.snapshotStore) { status in
+                handleStatusChange(status)
+            } onDiagnosticsReady: {
                 overviewDiagnosticsKickoffTask?.cancel()
                 overviewDiagnosticsKickoffTask = nil
-                automaticConnectionSetupTask?.cancel()
-                automaticConnectionSetupTask = nil
+                logDiagnosticsReadyIfNeeded()
             }
+        }
+        .fileImporter(isPresented: $showRRImporter,
+                      allowedContentTypes: [.commaSeparatedText, .plainText, .data],
+                      allowsMultipleSelection: false,
+                      onCompletion: handleRRImport)
+        .fileImporter(isPresented: $showHRImporter,
+                      allowedContentTypes: [.commaSeparatedText, .plainText, .data],
+                      allowsMultipleSelection: false,
+                      onCompletion: handleHRImport)
+        .sheet(isPresented: $showConnectionGuide) {
+            AtriaConnectionGuideSheetHost(statusStore: model.statusStore,
+                                          context: connectionGuideContext) {
+                connectionGuideSnoozedUntil = Date().addingTimeInterval(90)
+                showConnectionGuide = false
+                if model.statusStore.state.status != .connected {
+                    ble.startScan(reason: "connection_guide_continue")
+                }
+            } retry: {
+                connectionGuideSnoozedUntil = nil
+                ble.startScan(reason: "connection_guide_retry")
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onAppear {
+            guard !hasUnlockedPrimaryContent else { return }
+            if homeAppearedAt == nil {
+                homeAppearedAt = Date()
+            }
+            ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
+            model.setPulseDetailMode(active: selectedTab == .vitals)
+            scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
+                                                     delayNanoseconds: 60_000_000)
+            hasUnlockedPrimaryContent = true
+            logPrimaryContentReadyIfNeeded()
+            secondaryUnlockTask?.cancel()
+            secondaryUnlockTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: secondaryUnlockDelayNanoseconds(for: model.coreLiveStore.state.status))
+                guard !Task.isCancelled else { return }
+                hasUnlockedSecondarySections = true
+            }
+            scheduleOverviewDiagnosticsKickoff(reason: "home_overview_idle",
+                                               delayNanoseconds: 6_800_000_000)
+            presentConnectionGuideIfNeeded()
+        }
+        .onChange(of: selectedTab) { _, tab in
+            ble.setForegroundHighFrequencyDisplayMode(tab == .vitals)
+            model.setPulseDetailMode(active: tab == .vitals)
+            if tab != .overview {
+                overviewDiagnosticsKickoffTask?.cancel()
+                overviewDiagnosticsKickoffTask = nil
+                hasUnlockedPrimaryContent = true
+                hasUnlockedSecondarySections = true
+                if tab == .collection {
+                    model.loadDeferredDiagnosticsIfNeeded(reason: "tab_\(tab.rawValue)")
+                }
+            } else if !model.snapshotStore.diagnosticsReady {
+                scheduleOverviewDiagnosticsKickoff(reason: "overview_return_idle",
+                                                   delayNanoseconds: 6_800_000_000)
+            }
+        }
+        .onChange(of: hasUnlockedSecondarySections) { _, unlocked in
+            guard unlocked else { return }
+            logSecondaryContentReadyIfNeeded()
+        }
+        .onDisappear {
+            connectionGuidePresentationTask?.cancel()
+            connectionGuidePresentationTask = nil
+            secondaryUnlockTask?.cancel()
+            secondaryUnlockTask = nil
+            overviewDiagnosticsKickoffTask?.cancel()
+            overviewDiagnosticsKickoffTask = nil
+            automaticConnectionSetupTask?.cancel()
+            automaticConnectionSetupTask = nil
         }
     }
 
@@ -218,14 +230,25 @@ struct AtriaHomeView: View {
         colorScheme == .dark
     }
 
-    private var header: some View {
-        AtriaHeaderBar(statusStore: model.statusStore,
-                       store: store,
-                       ble: ble,
-                       onShowSetupGuide: {
-                           connectionGuideSnoozedUntil = nil
-                           showConnectionGuide = true
-                       })
+    private func tabNavigation<Content: View>(title: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 18) {
+                    hero
+                    content()
+                }
+                .frame(maxWidth: contentWidth)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 40)
+                .frame(maxWidth: .infinity)
+            }
+            .navigationTitle(title)
+            .toolbar {
+                toolbarContent
+            }
+        }
     }
 
     private var hero: some View {
@@ -235,52 +258,72 @@ struct AtriaHomeView: View {
                            pulseStore: model.heroPulseStore)
     }
 
-    private var tabPicker: some View {
-        Group {
-            if #available(iOS 26, *) {
-                GlassEffectContainer(spacing: 8) {
-                    tabPickerContent
-                }
-            } else {
-                tabPickerContent
-            }
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Text(statusHeadline)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .padding(6)
-        .atriaGlassCapsule(tint: isDark ? .cyan.opacity(0.18) : .white.opacity(0.8))
-    }
 
-    private var tabPickerContent: some View {
-        HStack(spacing: 8) {
-            ForEach(Tab.allCases) { tab in
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if model.statusStore.state.status != .connected {
                 Button {
-                    withAnimation(.snappy(duration: 0.24)) {
-                        selectedTab = tab
-                    }
+                    connectionGuideSnoozedUntil = nil
+                    showConnectionGuide = true
                 } label: {
-                    Label(tab.title, systemImage: tab.systemImage)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+                    Image(systemName: "questionmark.circle")
                 }
-                .buttonStyle(AtriaSegmentButtonStyle(selected: selectedTab == tab))
+                .accessibilityLabel("Connection help")
             }
+
+            connectionToolbarButton
+
+            NavigationLink {
+                HistoryView(store: store)
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .accessibilityLabel("History")
         }
     }
 
     @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
-        case .overview:
-            if hasUnlockedPrimaryContent {
-                overviewContent
-            } else {
-                secondaryLoadingCard(title: "Preparing overview",
-                                     subtitle: "Getting the first live readout on screen before the deeper cards load.")
+    private var connectionToolbarButton: some View {
+        switch model.statusStore.state.status {
+        case .connected:
+            Button {
+                ble.disconnect()
+            } label: {
+                Image(systemName: "bolt.heart.fill")
             }
-        case .vitals:
-            vitalsContent
-        case .collection:
-            collectionContent
+            .accessibilityLabel("Disconnect strap")
+        case .connecting, .scanning:
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .accessibilityLabel("Connecting to strap")
+        case .poweredOff, .disconnected:
+            Button {
+                ble.startScan(reason: "home_manual")
+            } label: {
+                Image(systemName: model.statusStore.state.status == .poweredOff ? "bolt.slash.circle" : "bolt.horizontal.circle")
+            }
+            .accessibilityLabel(model.statusStore.state.status == .poweredOff ? "Bluetooth unavailable" : "Scan for strap")
+        }
+    }
+
+    private var statusHeadline: String {
+        switch model.statusStore.state.status {
+        case .connected:
+            return "Live connection active"
+        case .connecting:
+            return "Finishing handoff"
+        case .scanning:
+            return "Searching nearby"
+        case .poweredOff:
+            return "Bluetooth paused"
+        case .disconnected:
+            return "Ready to reconnect"
         }
     }
 
@@ -517,6 +560,43 @@ struct AtriaHomeView: View {
                       elapsedMS,
                       status.logToken,
                       selectedTab.rawValue)
+    }
+}
+
+private struct AtriaLiveTabAccessory: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    private var isInline: Bool {
+        placement == .inline
+    }
+
+    var body: some View {
+        HStack(spacing: isInline ? 8 : 12) {
+            Image(systemName: "heart.fill")
+                .font(isInline ? .caption.weight(.bold) : .subheadline.weight(.bold))
+                .foregroundStyle(.red)
+
+            Text(liveStore.state.sessionSampleCount > 0 ? "Live" : "Connected")
+                .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
+
+            if liveStore.state.liveTRIMP > 0 {
+                Text(String(format: "strain %.1f", Metrics.strain(fromTRIMP: liveStore.state.liveTRIMP)))
+                    .font(isInline ? .caption2.monospacedDigit() : .caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            if !isInline {
+                Spacer(minLength: 0)
+                Label(liveStore.state.batteryText, systemImage: "battery.100")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, isInline ? 8 : 12)
+        .padding(.vertical, isInline ? 4 : 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Live strap connected")
     }
 }
 
