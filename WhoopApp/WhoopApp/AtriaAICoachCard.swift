@@ -89,14 +89,16 @@ struct AtriaAICoachCard: View, Equatable {
                     onSaveAPIKey(apiKeyDraft)
                     apiKeyDraft = ""
                 }
-                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .indigo))
+                .buttonStyle(.glassProminent)
+        .tint(.indigo)
 
                 if hasAPIKey {
                     Button("Remove key") {
                         apiKeyDraft = ""
                         onDeleteAPIKey()
                     }
-                    .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+                    .buttonStyle(.glassProminent)
+        .tint(.gray)
                 }
             }
 

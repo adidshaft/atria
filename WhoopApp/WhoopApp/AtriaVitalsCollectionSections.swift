@@ -262,18 +262,21 @@ private struct AtriaCollectionCaptureCardHost: View {
         Button(collectionLiveStore.state.isRecording ? "Stop capture" : "Start capture") {
             ble.toggleRecording()
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: collectionLiveStore.state.isRecording ? .red : .blue))
+        .buttonStyle(.glassProminent)
+        .tint(collectionLiveStore.state.isRecording ? .red : .blue)
 
         Button("Prepare export") {
             captureShareURL = ble.exportCSV()
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+        .buttonStyle(.glassProminent)
+        .tint(.gray)
 
         if let captureShareURL {
             ShareLink(item: captureShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
-            .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .green))
+            .buttonStyle(.glassProminent)
+        .tint(.green)
         }
     }
 }
@@ -331,18 +334,21 @@ private struct AtriaCollectionRRReferenceCardHost: View {
         Button("Export RR") {
             rrShareURL = store.exportRRReferencePackageForUI()
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+        .buttonStyle(.glassProminent)
+        .tint(.gray)
 
         Button("Import RR") {
             showRRImporter = true
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+        .buttonStyle(.glassProminent)
+        .tint(.blue)
 
         if let rrShareURL {
             ShareLink(item: rrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
-            .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .green))
+            .buttonStyle(.glassProminent)
+        .tint(.green)
         }
     }
 }
@@ -400,18 +406,21 @@ private struct AtriaCollectionHRReferenceCardHost: View {
         Button("Export HR") {
             hrShareURL = store.exportHRReferencePackageForUI()
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+        .buttonStyle(.glassProminent)
+        .tint(.gray)
 
         Button("Import HR") {
             showHRImporter = true
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+        .buttonStyle(.glassProminent)
+        .tint(.blue)
 
         if let hrShareURL {
             ShareLink(item: hrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
-            .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .green))
+            .buttonStyle(.glassProminent)
+        .tint(.green)
         }
     }
 }
@@ -484,7 +493,8 @@ private struct AtriaCollectionControlsCardHost: View {
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-            .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+            .buttonStyle(.glassProminent)
+        .tint(.gray)
         }
         .padding(18)
         .atriaCard()

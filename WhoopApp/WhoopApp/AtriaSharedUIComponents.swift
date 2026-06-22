@@ -336,13 +336,13 @@ struct AtriaProfileStepperTile: View {
                     Image(systemName: "minus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(AtriaGlassIconSegmentStyle())
+                .buttonStyle(.glass)
 
                 Button(action: increment) {
                     Image(systemName: "plus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(AtriaGlassIconSegmentStyle())
+                .buttonStyle(.glass)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

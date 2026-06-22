@@ -818,17 +818,21 @@ private struct AtriaConnectionGuideSheet: View {
                     ViewThatFits {
                         HStack(spacing: 10) {
                             Button(primaryButtonTitle, action: continueSetup)
-                                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+                                .buttonStyle(.glassProminent)
+        .tint(.blue)
                                 .frame(maxWidth: .infinity)
                             Button("Retry scan now", action: retry)
-                                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+                                .buttonStyle(.glassProminent)
+        .tint(.gray)
                         }
 
                         VStack(spacing: 10) {
                             Button(primaryButtonTitle, action: continueSetup)
-                                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+                                .buttonStyle(.glassProminent)
+        .tint(.blue)
                             Button("Retry scan now", action: retry)
-                                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+                                .buttonStyle(.glassProminent)
+        .tint(.gray)
                         }
                     }
 

@@ -1,38 +1,5 @@
 import SwiftUI
 
-struct AtriaGlassCapsuleButtonStyle: ButtonStyle {
-    let tint: Color
-    @Environment(\.colorScheme) private var colorScheme
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(foregroundColor.opacity(configuration.isPressed ? 0.92 : 1))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .atriaGlassCapsule(tint: tint)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-    }
-
-    private var foregroundColor: Color {
-        colorScheme == .dark ? .white : .primary
-    }
-}
-
-struct AtriaGlassIconButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(foregroundColor.opacity(configuration.isPressed ? 0.92 : 1))
-            .atraGlassIconChrome()
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-    }
-
-    private var foregroundColor: Color {
-        colorScheme == .dark ? .white : .primary
-    }
-}
-
 struct AtriaSegmentButtonStyle: ButtonStyle {
     let selected: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -65,19 +32,6 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
                 Color.white.opacity(0.42)
             ], startPoint: .topLeading, endPoint: .bottomTrailing)
         )
-    }
-}
-
-struct AtriaGlassIconSegmentStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline.weight(.semibold))
-            .padding(.vertical, 10)
-            .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.88 : 1))
-            .background {
-                AtriaInsetCardBackground(cornerRadius: 14, tint: .white)
-            }
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
 }
 

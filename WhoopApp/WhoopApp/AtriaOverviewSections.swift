@@ -705,7 +705,8 @@ struct AtriaOverviewCollectionSection: View, Equatable {
             }
 
             Button("Collection tools", action: onOpenCollection)
-                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+                .buttonStyle(.glassProminent)
+        .tint(.blue)
         }
         .padding(16)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
@@ -756,14 +757,16 @@ private struct AtriaOverviewActionStrip: View {
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .blue))
+        .buttonStyle(.glassProminent)
+        .tint(.blue)
 
         Button(action: secondaryAction) {
             Label(secondaryTitle, systemImage: secondarySystemImage)
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: .gray))
+        .buttonStyle(.glassProminent)
+        .tint(.gray)
     }
 }
 
@@ -852,7 +855,8 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
             }
 
             Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
-                .buttonStyle(AtriaGlassCapsuleButtonStyle(tint: tint))
+                .buttonStyle(.glassProminent)
+        .tint(tint)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
