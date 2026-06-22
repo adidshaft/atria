@@ -124,12 +124,12 @@ struct AtriaConnectionGuideContext: Equatable {
 
     var progressDetail: String {
         if hasEverConnected {
-            return "Atria already owns the strap and will keep trying in the background after drops."
+            return "Atria keeps reconnecting in the background and saves what the strap makes available."
         }
         if attempts == 0 {
-            return "As soon as the strap is free from the WHOOP app, Atria can scan, connect, and arm background logging on its own."
+            return "Atria starts scanning when Bluetooth is available and keeps trying without requiring the screen to stay awake."
         }
-        return "Attempt \(attempts) is the latest automatic pass. You only need to free the strap and keep the phone unlocked."
+        return "Attempt \(attempts) is the latest automatic pass. Keep the strap nearby; Atria will continue reconnecting."
     }
 
     var userStatusLabel: String {
@@ -138,9 +138,9 @@ struct AtriaConnectionGuideContext: Equatable {
 
     var actionSummary: String {
         if hasEverConnected {
-            return "Usually you can just leave Atria open and unlocked while it reconnects on its own."
+            return "You can lock the phone after setup; Atria resumes from saved sessions and background reconnects."
         }
-        return "You only need to free the strap once. After the first takeover, Atria handles reconnects automatically."
+        return "After the first successful connection, Atria handles reconnects and saved-session recovery automatically."
     }
 }
 

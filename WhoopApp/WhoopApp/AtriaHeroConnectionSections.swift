@@ -570,8 +570,8 @@ private struct AtriaConnectionGuideSheet: View {
 
     private var guideSubtitle: String {
         context.isFirstHandoff
-            ? "Disconnect the strap from WHOOP just once. After that, Atria finds it, connects, and keeps logging in the background on its own."
-            : "Atria is already connected to your strap, so there's nothing to do here — it's just reconnecting and picking your live data back up."
+            ? "Atria scans for the strap, connects when iOS makes it available, and keeps saving data without requiring the display to stay awake."
+            : "Atria keeps saved data intact while it reconnects and picks live readings back up."
     }
 
     private var setupStateTitle: String {
@@ -594,13 +594,13 @@ private struct AtriaConnectionGuideSheet: View {
         case .connected:
             return "Atria has the strap and will keep reconnecting and logging automatically."
         case .connecting:
-            return "Keep your phone unlocked and the strap nearby while Atria finishes connecting."
+            return "Keep the strap nearby while Atria finishes connecting."
         case .scanning:
             return "Atria is already searching and will widen the search on its own if the first pass misses."
         case .poweredOff:
             return "Turn Bluetooth back on, then Atria will resume the scan without extra steps."
         case .disconnected:
-            return "If WHOOP still owns the strap, disconnect it there first, then Atria can take over."
+            return "Atria keeps retrying automatically and uses saved sessions while the live link returns."
         }
     }
 
@@ -633,32 +633,32 @@ private struct AtriaConnectionGuideSheet: View {
     private var manualSteps: [AtriaConnectionGuideStep] {
         if context.isFirstHandoff {
             return [
-                AtriaConnectionGuideStep(title: "Free the strap",
-                                         detail: "Disconnect it inside the official WHOOP app if WHOOP still owns the connection.",
+                AtriaConnectionGuideStep(title: "Keep the strap nearby",
+                                         detail: "Wear the charged strap near this iPhone so iOS can hand Atria the live stream.",
                                          systemImage: "bolt.horizontal.circle",
                                          tint: .orange),
-                AtriaConnectionGuideStep(title: "Fully quit WHOOP",
-                                         detail: "Close the WHOOP app so it does not quietly reclaim the strap in the background.",
+                AtriaConnectionGuideStep(title: "Let Atria retry",
+                                         detail: "Atria scans, reconnects, and recovers saved sessions without needing the screen awake.",
                                          systemImage: "app.badge.checkmark",
                                          tint: .pink),
-                AtriaConnectionGuideStep(title: "Leave Atria open",
-                                         detail: "Keep the phone unlocked and wake the strap by wearing it or tapping it once.",
+                AtriaConnectionGuideStep(title: "Saved data stays local",
+                                         detail: "Interrupted live runs are checkpointed so later syncs do not discard the session.",
                                          systemImage: "iphone.radiowaves.left.and.right",
                                          tint: .blue)
             ]
         }
 
         return [
-            AtriaConnectionGuideStep(title: "Keep Atria on screen",
-                                     detail: "Keep your phone unlocked while it reconnects so your live data comes back cleanly.",
+            AtriaConnectionGuideStep(title: "Keep the strap nearby",
+                                     detail: "Atria reconnects in the background as the strap and iPhone become available.",
                                      systemImage: "iphone.radiowaves.left.and.right",
                                      tint: .blue),
             AtriaConnectionGuideStep(title: "Give it a moment",
                                      detail: "Atria widens the search on its own before you need to scan again manually.",
                                      systemImage: "arrow.triangle.2.circlepath",
                                      tint: .orange),
-            AtriaConnectionGuideStep(title: "Only free WHOOP if needed",
-                                     detail: "If the WHOOP app grabbed the strap again, disconnect it there and quit WHOOP once more.",
+            AtriaConnectionGuideStep(title: "Saved sessions remain",
+                                     detail: "Drops do not erase already captured local sessions.",
                                      systemImage: "bolt.horizontal.circle",
                                      tint: .pink)
         ]
@@ -669,14 +669,14 @@ private struct AtriaConnectionGuideSheet: View {
             return [
                 "Atria starts scanning automatically as soon as Bluetooth is available.",
                 "If the first filtered scan misses, Atria widens the search on its own.",
-                "Once you've connected the first time, Atria reconnects and keeps saving your data automatically."
+                "Once connected, Atria checkpoints and reconnects without requiring an unlocked screen."
             ]
         }
 
         return [
             "If the connection drops, Atria starts searching and reconnecting on its own.",
-            "After the first time, you usually never need to re-pair or open WHOOP again.",
-            "Your data keeps saving in the background once the strap is back with Atria."
+            "Saved sessions remain on the phone during interruptions.",
+            "Your data keeps saving once the strap is back with Atria."
         ]
     }
 
