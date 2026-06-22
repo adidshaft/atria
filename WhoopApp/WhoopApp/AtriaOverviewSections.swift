@@ -873,33 +873,48 @@ struct AtriaOverviewCollectionSection: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Data", subtitle: "Saved readings and local export")
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "internaldrive.fill")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 38, height: 38)
+                .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    overviewCollectionTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    overviewCollectionTiles
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Local backup")
+                    .font(.headline.weight(.semibold))
+                Text(backupDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button("Open data tools", action: onOpenCollection)
-                .buttonStyle(.glassProminent)
-        .tint(.blue)
+            Spacer(minLength: 0)
+
+            AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
+                .frame(maxWidth: 118)
+
+            Button(action: onOpenCollection) {
+                Label("Data", systemImage: "arrow.right.circle.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(.blue)
+            .accessibilityLabel("Open Data")
         }
         .padding(16)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
     }
 
-    @ViewBuilder
-    private var overviewCollectionTiles: some View {
-        AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
-        AtriaInlineQuickStat(label: "Baseline", value: snapshot.referenceText)
-        AtriaInlineQuickStat(label: "Workout", value: snapshot.workoutText)
-        AtriaInlineQuickStat(label: "Logging", value: snapshot.loggingText)
+    private var backupDetail: String {
+        if snapshot.loggingText.localizedCaseInsensitiveContains("samples") {
+            return "Saving readings locally. Open Data when you want exports or saved sessions."
+        }
+        if stats.backupValue.localizedCaseInsensitiveContains("ready") {
+            return "Saved sessions are on device. Open Data when you want exports."
+        }
+        return "Atria is preparing local backup while your baseline settles."
     }
 }
 
