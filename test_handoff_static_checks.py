@@ -482,8 +482,10 @@ class HandoffStaticChecks(unittest.TestCase):
                 assert_not_contains(self, text, forbidden)
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"RR package\"")
-        assert_contains(self, intents, "subtitle: \"Start live collection\"")
-        assert_contains(self, intents, "subtitle: \"Arm overnight collection\"")
+        assert_contains(self, intents, "subtitle: \"Start live backup\"")
+        assert_contains(self, intents, "subtitle: \"Arm overnight backup\"")
+        assert_contains(self, intents, "shortTitle: \"Start backup\"")
+        assert_contains(self, intents, "shortTitle: \"Stop backup\"")
         assert_not_contains(self, intents, "low-radio")
 
     def test_user_path_debug_logs_are_gated(self):

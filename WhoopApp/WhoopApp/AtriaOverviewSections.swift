@@ -242,7 +242,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                                      primaryTitle: "Vitals",
                                      primarySystemImage: "heart.text.square",
                                      primaryAction: onOpenVitals,
-                                     secondaryTitle: "Collection",
+                                     secondaryTitle: "Data",
                                      secondarySystemImage: "waveform.badge.magnifyingglass",
                                      secondaryAction: onOpenCollection)
 
@@ -483,7 +483,7 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
                                      systemImage: "waveform.badge.plus",
                                      tint: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? .green : .orange,
                                      isComplete: snapshot.loggingText.localizedCaseInsensitiveContains("samples"),
-                                     actionTitle: "Collection",
+                                     actionTitle: "Data",
                                      action: onOpenCollection)
         ]
     }
@@ -874,7 +874,7 @@ struct AtriaOverviewCollectionSection: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Collection", subtitle: "Capture and validation path")
+            AtriaPanelSectionHeader(title: "Data", subtitle: "Saved readings and local export")
 
             ViewThatFits {
                 HStack(spacing: 12) {
@@ -886,7 +886,7 @@ struct AtriaOverviewCollectionSection: View, Equatable {
                 }
             }
 
-            Button("Collection tools", action: onOpenCollection)
+            Button("Open data tools", action: onOpenCollection)
                 .buttonStyle(.glassProminent)
         .tint(.blue)
         }
