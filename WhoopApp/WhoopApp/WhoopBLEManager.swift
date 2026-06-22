@@ -362,6 +362,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var phoneMotionOverStillThreshold = 0
     private var phoneMotionStartedAt: Date?
     private var phoneMotionLastLoggedSample = 0
+    private let phonePedometer = CMPedometer()
+    private var phoneStepEvidenceActive = false
+    private var phoneStepStartedAt: Date?
+    private var phoneStepCount = 0
+    private var phoneStepDistanceMeters: Double?
+    private var phoneStepFloorsAscended: Int?
+    private var phoneStepFloorsDescended: Int?
+    private var phoneStepLastLoggedCount = 0
 
     // Diagnostics (shown on-screen to pinpoint the realtime issue)
     private(set) var dbgTxReady = false
@@ -7080,6 +7088,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         lastActiveJournalSavedSessionSampleCount = 0
         lastActiveJournalSavedRRArchiveCount = 0
         resetSessionMotionDiagnostics()
+        startPhoneStepEvidenceIfNeeded(start: start, reason: "live_session_reset")
         resetSessionSampleDiagnostics()
         sessionStart = start
         lastAcceptedHRAt = nil
@@ -7446,6 +7455,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         let motionShortStats = sleepMotionShortSummary()
         let phoneMotion = phoneMotionAuditSummary()
+        let phoneSteps = phoneStepEvidenceSummary()
         let respiratoryRate = hrvSnapshot?.isReady == true ? hrvSnapshot?.respiratoryRate : nil
         return SavedSession(id: liveSessionID, start: start, end: last.t,
                             label: label.trimmingCharacters(in: .whitespaces), points: points,
@@ -7469,6 +7479,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             phoneMotionMaxDeltaG: phoneMotion.maxDelta,
                             phoneMotionOverStillThreshold: phoneMotion.samples > 0 ? phoneMotion.overThreshold : nil,
                             phoneMotionStillThresholdG: phoneMotion.threshold,
+                            phoneStepSource: phoneSteps.source,
+                            phoneStepValidated: phoneSteps.validated,
+                            phoneStepCount: phoneSteps.steps > 0 ? phoneSteps.steps : nil,
+                            phoneStepDistanceMeters: phoneSteps.distanceMeters,
+                            phoneStepFloorsAscended: phoneSteps.floorsAscended,
+                            phoneStepFloorsDescended: phoneSteps.floorsDescended,
                             hrRaw2A37: sessionRawHRNotifications,
                             hrAccepted: sessionAcceptedHRSamples,
                             hrZero: sessionZeroHRSamples,
@@ -7569,6 +7585,73 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let mean = phoneMotionSamples > 0 ? phoneMotionDeltaSum / Double(phoneMotionSamples) : nil
         let maxDelta = phoneMotionSamples > 0 ? phoneMotionDeltaMax : nil
         return ("phone_coremotion_audit_only", false, phoneMotionSamples, mean, maxDelta, phoneMotionOverStillThreshold, phoneMotionStillThresholdG)
+    }
+
+    private func startPhoneStepEvidenceIfNeeded(start: Date, reason: String) {
+        guard CMPedometer.isStepCountingAvailable() else {
+            resetPhoneStepEvidenceStats(start: start)
+            WHOOPDebugLog("WHOOPDBG phone_steps status=unavailable reason=step_counting_unavailable source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only")
+            return
+        }
+        guard !phoneStepEvidenceActive else { return }
+        resetPhoneStepEvidenceStats(start: start)
+        phoneStepEvidenceActive = true
+        phonePedometer.startUpdates(from: start) { [weak self] data, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.phoneStepEvidenceActive = false
+                    self.phonePedometer.stopUpdates()
+                    WHOOPDebugLog("WHOOPDBG phone_steps status=error reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only", String(describing: error))
+                    return
+                }
+                guard let data else { return }
+                self.recordPhoneStepEvidence(data)
+            }
+        }
+        WHOOPDebugLog("WHOOPDBG phone_steps status=started reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only",
+                      reason)
+    }
+
+    private func stopPhoneStepEvidence(reason: String) {
+        guard phoneStepEvidenceActive else { return }
+        phonePedometer.stopUpdates()
+        phoneStepEvidenceActive = false
+        WHOOPDebugLog("WHOOPDBG phone_steps status=stopped reason=%@ source=phone_coremotion_pedometer steps=%d distance_m=%@ validated=0 action=activity_adjunct_only",
+                      reason,
+                      phoneStepCount,
+                      Self.formatDouble(phoneStepDistanceMeters))
+    }
+
+    private func recordPhoneStepEvidence(_ data: CMPedometerData) {
+        phoneStepCount = data.numberOfSteps.intValue
+        phoneStepDistanceMeters = data.distance?.doubleValue
+        phoneStepFloorsAscended = data.floorsAscended?.intValue
+        phoneStepFloorsDescended = data.floorsDescended?.intValue
+        if phoneStepCount - phoneStepLastLoggedCount >= 100 {
+            phoneStepLastLoggedCount = phoneStepCount
+            WHOOPDebugLog("WHOOPDBG phone_steps status=sampled source=phone_coremotion_pedometer steps=%d distance_m=%@ floors_up=%d floors_down=%d validated=0 action=activity_adjunct_only",
+                          phoneStepCount,
+                          Self.formatDouble(phoneStepDistanceMeters),
+                          phoneStepFloorsAscended ?? 0,
+                          phoneStepFloorsDescended ?? 0)
+        }
+    }
+
+    private func resetPhoneStepEvidenceStats(start: Date) {
+        phoneStepStartedAt = start
+        phoneStepCount = 0
+        phoneStepDistanceMeters = nil
+        phoneStepFloorsAscended = nil
+        phoneStepFloorsDescended = nil
+        phoneStepLastLoggedCount = 0
+    }
+
+    private func phoneStepEvidenceSummary() -> (source: String, validated: Bool, steps: Int, distanceMeters: Double?, floorsAscended: Int?, floorsDescended: Int?) {
+        guard CMPedometer.isStepCountingAvailable() else {
+            return ("unavailable", false, 0, nil, nil, nil)
+        }
+        return ("phone_coremotion_pedometer", false, phoneStepCount, phoneStepDistanceMeters, phoneStepFloorsAscended, phoneStepFloorsDescended)
     }
 
     private func resetSessionSampleDiagnostics() {

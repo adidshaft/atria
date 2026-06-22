@@ -50,6 +50,15 @@ struct SavedSession: Codable, Identifiable {
     var phoneMotionMaxDeltaG: Double? = nil
     var phoneMotionOverStillThreshold: Int? = nil
     var phoneMotionStillThresholdG: Double? = nil
+    /// Phone pedometer evidence captured locally while the cabled app is
+    /// running. This can explain ambulatory activity, but it is phone-side
+    /// adjunct evidence and never validates wrist motion or workout export.
+    var phoneStepSource: String? = nil
+    var phoneStepValidated: Bool? = nil
+    var phoneStepCount: Int? = nil
+    var phoneStepDistanceMeters: Double? = nil
+    var phoneStepFloorsAscended: Int? = nil
+    var phoneStepFloorsDescended: Int? = nil
     /// Audit-only HR sample attribution for this saved session. These fields
     /// explain coverage gaps; they do not relax workout or HRV gates.
     var hrRaw2A37: Int? = nil
@@ -110,6 +119,20 @@ struct SavedSession: Codable, Identifiable {
     var phoneMotionValidatedValue: Bool { phoneMotionValidated == true }
     var phoneMotionSamplesValue: Int { phoneMotionSamples ?? 0 }
     var phoneMotionOverStillThresholdValue: Int { phoneMotionOverStillThreshold ?? 0 }
+    var phoneStepSourceValue: String {
+        let trimmed = (phoneStepSource ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "unavailable" : trimmed
+    }
+    var phoneStepValidatedValue: Bool { phoneStepValidated == true }
+    var phoneStepCountValue: Int { phoneStepCount ?? 0 }
+    var hasPhoneStepWorkoutEvidence: Bool {
+        duration >= 10 * 60 && phoneStepCountValue >= max(250, Int(duration / 60 * 15))
+    }
+    var phoneStepEvidenceClause: String? {
+        guard phoneStepCountValue > 0 else { return nil }
+        let distanceClause = phoneStepDistanceMeters.map { String(format: ", %.0fm", $0) } ?? ""
+        return "phone steps \(phoneStepCountValue)\(distanceClause); phone-side adjunct, not wrist validated"
+    }
     var hrRaw2A37Value: Int { hrRaw2A37 ?? 0 }
     var hrAcceptedValue: Int { hrAccepted ?? 0 }
     var hrZeroValue: Int { hrZero ?? 0 }
@@ -1686,22 +1709,32 @@ extension SavedSession {
         if duration >= 10 * 60 {
             let readiness = workoutReadiness(rest: rest, maxHR: maxHR)
             if readiness.ready {
-                let reason = "sustained elevated HR"
+                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
+                let reason = "sustained elevated HR\(stepClause)"
                 return ActivityDetection(id: id, kind: .workout, confidence: .medium,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak, reason: reason)
             }
             if readiness.nearMiss {
+                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
-                                         reason: "HR-only workout-like signal; \(readiness.nearMissReason); not counted as workout")
+                                         reason: "HR-only workout-like signal\(stepClause); \(readiness.nearMissReason); not counted as workout")
             }
             if readiness.strengthCandidate {
+                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
-                                         reason: "Strength-like HR signal; \(readiness.strengthCandidateReason); not counted as workout")
+                                         reason: "Strength-like HR signal\(stepClause); \(readiness.strengthCandidateReason); not counted as workout")
+            }
+            if hasPhoneStepWorkoutEvidence {
+                let stepClause = phoneStepEvidenceClause ?? "phone step evidence"
+                return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
+                                         start: start, end: end, duration: duration,
+                                         avgHR: avg, peakHR: peak,
+                                         reason: "\(stepClause); HR workout gate not met; not counted as workout")
             }
             if duration >= 3 * 60 * 60 && overnight && lowHR {
                 let motionClause = motionHintCountValue > 0
@@ -3582,6 +3615,18 @@ final class SessionStore: ObservableObject {
                                    motionShortMin: nil,
                                    motionShortMax: nil,
                                    motionShortOverOneCount: nil,
+                                   phoneStepSource: overlapping.contains { $0.phoneStepCountValue > 0 } ? "phone_coremotion_pedometer" : "unavailable",
+                                   phoneStepValidated: false,
+                                   phoneStepCount: overlapping.reduce(0) { $0 + $1.phoneStepCountValue },
+                                   phoneStepDistanceMeters: overlapping
+                                       .compactMap(\.phoneStepDistanceMeters)
+                                       .reduce(0, +),
+                                   phoneStepFloorsAscended: overlapping
+                                       .compactMap(\.phoneStepFloorsAscended)
+                                       .reduce(0, +),
+                                   phoneStepFloorsDescended: overlapping
+                                       .compactMap(\.phoneStepFloorsDescended)
+                                       .reduce(0, +),
                                    hrRaw2A37: overlapping.reduce(0) { $0 + $1.hrRaw2A37Value },
                                    hrAccepted: overlapping.reduce(0) { $0 + $1.hrAcceptedValue },
                                    hrZero: overlapping.reduce(0) { $0 + $1.hrZeroValue },
@@ -5544,6 +5589,18 @@ final class SessionStore: ObservableObject {
                                      motionShortMin: nil,
                                      motionShortMax: nil,
                                      motionShortOverOneCount: nil,
+                                     phoneStepSource: ordered.contains { $0.phoneStepCountValue > 0 } ? "phone_coremotion_pedometer" : "unavailable",
+                                     phoneStepValidated: false,
+                                     phoneStepCount: ordered.reduce(0) { $0 + $1.phoneStepCountValue },
+                                     phoneStepDistanceMeters: ordered
+                                         .compactMap(\.phoneStepDistanceMeters)
+                                         .reduce(0, +),
+                                     phoneStepFloorsAscended: ordered
+                                         .compactMap(\.phoneStepFloorsAscended)
+                                         .reduce(0, +),
+                                     phoneStepFloorsDescended: ordered
+                                         .compactMap(\.phoneStepFloorsDescended)
+                                         .reduce(0, +),
                                      hrRaw2A37: ordered.reduce(0) { $0 + $1.hrRaw2A37Value },
                                      hrAccepted: ordered.reduce(0) { $0 + $1.hrAcceptedValue },
                                      hrZero: ordered.reduce(0) { $0 + $1.hrZeroValue },
