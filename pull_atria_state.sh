@@ -129,7 +129,7 @@ for active_source in "Documents/atria-active-session.json" "Documents/whoop-acti
   fi
 done
 if [[ "$active_status" != "ok" ]]; then
-  printf 'active_journal_final_status=missing\n' | tee -a "$summary"
+  printf 'active_journal_file_status=missing\n' | tee -a "$summary"
 fi
 
 copy_from_container "Documents/whoop-historical/historical-archive.jsonl" "$evidence_dir/historical-archive.jsonl" "historical_archive" || true
@@ -459,6 +459,7 @@ if journal is None:
         except Exception as exc:
             print(f"active_journal_reconstruct_write_error={type(exc).__name__}:{exc}")
 if journal is not None:
+    print("active_journal_final_status=ok")
     try:
         samples = journal.get("samples") or []
         rr = journal.get("rrSamples") or []
@@ -482,4 +483,6 @@ if journal is not None:
         rr_window_audit("active_journal", rr, relative_times=False)
     except Exception as exc:
         print(f"active_journal_summary_error={type(exc).__name__}:{exc}")
+else:
+    print("active_journal_final_status=missing")
 PY

@@ -339,6 +339,21 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, plist, needle)
 
+    def test_non_disruptive_pull_handles_segmented_active_journal(self):
+        script = source(ROOT / "pull_atria_state.sh")
+
+        for needle in [
+            "Documents/atria-active-session.segments",
+            "active_journal_segments_status=ok",
+            "def reconstructed_segmented_journal(evidence):",
+            "active_journal_reconstructed_from_segments=1",
+            "active_journal_final_status=ok",
+            "active_journal_final_status=missing",
+        ]:
+            assert_contains(self, script, needle)
+
+        assert_not_contains(self, script, "active_journal_final_status=missing\\n' | tee -a \"$summary\"")
+
 
 if __name__ == "__main__":
     unittest.main()
