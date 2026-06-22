@@ -176,6 +176,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case cloudDisabled",
             "let networkPolicy: AtriaCoachNetworkPolicy = .offlineOnly",
             "let networkPolicy: AtriaCoachNetworkPolicy = .cloudDisabled",
+            "kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
             "No data leaves this iPhone.",
             "Network requests stay disabled until a reviewed provider client is added.",
             "provider client pending",

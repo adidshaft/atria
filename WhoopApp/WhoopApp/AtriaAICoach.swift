@@ -136,6 +136,7 @@ enum AtriaCoachKeychain {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: provider.rawValue,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecValueData as String: data
         ]
         SecItemAdd(query as CFDictionary, nil)
