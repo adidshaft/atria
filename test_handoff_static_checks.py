@@ -413,6 +413,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "active_journal_final_status=missing",
             "active_journal_continuity_status=",
             "active_journal_interruption_class=live_stream_interrupted_saved_sessions_present",
+            "file_durability_status=saved_sessions_present",
+            "file_durability_status=saved_sessions_preserved",
+            "live_stream_consistency_status=interrupted_not_file_loss",
+            "whoop_primary_data_source=saved_sessions_hr_rr",
         ]:
             assert_contains(self, script, needle)
 

@@ -354,6 +354,8 @@ if sessions_path.exists():
             points = latest.get("points") or []
             rr_points = latest.get("rrPoints") or []
             bpms = [int(p.get("bpm", 0)) for p in points if p.get("bpm") is not None]
+            print("file_durability_status=saved_sessions_present")
+            print("whoop_primary_data_source=saved_sessions_hr_rr")
             print(f"latest_session_label={latest.get('label', '')}")
             print(f"latest_session_start={start.isoformat()}")
             print(f"latest_session_end={end.isoformat()}")
@@ -493,6 +495,8 @@ if journal is not None:
         print(f"active_journal_continuity_reason={continuity_reason}")
         if continuity == "stalled" and sessions_path.exists():
             print("active_journal_interruption_class=live_stream_interrupted_saved_sessions_present")
+            print("file_durability_status=saved_sessions_preserved")
+            print("live_stream_consistency_status=interrupted_not_file_loss")
         print(f"active_journal_duration_s={max(0, int((updated - started).total_seconds())) if started and updated else 0}")
         print(f"active_journal_peak_hr={max(bpms) if bpms else 0}")
         rr_window_audit("active_journal", rr, relative_times=False)
