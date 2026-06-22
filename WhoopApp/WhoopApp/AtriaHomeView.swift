@@ -1945,7 +1945,7 @@ final class AtriaHomeModel {
     private static func makeSnapshot(store: SessionStore,
                                      hero: HeroSnapshot,
                                      deferredDetails: DeferredDetails?) -> Snapshot {
-        let defaultReferenceText = store.externalHRReferenceValidated ? "Validated" : "Waiting"
+        let defaultReferenceText = baselineMaturityText(sampleCount: hero.baselineSamples)
 
         return Snapshot(referenceText: deferredDetails?.referenceText ?? defaultReferenceText,
                         sleepValue: deferredDetails?.sleepValue ?? "Preparing",
@@ -2091,13 +2091,7 @@ final class AtriaHomeModel {
             rrPackageText = "Learning"
         }
 
-        let referenceText: String
-        if store.externalHRReferenceValidated {
-            referenceText = "Validated"
-        } else {
-            let csv = store.csvHRReferenceDiagnostics
-            referenceText = csv.pairs > 0 ? "\(csv.pairs) pairs" : "Missing"
-        }
+        let referenceText = baselineMaturityText(sampleCount: store.baseline.hrvSampleCount)
 
         let headline: String
         if ble.status == .connected {
@@ -2137,6 +2131,10 @@ final class AtriaHomeModel {
                                headline: headline,
                                confirmedWorkouts: store.confirmedWorkouts.count,
                                confirmedSleeps: store.confirmedSleeps.count)
+    }
+
+    private static func baselineMaturityText(sampleCount: Int) -> String {
+        sampleCount >= 7 ? "Ready" : "\(max(0, sampleCount))/7"
     }
 
     private static func sessionHeartStats(_ samples: [HRSample]) -> (average: Int?, peak: Int?) {
