@@ -230,6 +230,12 @@ Then run:
 python3 tools/audit_handoff_status.py --skip-external-reference
 ```
 
+For a human-readable current-state summary, run:
+
+```sh
+python3 tools/audit_handoff_status.py --skip-external-reference --markdown
+```
+
 Use `--accessibility-performance <summary.json>` only when checking an
 alternate measured evidence file.
 

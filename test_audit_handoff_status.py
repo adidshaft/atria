@@ -253,6 +253,45 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertNotIn("external_reference_validation", report["blockers"])
 
+    def test_markdown_summary_includes_current_blocking_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            summary.parent.mkdir(parents=True)
+            summary.write_text(json.dumps({
+                "acceptance_status": "fail",
+                "acceptance_blockers": ["session_span", "session_coverage", "thermal"],
+                "acceptance_diagnostics": {
+                    "session_span": {
+                        "observed_s": 2731.1,
+                        "required_min_s": 28800,
+                        "ok": False,
+                    },
+                    "session_coverage": {
+                        "observed_percent": 50.0,
+                        "required_min_percent": 85.0,
+                        "ok": False,
+                    },
+                },
+                "thermal_states": ["serious"],
+                "battery_delta": 0,
+                "latest_recent_session_span_s": 2731.1,
+                "latest_recent_session_coverage_percent": 50.0,
+            }), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+            markdown = audit_handoff_status.markdown_summary(report)
+
+        self.assertIn("# Atria Handoff Status", markdown)
+        self.assertIn("- Status: `not_complete`", markdown)
+        self.assertIn("- Local checks: `pass`", markdown)
+        self.assertIn("- External reference: `skipped`", markdown)
+        self.assertIn("`session_span`: observed_s=2731.1, required_min_s=28800, ok=False", markdown)
+        self.assertIn("`session_coverage`: observed_percent=50, required_min_percent=85, ok=False", markdown)
+        self.assertIn("`missing_accessibility_performance_summary`", markdown)
+
     def test_accessibility_performance_evidence_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

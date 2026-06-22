@@ -343,6 +343,96 @@ def evaluate(
     }
 
 
+def format_diagnostic_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.1f}".rstrip("0").rstrip(".")
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "none"
+    return str(value)
+
+
+def markdown_summary(report: dict[str, object]) -> str:
+    physical = report["physical_long_wear"]
+    accessibility = report["accessibility_performance"]
+    if not isinstance(physical, dict) or not isinstance(accessibility, dict):
+        raise ValueError("audit report did not contain expected sections")
+
+    blockers = report.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = [str(blockers)]
+
+    lines = [
+        "# Atria Handoff Status",
+        "",
+        f"- Status: `{report['status']}`",
+        f"- Local checks: `{report['local_status']}`",
+        f"- Physical long-wear: `{physical['status']}` (`{physical['acceptance_status']}`)",
+        f"- Accessibility/performance: `{accessibility['status']}`",
+        f"- External reference: `{report['external_reference_status']}`",
+        "",
+        "## Blockers",
+    ]
+    if blockers:
+        lines.extend(f"- `{item}`" for item in blockers)
+    else:
+        lines.append("- none")
+
+    lines.extend([
+        "",
+        "## Physical Long-Wear",
+        f"- Summary: `{physical['summary']}`",
+        f"- Preset: `{physical.get('preset', 'missing')}`",
+        f"- Planned samples: `{physical.get('planned_samples', 'missing')}`",
+        f"- Planned duration seconds: `{physical.get('planned_duration_s', 'missing')}`",
+        f"- Session span seconds: `{format_diagnostic_value(physical.get('latest_recent_session_span_s', 'missing'))}`",
+        f"- Session coverage percent: `{format_diagnostic_value(physical.get('latest_recent_session_coverage_percent', 'missing'))}`",
+        f"- Thermal states: `{format_diagnostic_value(physical.get('thermal_states', []))}`",
+        f"- App commit: `{physical.get('app_commit', 'missing')}`",
+        f"- Monitor started: `{physical.get('monitor_started_at', 'missing')}`",
+        f"- Monitor finished: `{physical.get('monitor_finished_at', 'missing')}`",
+    ])
+
+    diagnostics = physical.get("acceptance_diagnostics", {})
+    if isinstance(diagnostics, dict) and diagnostics:
+        lines.extend(["", "### Long-Wear Diagnostics"])
+        for name in sorted(diagnostics):
+            diagnostic = diagnostics[name]
+            if not isinstance(diagnostic, dict):
+                continue
+            observed_parts = [
+                f"{key}={format_diagnostic_value(value)}"
+                for key, value in diagnostic.items()
+                if key.startswith("observed")
+            ]
+            required_parts = [
+                f"{key}={format_diagnostic_value(value)}"
+                for key, value in diagnostic.items()
+                if key.startswith("required") or key == "allowed"
+            ]
+            ok = diagnostic.get("ok", "missing")
+            detail = ", ".join(observed_parts + required_parts + [f"ok={ok}"])
+            lines.append(f"- `{name}`: {detail}")
+
+    lines.extend([
+        "",
+        "## Accessibility / Performance",
+        f"- Summary: `{accessibility['summary']}`",
+        f"- Device: `{accessibility.get('device', 'missing')}`",
+        f"- Dashboard scroll fps: `{accessibility.get('dashboard_scroll_fps', 'missing')}`",
+        f"- Instruments trace: `{accessibility.get('instruments_trace', 'missing')}`",
+        f"- Trace exists: `{accessibility.get('instruments_trace_exists', False)}`",
+        f"- Measured at: `{accessibility.get('measured_at', 'missing')}`",
+        f"- App commit: `{accessibility.get('app_commit', 'missing')}`",
+        f"- App build: `{accessibility.get('app_build', 'missing')}`",
+    ])
+    accessibility_blockers = accessibility.get("blockers", [])
+    if isinstance(accessibility_blockers, list) and accessibility_blockers:
+        lines.extend(["", "### Accessibility Blockers"])
+        lines.extend(f"- `{item}`" for item in accessibility_blockers)
+
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Atria repo root.")
@@ -359,6 +449,7 @@ def main() -> int:
         help="Treat external reference validation as deliberately deferred/gated for this audit.",
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    parser.add_argument("--markdown", action="store_true", help="Print a Markdown handoff status summary.")
     args = parser.parse_args()
 
     report = evaluate(
@@ -369,6 +460,8 @@ def main() -> int:
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
+    elif args.markdown:
+        print(markdown_summary(report))
     else:
         physical = report["physical_long_wear"]
         print(
