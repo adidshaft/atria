@@ -1772,6 +1772,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let acceptedHRGaps = sessionAcceptedHRGaps
         let maxRawHRGap = sessionMaxRawHRGap
         let maxAcceptedHRGap = sessionMaxAcceptedHRGap
+        let batteryLevel = batteryLevel
+        let thermalState = Self.thermalStateLabel(ProcessInfo.processInfo.thermalState)
+        let lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let powerMode = powerThermalGovernor.mode.rawValue
+        let cadenceMultiplier = powerThermalGovernor.cadenceMultiplier
         DispatchQueue.global(qos: .utility).async {
             let record = ActiveSessionJournalRecord(
                 schema: ActiveSessionJournal.schema,
@@ -1789,7 +1794,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 rawHRGaps: rawHRGaps,
                 acceptedHRGaps: acceptedHRGaps,
                 maxRawHRGap: maxRawHRGap,
-                maxAcceptedHRGap: maxAcceptedHRGap
+                maxAcceptedHRGap: maxAcceptedHRGap,
+                batteryLevel: batteryLevel,
+                thermalState: thermalState,
+                lowPowerMode: lowPowerMode,
+                powerMode: powerMode,
+                cadenceMultiplier: cadenceMultiplier
             )
             let duration = last.timeIntervalSince(first.t)
             do {

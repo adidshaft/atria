@@ -17,6 +17,11 @@ struct ActiveSessionJournalRecord: Codable {
     var acceptedHRGaps: Int
     var maxRawHRGap: Double
     var maxAcceptedHRGap: Double
+    var batteryLevel: Int?
+    var thermalState: String?
+    var lowPowerMode: Bool?
+    var powerMode: String?
+    var cadenceMultiplier: Double?
 
     struct Sample: Codable {
         let t: Date
@@ -49,6 +54,11 @@ private struct ActiveSessionJournalSegment: Codable {
     var acceptedHRGaps: Int
     var maxRawHRGap: Double
     var maxAcceptedHRGap: Double
+    var batteryLevel: Int?
+    var thermalState: String?
+    var lowPowerMode: Bool?
+    var powerMode: String?
+    var cadenceMultiplier: Double?
 }
 
 enum ActiveSessionJournal {
@@ -206,7 +216,12 @@ enum ActiveSessionJournal {
             rawHRGaps: record.rawHRGaps,
             acceptedHRGaps: record.acceptedHRGaps,
             maxRawHRGap: record.maxRawHRGap,
-            maxAcceptedHRGap: record.maxAcceptedHRGap
+            maxAcceptedHRGap: record.maxAcceptedHRGap,
+            batteryLevel: record.batteryLevel,
+            thermalState: record.thermalState,
+            lowPowerMode: record.lowPowerMode,
+            powerMode: record.powerMode,
+            cadenceMultiplier: record.cadenceMultiplier
         )
         let data = try JSONEncoder().encode(segment)
         try data.write(to: segmentURL(sequence: nextSequence), options: [.atomic])
@@ -247,7 +262,12 @@ enum ActiveSessionJournal {
             rawHRGaps: first.rawHRGaps,
             acceptedHRGaps: first.acceptedHRGaps,
             maxRawHRGap: first.maxRawHRGap,
-            maxAcceptedHRGap: first.maxAcceptedHRGap
+            maxAcceptedHRGap: first.maxAcceptedHRGap,
+            batteryLevel: first.batteryLevel,
+            thermalState: first.thermalState,
+            lowPowerMode: first.lowPowerMode,
+            powerMode: first.powerMode,
+            cadenceMultiplier: first.cadenceMultiplier
         )
         for segment in segments where segment.id == record.id {
             record.label = segment.label
@@ -276,6 +296,11 @@ enum ActiveSessionJournal {
             record.acceptedHRGaps = segment.acceptedHRGaps
             record.maxRawHRGap = segment.maxRawHRGap
             record.maxAcceptedHRGap = segment.maxAcceptedHRGap
+            record.batteryLevel = segment.batteryLevel
+            record.thermalState = segment.thermalState
+            record.lowPowerMode = segment.lowPowerMode
+            record.powerMode = segment.powerMode
+            record.cadenceMultiplier = segment.cadenceMultiplier
         }
         return record
     }

@@ -7,6 +7,7 @@ bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 seconds=${ATRIA_LIVE_DEBUG_SECONDS:-${WHOOP_LIVE_DEBUG_SECONDS:-120}}
 log_path=${ATRIA_LIVE_DEBUG_LOG:-${WHOOP_LIVE_DEBUG_LOG:-}}
 build=1
+pull_only=0
 seconds_explicit=0
 until_realtime=0
 until_ready=0
@@ -131,7 +132,7 @@ gate_e_contract=0
 usage() {
   cat <<'EOF'
 Usage:
-  ./live_device_debug.sh [--device DEVICE_ID] [--xcode-device XCODE_DEVICE_ID] [--seconds N] [--log PATH] [--no-build] [--until-realtime] [--until-ready] [--complete-onboarding] [--log-baseline] [--log-collection-health] [--log-collection-health-after N] [--log-gate-status] [--log-gate-readiness] [--log-gate-status-after N] [--log-gate-status-deep] [--log-activity-detections] [--log-daily-rollups] [--log-trends] [--log-widget-snapshot] [--log-workout-preflight] [--log-strain-validation] [--log-hr-consistency] [--log-hr-artifact-policy] [--log-hr-continuity-watchdog-state] [--quiet-ble-logs] [--full-protocol-mode] [--standard-hr-only] [--long-wear-mode] [--leave-running] [--reset-link-diagnostics] [--reset-sample-diagnostics] [--reset-protocol-diagnostics] [--active-motion-imu-check] [--flush-active-journal-after N] [--manual-checkpoint-after N] [--force-no-data-watchdog-after N] [--force-hr-continuity-watchdog-after N] [--force-rr-presence-watchdog-after N] [--force-missing-2a37-after N] [--force-accepted-hr-watchdog-after N] [--backup-sessions] [--verify-backup] [--restore-backup] [--push-backup PATH] [--push-rr-reference PATH] [--push-rr-reference-as NAME.csv] [--push-hr-reference PATH] [--push-hr-reference-as NAME.csv] [--clear-reference-inputs] [--healthkit-export] [--confirm-best-workout-candidate] [--confirm-best-sleep-candidate] [--export-rr-reference-package] [--validate-rr-reference] [--pull-reference-package DIR] [--morning-hrv-check] [--morning-hrv-force] [--gate-d-hr-comparison-capture] [--gate-e-workout-capture] [--gate-e-hr-only-workout-capture] [--auto-save-session-after N] [--auto-save-session-every N] [--checkpoint-session-every N] [--log-live-workout-every N] [--auto-save-workout-when-ready N] [--verify-workout-label LABEL] [--verify-workout-after N] [--verify-sleep] [--verify-sleep-label LABEL] [--verify-sleep-after N] [--schedule-notifications] [--test-notification] [--notification-delay N] [--auto-capture] [--strict-live-rr-capture] [--auto-capture-delay N] [--auto-capture-when-rr FRACTION] [--auto-capture-rr-window N] [--auto-capture-rr-min-frames N] [--auto-capture-max-rr-gap N] [--auto-capture-rr-timeout N] [--stop-when-ready] [--auto-stop-after N] [--label LABEL] [--realtime-start-retries N] [--realtime-restart-zero-rr-seconds N] [--realtime-reassert-zero-rr-seconds N] [--disable-history-ack] [--history-ack-mode trim|enddata|index|unix|zero|none] [--history-recent-sweep] [--history-recent-offsets N[,N...]] [--history-clock-handshake] [--history-noop-backfill] [--probe-command HEX] [--probe-command-delay N] [--probe-sweep HEX[,HEX...]] [--probe-sweep-interval N] [--probe-command-mode wwr|wr] [--pull-capture DIR] [--pull-backups DIR] [--pull-sessions DIR] [--pull-historical DIR] [--replay-log PATH]
+  ./live_device_debug.sh [--device DEVICE_ID] [--xcode-device XCODE_DEVICE_ID] [--seconds N] [--log PATH] [--no-build] [--pull-only] [--until-realtime] [--until-ready] [--complete-onboarding] [--log-baseline] [--log-collection-health] [--log-collection-health-after N] [--log-gate-status] [--log-gate-readiness] [--log-gate-status-after N] [--log-gate-status-deep] [--log-activity-detections] [--log-daily-rollups] [--log-trends] [--log-widget-snapshot] [--log-workout-preflight] [--log-strain-validation] [--log-hr-consistency] [--log-hr-artifact-policy] [--log-hr-continuity-watchdog-state] [--quiet-ble-logs] [--full-protocol-mode] [--standard-hr-only] [--long-wear-mode] [--leave-running] [--reset-link-diagnostics] [--reset-sample-diagnostics] [--reset-protocol-diagnostics] [--active-motion-imu-check] [--flush-active-journal-after N] [--manual-checkpoint-after N] [--force-no-data-watchdog-after N] [--force-hr-continuity-watchdog-after N] [--force-rr-presence-watchdog-after N] [--force-missing-2a37-after N] [--force-accepted-hr-watchdog-after N] [--backup-sessions] [--verify-backup] [--restore-backup] [--push-backup PATH] [--push-rr-reference PATH] [--push-rr-reference-as NAME.csv] [--push-hr-reference PATH] [--push-hr-reference-as NAME.csv] [--clear-reference-inputs] [--healthkit-export] [--confirm-best-workout-candidate] [--confirm-best-sleep-candidate] [--export-rr-reference-package] [--validate-rr-reference] [--pull-reference-package DIR] [--morning-hrv-check] [--morning-hrv-force] [--gate-d-hr-comparison-capture] [--gate-e-workout-capture] [--gate-e-hr-only-workout-capture] [--auto-save-session-after N] [--auto-save-session-every N] [--checkpoint-session-every N] [--log-live-workout-every N] [--auto-save-workout-when-ready N] [--verify-workout-label LABEL] [--verify-workout-after N] [--verify-sleep] [--verify-sleep-label LABEL] [--verify-sleep-after N] [--schedule-notifications] [--test-notification] [--notification-delay N] [--auto-capture] [--strict-live-rr-capture] [--auto-capture-delay N] [--auto-capture-when-rr FRACTION] [--auto-capture-rr-window N] [--auto-capture-rr-min-frames N] [--auto-capture-max-rr-gap N] [--auto-capture-rr-timeout N] [--stop-when-ready] [--auto-stop-after N] [--label LABEL] [--realtime-start-retries N] [--realtime-restart-zero-rr-seconds N] [--realtime-reassert-zero-rr-seconds N] [--disable-history-ack] [--history-ack-mode trim|enddata|index|unix|zero|none] [--history-recent-sweep] [--history-recent-offsets N[,N...]] [--history-clock-handshake] [--history-noop-backfill] [--probe-command HEX] [--probe-command-delay N] [--probe-sweep HEX[,HEX...]] [--probe-sweep-interval N] [--probe-command-mode wwr|wr] [--pull-capture DIR] [--pull-backups DIR] [--pull-sessions DIR] [--pull-historical DIR] [--replay-log PATH]
 
 Builds, installs, and launches the Atria app on a physical iPhone with
 devicectl --console so WHOOPDBG lines stream in real time. Defaults to adidshaft's
@@ -144,6 +145,10 @@ Options:
   --log PATH           Also write the console transcript to PATH.
                        Use --log auto for logs/live-device/<timestamp>.log.
   --no-build           Reuse the existing Debug-iphoneos app bundle.
+  --pull-only          Do not build, install, launch, terminate, or relaunch.
+                       Only copy requested app-container artifacts. Use with
+                       --pull-sessions, --pull-backups, or other pull flags
+                       during unattended long-wear runs.
   --until-realtime     Stop once a 61080005 realtime frame is observed.
   --until-ready        Stop once WHOOPDBG reports a validation-ready HRV window
                        or a ready capture_summary.
@@ -509,6 +514,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-build)
+      build=0
+      shift
+      ;;
+    --pull-only)
+      pull_only=1
       build=0
       shift
       ;;
@@ -1469,7 +1479,9 @@ if [[ -z "$replay_log" ]]; then
     printf 'Check cable, trust prompt, and Developer Mode, then retry.\n' >&2
     exit 69
   fi
+fi
 
+if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
   if [[ "$build" -eq 1 ]]; then
     xcode_destination_preflight
     build_output=$(mktemp -t atria-xcodebuild.XXXXXX.log)
@@ -1571,7 +1583,7 @@ if [[ -z "$replay_log" ]]; then
   fi
 fi
 
-python3 - "$device_id" "$bundle_id" "$seconds" "$until_realtime" "$until_ready" "$log_path" "$auto_capture" "$stop_when_ready" "$capture_label" "$auto_capture_delay" "$auto_capture_when_rr" "$auto_capture_rr_window" "$auto_capture_rr_min_frames" "$auto_capture_max_rr_gap" "$auto_capture_rr_timeout" "$auto_capture_max_attempts" "$strict_live_rr_capture" "$realtime_start_retries" "$realtime_restart_zero_rr_seconds" "$realtime_reassert_zero_rr_seconds" "$disable_history_ack" "$history_ack_mode" "$history_recent_sweep" "$history_recent_offsets" "$history_selector_sweep" "$history_selector_mode" "$history_selector_range_index" "$history_range_sweep" "$history_range_payloads" "$history_init_sweep" "$history_skip_range" "$history_clock_handshake" "$history_only_probe" "$probe_command" "$probe_command_delay" "$probe_command_mode" "$pull_capture_dir" "$pull_backups_dir" "$pull_sessions_dir" "$pull_historical_dir" "$export_rr_reference_package" "$export_hr_reference_package" "$validate_rr_reference" "$validate_hr_reference" "$clear_reference_inputs" "$pull_reference_package_dir" "$auto_stop_after" "$replay_log" "$probe_sweep" "$probe_sweep_interval" "$complete_onboarding" "$log_baseline" "$log_collection_health" "$log_collection_health_after" "$log_gate_status" "$log_gate_readiness" "$log_gate_status_after" "$log_gate_status_deep" "$log_activity_detections" "$log_daily_rollups" "$log_trends" "$log_widget_snapshot" "$log_workout_preflight" "$log_strain_validation" "$log_hr_consistency" "$log_hr_artifact_policy" "$log_hr_continuity_watchdog_state" "$quiet_ble_logs" "$full_protocol_mode" "$standard_hr_only" "$long_wear_mode" "$reset_capture_defaults" "$reset_link_diagnostics" "$reset_sample_diagnostics" "$reset_protocol_diagnostics" "$active_motion_imu_check" "$flush_active_journal_after" "$manual_checkpoint_after" "$force_no_data_watchdog_after" "$force_hr_continuity_watchdog_after" "$force_rr_presence_watchdog_after" "$force_missing_2a37_after" "$force_accepted_hr_watchdog_after" "$backup_sessions" "$verify_backup" "$restore_backup" "$healthkit_export" "$healthkit_reference_audit" "$healthkit_reset_rebuild" "$confirm_best_workout_candidate" "$confirm_best_sleep_candidate" "$morning_hrv_check" "$morning_hrv_force" "$auto_save_session_after" "$auto_save_session_every" "$checkpoint_session_every" "$log_live_workout_every" "$auto_save_workout_when_ready" "$verify_workout_label" "$verify_workout_after" "$verify_sleep" "$verify_sleep_label" "$verify_sleep_after" "$schedule_notifications" "$test_notification" "$notification_delay" "$leave_running" <<'PY'
+python3 - "$device_id" "$bundle_id" "$seconds" "$until_realtime" "$until_ready" "$log_path" "$auto_capture" "$stop_when_ready" "$capture_label" "$auto_capture_delay" "$auto_capture_when_rr" "$auto_capture_rr_window" "$auto_capture_rr_min_frames" "$auto_capture_max_rr_gap" "$auto_capture_rr_timeout" "$auto_capture_max_attempts" "$strict_live_rr_capture" "$realtime_start_retries" "$realtime_restart_zero_rr_seconds" "$realtime_reassert_zero_rr_seconds" "$disable_history_ack" "$history_ack_mode" "$history_recent_sweep" "$history_recent_offsets" "$history_selector_sweep" "$history_selector_mode" "$history_selector_range_index" "$history_range_sweep" "$history_range_payloads" "$history_init_sweep" "$history_skip_range" "$history_clock_handshake" "$history_only_probe" "$probe_command" "$probe_command_delay" "$probe_command_mode" "$pull_capture_dir" "$pull_backups_dir" "$pull_sessions_dir" "$pull_historical_dir" "$export_rr_reference_package" "$export_hr_reference_package" "$validate_rr_reference" "$validate_hr_reference" "$clear_reference_inputs" "$pull_reference_package_dir" "$auto_stop_after" "$replay_log" "$probe_sweep" "$probe_sweep_interval" "$complete_onboarding" "$log_baseline" "$log_collection_health" "$log_collection_health_after" "$log_gate_status" "$log_gate_readiness" "$log_gate_status_after" "$log_gate_status_deep" "$log_activity_detections" "$log_daily_rollups" "$log_trends" "$log_widget_snapshot" "$log_workout_preflight" "$log_strain_validation" "$log_hr_consistency" "$log_hr_artifact_policy" "$log_hr_continuity_watchdog_state" "$quiet_ble_logs" "$full_protocol_mode" "$standard_hr_only" "$long_wear_mode" "$reset_capture_defaults" "$reset_link_diagnostics" "$reset_sample_diagnostics" "$reset_protocol_diagnostics" "$active_motion_imu_check" "$flush_active_journal_after" "$manual_checkpoint_after" "$force_no_data_watchdog_after" "$force_hr_continuity_watchdog_after" "$force_rr_presence_watchdog_after" "$force_missing_2a37_after" "$force_accepted_hr_watchdog_after" "$backup_sessions" "$verify_backup" "$restore_backup" "$healthkit_export" "$healthkit_reference_audit" "$healthkit_reset_rebuild" "$confirm_best_workout_candidate" "$confirm_best_sleep_candidate" "$morning_hrv_check" "$morning_hrv_force" "$auto_save_session_after" "$auto_save_session_every" "$checkpoint_session_every" "$log_live_workout_every" "$auto_save_workout_when_ready" "$verify_workout_label" "$verify_workout_after" "$verify_sleep" "$verify_sleep_label" "$verify_sleep_after" "$schedule_notifications" "$test_notification" "$notification_delay" "$leave_running" "$pull_only" <<'PY'
 import subprocess
 import sys
 import time
@@ -1584,7 +1596,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-device_id, bundle_id, seconds_raw, until_realtime_raw, until_ready_raw, log_path, auto_capture_raw, stop_when_ready_raw, capture_label, auto_capture_delay, auto_capture_when_rr, auto_capture_rr_window, auto_capture_rr_min_frames, auto_capture_max_rr_gap, auto_capture_rr_timeout, auto_capture_max_attempts, strict_live_rr_capture_raw, realtime_start_retries, realtime_restart_zero_rr_seconds, realtime_reassert_zero_rr_seconds, disable_history_ack_raw, history_ack_mode, history_recent_sweep_raw, history_recent_offsets, history_selector_sweep_raw, history_selector_mode, history_selector_range_index, history_range_sweep_raw, history_range_payloads, history_init_sweep, history_skip_range_raw, history_clock_handshake_raw, history_only_probe_raw, probe_command, probe_command_delay, probe_command_mode, pull_capture_dir, pull_backups_dir, pull_sessions_dir, pull_historical_dir, export_rr_reference_package_raw, export_hr_reference_package_raw, validate_rr_reference_raw, validate_hr_reference_raw, clear_reference_inputs_raw, pull_reference_package_dir, auto_stop_after, replay_log, probe_sweep, probe_sweep_interval, complete_onboarding_raw, log_baseline_raw, log_collection_health_raw, log_collection_health_after, log_gate_status_raw, log_gate_readiness_raw, log_gate_status_after, log_gate_status_deep_raw, log_activity_detections_raw, log_daily_rollups_raw, log_trends_raw, log_widget_snapshot_raw, log_workout_preflight_raw, log_strain_validation_raw, log_hr_consistency_raw, log_hr_artifact_policy_raw, log_hr_continuity_watchdog_state_raw, quiet_ble_logs_raw, full_protocol_mode_raw, standard_hr_only_raw, long_wear_mode_raw, reset_capture_defaults_raw, reset_link_diagnostics_raw, reset_sample_diagnostics_raw, reset_protocol_diagnostics_raw, active_motion_imu_check_raw, flush_active_journal_after, manual_checkpoint_after, force_no_data_watchdog_after, force_hr_continuity_watchdog_after, force_rr_presence_watchdog_after, force_missing_2a37_after, force_accepted_hr_watchdog_after, backup_sessions_raw, verify_backup_raw, restore_backup_raw, healthkit_export_raw, healthkit_reference_audit_raw, healthkit_reset_rebuild_raw, confirm_best_workout_candidate_raw, confirm_best_sleep_candidate_raw, morning_hrv_check_raw, morning_hrv_force_raw, auto_save_session_after, auto_save_session_every, checkpoint_session_every, log_live_workout_every, auto_save_workout_when_ready, verify_workout_label, verify_workout_after, verify_sleep_raw, verify_sleep_label, verify_sleep_after, schedule_notifications_raw, test_notification_raw, notification_delay, leave_running_raw = sys.argv[1:108]
+device_id, bundle_id, seconds_raw, until_realtime_raw, until_ready_raw, log_path, auto_capture_raw, stop_when_ready_raw, capture_label, auto_capture_delay, auto_capture_when_rr, auto_capture_rr_window, auto_capture_rr_min_frames, auto_capture_max_rr_gap, auto_capture_rr_timeout, auto_capture_max_attempts, strict_live_rr_capture_raw, realtime_start_retries, realtime_restart_zero_rr_seconds, realtime_reassert_zero_rr_seconds, disable_history_ack_raw, history_ack_mode, history_recent_sweep_raw, history_recent_offsets, history_selector_sweep_raw, history_selector_mode, history_selector_range_index, history_range_sweep_raw, history_range_payloads, history_init_sweep, history_skip_range_raw, history_clock_handshake_raw, history_only_probe_raw, probe_command, probe_command_delay, probe_command_mode, pull_capture_dir, pull_backups_dir, pull_sessions_dir, pull_historical_dir, export_rr_reference_package_raw, export_hr_reference_package_raw, validate_rr_reference_raw, validate_hr_reference_raw, clear_reference_inputs_raw, pull_reference_package_dir, auto_stop_after, replay_log, probe_sweep, probe_sweep_interval, complete_onboarding_raw, log_baseline_raw, log_collection_health_raw, log_collection_health_after, log_gate_status_raw, log_gate_readiness_raw, log_gate_status_after, log_gate_status_deep_raw, log_activity_detections_raw, log_daily_rollups_raw, log_trends_raw, log_widget_snapshot_raw, log_workout_preflight_raw, log_strain_validation_raw, log_hr_consistency_raw, log_hr_artifact_policy_raw, log_hr_continuity_watchdog_state_raw, quiet_ble_logs_raw, full_protocol_mode_raw, standard_hr_only_raw, long_wear_mode_raw, reset_capture_defaults_raw, reset_link_diagnostics_raw, reset_sample_diagnostics_raw, reset_protocol_diagnostics_raw, active_motion_imu_check_raw, flush_active_journal_after, manual_checkpoint_after, force_no_data_watchdog_after, force_hr_continuity_watchdog_after, force_rr_presence_watchdog_after, force_missing_2a37_after, force_accepted_hr_watchdog_after, backup_sessions_raw, verify_backup_raw, restore_backup_raw, healthkit_export_raw, healthkit_reference_audit_raw, healthkit_reset_rebuild_raw, confirm_best_workout_candidate_raw, confirm_best_sleep_candidate_raw, morning_hrv_check_raw, morning_hrv_force_raw, auto_save_session_after, auto_save_session_every, checkpoint_session_every, log_live_workout_every, auto_save_workout_when_ready, verify_workout_label, verify_workout_after, verify_sleep_raw, verify_sleep_label, verify_sleep_after, schedule_notifications_raw, test_notification_raw, notification_delay, leave_running_raw, pull_only_raw = sys.argv[1:109]
 seconds = int(seconds_raw)
 until_realtime = until_realtime_raw == "1"
 until_ready = until_ready_raw == "1"
@@ -1642,6 +1654,7 @@ morning_hrv_force = morning_hrv_force_raw == "1"
 schedule_notifications = schedule_notifications_raw == "1"
 test_notification = test_notification_raw == "1"
 leave_running = leave_running_raw == "1"
+pull_only = pull_only_raw == "1"
 history_probe_requested = (
     history_recent_sweep
     or bool(history_recent_offsets)
@@ -1756,6 +1769,10 @@ def summarize_active_journal_segments(directory: Path) -> None:
          f"raw_gaps={latest.get('rawHRGaps', 0)} accepted_gaps={latest.get('acceptedHRGaps', 0)} "
          f"max_raw_gap_s={float(latest.get('maxRawHRGap', 0) or 0):.1f} "
          f"max_accepted_gap_s={float(latest.get('maxAcceptedHRGap', 0) or 0):.1f} "
+         f"battery={latest.get('batteryLevel', 'missing')} thermal={latest.get('thermalState', 'missing')} "
+         f"low_power={int(bool(latest.get('lowPowerMode', False)))} "
+         f"power_mode={latest.get('powerMode', 'missing')} "
+         f"cadence_multiplier={float(latest.get('cadenceMultiplier', 0) or 0):.1f} "
          f"latest_bpm={latest_bpm} latest_file={latest.get('_file', 'unknown')} "
          f"label={str(latest.get('label', '')).replace(' ', '_')}")
 
@@ -2445,7 +2462,9 @@ def ingest_whoopdbg(line: str) -> None:
     rr_summary["rr_start_delay_s"] = elapsed_seconds(timestamps["first_realtime"], timestamps["first_rr"])
     rr_summary["last_rr_elapsed_s"] = elapsed_seconds(baseline, timestamps["last_rr"])
 
-if replay_log:
+if pull_only:
+    emit("HARNESS_PULL_ONLY status=enabled action=skip_build_install_launch")
+elif replay_log:
     skipping_existing_summary = False
     with open(replay_log, encoding="utf-8") as handle:
         for line in handle:
@@ -2816,7 +2835,7 @@ if hr_reference_manifest_path:
     emit(f"WHOOPDBG_HR_REFERENCE_MANIFEST_FILE={hr_reference_manifest_path}")
 emit("WHOOPDBG_SUMMARY_END")
 
-if not replay_log:
+if not replay_log and not pull_only:
     if not launch_seen:
         emit("HARNESS_ERROR=app_launch_not_confirmed")
         sys.exit(2)
@@ -3007,7 +3026,7 @@ if not replay_log and pull_reference_package_dir:
             prefix = "WHOOPDBG_HR_REFERENCE_PULL_FILE" if "hr-reference" in name else "WHOOPDBG_RR_REFERENCE_PULL_FILE"
             emit(f"{prefix}={destination_file}")
 
-if not replay_log and leave_running:
+if not replay_log and leave_running and not pull_only:
     keepalive_label = "Long_wear"
     keepalive_cmd = [
         "xcrun", "devicectl", "device", "process", "launch",
@@ -3036,6 +3055,8 @@ if not replay_log and leave_running:
         raise SystemExit(result.returncode)
     emit("HARNESS_LEAVE_RUNNING status=launched mode=standard_hr_only_long_wear checkpoint_s=60 autosave_s=900 workout_check_s=60")
 
+if pull_only:
+    sys.exit(0)
 if until_realtime and not flags["frame_61080005"]:
     raise SystemExit(2)
 if until_ready and not (flags["hrv_ready"] or flags["capture_summary_ready"]):
