@@ -275,7 +275,7 @@ struct AtriaStatusChip: View, Equatable {
             .foregroundStyle(colorScheme == .dark ? tint.opacity(0.98) : tint)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .atriaGlassCapsule(tint: tint)
+            .atriaChromeCapsule(tint: tint)
     }
 }
 

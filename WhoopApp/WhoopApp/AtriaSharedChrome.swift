@@ -283,11 +283,11 @@ extension View {
     }
 
     @ViewBuilder
-    func atriaGlassCapsule(tint: Color) -> some View {
+    func atriaChromeCapsule(tint: Color) -> some View {
         self.background(AtriaCapsuleChromeBackground(tint: tint))
     }
 
-    func atraGlassIconChrome() -> some View {
+    func atriaChromeIcon() -> some View {
         self
             .frame(width: 46, height: 46)
             .background(AtriaIconChromeBackground())

@@ -47,7 +47,7 @@ struct AtriaHeaderBar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .atraGlassIconChrome()
+                .atriaChromeIcon()
             }
 
             connectionButton
@@ -60,7 +60,7 @@ struct AtriaHeaderBar: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
-            .atraGlassIconChrome()
+            .atriaChromeIcon()
         }
     }
 
@@ -83,7 +83,7 @@ struct AtriaHeaderBar: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .atriaGlassCapsule(tint: .green)
+            .atriaChromeCapsule(tint: .green)
 
         case .connecting, .scanning:
             Image(systemName: "dot.radiowaves.left.and.right")
@@ -95,7 +95,7 @@ struct AtriaHeaderBar: View {
                     Circle()
                         .fill(Color.clear)
                 }
-                .atraGlassIconChrome()
+                .atriaChromeIcon()
 
         case .poweredOff, .disconnected:
             Button {
@@ -112,7 +112,7 @@ struct AtriaHeaderBar: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .atriaGlassCapsule(tint: .blue)
+            .atriaChromeCapsule(tint: .blue)
         }
     }
 }
@@ -197,7 +197,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .atriaGlassCapsule(tint: tint.opacity(0.82))
+                    .atriaChromeCapsule(tint: tint.opacity(0.82))
 
                 Spacer(minLength: 0)
 
@@ -252,7 +252,7 @@ private struct AtriaHeroHeadlineBlock: View, Equatable {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .atriaGlassCapsule(tint: .white)
+                    .atriaChromeCapsule(tint: .white)
                 Spacer(minLength: 0)
                 if status != .connected {
                     AtriaStatusChip(text: status.rawValue,
