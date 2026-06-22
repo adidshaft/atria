@@ -356,6 +356,22 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, script, "active_journal_final_status=missing\\n' | tee -a \"$summary\"")
 
+    def test_unsavable_active_journals_are_cleared_during_recovery(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "private func clearUnsavableActiveJournalIfNeeded(reason: String) -> Bool",
+            "session.count < 2",
+            "status: \"cleared_unsavable\"",
+            "action=drop_unsavable_stale_segment",
+            "clearUnsavableActiveJournalIfNeeded(reason: \"no_data_watchdog_unsavable\")",
+            "clearUnsavableActiveJournalIfNeeded(reason: \"hr_continuity_watchdog_unsavable\")",
+            "clearUnsavableActiveJournalIfNeeded(reason: \"accepted_hr_watchdog_unsavable\")",
+            "clearUnsavableActiveJournalIfNeeded(reason: \"disconnect_unsavable\")",
+            "autoSaveStatus = \"cleared_unsavable\"",
+        ]:
+            assert_contains(self, text, needle)
+
 
 if __name__ == "__main__":
     unittest.main()

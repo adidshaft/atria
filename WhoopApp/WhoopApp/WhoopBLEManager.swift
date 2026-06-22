@@ -2876,6 +2876,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   snapshot.rrSampleCount,
                   snapshot.duration,
                   snapshot.label)
+        } else {
+            clearUnsavableActiveJournalIfNeeded(reason: "no_data_watchdog_unsavable")
         }
         persistWatchdogRecovery(source: "no_data",
                                 status: recoveryStatus,
@@ -3097,6 +3099,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
         if timeout > 0, rawGap >= max(timeout * 2, timeout + 6) {
             persistActiveSessionJournalIfNeeded(reason: "hr_continuity_watchdog_reconnect", force: true)
+            if session.count < 2 {
+                clearUnsavableActiveJournalIfNeeded(reason: "hr_continuity_watchdog_unsavable")
+            }
             let action = "fresh_scan_reconnect"
             persistHRContinuityWatchdogResult(status: actionStatus,
                                               action: action,
@@ -3497,6 +3502,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   snapshot.rrSampleCount,
                   snapshot.duration,
                   snapshot.label)
+        } else {
+            clearUnsavableActiveJournalIfNeeded(reason: "accepted_hr_watchdog_unsavable")
         }
         persistWatchdogRecovery(source: "accepted_hr",
                                 status: recoveryStatus,
@@ -7468,6 +7475,28 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               saved.duration)
     }
 
+    @discardableResult
+    private func clearUnsavableActiveJournalIfNeeded(reason: String) -> Bool {
+        guard longWearModeEnabled, !session.isEmpty, session.count < 2 else { return false }
+        let label = captureLabel.isEmpty ? "Long wear" : captureLabel
+        let duration = max(0, (session.last?.t ?? sessionStart).timeIntervalSince(sessionStart))
+        activeJournalDirtySamples = 0
+        lastActiveJournalSavedSessionSampleCount = 0
+        lastActiveJournalSavedRRArchiveCount = 0
+        ActiveSessionJournal.recordClose(status: "cleared_unsavable",
+                                         reason: reason,
+                                         label: label,
+                                         samples: session.count,
+                                         duration: duration)
+        ActiveSessionJournal.clear()
+        WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=%@ label=%@ samples=%d duration_s=%.0f action=drop_unsavable_stale_segment",
+                      reason,
+                      label,
+                      session.count,
+                      duration)
+        return true
+    }
+
     /// Snapshot the current HR session into a persistable record without
     /// resetting it, so unattended long runs survive debugger/device drops.
     func snapshotSession(label: String) -> SavedSession? {
@@ -7843,6 +7872,10 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                 }
                 autoSaveSamples = saved.points.count
                 autoSaveDuration = Int(saved.duration.rounded())
+            } else if clearUnsavableActiveJournalIfNeeded(reason: "disconnect_unsavable") {
+                autoSaveStatus = "cleared_unsavable"
+                autoSaveSamples = session.count
+                autoSaveDuration = max(0, Int(((session.last?.t ?? sessionStart).timeIntervalSince(sessionStart)).rounded()))
             }
             defaults.set(autoSaveStatus, forKey: LinkDefaults.lastAutoSaveStatus)
             defaults.set(autoSaveSamples, forKey: LinkDefaults.lastAutoSaveSamples)
