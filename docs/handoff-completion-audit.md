@@ -143,6 +143,12 @@ acceptance_status=pass
 acceptance_blockers=none
 ```
 
+The handoff audit also verifies that the summary came from the overnight preset
+shape: at least 11 planned samples, 10 planned hours, 9 required successful
+pulls, 8 hours of persisted-session span, 85% coverage, 30 second maximum
+accepted-HR gap, `nominal`/`fair` thermal states only, and at most 35 percentage
+points of battery drop. Short custom smokes do not satisfy final acceptance.
+
 The default overnight preset records:
 
 - 11 pull-only samples.

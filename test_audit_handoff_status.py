@@ -16,8 +16,20 @@ def touch(root: Path, rel: Path) -> None:
 def write_passing_long_wear_summary(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
+        "preset": "overnight",
+        "planned_samples": 11,
+        "planned_duration_s": 36_000,
         "acceptance_status": "pass",
         "acceptance_blockers": [],
+        "criteria": {
+            "preset": "overnight",
+            "min_samples": 9,
+            "min_span_s": 28_800,
+            "min_coverage_percent": 85.0,
+            "max_gap_s": 30.0,
+            "allowed_thermal": ["nominal", "fair"],
+            "max_battery_drop_percent": 35.0,
+        },
         "thermal_states": ["nominal", "fair"],
         "battery_delta": -12,
         "latest_recent_session_span_s": 30_000.0,
@@ -69,6 +81,42 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertIn("external_reference_validation", report["blockers"])
         self.assertEqual(report["external_reference_status"], "required")
+
+    def test_short_custom_long_wear_pass_cannot_complete_physical_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            summary.parent.mkdir(parents=True)
+            summary.write_text(json.dumps({
+                "preset": "custom",
+                "planned_samples": 2,
+                "planned_duration_s": 60,
+                "acceptance_status": "pass",
+                "acceptance_blockers": [],
+                "criteria": {
+                    "preset": "custom",
+                    "min_samples": 1,
+                    "min_span_s": 30,
+                    "min_coverage_percent": 10.0,
+                    "max_gap_s": 999.0,
+                    "allowed_thermal": ["nominal", "fair", "serious"],
+                    "max_battery_drop_percent": 100.0,
+                },
+                "thermal_states": ["nominal"],
+                "battery_delta": 0,
+                "latest_recent_session_span_s": 60.0,
+                "latest_recent_session_coverage_percent": 100.0,
+            }), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["physical_long_wear"]["status"], "fail")
+        self.assertIn("overnight_preset", report["blockers"])
+        self.assertIn("overnight_planned_duration", report["blockers"])
+        self.assertIn("overnight_min_span", report["blockers"])
 
     def test_external_reference_can_be_explicitly_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
