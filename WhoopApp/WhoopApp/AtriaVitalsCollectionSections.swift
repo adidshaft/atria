@@ -56,6 +56,7 @@ struct AtriaVitalsTabContent: View {
     private var profileCard: some View {
         AtriaVitalsProfileCardHost(pulseStore: pulseStore,
                                    profileStore: profileStore,
+                                   store: store,
                                    onUpdateProfile: store.updateProfile)
     }
 }
@@ -180,11 +181,15 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
 private struct AtriaVitalsProfileCardHost: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
+    @ObservedObject var store: SessionStore
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
 
     var body: some View {
+        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? 60
         AtriaProfileCard(profile: profileStore.profile,
                          observedPeakHeartRateText: pulseStore.state.peakHeartRateText,
+                         vo2MaxEstimate: store.vo2MaxEstimateSummary(rest: rest,
+                                                                     maxHR: profileStore.profile.maxHR),
                          onUpdateProfile: onUpdateProfile)
             .equatable()
     }
@@ -779,11 +784,13 @@ private struct AtriaTrainingLoadTile: View, Equatable {
 private struct AtriaProfileCard: View, Equatable {
     let profile: AthleteProfile
     let observedPeakHeartRateText: String
+    let vo2MaxEstimate: VO2MaxEstimateSummary
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
 
     static func == (lhs: AtriaProfileCard, rhs: AtriaProfileCard) -> Bool {
         lhs.profile == rhs.profile
             && lhs.observedPeakHeartRateText == rhs.observedPeakHeartRateText
+            && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
     }
 
     var body: some View {
@@ -823,14 +830,21 @@ private struct AtriaProfileCard: View, Equatable {
                     AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
                     AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
                     AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
+                    AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
                 }
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
                     AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
                     AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
+                    AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
                 }
             }
+
+            Text(vo2MaxEstimate.narrative)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text("Atria uses the active HRmax right away for strain and workout interpretation.")
                 .font(.caption)

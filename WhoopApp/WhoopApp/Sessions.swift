@@ -1099,6 +1099,17 @@ struct TrainingLoadSummary: Equatable {
     }
 }
 
+struct VO2MaxEstimateSummary: Equatable {
+    let value: Double?
+    let confidence: String
+    let detail: String
+    let narrative: String
+
+    var valueText: String {
+        value.map { String(format: "%.1f", $0) } ?? "Learning"
+    }
+}
+
 private struct RRLedgerReplaySummary {
     let sessionsWithRR: Int
     let rrSamples: Int
@@ -5939,6 +5950,35 @@ final class SessionStore: ObservableObject {
                                    confidence: confidence,
                                    targetBand: targetBand,
                                    detail: detail)
+    }
+
+    func vo2MaxEstimateSummary(rest: Int, maxHR: Int) -> VO2MaxEstimateSummary {
+        let restingSamples = baseline.restingSampleCount
+        guard rest > 0, maxHR > rest, restingSamples >= 3 else {
+            return VO2MaxEstimateSummary(value: nil,
+                                         confidence: "learning",
+                                         detail: "\(restingSamples)/3 RHR",
+                                         narrative: "Atria needs a few local resting baselines before estimating VO2max.")
+        }
+
+        let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
+        let ageAdjusted = rawEstimate - max(0, Double(profile.age - 30)) * 0.08
+        let boundedEstimate = min(max(ageAdjusted, 20), 80)
+        let hrvSamples = baseline.hrvSampleCount
+        let confidence: String
+        if restingSamples >= 7 && hrvSamples >= 7 {
+            confidence = "personal baseline"
+        } else {
+            confidence = "estimate"
+        }
+        let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
+        let narrative = hrvSamples >= 7
+            ? "Derived locally from your active HRmax, resting baseline, age, and HRV history."
+            : "Derived locally from your active HRmax, resting baseline, and age; HRV history will improve confidence."
+        return VO2MaxEstimateSummary(value: boundedEstimate,
+                                     confidence: confidence,
+                                     detail: detail,
+                                     narrative: narrative)
     }
 
     func trendSummaryFast(rest: Int,
