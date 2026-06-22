@@ -40,6 +40,9 @@ def write_passing_long_wear_summary(path: Path) -> None:
 
 def write_passing_accessibility_performance(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    trace = path.parent / "trace.trace"
+    trace.parent.mkdir(parents=True, exist_ok=True)
+    trace.write_text("placeholder trace artifact", encoding="utf-8")
     path.write_text(json.dumps({
         "device": "iPhone 15 Pro",
         "accessibility_checks": {
@@ -290,6 +293,30 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
+
+    def test_accessibility_performance_trace_file_must_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            trace = repo / "docs/evidence/accessibility-performance/trace.trace"
+            trace.unlink()
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "fail")
+        self.assertIn("missing_instruments_trace_file", report["blockers"])
+        self.assertFalse(report["accessibility_performance"]["instruments_trace_exists"])
 
     def test_accessibility_performance_app_commit_must_match_repo_head(self):
         with tempfile.TemporaryDirectory() as tmp:

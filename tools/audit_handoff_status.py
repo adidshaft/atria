@@ -227,8 +227,14 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         blockers.append("dashboard_scroll_fps")
 
     instruments_trace = str(data.get("instruments_trace", "")).strip()
+    resolved_trace: Path | None = None
     if not instruments_trace:
         blockers.append("missing_instruments_trace")
+    else:
+        trace_path = Path(instruments_trace)
+        resolved_trace = trace_path if trace_path.is_absolute() else repo / trace_path
+        if not resolved_trace.exists():
+            blockers.append("missing_instruments_trace_file")
 
     measured_at = str(data.get("measured_at", "")).strip()
     if not measured_at:
@@ -254,6 +260,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         "device": device or "missing",
         "dashboard_scroll_fps": scroll_fps if isinstance(scroll_fps, (int, float)) else "missing",
         "instruments_trace": instruments_trace or "missing",
+        "instruments_trace_exists": resolved_trace.exists() if resolved_trace else False,
         "measured_at": measured_at or "missing",
         "app_commit": app_commit or "missing",
         "expected_app_commit": expected_commit or "missing",

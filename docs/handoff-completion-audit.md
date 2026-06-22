@@ -206,7 +206,8 @@ folder and fill it only from measured iPhone 15 Pro results. The audit requires:
 - Reduce Motion visual pass.
 - Light mode and dark mode visual pass.
 - Dashboard scroll performance of at least 58 fps.
-- A recorded Instruments trace path.
+- A recorded Instruments trace path, and the referenced trace artifact must
+  exist in the evidence folder.
 - Measurement provenance: `measured_at`, `app_commit`, and `app_build`.
   `app_commit` must match the repository commit being audited.
 
