@@ -693,6 +693,16 @@ struct ProfileOnboardingView: View {
     let onComplete: (AthleteProfile) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var step: OnboardingStep = .welcome
+
+    private enum OnboardingStep: Int, CaseIterable {
+        case welcome
+        case connect
+        case profile
+
+        var isFirst: Bool { self == .welcome }
+        var isLast: Bool { self == .profile }
+    }
 
     init(profile: AthleteProfile, onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
@@ -707,75 +717,41 @@ struct ProfileOnboardingView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Profile")
-                                .font(.system(size: 34, weight: .bold, design: .rounded))
-                            Text("Tune HRmax once so strain, recovery, and workout guidance stay fast and local.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                        switch step {
+                        case .welcome: welcomeStep
+                        case .connect: connectStep
+                        case .profile: profileStep
                         }
-
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("HRmax source")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
-                            onboardingSourcePicker
-
-                            HStack(spacing: 12) {
-                                onboardingStepperCard(title: "Age",
-                                                      value: "\(draft.age)",
-                                                      detail: "13-100") {
-                                    draft.age = max(13, draft.age - 1)
-                                } increment: {
-                                    draft.age = min(100, draft.age + 1)
-                                }
-
-                                onboardingStepperCard(title: "Measured max",
-                                                      value: "\(draft.measuredMaxHR)",
-                                                      detail: "120-220 bpm") {
-                                    draft.measuredMaxHR = max(120, draft.measuredMaxHR - 1)
-                                } increment: {
-                                    draft.measuredMaxHR = min(220, draft.measuredMaxHR + 1)
-                                }
-                            }
-                        }
-                        .padding(18)
-                        .atriaCard(cornerRadius: 22, emphasis: .soft)
-
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Active HRmax")
-                                    .font(.headline.weight(.semibold))
-                                Spacer()
-                                Text("\(draft.maxHR)")
-                                    .font(.title3.weight(.bold).monospacedDigit())
-                            }
-
-                            Text("Atria uses HR reserve from learned resting HR up to this HRmax. You can change it later from the Vitals tab.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            HStack(spacing: 10) {
-                                onboardingMetricPill(label: "Source", value: draft.maxHRSource.label, tint: .cyan)
-                                onboardingMetricPill(label: "Age", value: "\(draft.age)", tint: .green)
-                                onboardingMetricPill(label: "Measured", value: "\(draft.measuredMaxHR)", tint: .orange)
-                            }
-                        }
-                        .padding(18)
-                        .atriaCard(cornerRadius: 22, emphasis: .soft)
                     }
-
                     .padding(.horizontal, 20)
                     .padding(.top, 24)
                     .padding(.bottom, 124)
+                    .transition(.opacity)
+                    .id(step)
+                }
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if !step.isFirst {
+                        Button {
+                            advance(to: OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome)
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                    }
                 }
             }
             .safeAreaBar(edge: .bottom) {
-                VStack(spacing: 10) {
-                    Button("Use this profile") {
-                        onComplete(draft)
+                VStack(spacing: 14) {
+                    onboardingProgressDots
+                    Button(primaryButtonTitle) {
+                        if step.isLast {
+                            onComplete(draft)
+                        } else {
+                            advance(to: OnboardingStep(rawValue: step.rawValue + 1) ?? .profile)
+                        }
                     }
                     .buttonStyle(ProfileOnboardingPrimaryButtonStyle())
                     .frame(maxWidth: .infinity)
@@ -784,6 +760,217 @@ struct ProfileOnboardingView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 16)
             }
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        switch step {
+        case .welcome: return "Get started"
+        case .connect: return "Continue"
+        case .profile: return "Use this profile"
+        }
+    }
+
+    private func advance(to next: OnboardingStep) {
+        if reduceMotion {
+            step = next
+        } else {
+            withAnimation(.snappy(duration: 0.28)) { step = next }
+        }
+    }
+
+    private var onboardingProgressDots: some View {
+        HStack(spacing: 8) {
+            ForEach(OnboardingStep.allCases, id: \.rawValue) { item in
+                Capsule()
+                    .fill(item == step ? Color.accentColor : Color.secondary.opacity(0.3))
+                    .frame(width: item == step ? 22 : 7, height: 7)
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: step)
+            }
+        }
+        .accessibilityLabel("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")
+    }
+
+    // MARK: - Step 1: Welcome
+
+    private var welcomeStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "bolt.heart.fill")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(.pink)
+                Text("Welcome to Atria")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                Text("Your strap, your data — free and entirely on your phone.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                onboardingFeatureRow(icon: "lock.shield.fill",
+                                     tint: .green,
+                                     title: "Stays on your device",
+                                     detail: "No WHOOP account, no cloud, no subscription. Your data never leaves your phone.")
+                onboardingFeatureRow(icon: "waveform.path.ecg",
+                                     tint: .pink,
+                                     title: "Live from your own strap",
+                                     detail: "Heart rate, strain, sleep and recovery, read straight from your strap over Bluetooth.")
+                onboardingFeatureRow(icon: "checkmark.seal.fill",
+                                     tint: .blue,
+                                     title: "Honest by design",
+                                     detail: "Atria shows how confident each number is, and never makes up metrics it can't measure.")
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+        }
+    }
+
+    // MARK: - Step 2: Connect your strap
+
+    private var connectStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(.blue)
+                Text("Connect your strap")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                Text("Atria reads your strap directly over Bluetooth. You only need to set this up once.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                onboardingNumberedStep(1,
+                                       title: "Free the strap from WHOOP",
+                                       detail: "If the WHOOP app is still connected to your strap, disconnect it there first.")
+                onboardingNumberedStep(2,
+                                       title: "Fully quit the WHOOP app",
+                                       detail: "Close it so it doesn't quietly grab the strap back in the background.")
+                onboardingNumberedStep(3,
+                                       title: "Keep your phone nearby",
+                                       detail: "Wear the strap or tap it to wake it, and keep your phone unlocked while Atria connects.")
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+
+            Label("No strap handy right now? You can skip ahead and connect later — Atria keeps trying in the background.",
+                  systemImage: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Step 3: Profile
+
+    private var profileStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Set your max heart rate")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                Text("This is the one number Atria needs from you. It scores strain and effort to your body. You can change it anytime in Vitals.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("How should we set it?")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                onboardingSourcePicker
+
+                HStack(spacing: 12) {
+                    onboardingStepperCard(title: "Your age",
+                                          value: "\(draft.age)",
+                                          detail: "13-100") {
+                        draft.age = max(13, draft.age - 1)
+                    } increment: {
+                        draft.age = min(100, draft.age + 1)
+                    }
+
+                    onboardingStepperCard(title: "Measured max",
+                                          value: "\(draft.measuredMaxHR)",
+                                          detail: "120-220 bpm") {
+                        draft.measuredMaxHR = max(120, draft.measuredMaxHR - 1)
+                    } increment: {
+                        draft.measuredMaxHR = min(220, draft.measuredMaxHR + 1)
+                    }
+                }
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Your max heart rate")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Text("\(draft.maxHR)")
+                        .font(.title3.weight(.bold).monospacedDigit())
+                }
+
+                Text(draft.maxHRSource == .ageEstimate
+                     ? "Estimated from your age. Pick “Measured” if you know your real max from a hard effort or a lab test."
+                     : "Using the max you measured. This is the most accurate option if you have a real number.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    onboardingMetricPill(label: "Source", value: draft.maxHRSource.label, tint: .cyan)
+                    onboardingMetricPill(label: "Age", value: "\(draft.age)", tint: .green)
+                    onboardingMetricPill(label: "Measured", value: "\(draft.measuredMaxHR)", tint: .orange)
+                }
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+        }
+    }
+
+    private func onboardingFeatureRow(icon: String,
+                                      tint: Color,
+                                      title: String,
+                                      detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(tint)
+                .frame(width: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func onboardingNumberedStep(_ number: Int,
+                                        title: String,
+                                        detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("\(number)")
+                .font(.subheadline.weight(.bold).monospacedDigit())
+                .foregroundStyle(Color.white)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Color.accentColor))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
     }
 
