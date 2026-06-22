@@ -8,7 +8,7 @@ final class AtriaLiveActivityCoordinator {
         var heartRate: Int
         var strain: Double
         var batteryLevel: Int
-        var sampleCount: Int
+        var readingCount: Int
         var mediaTitle: String
         var mediaArtist: String
         var mediaIsPlaying: Bool
@@ -48,10 +48,10 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: Date().addingTimeInterval(90)),
                                             pushType: nil)
-            WHOOPDebugLog("WHOOPDBG live_activity status=started bpm=%d strain=%.1f samples=%d media_now_playing=%d local_only=1",
+            WHOOPDebugLog("WHOOPDBG live_activity status=started bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
-                          snapshot.sampleCount,
+                          snapshot.readingCount,
                           snapshot.mediaHasNowPlayingInfo ? 1 : 0)
         } catch {
             WHOOPDebugLog("WHOOPDBG live_activity status=start_failed error=%@ local_only=1",
@@ -72,10 +72,10 @@ final class AtriaLiveActivityCoordinator {
                            dismissalPolicy: .after(Date().addingTimeInterval(30)))
         self.activity = nil
         startedAt = nil
-        WHOOPDebugLog("WHOOPDBG live_activity status=ended bpm=%d strain=%.1f samples=%d media_now_playing=%d local_only=1",
+        WHOOPDebugLog("WHOOPDBG live_activity status=ended bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
                       snapshot.heartRate,
                       snapshot.strain,
-                      snapshot.sampleCount,
+                      snapshot.readingCount,
                       snapshot.mediaHasNowPlayingInfo ? 1 : 0)
     }
 
@@ -83,7 +83,7 @@ final class AtriaLiveActivityCoordinator {
         AtriaLiveActivityAttributes.ContentState(heartRate: snapshot.heartRate,
                                                  strain: snapshot.strain,
                                                  batteryLevel: snapshot.batteryLevel,
-                                                 sampleCount: snapshot.sampleCount,
+                                                 readingCount: snapshot.readingCount,
                                                  mediaTitle: snapshot.mediaTitle,
                                                  mediaArtist: snapshot.mediaArtist,
                                                  mediaIsPlaying: snapshot.mediaIsPlaying,

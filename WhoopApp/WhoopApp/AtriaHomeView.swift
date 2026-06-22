@@ -358,7 +358,7 @@ struct AtriaHomeView: View {
             heartRate: model.pulseLiveStore.state.heartRate,
             strain: Metrics.strain(fromTRIMP: model.coreLiveStore.state.liveTRIMP),
             batteryLevel: model.coreLiveStore.state.batteryLevel,
-            sampleCount: model.coreLiveStore.state.sessionSampleCount,
+            readingCount: model.coreLiveStore.state.sessionSampleCount,
             mediaTitle: mediaController.state.title,
             mediaArtist: mediaController.state.artist,
             mediaIsPlaying: mediaController.state.isPlaying,

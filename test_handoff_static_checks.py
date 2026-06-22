@@ -200,6 +200,22 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, collection, forbidden)
 
+    def test_live_activity_uses_end_user_reading_language(self):
+        app_attributes = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityAttributes.swift")
+        widget_attributes = source(ROOT / "WhoopApp" / "WhoopWidget" / "AtriaLiveActivityAttributes.swift")
+        coordinator = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityCoordinator.swift")
+        widget = source(ROOT / "WhoopApp" / "WhoopWidget" / "WhoopWidget.swift")
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+
+        for text in [app_attributes, widget_attributes, coordinator]:
+            assert_contains(self, text, "readingCount")
+            assert_not_contains(self, text, "sampleCount")
+
+        assert_contains(self, home, "readingCount: model.coreLiveStore.state.sessionSampleCount")
+        assert_contains(self, widget, "context.state.readingCount")
+        assert_contains(self, widget, "readings ·")
+        assert_not_contains(self, widget, "samples ·")
+
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
         plist = source(ROOT / "WhoopApp" / "Info.plist")

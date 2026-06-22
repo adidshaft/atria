@@ -290,7 +290,7 @@ private struct AtriaLiveActivityLockScreenView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(String(format: "Strain %.1f", context.state.strain))
                         .font(.subheadline.monospacedDigit().weight(.semibold))
-                    Text("\(context.state.sampleCount) samples · \(elapsedText(since: context.attributes.startedAt))")
+                    Text("\(context.state.readingCount) readings · \(elapsedText(since: context.attributes.startedAt))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
