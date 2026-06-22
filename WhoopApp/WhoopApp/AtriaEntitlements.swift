@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// Single seam for future premium licensing without shipping a paywall today.
 struct AtriaEntitlements: Equatable {
@@ -31,3 +31,13 @@ struct AtriaEntitlements: Equatable {
     }
 }
 
+private struct AtriaEntitlementsKey: EnvironmentKey {
+    static let defaultValue = AtriaEntitlements()
+}
+
+extension EnvironmentValues {
+    var atriaEntitlements: AtriaEntitlements {
+        get { self[AtriaEntitlementsKey.self] }
+        set { self[AtriaEntitlementsKey.self] = newValue }
+    }
+}

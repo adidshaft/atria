@@ -69,6 +69,7 @@ struct AtriaHomeView: View {
     @State private var hasLoggedPrimaryReady = false
     @State private var hasLoggedSecondaryReady = false
     @State private var hasLoggedDiagnosticsReady = false
+    @State private var entitlements = AtriaEntitlements()
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -120,6 +121,7 @@ struct AtriaHomeView: View {
                 logDiagnosticsReadyIfNeeded()
             }
         }
+        .environment(\.atriaEntitlements, entitlements)
         .fileImporter(isPresented: $showRRImporter,
                       allowedContentTypes: [.commaSeparatedText, .plainText, .data],
                       allowsMultipleSelection: false,
@@ -566,9 +568,14 @@ struct AtriaHomeView: View {
 private struct AtriaLiveTabAccessory: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    @Environment(\.atriaEntitlements) private var entitlements
 
     private var isInline: Bool {
         placement == .inline
+    }
+
+    private var showsPremiumControls: Bool {
+        entitlements.isEnabled(.liveActivity) || entitlements.isEnabled(.mediaControls)
     }
 
     var body: some View {
@@ -588,6 +595,12 @@ private struct AtriaLiveTabAccessory: View {
 
             if !isInline {
                 Spacer(minLength: 0)
+                if showsPremiumControls {
+                    Image(systemName: "playpause.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
                 Label(liveStore.state.batteryText, systemImage: "battery.100")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
