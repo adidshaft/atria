@@ -96,7 +96,16 @@ Evidence present:
   strap-write blocking, restored-peripheral reuse, validated-only HRV export,
   resting-HR/respiratory-rate HealthKit export, validate-later recovery display,
   native feature seams, monetization seam/no-StoreKit scope, BG task plumbing,
-  and iOS 26 UI cleanup.
+  diagnostic-log gating, production notification identifiers, and iOS 26 UI
+  cleanup. It also verifies that every CoreBluetooth `writeValue` call remains
+  confined to the guarded `sendCommand` helper, preventing accidental new blind
+  strap-write paths.
+- `WHOOPDBG` HealthKit/export diagnostics route through `WHOOPDebugLog`, so
+  normal end-user launches do not emit verbose diagnostic rows unless the
+  harness/debug flags enable them.
+- Production notification identifiers are limited to recovery, strain, and
+  battery alerts. The diagnostic delivery probe remains debug-only while still
+  being removable during cleanup.
 - `tools/audit_handoff_status.py` summarizes local artifacts and long-wear
   monitor summaries into a conservative `complete` / `not_complete` result.
   The top-level audit carries through long-wear `acceptance_diagnostics`, so a
