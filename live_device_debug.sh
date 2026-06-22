@@ -1579,6 +1579,7 @@ import signal
 import select
 import shlex
 import os
+import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -1719,6 +1720,44 @@ def elapsed_seconds(start: datetime | None, end: datetime | None) -> str:
     if start is None or end is None:
         return ""
     return f"{(end - start).total_seconds():.1f}"
+
+def summarize_active_journal_segments(directory: Path) -> None:
+    segments = []
+    for path in sorted(directory.glob("segment-*.json")):
+        try:
+            with path.open(encoding="utf-8") as handle:
+                segment = json.load(handle)
+                segment["_file"] = path.name
+                segments.append(segment)
+        except (OSError, json.JSONDecodeError) as error:
+            emit(f"WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=decode_error file={path.name} error={str(error)!r}")
+            return
+    if not segments:
+        emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=empty segments=0")
+        return
+    samples = []
+    rr_samples = []
+    starts = []
+    updates = []
+    for segment in segments:
+        samples.extend(segment.get("samples", []))
+        rr_samples.extend(segment.get("rrSamples", []))
+        if isinstance(segment.get("startedAt"), (int, float)):
+            starts.append(segment["startedAt"])
+        if isinstance(segment.get("updatedAt"), (int, float)):
+            updates.append(segment["updatedAt"])
+    latest = segments[-1]
+    duration = (max(updates) - min(starts)) if starts and updates else 0
+    latest_bpm = samples[-1].get("bpm", "none") if samples else "none"
+    emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY "
+         f"status=ok segments={len(segments)} duration_s={duration:.1f} "
+         f"delta_samples={len(samples)} delta_rr={len(rr_samples)} "
+         f"accepted_hr={latest.get('acceptedHRSamples', 0)} raw_hr={latest.get('rawHRNotifications', 0)} "
+         f"raw_gaps={latest.get('rawHRGaps', 0)} accepted_gaps={latest.get('acceptedHRGaps', 0)} "
+         f"max_raw_gap_s={float(latest.get('maxRawHRGap', 0) or 0):.1f} "
+         f"max_accepted_gap_s={float(latest.get('maxAcceptedHRGap', 0) or 0):.1f} "
+         f"latest_bpm={latest_bpm} latest_file={latest.get('_file', 'unknown')} "
+         f"label={str(latest.get('label', '')).replace(' ', '_')}")
 
 
 def frame_payload_from_frame_hex(line: str) -> tuple[str, bytes, bool] | None:
@@ -2886,6 +2925,7 @@ if not replay_log and pull_sessions_dir:
         for line in result.stdout.splitlines():
             emit(line)
         emit(f"WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_FILE={active_segments_destination}")
+        summarize_active_journal_segments(active_segments_destination)
     else:
         emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_STATUS=missing")
     gate_status_destination_file = destination / "atria-gate-status.txt"
