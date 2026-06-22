@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UniformTypeIdentifiers
+import UIKit
 
 struct AtriaHomeContainer: View, Equatable {
     let ble: WhoopBLEManager
@@ -77,6 +78,8 @@ struct AtriaHomeView: View {
     @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
     @State private var aiCoachHasAPIKey = false
+    @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
+    @State private var standByDismissedUntil: Date?
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -128,6 +131,19 @@ struct AtriaHomeView: View {
                 overviewDiagnosticsKickoffTask = nil
                 logDiagnosticsReadyIfNeeded()
             }
+
+            GeometryReader { proxy in
+                let isLandscape = proxy.size.width > proxy.size.height
+                if shouldShowStandBy(isLandscape: isLandscape) {
+                    AtriaStandByOverlay(coreLiveStore: model.coreLiveStore,
+                                        pulseLiveStore: model.pulseLiveStore,
+                                        heroStore: model.heroStore) {
+                        standByDismissedUntil = Date().addingTimeInterval(20 * 60)
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
+            }
+            .ignoresSafeArea()
         }
         .environment(\.atriaEntitlements, entitlements)
         .fileImporter(isPresented: $showRRImporter,
@@ -155,6 +171,8 @@ struct AtriaHomeView: View {
         }
         .onAppear {
             guard !hasUnlockedPrimaryContent else { return }
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            batteryState = UIDevice.current.batteryState
             if homeAppearedAt == nil {
                 homeAppearedAt = Date()
             }
@@ -227,6 +245,9 @@ struct AtriaHomeView: View {
         }
         .onReceive(model.heroStore.$state) { _ in
             updateHapticCoordinator()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
+            batteryState = UIDevice.current.batteryState
         }
         .onDisappear {
             connectionGuidePresentationTask?.cancel()
@@ -326,6 +347,16 @@ struct AtriaHomeView: View {
 
     private var isDark: Bool {
         colorScheme == .dark
+    }
+
+    private func shouldShowStandBy(isLandscape: Bool) -> Bool {
+        guard isLandscape else { return false }
+        guard model.coreLiveStore.state.status == .connected else { return false }
+        guard batteryState == .charging || batteryState == .full else { return false }
+        if let standByDismissedUntil, standByDismissedUntil > Date() {
+            return false
+        }
+        return true
     }
 
     private func tabNavigation<Content: View>(title: String,
@@ -759,6 +790,114 @@ private struct AtriaLiveTabAccessory: View {
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .accessibilityLabel(label)
+    }
+}
+
+private struct AtriaStandByOverlay: View {
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    let dismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black
+                .ignoresSafeArea()
+
+            HStack(alignment: .center, spacing: 28) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(.green)
+                            .frame(width: 10, height: 10)
+                        Text(coreLiveStore.state.deviceName.isEmpty ? "Atria live" : coreLiveStore.state.deviceName)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+
+                    Text(pulseLiveStore.state.heartRateText)
+                        .font(.system(size: 118, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .minimumScaleFactor(0.7)
+
+                    Text(pulseLiveStore.state.hasContact ? "BPM live" : "BPM waiting")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(spacing: 14) {
+                    AtriaStandByMetric(title: "Recovery",
+                                       value: heroStore.state.recoveryValue,
+                                       detail: heroStore.state.recoveryEstimate.confidence.rawValue,
+                                       tint: .green)
+                    AtriaStandByMetric(title: "Strain",
+                                       value: String(format: "%.1f", heroStore.state.strain),
+                                       detail: heroStore.state.strainConfidence,
+                                       tint: .orange)
+                    AtriaStandByMetric(title: "Battery",
+                                       value: coreLiveStore.state.batteryText,
+                                       detail: coreLiveStore.state.rrContinuityText,
+                                       tint: .cyan)
+                }
+                .frame(width: 230)
+            }
+            .padding(.horizontal, 48)
+            .padding(.vertical, 34)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: dismiss) {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.bold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.glass)
+                    .accessibilityLabel("Dismiss StandBy view")
+                }
+                Spacer()
+            }
+            .padding(24)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct AtriaStandByMetric: View {
+    let title: String
+    let value: String
+    let detail: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(detail)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.white.opacity(0.08))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(.white.opacity(0.10), lineWidth: 1)
+                }
+        }
     }
 }
 
