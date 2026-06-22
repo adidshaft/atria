@@ -130,6 +130,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")
+        docs = "\n".join(source(path) for path in (ROOT / "docs").rglob("*.md"))
 
         for needle in [
             "case personalBaseline = \"personal baseline\"",
@@ -138,6 +139,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
             assert_contains(self, text, needle)
+
+        for forbidden in [
+            "all HRV metrics in\n  **learning** until an external RR/IBI reference passes",
+            "blocked from display until an external RR reference passes",
+            "show nothing until validated",
+        ]:
+            assert_not_contains(self, docs, forbidden)
 
     def test_local_native_feature_seams_are_present(self):
         text = all_swift_source()

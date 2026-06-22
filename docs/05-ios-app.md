@@ -1548,9 +1548,11 @@ the counted samples are from non-Atria sources. If the row reports
   `execution_priority next_gate=B
   next_action=restore_current_rr_continuity_before_external_reference
   next_local_gate=B
-  next_local_action=restore_current_rr_continuity_no_gap_over_3s`, while still
-  keeping the saved clean RR candidate reference-pending and all HRV metrics in
-  **learning** until an external RR/IBI reference passes.
+  next_local_action=restore_current_rr_continuity_no_gap_over_3s`. The saved
+  clean RR candidate remains visible as a personal-baseline/unverified HRV
+  value when the local data-sufficiency gates pass; only the `validated` badge,
+  clinical Gate B pass, and HealthKit HRV export wait for an external RR/IBI
+  reference.
 - HR-continuity reconnect escalation: when standard `2A37` notifications remain
   stale for a second watchdog window, Atria now flushes the active journal and
   fresh scan-connects from the HR-continuity watchdog instead of waiting for the
