@@ -13,6 +13,9 @@ struct SavedSession: Codable, Identifiable {
     /// Representative HRV (RMSSD, ms) for the session, if the realtime channel
     /// produced RR intervals. Optional so older saved sessions still decode.
     var hrv: Int?
+    /// Respiratory rate inferred from RR modulation, in breaths per minute.
+    /// Optional because older sessions and insufficient RR windows have none.
+    var respiratoryRate: Double? = nil
     /// Real decoded RR/IBI intervals received from WHOOP realtime frames during
     /// this saved session. These are preserved for audit/replay, but do not make
     /// HRV clinically usable unless the strict continuity and reference gates pass.

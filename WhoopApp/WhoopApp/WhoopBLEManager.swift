@@ -7376,9 +7376,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         let motionShortStats = sleepMotionShortSummary()
         let phoneMotion = phoneMotionAuditSummary()
+        let respiratoryRate = hrvSnapshot?.isReady == true ? hrvSnapshot?.respiratoryRate : nil
         return SavedSession(id: liveSessionID, start: start, end: last.t,
                             label: label.trimmingCharacters(in: .whitespaces), points: points,
                             hrv: hrv > 0 ? hrv : nil,
+                            respiratoryRate: respiratoryRate,
                             rrPoints: rrPoints.isEmpty ? nil : rrPoints,
                             hrvReferenceValidated: false,
                             motionHintCount: sleepMotionHintCount,
