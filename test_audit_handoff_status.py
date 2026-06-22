@@ -50,6 +50,9 @@ def write_passing_accessibility_performance(path: Path) -> None:
         },
         "dashboard_scroll_fps": 60.0,
         "instruments_trace": "docs/evidence/accessibility-performance/trace.trace",
+        "measured_at": "2026-06-22T12:00:00Z",
+        "app_commit": "abcdef1234567890",
+        "app_build": "Atria 1.0 (100)",
         "notes": "Measured on physical iPhone.",
     }), encoding="utf-8")
 
@@ -229,6 +232,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
                 "accessibility_checks": {"reduce_motion": True},
                 "dashboard_scroll_fps": 52.0,
                 "instruments_trace": "",
+                "measured_at": "",
+                "app_commit": "",
+                "app_build": "",
             }), encoding="utf-8")
 
             report = audit_handoff_status.evaluate(
@@ -244,6 +250,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("accessibility_reduce_transparency", report["blockers"])
         self.assertIn("dashboard_scroll_fps", report["blockers"])
         self.assertIn("missing_instruments_trace", report["blockers"])
+        self.assertIn("missing_measured_at", report["blockers"])
+        self.assertIn("missing_app_commit", report["blockers"])
+        self.assertIn("missing_app_build", report["blockers"])
 
     def test_accessibility_performance_evidence_can_complete_non_reference_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

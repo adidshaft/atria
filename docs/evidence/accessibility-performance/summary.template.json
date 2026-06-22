@@ -9,5 +9,8 @@
   },
   "dashboard_scroll_fps": 0,
   "instruments_trace": "",
+  "measured_at": "",
+  "app_commit": "",
+  "app_build": "",
   "notes": "Fill this from a physical-device accessibility pass and Instruments dashboard scroll trace. Keep false/0/empty values until measured."
 }
