@@ -46,6 +46,7 @@ struct AtriaHomeView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: AtriaHomeModel
     @State private var selectedTab: HomeTab = .overview
     @State private var showRRImporter = false
@@ -152,6 +153,7 @@ struct AtriaHomeView: View {
             }
             ble.setForegroundHighFrequencyDisplayMode(selectedTab == .vitals)
             model.setPulseDetailMode(active: selectedTab == .vitals)
+            consumePendingIntentCommandIfNeeded()
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
                                                      delayNanoseconds: 60_000_000)
             hasUnlockedPrimaryContent = true
@@ -185,6 +187,10 @@ struct AtriaHomeView: View {
         .onChange(of: hasUnlockedSecondarySections) { _, unlocked in
             guard unlocked else { return }
             logSecondaryContentReadyIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            consumePendingIntentCommandIfNeeded()
         }
         .onDisappear {
             connectionGuidePresentationTask?.cancel()
@@ -225,6 +231,32 @@ struct AtriaHomeView: View {
             return 320_000_000
         case .poweredOff, .disconnected:
             return 180_000_000
+        }
+    }
+
+    private func consumePendingIntentCommandIfNeeded() {
+        guard let command = AtriaIntentCommandStore.consume() else { return }
+        switch command {
+        case .open(let destination):
+            withAnimation(.snappy(duration: 0.24)) {
+                switch destination {
+                case .today:
+                    selectedTab = .overview
+                case .vitals:
+                    selectedTab = .vitals
+                case .collection:
+                    selectedTab = .collection
+                }
+            }
+        case .capture(let command):
+            if command == .start && !ble.isRecording {
+                ble.toggleRecording()
+            } else if command == .stop && ble.isRecording {
+                ble.toggleRecording()
+            }
+            withAnimation(.snappy(duration: 0.24)) {
+                selectedTab = .collection
+            }
         }
     }
 
