@@ -209,6 +209,45 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
 
+    def test_default_accessibility_performance_summary_is_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / audit_handoff_status.DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY
+            write_passing_accessibility_performance(accessibility)
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+            )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["accessibility_performance"]["summary"], str(accessibility))
+
+    def test_accessibility_performance_template_is_not_treated_as_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            template = repo / "docs/evidence/accessibility-performance/summary.template.json"
+            write_passing_accessibility_performance(template)
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "missing")
+        self.assertIn("missing_accessibility_performance_summary", report["blockers"])
+
     def test_missing_summary_is_not_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

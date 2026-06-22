@@ -30,6 +30,7 @@ ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
     "light_mode",
     "dark_mode",
 ]
+DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-performance/summary.json")
 
 MIN_SCROLL_FPS = 58.0
 MIN_OVERNIGHT_PLANNED_DURATION_S = 10 * 60 * 60
@@ -116,19 +117,20 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
     }
 
 
-def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None) -> dict[str, object]:
+def accessibility_performance_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     if explicit is None:
-        return {
-            "status": "missing",
-            "summary": "missing",
-            "blockers": ["missing_accessibility_performance_summary"],
-        }
-
+        candidate = repo / DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY
+        return candidate if candidate.exists() else None
     candidate = explicit if explicit.is_absolute() else repo / explicit
-    if not candidate.exists():
+    return candidate if candidate.exists() else None
+
+
+def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None) -> dict[str, object]:
+    candidate = accessibility_performance_summary(repo, explicit)
+    if candidate is None:
         return {
             "status": "missing",
-            "summary": str(candidate),
+            "summary": str(repo / DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY) if explicit is None else str(explicit),
             "blockers": ["missing_accessibility_performance_summary"],
         }
 

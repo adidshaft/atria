@@ -99,8 +99,11 @@ Evidence present:
   monitor summaries into a conservative `complete` / `not_complete` result.
   Use `--skip-external-reference` when external reference validation is
   deliberately deferred for a non-reference readiness audit.
-  Use `--accessibility-performance <summary.json>` once a physical iPhone 15 Pro
-  accessibility/performance evidence manifest has been recorded.
+  By default, it discovers
+  `docs/evidence/accessibility-performance/summary.json` once a physical
+  iPhone 15 Pro accessibility/performance manifest has been recorded. Use
+  `--accessibility-performance <summary.json>` only for an alternate evidence
+  path.
 - `test_audit_handoff_status.sh` verifies that failed or missing physical
   acceptance evidence cannot be reported as complete.
 - `test_handoff_local.sh` runs the fast local handoff suite in one command.
@@ -203,10 +206,11 @@ folder and fill it only from measured iPhone 15 Pro results. The audit requires:
 Then run:
 
 ```sh
-python3 tools/audit_handoff_status.py \
-  --skip-external-reference \
-  --accessibility-performance <summary.json>
+python3 tools/audit_handoff_status.py --skip-external-reference
 ```
+
+Use `--accessibility-performance <summary.json>` only when checking an
+alternate measured evidence file.
 
 ## Final Summary Rule
 
