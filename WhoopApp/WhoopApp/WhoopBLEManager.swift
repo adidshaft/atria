@@ -5782,6 +5782,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     /// Send a COMMAND packet on CMD_TO_STRAP: [0x23, seq, cmd, data...].
     private func sendCommand(_ cmd: UInt8, _ data: [UInt8], mode: CommandWriteMode) {
+        guard !standardHROnlyMode || historyOnlyProbeEnabled else {
+            incrementRadioCounter(RadioDefaults.realtimeStartSkipped, reason: "standard_hr_only_write_blocked")
+            WHOOPDebugLog("WHOOPDBG writeSkip mode=%@ reason=standard_hr_only_no_strap_writes cmd=%02x",
+                  mode.rawValue, cmd)
+            dbgWrite = "standard hr only blocked"
+            return
+        }
         guard let tx = txCharacteristic, let p = peripheral else { return }
         let payload = [Packet.command, cmdSeq, cmd] + data
         let seq = cmdSeq
