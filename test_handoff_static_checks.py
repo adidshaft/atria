@@ -164,6 +164,42 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, app_text, forbidden)
 
+    def test_developer_only_surfaces_are_hidden_by_default(self):
+        developer_mode = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaDeveloperMode.swift")
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "enum AtriaDeveloperMode",
+            "defaultsKey = \"atria.developerMode.enabled\"",
+            "launchArgument = \"--atria-developer-mode\"",
+            "UserDefaults.standard.bool(forKey: defaultsKey)",
+        ]:
+            assert_contains(self, developer_mode, needle)
+
+        for needle in [
+            "@State private var developerModeEnabled = AtriaDeveloperMode.isEnabled",
+            "developerModeEnabled: developerModeEnabled",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "let developerModeEnabled: Bool",
+            "if developerModeEnabled {\n                            rrReferenceCard",
+            "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
+            "title: \"Standard HR radio\"",
+            "subtitle: \"Developer option for standard heart-rate-only collection.\"",
+        ]:
+            assert_contains(self, collection, needle)
+
+        for forbidden in [
+            "title: \"Low radio HR\"",
+            "subtitle: \"Native RR window and reference flow\"",
+            "AtriaInlineQuickStat(label: \"Reference\"",
+            "AtriaInlineQuickStat(label: \"RR package\"",
+        ]:
+            assert_not_contains(self, collection, forbidden)
+
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
         plist = source(ROOT / "WhoopApp" / "Info.plist")

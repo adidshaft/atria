@@ -28,6 +28,8 @@ Evidence present:
 - Native tab/root and bottom accessory implementation is present in the app
   source.
 - Design-token files and renamed content-card surfaces are present.
+- External reference import/export cards and the standard-HR radio toggle are
+  hidden from the default end-user Collection tab behind `AtriaDeveloperMode`.
 - Media controls are surfaced in app chrome and Live Activity paths.
 - Dead legacy identifiers were not found by local scan for:
   `LegacyContentView`, `DashboardSection`, `AtriaGlassToolbar`,
@@ -91,6 +93,8 @@ Evidence present:
 - `test_handoff_local.sh` runs the fast local handoff suite in one command.
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
+- 2026-06-22 simulator compile check passed:
+  `xcodebuild -project WhoopApp/WhoopApp.xcodeproj -scheme WhoopApp -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath /tmp/atria-derived-data build`.
 
 Recent physical-device smoke evidence already captured:
 

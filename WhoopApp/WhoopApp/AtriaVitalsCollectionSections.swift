@@ -78,6 +78,7 @@ struct AtriaCollectionTabContent: View {
     @Binding var rrImportStatus: String
     @Binding var hrImportStatus: String
     @Binding var hapticSettings: AtriaHapticAlertSettings
+    let developerModeEnabled: Bool
 
     var body: some View {
         Group {
@@ -85,8 +86,10 @@ struct AtriaCollectionTabContent: View {
                 HStack(alignment: .top, spacing: 18) {
                     LazyVStack(spacing: 18) {
                         captureCard
-                        rrReferenceCard
-                        hrReferenceCard
+                        if developerModeEnabled {
+                            rrReferenceCard
+                            hrReferenceCard
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
 
@@ -99,8 +102,10 @@ struct AtriaCollectionTabContent: View {
             } else {
                 LazyVStack(spacing: 18) {
                     captureCard
-                    rrReferenceCard
-                    hrReferenceCard
+                    if developerModeEnabled {
+                        rrReferenceCard
+                        hrReferenceCard
+                    }
                     collectionControlsCard
                     collectionStatusCard
                 }
@@ -136,7 +141,8 @@ struct AtriaCollectionTabContent: View {
                                         profileStore: profileStore,
                                         store: store,
                                         ble: ble,
-                                        hapticSettings: $hapticSettings)
+                                        hapticSettings: $hapticSettings,
+                                        developerModeEnabled: developerModeEnabled)
     }
 
     private var collectionStatusCard: some View {
@@ -239,9 +245,9 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureStats: some View {
-        AtriaInlineQuickStat(label: "Rows", value: "\(collectionLiveStore.state.capturedRows)")
+        AtriaInlineQuickStat(label: "Samples", value: "\(collectionLiveStore.state.capturedRows)")
         AtriaInlineQuickStat(label: "State", value: collectionLiveStore.state.recordingState)
-        AtriaInlineQuickStat(label: "File", value: collectionLiveStore.state.captureFileLabel)
+        AtriaInlineQuickStat(label: "Export", value: collectionLiveStore.state.captureFileLabel)
     }
 
     @ViewBuilder
@@ -432,11 +438,12 @@ private struct AtriaCollectionControlsCardHost: View {
     let store: SessionStore
     let ble: WhoopBLEManager
     @Binding var hapticSettings: AtriaHapticAlertSettings
+    let developerModeEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Collection controls", subtitle: "Low-friction radio and long wear modes")
+                AtriaPanelSectionHeader(title: "Collection controls", subtitle: "Tune how Atria collects while you wear the strap")
 
                 Spacer(minLength: 0)
 
@@ -446,17 +453,19 @@ private struct AtriaCollectionControlsCardHost: View {
             }
 
             VStack(spacing: 12) {
-                AtriaCollectionToggleCard(
-                    title: "Low radio HR",
-                    subtitle: "Keep the radio lighter when you only need standard heart-rate collection.",
-                    systemImage: "dot.radiowaves.left.and.right",
-                    tint: .blue,
-                    isOn: Binding(
-                        get: { collectionLiveStore.state.standardHROnlyEnabled },
-                        set: { enabled in
-                            ble.setStandardHROnlyEnabled(enabled)
-                        })
-                )
+                if developerModeEnabled {
+                    AtriaCollectionToggleCard(
+                        title: "Standard HR radio",
+                        subtitle: "Developer option for standard heart-rate-only collection.",
+                        systemImage: "dot.radiowaves.left.and.right",
+                        tint: .blue,
+                        isOn: Binding(
+                            get: { collectionLiveStore.state.standardHROnlyEnabled },
+                            set: { enabled in
+                                ble.setStandardHROnlyEnabled(enabled)
+                            })
+                    )
+                }
 
                 AtriaCollectionToggleCard(
                     title: "Long wear",
@@ -538,7 +547,7 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaInlineQuickStat(label: "Logging", value: snapshotStore.state.loggingText)
         AtriaInlineQuickStat(label: "Backup", value: homeStatsStore.state.backupValue)
         AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
-        AtriaInlineQuickStat(label: "Mode", value: collectionLiveStore.state.modeLabel)
+        AtriaInlineQuickStat(label: "Profile", value: collectionLiveStore.state.modeLabel)
     }
 }
 
@@ -670,7 +679,7 @@ private struct AtriaHRVCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "HRV", subtitle: "Native RR window and reference flow")
+                AtriaPanelSectionHeader(title: "HRV", subtitle: "Live RR window and confidence")
 
                 Spacer(minLength: 0)
 
@@ -705,9 +714,9 @@ private struct AtriaHRVCard: View, Equatable {
 
     @ViewBuilder
     private var hrvStatTiles: some View {
-        AtriaInlineQuickStat(label: "Display", value: hero.hrvValue)
-        AtriaInlineQuickStat(label: "RR package", value: hero.rrPackageText)
-        AtriaInlineQuickStat(label: "Reference", value: hero.hrvDetail)
+        AtriaInlineQuickStat(label: "RMSSD", value: hero.hrvValue)
+        AtriaInlineQuickStat(label: "Window", value: hero.rrPackageText)
+        AtriaInlineQuickStat(label: "Confidence", value: hero.hrvDetail)
         AtriaInlineQuickStat(label: "Stress", value: hero.stressValue, detail: hero.stressDetail)
     }
 }

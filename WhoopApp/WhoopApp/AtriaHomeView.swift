@@ -80,6 +80,7 @@ struct AtriaHomeView: View {
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
+    @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
 
     init(ble: WhoopBLEManager, store: SessionStore) {
         self.ble = ble
@@ -547,7 +548,8 @@ struct AtriaHomeView: View {
                                   captureShareURL: $captureShareURL,
                                   rrImportStatus: $rrImportStatus,
                                   hrImportStatus: $hrImportStatus,
-                                  hapticSettings: $hapticSettings)
+                                  hapticSettings: $hapticSettings,
+                                  developerModeEnabled: developerModeEnabled)
     }
 
     private func secondaryLoadingCard(title: String, subtitle: String) -> some View {
@@ -978,7 +980,7 @@ final class AtriaHomeModel {
         var recordingState: String { isRecording ? "Recording" : (captureWasValidationReady ? "Ready" : "Idle") }
         var captureFileLabel: String { lastCaptureFile.isEmpty ? "None" : "Saved" }
         var modeLabel: String {
-            longWearModeEnabled ? "long wear" : (standardHROnlyEnabled ? "low radio" : "full protocol")
+            longWearModeEnabled ? "Long wear" : collectionProfile.label
         }
     }
 
