@@ -3723,7 +3723,7 @@ final class SessionStore: ObservableObject {
                                       hrvBaselineSamples: Int,
                                       externalHRReferenceReady: Bool,
                                       gateDReady: Bool,
-                                      recoveryHighReady: Bool,
+                                      recoveryHighReady _: Bool,
                                       sleepDays: Int,
                                       sleepEvidenceReady: Bool,
                                       sleepEvidenceBlocker: String,
@@ -3764,8 +3764,8 @@ final class SessionStore: ObservableObject {
             if currentRRCaptureBlocked {
                 localBlocked.append(currentRRBlocker)
             }
-        } else if !recoveryHighReady {
-            localBlocked.append("C:validated_hrv_baseline_\(hrvBaselineSamples)_of_7")
+        } else if hrvBaselineSamples < 7 {
+            localBlocked.append("C:personal_baseline_hrv_\(hrvBaselineSamples)_of_7")
         }
         if !externalHRReferenceReady {
             externalBlocked.append("D:external_hr_reference")
@@ -3841,9 +3841,9 @@ final class SessionStore: ObservableObject {
         } else if !historicalDownloadProtocolValidated {
             nextLocalGate = "H"
             nextLocalAction = "finish_historical_download_or_new_sensor_decode"
-        } else if hrvValidated > 0 && !recoveryHighReady {
+        } else if hrvBaselineSamples < 7 {
             nextLocalGate = "C"
-            nextLocalAction = "accumulate_validated_hrv_baseline"
+            nextLocalAction = "accumulate_personal_hrv_baseline"
         } else {
             nextLocalGate = "none"
             nextLocalAction = "no_local_code_unblocker_collect_external_reference_or_real_workout"
@@ -8193,7 +8193,7 @@ final class SessionStore: ObservableObject {
         return blockers.isEmpty ? "none" : blockers.joined(separator: "+")
     }
 
-    private func trendBlockers(summary: TrendSummary?, hrvValidated: Int) -> String {
+    private func trendBlockers(summary: TrendSummary?, hrvValidated _: Int) -> String {
         guard let summary else { return "no_trend_summary" }
         var blockers: [String] = []
         if summary.coverageDays <= 0 {
@@ -8201,8 +8201,8 @@ final class SessionStore: ObservableObject {
         } else if summary.confidence != "high" {
             blockers.append("coverage_below_70pct")
         }
-        if hrvValidated == 0 {
-            blockers.append("hrv_reference_pending")
+        if summary.hrvState == "learning" {
+            blockers.append("hrv_learning")
         }
         if summary.avgRecovery == nil {
             blockers.append("recovery_points_missing")
@@ -8852,8 +8852,8 @@ struct TrendSummaryView: View {
         if confidence.contains("learning") || coverageMin < 70 {
             blockers.append("coverage_below_70pct")
         }
-        if hrvStates.contains("reference_pending") {
-            blockers.append("hrv_reference_pending")
+        if hrvStates.contains("learning") {
+            blockers.append("hrv_learning")
         }
         if recoveryPoints == 0 {
             blockers.append("recovery_points_missing")
