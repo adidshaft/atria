@@ -70,6 +70,20 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, body, "standard_hr_only_no_strap_writes")
         assert_contains(self, body, "standard_hr_only_write_blocked")
 
+    def test_production_capture_defaults_land_on_balanced_profile(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "case balanced",
+            "case .balanced: return \"Balanced\"",
+            "return .balanced",
+            "defaults.removeObject(forKey: CollectionProfileDefaults.profile)",
+            "collectionProfile = .balanced",
+            "defaults.set(CollectionProfile.balanced.rawValue, forKey: CollectionProfileDefaults.profile)",
+            "collectionProfile = CollectionProfile.load(defaults: defaults)",
+        ]:
+            assert_contains(self, text, needle)
+
     def test_state_restoration_reuses_standard_hr_only_peripheral(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 

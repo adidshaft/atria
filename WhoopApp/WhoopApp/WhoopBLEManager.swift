@@ -924,6 +924,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: LongWearDefaults.noDataCheckInterval)
         defaults.removeObject(forKey: LongWearDefaults.acceptedHRTimeout)
         defaults.removeObject(forKey: LongWearDefaults.label)
+        defaults.removeObject(forKey: CollectionProfileDefaults.profile)
+        collectionProfile = .balanced
         longWearModeEnabled = false
         updateSessionPointCacheMode()
         standardHROnlyMode = false
@@ -958,6 +960,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if defaults.string(forKey: LongWearDefaults.label) == nil {
             defaults.set("Long wear", forKey: LongWearDefaults.label)
         }
+        if defaults.string(forKey: CollectionProfileDefaults.profile) == nil {
+            defaults.set(CollectionProfile.balanced.rawValue, forKey: CollectionProfileDefaults.profile)
+        }
+        collectionProfile = CollectionProfile.load(defaults: defaults)
         longWearModeEnabled = true
         updateSessionPointCacheMode()
         standardHROnlyMode = true
