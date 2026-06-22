@@ -19,6 +19,20 @@ SUMMARY_PREFIXES = (
     "WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY ",
 )
 
+PRESETS = {
+    "custom": {},
+    "overnight": {
+        "samples": 11,
+        "interval": 60 * 60,
+        "min_samples": 9,
+        "min_span": 8 * 60 * 60,
+        "min_coverage": 85.0,
+        "max_gap": 30.0,
+        "allowed_thermal": ["nominal", "fair"],
+        "max_battery_drop": 35.0,
+    },
+}
+
 
 def parse_tokens(line: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
@@ -74,21 +88,33 @@ def run_pull(repo: Path, device_id: str, out_dir: Path, log_path: Path) -> tuple
     return result.returncode, result.stdout
 
 
+def value_from(args: argparse.Namespace, name: str) -> object:
+    preset = PRESETS.get(args.preset, {})
+    value = getattr(args, name)
+    return value if value is not None else preset.get(name)
+
+
 def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
     thermal_states = set(final.get("thermal_states", []))
-    allowed_thermal = set(args.allowed_thermal)
+    allowed_thermal_list = list(value_from(args, "allowed_thermal") or [])
+    allowed_thermal = set(allowed_thermal_list)
+    max_battery_drop = float(value_from(args, "max_battery_drop") or 0)
+    min_samples = int(value_from(args, "min_samples") or 0)
+    min_span = float(value_from(args, "min_span") or 0)
+    min_coverage = float(value_from(args, "min_coverage") or 0)
+    max_gap = float(value_from(args, "max_gap") or 0)
     battery_delta = final.get("battery_delta")
     if not isinstance(battery_delta, (int, float)):
         battery_ok = False
     else:
-        battery_ok = battery_delta >= -args.max_battery_drop
+        battery_ok = battery_delta >= -max_battery_drop
     checks = {
-        "samples": int(final.get("samples", 0)) >= args.min_samples,
-        "active_ok_samples": int(final.get("active_ok_samples", 0)) >= args.min_samples,
-        "session_span": float(final.get("latest_recent_session_span_s", 0) or 0) >= args.min_span,
-        "session_coverage": float(final.get("latest_recent_session_coverage_percent", 0) or 0) >= args.min_coverage,
-        "active_gap": float(final.get("max_active_accepted_gap_s", 0) or 0) <= args.max_gap,
-        "recent_gap": float(final.get("max_recent_accepted_gap_s", 0) or 0) <= args.max_gap,
+        "samples": int(final.get("samples", 0)) >= min_samples,
+        "active_ok_samples": int(final.get("active_ok_samples", 0)) >= min_samples,
+        "session_span": float(final.get("latest_recent_session_span_s", 0) or 0) >= min_span,
+        "session_coverage": float(final.get("latest_recent_session_coverage_percent", 0) or 0) >= min_coverage,
+        "active_gap": float(final.get("max_active_accepted_gap_s", 0) or 0) <= max_gap,
+        "recent_gap": float(final.get("max_recent_accepted_gap_s", 0) or 0) <= max_gap,
         "thermal": bool(thermal_states) and thermal_states.issubset(allowed_thermal),
         "battery": battery_ok,
     }
@@ -98,12 +124,13 @@ def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> d
         "acceptance_checks": checks,
         "acceptance_blockers": blockers,
         "criteria": {
-            "min_samples": args.min_samples,
-            "min_span_s": args.min_span,
-            "min_coverage_percent": args.min_coverage,
-            "max_gap_s": args.max_gap,
-            "allowed_thermal": args.allowed_thermal,
-            "max_battery_drop_percent": args.max_battery_drop,
+            "preset": args.preset,
+            "min_samples": min_samples,
+            "min_span_s": min_span,
+            "min_coverage_percent": min_coverage,
+            "max_gap_s": max_gap,
+            "allowed_thermal": allowed_thermal_list,
+            "max_battery_drop_percent": max_battery_drop,
         },
     }
 
@@ -150,21 +177,25 @@ def main() -> int:
     parser.add_argument("--device", default=os.environ.get("ATRIA_DEVICE_ID", ""), help="CoreDevice physical iPhone id.")
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Atria repo root.")
     parser.add_argument("--out-dir", type=Path, default=Path("logs/live-device/long-wear-monitor"), help="Directory for pulls and rollups.")
-    parser.add_argument("--samples", type=int, default=2, help="Number of pull-only samples to collect.")
-    parser.add_argument("--interval", type=float, default=300, help="Seconds between samples.")
+    parser.add_argument("--preset", choices=sorted(PRESETS), default="custom",
+                        help="Preset cadence and acceptance criteria. overnight = 11 hourly pulls over 10h.")
+    parser.add_argument("--samples", type=int, default=None, help="Number of pull-only samples to collect.")
+    parser.add_argument("--interval", type=float, default=None, help="Seconds between samples.")
     parser.add_argument("--label", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), help="Run label.")
-    parser.add_argument("--min-samples", type=int, default=2, help="Minimum successful pull samples required for acceptance.")
-    parser.add_argument("--min-span", type=float, default=8 * 60 * 60, help="Minimum recent persisted-session span in seconds.")
-    parser.add_argument("--min-coverage", type=float, default=85.0, help="Minimum recent persisted-session coverage percent.")
-    parser.add_argument("--max-gap", type=float, default=30.0, help="Maximum accepted-HR gap in seconds.")
-    parser.add_argument("--allowed-thermal", nargs="+", default=["nominal", "fair"], help="Thermal states allowed for acceptance.")
-    parser.add_argument("--max-battery-drop", type=float, default=35.0, help="Maximum allowed battery percentage drop.")
+    parser.add_argument("--min-samples", type=int, default=None, help="Minimum successful pull samples required for acceptance.")
+    parser.add_argument("--min-span", type=float, default=None, help="Minimum recent persisted-session span in seconds.")
+    parser.add_argument("--min-coverage", type=float, default=None, help="Minimum recent persisted-session coverage percent.")
+    parser.add_argument("--max-gap", type=float, default=None, help="Maximum accepted-HR gap in seconds.")
+    parser.add_argument("--allowed-thermal", nargs="+", default=None, help="Thermal states allowed for acceptance.")
+    parser.add_argument("--max-battery-drop", type=float, default=None, help="Maximum allowed battery percentage drop.")
     args = parser.parse_args()
+    samples_count = int(value_from(args, "samples") or 2)
+    interval_seconds = float(value_from(args, "interval") or 300)
 
     if not args.device:
         print("Set ATRIA_DEVICE_ID or pass --device.", file=sys.stderr)
         return 64
-    if args.samples < 1:
+    if samples_count < 1:
         print("--samples must be >= 1", file=sys.stderr)
         return 64
     repo = args.repo.resolve()
@@ -174,7 +205,7 @@ def main() -> int:
     summary_path = out_root / "summary.json"
     samples: list[dict[str, object]] = []
 
-    for index in range(args.samples):
+    for index in range(samples_count):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         pull_dir = out_root / f"pull-{index:04d}-{stamp}"
         log_path = out_root / f"pull-{index:04d}-{stamp}.log"
@@ -201,12 +232,16 @@ def main() -> int:
         )
         if code != 0:
             break
-        if index + 1 < args.samples:
-            time.sleep(args.interval)
+        if index + 1 < samples_count:
+            time.sleep(interval_seconds)
 
     final = rollup(samples)
     final.update(evaluate_acceptance(final, args))
     final["label"] = args.label
+    final["preset"] = args.preset
+    final["planned_samples"] = samples_count
+    final["planned_interval_s"] = interval_seconds
+    final["planned_duration_s"] = max(0, samples_count - 1) * interval_seconds
     final["out_dir"] = str(out_root)
     final["jsonl"] = str(jsonl_path)
     summary_path.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
