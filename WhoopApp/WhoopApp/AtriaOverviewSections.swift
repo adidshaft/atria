@@ -194,7 +194,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
         case .disconnected:
             return "Atria is keeping the disconnected state light while it waits for the strap to be free from the WHOOP app."
         case .connected:
-            return "Saved insights will finish loading after the live connection settles."
+            return "Saved insights prepare after the live connection settles."
         }
     }
 
