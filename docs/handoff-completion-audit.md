@@ -58,13 +58,19 @@ Evidence present:
 - `AtriaHapticAlerts.swift` uses `CXCallObserver`.
 - `AtriaMediaControls.swift` reads `MPNowPlayingInfoCenter`.
 - AI coach code is present and cloud mode is not default-on.
+- `AtriaCoachNetworkPolicy` now makes the coach network posture explicit:
+  local mode is `.offlineOnly`, cloud mode is `.cloudDisabled`, the local
+  disclosure says no data leaves the iPhone, and the static checks forbid
+  `URLSession`/request/http usage in `AtriaAICoach.swift`.
 
 Not yet accepted:
 
 - External-reference HRV validation is intentionally skipped for this pass, so
   `validated` tier and HealthKit HRV writes remain gated.
 - End-to-end UI/accessibility proof for all new feature surfaces is not present.
-- Local/offline AI model runtime proof is not present.
+- Optional downloaded local LLM runtime proof is not present; current local
+  coach answers are deterministic on-device summaries with explicit offline
+  network policy.
 
 ### Pillar 3: Background Collection / Battery Safety
 
