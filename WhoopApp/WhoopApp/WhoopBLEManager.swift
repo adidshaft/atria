@@ -592,7 +592,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var capturedRows = 0
     var captureLabel = ""
-    @Published var captureSummary = "No capture yet"
+    @Published var captureSummary = "No backup yet"
     @Published var captureWasValidationReady = false
     private(set) var captureElapsedSeconds: TimeInterval = 0
     @Published var lastCaptureFile = ""
@@ -4344,7 +4344,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             captureCleanWindowStart = startedAt
             captureElapsedSeconds = 0
             capturedRows = 0
-            assignIfChanged(\.captureSummary, "Recording clean RR window")
+            assignIfChanged(\.captureSummary, "Recording a clean heart-rate window")
             assignIfChanged(\.captureWasValidationReady, false)
             captureAbortReason = nil
             captureQualityResetCount = 0
@@ -4576,12 +4576,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let summaryLogValue: String
         if let h = hrvSnapshot {
             ready = h.isReady && finalAbortReason == nil
-            summary = String(format: "%@ · rec %.0fs · HRV %.0fs · RR %d/%d · gap %.1fs · rej %d/%d/%d · interp %d · conf %d%% · RMSSD %@ · SDNN %@ · pNN50 %@ · ln %@ · Resp %@",
-                             ready ? "Validation-ready" : "Not validation-ready",
+            summary = String(format: "%@ · saved %.0fs · HRV %.0fs · clean beats %d/%d · max gap %.1fs · confidence %d%% · RMSSD %@ · SDNN %@ · pNN50 %@ · ln %@ · breathing %@",
+                             ready ? "Personal baseline ready" : "Still learning",
                              captureElapsedSeconds, h.windowSeconds, h.kept, h.raw,
                              h.maxRRGapSeconds,
-                             h.rejectedOutOfRange, h.rejectedDeltaOver20Percent, h.rejectedHRMismatch,
-                             h.interpolated, h.confidencePercent,
+                             h.confidencePercent,
                              ready ? String(format: "%.1f", h.rmssd) : "learning",
                              ready ? String(format: "%.1f", h.sdnn) : "learning",
                              ready ? String(format: "%.1f", h.pnn50) : "learning",
@@ -4610,7 +4609,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                    value: summaryLogValue)
         } else {
             ready = false
-            summary = String(format: "Not validation-ready · rec %.0fs · no realtime RR",
+            summary = String(format: "Still learning · saved %.0fs · waiting for clean RR",
                              captureElapsedSeconds)
             let reason = finalAbortReason ?? "no_realtime_rr"
             let cleanElapsed = Date().timeIntervalSince(captureCleanWindowStart)
