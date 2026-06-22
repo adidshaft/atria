@@ -125,12 +125,26 @@ ATRIA_DEVICE_ID=<physical-device-id> \
 That monitor is non-invasive: it uses `live_device_debug.sh --pull-only` to sample
 sessions and the active journal without relaunching Atria. The handoff is not
 accepted until the final summary reports `acceptance_status=pass` and
-`acceptance_blockers=none`.
+`acceptance_blockers=none`, and the handoff audit confirms the summary is the
+full overnight shape rather than a short custom smoke.
+
+Accessibility/performance acceptance also needs a physical iPhone 15 Pro
+manifest. Start from `docs/evidence/accessibility-performance/summary.template.json`
+and fill it only from measured device results.
 
 To summarize the current handoff evidence without running the device:
 
 ```sh
-python3 tools/audit_handoff_status.py
+python3 tools/audit_handoff_status.py --skip-external-reference
+```
+
+After overnight and accessibility/performance evidence exists:
+
+```sh
+python3 tools/audit_handoff_status.py \
+  --skip-external-reference \
+  --summary <overnight-summary.json> \
+  --accessibility-performance <accessibility-performance-summary.json>
 ```
 
 ## Repository Layout
