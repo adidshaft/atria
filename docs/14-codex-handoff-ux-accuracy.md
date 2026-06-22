@@ -1,9 +1,46 @@
 # Codex Handoff — UX friendliness pass + accuracy follow-ups
 
-Date: 2026-06-22
-Author: Claude (non-device session)
-Scope: User-facing copy made friendlier (no logic change); device-dependent
-accuracy and visual work handed to Codex.
+Date: 2026-06-22 (updated 2026-06-23)
+Author: Claude
+Scope: User-facing copy made friendlier (no logic change); a device-verified BLE
+stability fix; remaining accuracy/visual work handed to Codex.
+
+## 0. Device-verified BLE stability fix (landed 2026-06-23)
+
+**Problem reported:** app lags when the strap disconnects, and collection stops
+when the app is backgrounded / app-switched.
+
+**Root cause found via on-device diagnostics** (pulled live counters from
+`Library/Preferences/com.adidshaft.atria.plist`): the link had churned massively
+over a day of testing — `whoop.link.disconnects=512`,
+`whoop.watchdog.hrContinuityCount=307`, `acceptedHRCount=27`. The HR-continuity
+and accepted-HR watchdogs called `requestFreshScanReconnect` (cancel connection
++ rescan + reconnect + rediscover) after only ~16s / ~45s of missing HR **even
+when the peripheral was still `.connected`**. A silent `2A37` gap on a live link
+is almost always brief skin-contact loss or radio latency. The full teardown:
+in the background hits iOS scan throttling → long collection gaps; in the
+foreground churns connection state → UI lag; and can't restore data faster than
+re-subscribing anyway.
+
+**Fix** (`WhoopBLEManager.swift`, `performHRContinuityWatchdogAction` and
+`recoverAcceptedHRWatchdog`): while the peripheral is still `.connected`, re-assert
+the `2A37` notify subscription and **keep the connection**; reserve the
+fresh-scan teardown for a genuinely dead link (`peripheral.state != .connected`)
+or an extreme gap (`>= max(timeout*4, 60s)`). Real disconnects are still handled
+immediately by `didDisconnectPeripheral`. New watchdog action:
+`reassert_keep_connection`.
+
+**Verified on device:** builds, installs, streams HR+RR (`hr=64`, RR via
+`0x2A37`), 54 HR samples in 30s, no teardown storm.
+
+**Still needs a worn-strap + backgrounded test by Codex/owner:** lock the screen
+or switch apps for ~2 min with the strap worn, then pull
+`Documents/atria-active-session.json` and confirm samples kept arriving with no
+multi-second gaps, and that `whoop.watchdog.hrContinuityCount` did NOT climb.
+Live counters to watch (pull the prefs plist, read with `plistlib`):
+`whoop.link.disconnects`, `whoop.watchdog.hrContinuityCount`,
+`whoop.watchdog.acceptedHRCount`, and the new `reassert_keep_connection` action
+in `whoop.watchdog.lastAction`.
 
 ## Hard constraint for this session
 
