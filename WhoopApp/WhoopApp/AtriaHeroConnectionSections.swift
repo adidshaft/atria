@@ -646,7 +646,7 @@ private struct AtriaConnectionGuideSheet: View {
     private var progressItems: [String] {
         [
             context.progressDetail,
-            "Latest status: \(context.diagnosticLabel)",
+            "Connection state: \(context.userStatusLabel)",
             context.actionSummary
         ]
     }

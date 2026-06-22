@@ -334,6 +334,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
         assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
         assert_contains(self, hero, "Saved metrics and backup remain on device while Atria waits for the strap again.")
+        assert_contains(self, hero, "Connection state: \\(context.userStatusLabel)")
         assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"Validation\"")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"HRV window\"")
@@ -346,6 +347,7 @@ class HandoffStaticChecks(unittest.TestCase):
                 "Saved references and backup remain available while the strap reconnects.",
                 "Saved references and backup remain on device while Atria waits for the strap again.",
                 "Rest candidates are diagnostic only; they do not count as sleep.",
+                "Latest status:",
             ]:
                 assert_not_contains(self, text, forbidden)
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")

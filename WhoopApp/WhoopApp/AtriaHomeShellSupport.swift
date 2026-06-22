@@ -132,7 +132,7 @@ struct AtriaConnectionGuideContext: Equatable {
         return "Attempt \(attempts) is the latest automatic pass. You only need to free the strap and keep the phone unlocked."
     }
 
-    var diagnosticLabel: String {
+    var userStatusLabel: String {
         "\(lastStatus) • \(lastReason.replacingOccurrences(of: "_", with: " "))"
     }
 
