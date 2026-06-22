@@ -1378,7 +1378,7 @@ final class AtriaHomeModel {
             strainConfidence = "learning"
         }
 
-        let guidance = Coach.guide(recovery: recovery, strain: strain)
+        let guidance = Coach.guide(recovery: recovery, strain: strain, load: load)
         return HeroSnapshot(recoveryEstimate: recovery,
                             strain: strain,
                             strainConfidence: strainConfidence,

@@ -66,7 +66,8 @@ enum Coach {
     }
 
     static func guide(recovery estimate: Metrics.RecoveryEstimate,
-                      strain: Double) -> Guidance {
+                      strain: Double,
+                      load: TrainingLoadSummary? = nil) -> Guidance {
         guard let percent = estimate.percent else {
             let blocker = estimate.detail.isEmpty ? "learning" : estimate.detail
             return Guidance(headline: "Guidance learning",
@@ -76,7 +77,51 @@ enum Coach {
                             state: "learning",
                             reason: "recovery_\(estimate.confidence.rawValue)_not_ready")
         }
-        return guide(recovery: percent, strain: strain)
+        var guidance = guide(recovery: percent, strain: strain)
+        guard let load, load.confidence != "learning", let ratio = load.ratio else {
+            return guidance
+        }
+
+        let adjustedTarget: Double
+        let loadClause: String
+        let loadReason: String
+        if ratio > 1.30 {
+            adjustedTarget = max(4, (guidance.target ?? optimalStrain(recovery: percent)) - 2)
+            loadClause = " Acute load is above your longer base, so today's target is softened."
+            loadReason = "load_high"
+        } else if ratio < 0.80 {
+            adjustedTarget = min(21, (guidance.target ?? optimalStrain(recovery: percent)) + 1)
+            loadClause = " Recent load is below your base, so there is room to rebuild gradually."
+            loadReason = "load_low"
+        } else {
+            adjustedTarget = guidance.target ?? optimalStrain(recovery: percent)
+            loadClause = " Load is aligned with your base."
+            loadReason = "load_aligned"
+        }
+
+        if strain > adjustedTarget + 2 {
+            guidance = Guidance(headline: "Ease off",
+                                detail: "You are past today's adjusted strain target.\(loadClause)",
+                                color: .orange,
+                                target: adjustedTarget,
+                                state: guidance.state,
+                                reason: "\(guidance.reason)_\(loadReason)")
+        } else if strain < adjustedTarget - 2 {
+            guidance = Guidance(headline: "Room to push",
+                                detail: "You can add strain toward today's adjusted target.\(loadClause)",
+                                color: .green,
+                                target: adjustedTarget,
+                                state: guidance.state,
+                                reason: "\(guidance.reason)_\(loadReason)")
+        } else {
+            guidance = Guidance(headline: "On target",
+                                detail: "Your strain matches today's adjusted target.\(loadClause)",
+                                color: .blue,
+                                target: adjustedTarget,
+                                state: guidance.state,
+                                reason: "\(guidance.reason)_\(loadReason)")
+        }
+        return guidance
     }
 }
 
