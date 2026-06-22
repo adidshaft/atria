@@ -456,7 +456,7 @@ private struct AtriaCollectionControlsCardHost: View {
                 if developerModeEnabled {
                     AtriaCollectionToggleCard(
                         title: "Standard HR radio",
-                        subtitle: "Developer option for standard heart-rate-only collection.",
+                        subtitle: "Advanced compatibility mode for heart-rate-only collection.",
                         systemImage: "dot.radiowaves.left.and.right",
                         tint: .blue,
                         isOn: Binding(

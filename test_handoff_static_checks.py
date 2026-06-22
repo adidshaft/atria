@@ -246,12 +246,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "if developerModeEnabled {\n                            rrReferenceCard",
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
             "title: \"Standard HR radio\"",
-            "subtitle: \"Developer option for standard heart-rate-only collection.\"",
+            "subtitle: \"Advanced compatibility mode for heart-rate-only collection.\"",
         ]:
             assert_contains(self, collection, needle)
 
         for forbidden in [
             "title: \"Low radio HR\"",
+            "Developer option for standard heart-rate-only collection.",
             "subtitle: \"Native RR window and reference flow\"",
             "AtriaInlineQuickStat(label: \"Reference\"",
             "AtriaInlineQuickStat(label: \"RR package\"",
