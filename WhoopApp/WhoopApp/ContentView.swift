@@ -73,10 +73,10 @@ private struct DailyEvidenceCard: View {
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 miniMetric("Saved", "\(summary.savedMinutes)m", "today", "externaldrive.fill", .blue, summary.savedMinutes > 0)
-                miniMetric("Activity", "\(summary.activitySignals)", summary.confirmedWorkouts > 0 ? "\(summary.confirmedWorkouts) confirmed" : (summary.activitySignals > 0 ? "candidate" : "none"), "figure.walk.motion", .orange, summary.activitySignals > 0)
-                miniMetric("Rest", "\(summary.restCandidates)", summary.restCandidates > 0 ? "candidate" : "none", "chair.lounge.fill", .cyan, summary.restCandidates > 0)
-                miniMetric("Sleep", "\(summary.sleepCandidates)", summary.confirmedSleeps > 0 ? "\(summary.confirmedSleeps) confirmed" : (summary.sleepSignalPresent ? "candidate" : "none"), "bed.double.fill", .cyan, summary.sleepSignalPresent)
-                miniMetric("RR", "\(summary.rrSaved)", summary.rrSaved > 0 ? "saved" : "none", "waveform.path.ecg", .purple, summary.rrSaved > 0)
+                miniMetric("Activity", "\(summary.activitySignals)", summary.confirmedWorkouts > 0 ? "\(summary.confirmedWorkouts) confirmed" : (summary.activitySignals > 0 ? "maybe" : "not yet"), "figure.walk.motion", .orange, summary.activitySignals > 0)
+                miniMetric("Rest", "\(summary.restCandidates)", summary.restCandidates > 0 ? "unconfirmed" : "not yet", "chair.lounge.fill", .cyan, summary.restCandidates > 0)
+                miniMetric("Sleep", "\(summary.sleepCandidates)", summary.confirmedSleeps > 0 ? "\(summary.confirmedSleeps) confirmed" : (summary.sleepSignalPresent ? "maybe" : "not yet"), "bed.double.fill", .cyan, summary.sleepSignalPresent)
+                miniMetric("RR", "\(summary.rrSaved)", summary.rrSaved > 0 ? "saved" : "not yet", "waveform.path.ecg", .purple, summary.rrSaved > 0)
             }
 
             if summary.detections.isEmpty && !summary.workoutSignalPresent && !summary.sleepSignalPresent {
