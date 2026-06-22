@@ -41,7 +41,12 @@ def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     return summaries[-1] if summaries else None
 
 
-def evaluate(repo: Path, summary_path: Path | None = None) -> dict[str, object]:
+def evaluate(
+    repo: Path,
+    summary_path: Path | None = None,
+    *,
+    skip_external_reference: bool = False,
+) -> dict[str, object]:
     missing_local = [str(path) for path in LOCAL_CHECK_FILES if not (repo / path).exists()]
     missing_source = [str(path) for path in REQUIRED_SOURCE_FILES if not (repo / path).exists()]
     local_status = "pass" if not missing_local and not missing_source else "fail"
@@ -78,7 +83,9 @@ def evaluate(repo: Path, summary_path: Path | None = None) -> dict[str, object]:
     if physical["status"] != "pass":
         blockers.append("physical_long_wear_acceptance")
     blockers.extend(str(item) for item in physical.get("acceptance_blockers", []) if item != "none")
-    blockers.extend(["accessibility_performance_proof", "external_reference_validation"])
+    blockers.append("accessibility_performance_proof")
+    if not skip_external_reference:
+        blockers.append("external_reference_validation")
 
     return {
         "status": "complete" if not blockers else "not_complete",
@@ -86,6 +93,7 @@ def evaluate(repo: Path, summary_path: Path | None = None) -> dict[str, object]:
         "missing_local_files": missing_local,
         "missing_source_files": missing_source,
         "physical_long_wear": physical,
+        "external_reference_status": "skipped" if skip_external_reference else "required",
         "blockers": sorted(set(blockers)),
     }
 
@@ -94,10 +102,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Atria repo root.")
     parser.add_argument("--summary", type=Path, default=None, help="Specific long-wear monitor summary JSON.")
+    parser.add_argument(
+        "--skip-external-reference",
+        action="store_true",
+        help="Treat external reference validation as deliberately deferred/gated for this audit.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args()
 
-    report = evaluate(args.repo.resolve(), args.summary)
+    report = evaluate(
+        args.repo.resolve(),
+        args.summary,
+        skip_external_reference=args.skip_external_reference,
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -109,6 +126,7 @@ def main() -> int:
             f"physical_status={physical['status']} "
             f"acceptance_status={physical['acceptance_status']} "
             f"acceptance_blockers={','.join(physical['acceptance_blockers']) or 'none'} "
+            f"external_reference_status={report['external_reference_status']} "
             f"blockers={','.join(report['blockers']) or 'none'} "
             f"summary={physical['summary']}"
         )

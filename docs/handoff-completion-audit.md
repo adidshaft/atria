@@ -17,7 +17,8 @@ validation that is intentionally skipped for now:
 - 8-12 hour unattended long-wear run.
 - Acceptable iPhone thermal state (`nominal`/`fair`) and "not warm" evidence.
 - Broad accessibility/performance proof, including Instruments evidence.
-- Any external-reference validation for the `validated` tier.
+- External-reference validation for the `validated` tier is explicitly skipped
+  for this pass and remains gated/unvalidated by design.
 
 ## Local Implementation Evidence
 
@@ -60,8 +61,8 @@ Evidence present:
 
 Not yet accepted:
 
-- External-reference HRV validation is not present, so `validated` tier and
-  HealthKit HRV writes remain gated.
+- External-reference HRV validation is intentionally skipped for this pass, so
+  `validated` tier and HealthKit HRV writes remain gated.
 - End-to-end UI/accessibility proof for all new feature surfaces is not present.
 - Local/offline AI model runtime proof is not present.
 
@@ -88,6 +89,8 @@ Evidence present:
   and iOS 26 UI cleanup.
 - `tools/audit_handoff_status.py` summarizes local artifacts and long-wear
   monitor summaries into a conservative `complete` / `not_complete` result.
+  Use `--skip-external-reference` when external reference validation is
+  deliberately deferred for a non-reference readiness audit.
 - `test_audit_handoff_status.sh` verifies that failed or missing physical
   acceptance evidence cannot be reported as complete.
 - `test_handoff_local.sh` runs the fast local handoff suite in one command.
@@ -95,6 +98,12 @@ Evidence present:
   identifiers.
 - 2026-06-22 simulator compile check passed:
   `xcodebuild -project WhoopApp/WhoopApp.xcodeproj -scheme WhoopApp -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath /tmp/atria-derived-data build`.
+- 2026-06-22 end-user readiness smoke on the plugged-in iPhone launched with
+  the worn WHOOP strap in standard-HR-only long-wear mode. The smoke log
+  captured standard Heart Rate Measurement RR data before relaunching long-wear
+  collection: `rr_frames=26`, `rr_values=30`,
+  `rr_source_2a37_frames=26`, `standard_2a37_rr_frames=26`,
+  `rr_truncated_frames=0`, and `rr_hr_mismatch_values=0`.
 
 Recent physical-device smoke evidence already captured:
 
