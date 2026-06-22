@@ -83,6 +83,10 @@ struct SavedSession: Codable, Identifiable {
     var referenceValidatedHRV: Int? {
         hrvReferenceValidated == true ? hrv : nil
     }
+    var localRMSSD: Int? {
+        guard let hrv, hrv > 0 else { return nil }
+        return hrv
+    }
     var referenceValidatedSDNN: Double? {
         guard hrvReferenceValidated == true else { return nil }
         if let hrvSDNN, hrvSDNN > 0 {
@@ -1790,11 +1794,15 @@ extension SavedSession {
                                             accepted: true,
                                             reason: "sleep_candidate")
         }
-        if hrvReferenceValidated == true && duration >= 5 * 60 {
+        if localRMSSD != nil && duration >= 5 * 60 {
             return BaselineLearningEvidence(value: restingEvidence.value,
-                                            source: "validated_hrv_window_10th_percentile",
+                                            source: hrvReferenceValidated == true
+                                                ? "validated_hrv_window_10th_percentile"
+                                                : "local_hrv_window_10th_percentile",
                                             accepted: true,
-                                            reason: "validated_hrv_window")
+                                            reason: hrvReferenceValidated == true
+                                                ? "validated_hrv_window"
+                                                : "local_hrv_window")
         }
         if duration < 20 * 60 {
             return BaselineLearningEvidence(value: restingEvidence.value,
@@ -2272,7 +2280,7 @@ final class SessionStore: ObservableObject {
                                                                                                anomalies: [],
                                                                                                anomalySource: "none",
                                                                                                anomalySampleDays: 0,
-                                                                                               hrvState: "reference_pending",
+                                                                                               hrvState: "learning",
                                                                                                detail: "Saved trends are loading.",
                                                                                                blockers: "loading"))
     }
@@ -2659,7 +2667,7 @@ final class SessionStore: ObservableObject {
             return
         }
         baseline.learn(fromResting: evidence.value,
-                       hrv: session.referenceValidatedHRV ?? 0,
+                       hrv: session.localRMSSD ?? 0,
                        at: session.end)
         baseline.save()
         refreshHomeDashboardDiagnosticsCache()
@@ -2687,7 +2695,7 @@ final class SessionStore: ObservableObject {
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
             if evidence.accepted {
                 rebuilt.learn(fromResting: evidence.value,
-                              hrv: session.referenceValidatedHRV ?? 0,
+                              hrv: session.localRMSSD ?? 0,
                               at: session.end)
                 accepted += 1
             } else {
@@ -5392,7 +5400,7 @@ final class SessionStore: ObservableObject {
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
-            let hrvs = daySessions.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = daySessions.compactMap(\.respiratoryRate).filter { $0 > 0 }
             let sleepRHRs = daySessions.compactMap { session -> Int? in
                 guard session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate else {
@@ -6063,18 +6071,24 @@ final class SessionStore: ObservableObject {
                 return evidence.accepted ? evidence.value : nil
             }
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
-            let hrvs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
             let recoveries = recent.compactMap {
                 let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                                  fallbackRMSSD: $0.referenceValidatedHRV,
+                                                  fallbackRMSSD: $0.localRMSSD,
                                                   restingNow: $0.restingStable,
-                                                  baseline: baseline)
+                                                  baseline: baseline,
+                                                  hrvReferenceValidated: $0.hrvReferenceValidated == true)
                 return recovery.percent
             }
 
             let anomalies = trendAnomalies(rollups: recentRollups)
-            let hrvState = hrvs.isEmpty ? "reference_pending" : "validated_samples_\(hrvs.count)"
+            let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let hrvState = hrvs.isEmpty
+                ? "learning"
+                : (validatedHRVs.count == hrvs.count
+                   ? "validated_samples_\(hrvs.count)"
+                   : "personal_baseline_samples_\(hrvs.count)")
             let avgRecovery = averageInt(recoveries)
             let avgHRV = averageInt(hrvs)
             let detail = trendDetail(coverageDays: coverageDays,
@@ -6206,16 +6220,22 @@ final class SessionStore: ObservableObject {
             return evidence.accepted ? evidence.value : nil
         }
         let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
-        let hrvs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+        let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
         let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
         let recoveries = recent.compactMap {
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                              fallbackRMSSD: $0.referenceValidatedHRV,
+                                              fallbackRMSSD: $0.localRMSSD,
                                               restingNow: $0.restingStable,
-                                              baseline: baseline)
+                                              baseline: baseline,
+                                              hrvReferenceValidated: $0.hrvReferenceValidated == true)
             return recovery.percent
         }
-        let hrvState = hrvs.isEmpty ? "reference_pending" : "validated_samples_\(hrvs.count)"
+        let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+        let hrvState = hrvs.isEmpty
+            ? "learning"
+            : (validatedHRVs.count == hrvs.count
+               ? "validated_samples_\(hrvs.count)"
+               : "personal_baseline_samples_\(hrvs.count)")
         let avgRecovery = averageInt(recoveries)
         let avgHRV = averageInt(hrvs)
         let detail = trendDetail(coverageDays: coverageDays,
@@ -8140,7 +8160,7 @@ final class SessionStore: ObservableObject {
         } else {
             parts.append("coverage sparse")
         }
-        parts.append(hrvState == "reference_pending" ? "HRV reference pending" : "HRV \(hrvState)")
+        parts.append(hrvState == "learning" ? "HRV learning" : "HRV \(hrvState)")
         parts.append(rhrSamples > 0 ? "RHR accepted evidence \(rhrSamples)" : "RHR learning")
         parts.append(strainSamples > 0 ? "strain saved TRIMP \(strainSamples)" : "strain learning")
         parts.append("anomaly source \(anomalySource) days \(anomalySampleDays)")
@@ -8161,8 +8181,8 @@ final class SessionStore: ObservableObject {
         } else if coverageDays < requiredCoverageDays {
             blockers.append("coverage_below_70pct")
         }
-        if hrvState == "reference_pending" {
-            blockers.append("hrv_reference_pending")
+        if hrvState == "learning" {
+            blockers.append("hrv_learning")
         }
         if avgRecovery == nil {
             blockers.append("recovery_points_missing")
@@ -8384,8 +8404,8 @@ final class SessionStore: ObservableObject {
         if baseline.updated == nil || baseline.restingSampleCount == 0 {
             return true
         }
-        let hasValidatedHRVInSessions = decoded.contains { ($0.referenceValidatedHRV ?? 0) > 0 }
-        if baseline.hrvSampleCount == 0 && hasValidatedHRVInSessions {
+        let hasLocalHRVInSessions = decoded.contains { $0.localRMSSD != nil }
+        if baseline.hrvSampleCount == 0 && hasLocalHRVInSessions {
             return true
         }
         return false
@@ -8401,7 +8421,7 @@ final class SessionStore: ObservableObject {
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
             guard evidence.accepted else { continue }
             rebuilt.learn(fromResting: evidence.value,
-                          hrv: session.referenceValidatedHRV ?? 0,
+                          hrv: session.localRMSSD ?? 0,
                           at: session.end)
         }
         return rebuilt

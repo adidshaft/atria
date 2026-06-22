@@ -31,7 +31,7 @@ enum Coach {
     static func guide(recovery: Int?, strain: Double) -> Guidance {
         guard let r = recovery else {
             return Guidance(headline: "Building your baseline",
-                            detail: "Recovery is learning; strain target stays off until the inputs are validated.",
+                            detail: "Recovery is learning; strain target stays off until enough local inputs are ready.",
                             color: .secondary, target: nil,
                             state: "learning",
                             reason: "recovery_unavailable")
