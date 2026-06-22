@@ -9,6 +9,10 @@ final class AtriaLiveActivityCoordinator {
         var strain: Double
         var batteryLevel: Int
         var sampleCount: Int
+        var mediaTitle: String
+        var mediaArtist: String
+        var mediaIsPlaying: Bool
+        var mediaHasNowPlayingInfo: Bool
     }
 
     private var activity: Activity<AtriaLiveActivityAttributes>?
@@ -44,10 +48,11 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: Date().addingTimeInterval(90)),
                                             pushType: nil)
-            WHOOPDebugLog("WHOOPDBG live_activity status=started bpm=%d strain=%.1f samples=%d local_only=1",
+            WHOOPDebugLog("WHOOPDBG live_activity status=started bpm=%d strain=%.1f samples=%d media_now_playing=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
-                          snapshot.sampleCount)
+                          snapshot.sampleCount,
+                          snapshot.mediaHasNowPlayingInfo ? 1 : 0)
         } catch {
             WHOOPDebugLog("WHOOPDBG live_activity status=start_failed error=%@ local_only=1",
                           String(describing: error))
@@ -67,10 +72,11 @@ final class AtriaLiveActivityCoordinator {
                            dismissalPolicy: .after(Date().addingTimeInterval(30)))
         self.activity = nil
         startedAt = nil
-        WHOOPDebugLog("WHOOPDBG live_activity status=ended bpm=%d strain=%.1f samples=%d local_only=1",
+        WHOOPDebugLog("WHOOPDBG live_activity status=ended bpm=%d strain=%.1f samples=%d media_now_playing=%d local_only=1",
                       snapshot.heartRate,
                       snapshot.strain,
-                      snapshot.sampleCount)
+                      snapshot.sampleCount,
+                      snapshot.mediaHasNowPlayingInfo ? 1 : 0)
     }
 
     private func contentState(from snapshot: Snapshot) -> AtriaLiveActivityAttributes.ContentState {
@@ -78,6 +84,10 @@ final class AtriaLiveActivityCoordinator {
                                                  strain: snapshot.strain,
                                                  batteryLevel: snapshot.batteryLevel,
                                                  sampleCount: snapshot.sampleCount,
+                                                 mediaTitle: snapshot.mediaTitle,
+                                                 mediaArtist: snapshot.mediaArtist,
+                                                 mediaIsPlaying: snapshot.mediaIsPlaying,
+                                                 mediaHasNowPlayingInfo: snapshot.mediaHasNowPlayingInfo,
                                                  updatedAt: Date())
     }
 }

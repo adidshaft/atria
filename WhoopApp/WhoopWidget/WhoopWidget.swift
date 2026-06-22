@@ -207,15 +207,23 @@ struct AtriaLiveActivityWidget: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
-                        Spacer(minLength: 10)
-                        Label(context.state.batteryLevel >= 0 ? "\(context.state.batteryLevel)%" : "Battery", systemImage: "battery.100")
-                        Button(intent: AtriaControlCaptureIntent(command: .stop)) {
-                            Label("Stop", systemImage: "stop.circle")
-                                .labelStyle(.titleAndIcon)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
+                            Spacer(minLength: 10)
+                            Label(context.state.batteryLevel >= 0 ? "\(context.state.batteryLevel)%" : "Battery", systemImage: "battery.100")
+                            Button(intent: AtriaControlCaptureIntent(command: .stop)) {
+                                Label("Stop", systemImage: "stop.circle")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .tint(.red)
                         }
-                        .tint(.red)
+
+                        if context.state.mediaHasNowPlayingInfo {
+                            Label(mediaLine(for: context.state), systemImage: context.state.mediaIsPlaying ? "play.fill" : "pause.fill")
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                        }
                     }
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -288,6 +296,14 @@ private struct AtriaLiveActivityLockScreenView: View {
                 }
             }
 
+            if context.state.mediaHasNowPlayingInfo {
+                Label(mediaLine(for: context.state), systemImage: context.state.mediaIsPlaying ? "play.fill" : "pause.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
             Button(intent: AtriaControlCaptureIntent(command: .stop)) {
                 Label("Stop capture", systemImage: "stop.circle")
                     .frame(maxWidth: .infinity)
@@ -297,6 +313,13 @@ private struct AtriaLiveActivityLockScreenView: View {
         }
         .padding(.vertical, 4)
     }
+}
+
+private func mediaLine(for state: AtriaLiveActivityAttributes.ContentState) -> String {
+    if state.mediaArtist.isEmpty || state.mediaArtist == "System player" {
+        return state.mediaTitle
+    }
+    return "\(state.mediaTitle) · \(state.mediaArtist)"
 }
 
 private func elapsedText(since start: Date) -> String {

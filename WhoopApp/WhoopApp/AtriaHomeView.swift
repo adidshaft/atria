@@ -243,6 +243,9 @@ struct AtriaHomeView: View {
             updateLiveActivity()
             updateHapticCoordinator()
         }
+        .onReceive(mediaController.$state) { _ in
+            updateLiveActivity()
+        }
         .onReceive(model.heroStore.$state) { _ in
             updateHapticCoordinator()
         }
@@ -354,7 +357,11 @@ struct AtriaHomeView: View {
             heartRate: model.pulseLiveStore.state.heartRate,
             strain: Metrics.strain(fromTRIMP: model.coreLiveStore.state.liveTRIMP),
             batteryLevel: model.coreLiveStore.state.batteryLevel,
-            sampleCount: model.coreLiveStore.state.sessionSampleCount
+            sampleCount: model.coreLiveStore.state.sessionSampleCount,
+            mediaTitle: mediaController.state.title,
+            mediaArtist: mediaController.state.artist,
+            mediaIsPlaying: mediaController.state.isPlaying,
+            mediaHasNowPlayingInfo: mediaController.state.hasNowPlayingInfo
         ))
     }
 

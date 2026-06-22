@@ -7,6 +7,10 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var strain: Double
         var batteryLevel: Int
         var sampleCount: Int
+        var mediaTitle: String
+        var mediaArtist: String
+        var mediaIsPlaying: Bool
+        var mediaHasNowPlayingInfo: Bool
         var updatedAt: Date
     }
 
