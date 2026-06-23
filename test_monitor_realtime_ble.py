@@ -119,6 +119,20 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertEqual(compact["live_stream_consistency_status"], "interrupted_not_file_loss")
         self.assertNotIn("noisy line without separator", compact)
 
+    def test_parse_sample_events_groups_by_sample(self):
+        events = monitor_realtime_ble.parse_sample_events([
+            "2:brief_contact_loss_start",
+            "2:brief_contact_loss_reseat",
+            "4:sustained_silence_start",
+        ])
+
+        self.assertEqual(events[2], ["brief_contact_loss_start", "brief_contact_loss_reseat"])
+        self.assertEqual(events[4], ["sustained_silence_start"])
+
+    def test_parse_sample_events_rejects_bad_format(self):
+        with self.assertRaises(ValueError):
+            monitor_realtime_ble.parse_sample_events(["brief_contact_loss_start"])
+
 
 if __name__ == "__main__":
     unittest.main()

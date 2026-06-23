@@ -98,6 +98,14 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    embeds active-journal/session continuity fields in `summary.json` under
    `state_pull`. This gives the pass/fail audit one artifact for both live BLE
    counters and the "continuous session, not tiny fragments" requirement.
+   For targeted stress runs, add one or more `--event SAMPLE:LABEL` flags to
+   annotate the JSONL/summary timeline. Example:
+```sh
+ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 \
+  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat
+```
    Use the inline loop only if the repo tool is unavailable:
 ```sh
 python3 - <<'PY'
@@ -228,6 +236,10 @@ complete the full 2–3h validation:
   `max_disconnect_delta=0`, `max_hr_continuity_delta=0`) and embedded
   `state_pull.status=ok`. That smoke is tooling proof only; its active journal
   was stale, so it is not long-window pass evidence.
+- `tools/monitor_realtime_ble.py --event SAMPLE:LABEL` now records stress
+  annotations in both `samples.jsonl` and `summary.json`. Use it for the
+  remaining contact-loss and sustained-silence runs so the physical action is
+  tied to the monitor tick that proves recovery.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
 and the remaining stress tests above (brief contact loss, sustained
