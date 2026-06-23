@@ -127,7 +127,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    For targeted stress runs, add one or more `--event SAMPLE:LABEL` flags to
    annotate the JSONL/summary timeline. The summary also includes
    `event_outcomes`, which reports the next sample's raw-data, disconnect, and
-   HR-continuity deltas after each event. Example:
+   HR-continuity deltas after each event. Known stress labels also print an
+   `ATRIA_REALTIME_BLE_OPERATOR_ACTION` line at the marked sample and are saved
+   in `summary.json` under `operator_actions`. Example:
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 \

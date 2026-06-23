@@ -66,6 +66,13 @@ PULL_STATE_SUMMARY_KEYS = [
     "live_stream_consistency_status",
 ]
 
+EVENT_ACTIONS = {
+    "brief_contact_loss_start": "Loosen or lift the strap for about 30 seconds.",
+    "brief_contact_loss_reseat": "Reseat the strap firmly now.",
+    "sustained_silence_start": "Take the strap off and set it down until the reseat marker.",
+    "sustained_silence_reseat": "Reseat the strap firmly now.",
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -225,6 +232,10 @@ def parse_sample_events(values: list[str]) -> dict[int, list[str]]:
     return events
 
 
+def event_actions_for(labels: list[str]) -> list[str]:
+    return [EVENT_ACTIONS[label] for label in labels if label in EVENT_ACTIONS]
+
+
 def pull_state_snapshot(device: str, bundle: str, out_dir: Path) -> dict[str, Any]:
     evidence_dir = out_dir / "state"
     result = subprocess.run(
@@ -340,6 +351,7 @@ def main() -> int:
 
     previous: dict[str, Any] | None = None
     samples: list[dict[str, Any]] = []
+    operator_actions: list[dict[str, Any]] = []
     for index in range(args.samples):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         prefs_path = out_dir / f"prefs-{index:04d}-{stamp}.plist"
@@ -371,6 +383,14 @@ def main() -> int:
         sample_events_for_index = sample_events.get(index, [])
         if sample_events_for_index:
             sample["events"] = sample_events_for_index
+            actions = event_actions_for(sample_events_for_index)
+            if actions:
+                sample["operator_actions"] = actions
+                operator_actions.append({
+                    "sample": index,
+                    "events": sample_events_for_index,
+                    "actions": actions,
+                })
         samples.append(sample)
         with jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(sample, sort_keys=True) + "\n")
@@ -389,6 +409,12 @@ def main() -> int:
             f"flags={','.join(sample['flags']) or 'OK'}",
             flush=True,
         )
+        for action in sample.get("operator_actions", []):
+            print(
+                "ATRIA_REALTIME_BLE_OPERATOR_ACTION "
+                f"index={index} action={shlex.quote(action)}",
+                flush=True,
+            )
         if index + 1 < args.samples:
             time.sleep(args.interval)
 
@@ -407,6 +433,7 @@ def main() -> int:
         "planned_samples": args.samples,
         "planned_interval_s": args.interval,
         "events": {str(key): value for key, value in sorted(sample_events.items())},
+        "operator_actions": operator_actions,
     })
     outcomes = event_outcomes(samples)
     if outcomes:

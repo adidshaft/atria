@@ -175,6 +175,18 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         with self.assertRaises(ValueError):
             monitor_realtime_ble.parse_sample_events(["brief_contact_loss_start"])
 
+    def test_event_actions_for_known_stress_labels(self):
+        actions = monitor_realtime_ble.event_actions_for([
+            "brief_contact_loss_start",
+            "unknown_label",
+            "brief_contact_loss_reseat",
+        ])
+
+        self.assertEqual(actions, [
+            "Loosen or lift the strap for about 30 seconds.",
+            "Reseat the strap firmly now.",
+        ])
+
     def test_event_outcomes_mark_recovered_next_sample(self):
         samples = [
             {
