@@ -493,6 +493,22 @@ complete the full 2–3h validation:
   (`rawNotif+126 accepted+126`, `rawNotif+113 accepted+113`,
   `rawNotif+125 accepted+125`) with zero disconnect and HR-continuity churn.
   This is the current authoritative app-switch pass evidence.
+- Additional same-device app-switch diagnostics after the user reported that
+  switching away still looked disconnected:
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-now-20260623T082838Z/summary.json`
+  passed with `samples=4`, `min_raw_notification_delta=63`,
+  `min_accepted_sample_delta=63`, `max_disconnect_delta=0`, and
+  `max_hr_continuity_delta=0`.
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-auto-20260623T083154Z/summary.json`
+  also passed while `devicectl` explicitly foregrounded Clock, then returned
+  Atria to the foreground; it recorded `min_raw_notification_delta=40`,
+  `min_accepted_sample_delta=40`, `max_disconnect_delta=0`, and
+  `max_hr_continuity_delta=0`. These later runs are bounded diagnostic evidence
+  that the physical phone kept receiving WHOOP 2A37 samples while another app
+  was foregrounded. They do not replace the authoritative marked app-switch
+  summary above because they were collected as ad hoc troubleshooting runs, and
+  they do not satisfy the remaining daytime/contact-loss/sustained-silence
+  requirements.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,
