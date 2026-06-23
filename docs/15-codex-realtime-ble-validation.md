@@ -209,8 +209,9 @@ generation timestamp and the number of local monitor summaries inspected.
 ### Remaining Stress Test Commands
 
 Use these short targeted runs before or after the full 2–3h monitor. They do not
-replace the long worn window, but they create clean artifacts for the two
-remaining physical recovery requirements.
+replace the long worn window. App-switch already has passing evidence, but the
+command is kept here for repeatability; the contact-loss and sustained-silence
+commands create the missing physical recovery artifacts.
 
 **App switch:**
 1. Start this monitor:
@@ -410,9 +411,10 @@ complete the full 2–3h validation:
   contact-loss and sustained-silence runs so the physical action is tied to the
   monitor tick that proves recovery.
 
-Still required before marking this handoff complete: the full 2–3h worn monitor
-and the remaining stress tests above (brief contact loss, sustained
-silence/reseat) with passing evidence.
+Still required before marking this handoff complete: the full 2–3h worn monitor,
+brief contact-loss recovery, and sustained-silence/reseat recovery with passing
+evidence. App-switch is currently passing, but can be rerun with the command
+above if the lifecycle code changes again.
 
 Current verifier status:
 ```text
