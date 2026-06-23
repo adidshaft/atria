@@ -74,6 +74,33 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertEqual(summary["status"], "fail")
         self.assertEqual(summary["flags"], ["NO_NEW_DATA"])
 
+    def test_summary_passes_when_only_baseline_has_zero_delta(self):
+        baseline_delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
+        healthy_delta = {
+            **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
+            "whoop.sample.rawNotifications": 12,
+            "whoop.sample.acceptedSamples": 12,
+            "whoop.link.disconnects": 0,
+            "whoop.watchdog.hrContinuityCount": 0,
+        }
+        samples = [
+            {
+                "current": {"whoop.sample.lastStatus": "accepted", "whoop.link.lastStatus": "connected"},
+                "delta": baseline_delta,
+                "flags": [],
+            },
+            {
+                "current": {"whoop.sample.lastStatus": "accepted", "whoop.link.lastStatus": "connected"},
+                "delta": healthy_delta,
+                "flags": [],
+            },
+        ]
+
+        summary = monitor_realtime_ble.summarize(samples, worn=True)
+
+        self.assertEqual(summary["status"], "pass")
+        self.assertEqual(summary["min_raw_notification_delta"], 12)
+
 
 if __name__ == "__main__":
     unittest.main()

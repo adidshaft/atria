@@ -5291,6 +5291,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             }
         }
         lastRawHRNotificationAt = sampleTime
+        scheduleSampleDiagnosticsFlush()
     }
 
     private func recordAcceptedHRSample(rate: Int, at sampleTime: Date) {
@@ -5316,8 +5317,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if sampleDiagnostics.lastReason == "accepted_gap" {
             sampleDiagnostics.lastStatus = "accepted"
             sampleDiagnostics.lastReason = "sample"
-            scheduleSampleDiagnosticsFlush()
         }
+        scheduleSampleDiagnosticsFlush()
     }
 
     fileprivate func record(_ rate: Int, at sampleTime: Date = Date()) {
