@@ -251,6 +251,19 @@ def pull_state_snapshot(device: str, bundle: str, out_dir: Path) -> dict[str, An
     }
 
 
+def write_audit_snapshot(root: Path, destination: Path) -> dict[str, Any]:
+    from tools import audit_realtime_ble_validation as audit
+
+    report = audit.evaluate(root)
+    destination.write_text(audit.markdown_summary(report), encoding="utf-8")
+    return {
+        "status": report.get("status", "missing"),
+        "path": str(destination),
+        "summary_count": report.get("summary_count", 0),
+        "blockers": report.get("blockers", []),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default=os.environ.get("ATRIA_DEVICE_ID", DEFAULT_DEVICE))
@@ -271,6 +284,11 @@ def main() -> int:
         default=[],
         metavar="SAMPLE:LABEL",
         help="Annotate a sample index in samples.jsonl/summary.json, e.g. --event 2:brief_contact_loss_reseat.",
+    )
+    parser.add_argument(
+        "--audit-snapshot",
+        action="store_true",
+        help="After writing summary.json, archive the realtime BLE audit Markdown into this run directory.",
     )
     args = parser.parse_args()
 
@@ -360,6 +378,10 @@ def main() -> int:
         state = pull_state_snapshot(args.device, args.bundle, out_dir)
         summary["state_pull"] = state
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.audit_snapshot:
+        audit_root = (Path.cwd() / args.out_dir).resolve()
+        summary["audit_snapshot"] = write_audit_snapshot(audit_root, out_dir / "audit.md")
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     state_text = ""
     if "state_pull" in summary:
         state_pull = summary["state_pull"]
@@ -378,6 +400,15 @@ def main() -> int:
         f"{state_text}",
         flush=True,
     )
+    if "audit_snapshot" in summary:
+        audit_snapshot = summary["audit_snapshot"]
+        print(
+            "ATRIA_REALTIME_BLE_AUDIT "
+            f"status={audit_snapshot.get('status')} "
+            f"summary_count={audit_snapshot.get('summary_count')} "
+            f"path={audit_snapshot.get('path')}",
+            flush=True,
+        )
     return 0
 
 

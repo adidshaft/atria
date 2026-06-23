@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools import monitor_realtime_ble
 
@@ -215,6 +218,33 @@ class MonitorRealtimeBLETests(unittest.TestCase):
 
         self.assertEqual(outcomes[0]["status"], "no_new_data_after_event")
         self.assertEqual(outcomes[0]["next_raw_notification_delta"], 0)
+
+    def test_write_audit_snapshot_archives_markdown_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "realtime"
+            run = root / "rt-clock-switch-ok"
+            run.mkdir(parents=True)
+            (run / "summary.json").write_text(json.dumps({
+                "label": "rt-clock-switch-ok",
+                "status": "pass",
+                "samples": 4,
+                "started_at": "2026-06-23T00:00:00Z",
+                "finished_at": "2026-06-23T00:01:00Z",
+                "min_raw_notification_delta": 18,
+                "max_disconnect_delta": 0,
+                "max_hr_continuity_delta": 0,
+                "flags": [],
+            }), encoding="utf-8")
+            out = run / "audit.md"
+
+            snapshot = monitor_realtime_ble.write_audit_snapshot(root, out)
+
+            self.assertEqual(snapshot["status"], "incomplete")
+            self.assertEqual(snapshot["summary_count"], 1)
+            self.assertTrue(out.exists())
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("# Realtime BLE Validation Audit", text)
+            self.assertIn("rt-clock-switch-ok", text)
 
 
 if __name__ == "__main__":

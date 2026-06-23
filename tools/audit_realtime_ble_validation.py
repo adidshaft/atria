@@ -19,7 +19,7 @@ NEXT_ACTIONS = {
         "command": (
             "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
             "python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 "
-            "--label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state"
+            "--label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot"
         ),
         "operator_action": "Wear the strap continuously for the full 2+ hour monitor window.",
     },
@@ -27,7 +27,7 @@ NEXT_ACTIONS = {
         "command": (
             "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
             "python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 "
-            "--label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state "
+            "--label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
             "--event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat"
         ),
         "operator_action": "After sample index=1, loosen/lift the strap for about 30 seconds, then reseat before sample index=2.",
@@ -36,7 +36,7 @@ NEXT_ACTIONS = {
         "command": (
             "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
             "python3 tools/monitor_realtime_ble.py --samples 7 --interval 120 "
-            "--label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state "
+            "--label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
             "--event 1:sustained_silence_start --event 3:sustained_silence_reseat"
         ),
         "operator_action": "After sample index=1, take the strap off for at least 2.5 minutes, then reseat after sample index=3.",
@@ -45,7 +45,7 @@ NEXT_ACTIONS = {
         "command": (
             "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
             "python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 "
-            "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state"
+            "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot"
         ),
         "operator_action": "Foreground another app for about 2 minutes during the monitor, then return to Atria.",
     },
