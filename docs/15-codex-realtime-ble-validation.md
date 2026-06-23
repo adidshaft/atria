@@ -74,6 +74,13 @@ for k in ['whoop.link.attempts','whoop.link.disconnects','whoop.link.successes',
     print(k, '=', d.get(k))
 PY
 ```
+Pull the full state snapshot without relaunching the app:
+```sh
+./pull_atria_state.sh \
+  --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  --bundle-id com.adidshaft.atria \
+  --evidence-dir logs/live-device/state-pulls/$(date -u +%Y%m%dT%H%M%SZ)
+```
 
 ## Procedure (real-time, ~2–3 hours worn)
 
@@ -291,6 +298,15 @@ complete the full 2–3h validation:
   `active_journal_duration_s=560`). This proves the current installed app is
   still live and writing durable state, but it is only readiness evidence, not
   the full 2–3h worn validation.
+- Direct non-disruptive state pull:
+  `logs/live-device/state-pulls/continuation-cli-20260623T062356Z/pull-summary.txt`
+  verified the documented `pull_atria_state.sh --device ... --bundle-id ...`
+  command path after the parser fix. It reported `process_status=running`,
+  `active_journal_freshness=fresh`,
+  `active_journal_continuity_status=active`, `active_journal_samples=710`,
+  `active_journal_rr_values=149`, and `active_journal_duration_s=681`. This is
+  state-readiness evidence only; it does not replace the long monitor because it
+  cannot prove every 120s tick had new raw notifications.
 - `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
   `pull_atria_state.sh` evidence into the monitor `summary.json`, including
   active journal continuity, latest saved-session points/RR points, and file
