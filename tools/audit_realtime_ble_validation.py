@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -231,18 +232,53 @@ def state_fields(summary: dict[str, Any]) -> dict[str, Any]:
     return fields if isinstance(fields, dict) else {}
 
 
+def state_summary_file(summary: dict[str, Any], summary_path: Path | None = None) -> Path | None:
+    state = summary.get("state_pull")
+    if not isinstance(state, dict):
+        return None
+    summary_file = state.get("summary_file")
+    if not summary_file:
+        return None
+    run_dir = summary_path.parent if summary_path else Path.cwd()
+    state_file = resolve_run_artifact(summary_file, run_dir)
+    return state_file if state_file and state_file.exists() else None
+
+
+def enriched_state_fields(summary: dict[str, Any], summary_path: Path | None = None) -> dict[str, Any]:
+    fields = dict(state_fields(summary))
+    if all(key in fields for key in (
+        "link_last_auto_save_status",
+        "link_last_auto_save_samples",
+        "link_last_auto_save_duration_s",
+    )):
+        return fields
+    state_file = state_summary_file(summary, summary_path)
+    if state_file is None:
+        return fields
+    prefs_path = state_file.parent / "preferences.plist"
+    if not prefs_path.exists():
+        return fields
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception:
+        return fields
+    fields.setdefault("link_last_auto_save_status", prefs.get("whoop.link.lastAutoSaveStatus") or "none")
+    fields.setdefault("link_last_auto_save_samples", str(int(prefs.get("whoop.link.lastAutoSaveSamples") or 0)))
+    fields.setdefault("link_last_auto_save_duration_s", str(int(prefs.get("whoop.link.lastAutoSaveDuration") or 0)))
+    return fields
+
+
 def state_pull_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     state = summary.get("state_pull")
     if not isinstance(state, dict) or state.get("status") != "ok":
         return ["missing_ok_state_pull"]
-    summary_file = state.get("summary_file")
-    if not summary_file:
+    if not state.get("summary_file"):
         return ["state_pull_summary_file_missing"]
-    run_dir = summary_path.parent if summary_path else Path.cwd()
-    state_file = resolve_run_artifact(summary_file, run_dir)
-    if state_file is None or not state_file.exists():
+    state_file = state_summary_file(summary, summary_path)
+    if state_file is None:
         return ["state_pull_summary_file_not_found"]
-    fields = state_fields(summary)
+    fields = enriched_state_fields(summary, summary_path)
     if fields.get("file_durability_status") not in {"saved_sessions_present", "saved_sessions_preserved"}:
         return ["file_durability_not_proven"]
     return []
@@ -310,7 +346,7 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
         blockers.append("summary_status_not_pass")
     flags = summary.get("flags") or []
     disconnect_delta = numeric(summary.get("max_disconnect_delta"))
-    fields = state_fields(summary)
+    fields = enriched_state_fields(summary, summary_path)
     backfill_proven = range_loss_backfill_proven(fields)
     coexistence_detected = official_whoop_coexistence_detected(fields)
     continuity_duration = max(

@@ -716,28 +716,28 @@ complete the full 2–3h validation:
   `link_last_auto_save_duration_s=7857`. This is the clean starting condition
   for the next completion run, but it is only a 60s readiness artifact.
 
-Still required before marking this handoff complete: rerun the full 2–3h worn
-monitor on the current build and get a passing audit with fresh/active
-`--pull-state` continuity, `active_journal_duration_s >= 7200`, no tiny-session
-fragmentation, and no `official_whoop_coexistence_risk_present` blocker. Before
-starting that full run, pull state and confirm
-`official_whoop_coexistence_risk=0`; if it is still `1`, close/remove/disable the
-official WHOOP widget/app path first or treat the next run as a dedicated
-coexistence failure/proof run rather than completion evidence.
+Still required before marking this handoff complete: resolve the official WHOOP
+coexistence blocker. The completed 91-sample daytime run is now the selected
+audit candidate and proves the live-stream plus continuity-checkpoint side; the
+remaining audit blocker is `official_whoop_coexistence_risk_present` from the
+final process pull. The next completion evidence must either end with
+`official_whoop_coexistence_risk=0`, or intentionally prove reliable WHOOP
+coexistence without active-journal fragmentation.
 
 Current verifier status:
 ```text
 python3 tools/audit_realtime_ble_validation.py --markdown
 Status: incomplete
 daytime_worn_monitor: incomplete
-  blocker: active_journal_duration_under_2h
+  summary: logs/live-device/realtime-ble-monitor/rt-daytime-20260623T163743Z/summary.json
+  blocker: official_whoop_coexistence_risk_present
 brief_contact_loss: pass
 sustained_silence_reseat: pass
 app_switch: pass
 ```
 The live Markdown output is the authoritative next-step list; it currently
-prints the exact 91-sample daytime monitor command and operator action for the
-remaining long worn run.
+selects the completed 91-sample daytime run and blocks only on official WHOOP
+coexistence at the final pull.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
