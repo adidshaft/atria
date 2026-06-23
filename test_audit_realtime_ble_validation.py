@@ -13,7 +13,7 @@ STATE_PULL_SUMMARY_FILE = Path(__file__).resolve()
 
 def write_summary(root: Path, label: str, payload: dict) -> Path:
     path = root / label / "summary.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"label": label, **payload}
     state_pull = payload.get("state_pull")
     if isinstance(state_pull, dict) and state_pull.get("summary_file") == str(STATE_PULL_SUMMARY_FILE):
@@ -424,6 +424,39 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
 
             self.assertIn("audit_snapshot_file_missing", blockers)
+
+    def test_daytime_accepts_artifact_paths_relative_to_run_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / "rt-daytime-relative-artifacts"
+            (run / "state").mkdir(parents=True)
+            (run / "state" / "pull-summary.txt").write_text(
+                "file_durability_status=saved_sessions_present\n",
+                encoding="utf-8",
+            )
+            (run / "audit.md").write_text("# Realtime BLE Validation Audit\n", encoding="utf-8")
+            write_summary(root, "rt-daytime-relative-artifacts", passing_stream(
+                audit_snapshot={
+                    "status": "incomplete",
+                    "path": "audit.md",
+                    "summary_count": 4,
+                },
+                state_pull={
+                    "status": "ok",
+                    "summary_file": "state/pull-summary.txt",
+                    "fields": {
+                        "active_journal_freshness": "fresh",
+                        "active_journal_continuity_status": "active",
+                        "active_journal_duration_s": "10800",
+                        "active_journal_samples": "10000",
+                        "file_durability_status": "saved_sessions_present",
+                    },
+                },
+            ))
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["requirements"]["daytime_worn_monitor"]["status"], "pass")
 
     def test_daytime_rejects_audit_snapshot_file_outside_run(self):
         with tempfile.TemporaryDirectory() as tmp:

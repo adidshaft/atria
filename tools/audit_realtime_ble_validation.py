@@ -158,10 +158,10 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
     return blockers
 
 
-def app_switch_blockers(summary: dict[str, Any]) -> list[str]:
+def app_switch_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     blockers = base_stream_blockers(summary)
-    blockers.extend(audit_snapshot_blockers(summary))
-    blockers.extend(state_pull_blockers(summary))
+    blockers.extend(audit_snapshot_blockers(summary, summary_path))
+    blockers.extend(state_pull_blockers(summary, summary_path))
     if not has_event(summary, "app_switch_background"):
         blockers.append("missing_event_app_switch_background")
     if not has_event(summary, "app_switch_return"):
@@ -190,14 +190,16 @@ def state_fields(summary: dict[str, Any]) -> dict[str, Any]:
     return fields if isinstance(fields, dict) else {}
 
 
-def state_pull_blockers(summary: dict[str, Any]) -> list[str]:
+def state_pull_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     state = summary.get("state_pull")
     if not isinstance(state, dict) or state.get("status") != "ok":
         return ["missing_ok_state_pull"]
     summary_file = state.get("summary_file")
     if not summary_file:
         return ["state_pull_summary_file_missing"]
-    if not Path(str(summary_file)).exists():
+    run_dir = summary_path.parent if summary_path else Path.cwd()
+    state_file = resolve_run_artifact(summary_file, run_dir)
+    if state_file is None or not state_file.exists():
         return ["state_pull_summary_file_not_found"]
     fields = state_fields(summary)
     if fields.get("file_durability_status") not in {"saved_sessions_present", "saved_sessions_preserved"}:
@@ -209,9 +211,12 @@ def resolve_run_artifact(path_value: object, run_dir: Path) -> Path | None:
     if not path_value:
         return None
     artifact_path = Path(str(path_value))
-    if not artifact_path.is_absolute():
-        artifact_path = run_dir / artifact_path
-    return artifact_path
+    if artifact_path.is_absolute():
+        return artifact_path
+    cwd_relative = (Path.cwd() / artifact_path).resolve()
+    if cwd_relative.exists():
+        return cwd_relative
+    return run_dir / artifact_path
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
@@ -238,7 +243,7 @@ def run_artifact_scope_blockers(summary: dict[str, Any], summary_path: Path) -> 
     return blockers
 
 
-def audit_snapshot_blockers(summary: dict[str, Any]) -> list[str]:
+def audit_snapshot_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     snapshot = summary.get("audit_snapshot")
     if not isinstance(snapshot, dict):
         return ["missing_audit_snapshot"]
@@ -247,22 +252,24 @@ def audit_snapshot_blockers(summary: dict[str, Any]) -> list[str]:
     snapshot_path = snapshot.get("path")
     if not snapshot_path:
         return ["audit_snapshot_path_missing"]
-    if not Path(str(snapshot_path)).exists():
+    run_dir = summary_path.parent if summary_path else Path.cwd()
+    audit_file = resolve_run_artifact(snapshot_path, run_dir)
+    if audit_file is None or not audit_file.exists():
         return ["audit_snapshot_file_missing"]
     if numeric(snapshot.get("summary_count")) <= 0:
         return ["audit_snapshot_summary_count_missing"]
     return []
 
 
-def daytime_blockers(summary: dict[str, Any]) -> list[str]:
+def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     blockers = base_stream_blockers(summary)
-    blockers.extend(audit_snapshot_blockers(summary))
+    blockers.extend(audit_snapshot_blockers(summary, summary_path))
     duration = summary_duration_seconds(summary)
     if duration < MIN_DAYTIME_DURATION_SECONDS:
         blockers.append("daytime_monitor_under_2h")
     if numeric(summary.get("samples")) < MIN_DAYTIME_SAMPLES:
         blockers.append("daytime_monitor_too_few_samples")
-    state_blockers = state_pull_blockers(summary)
+    state_blockers = state_pull_blockers(summary, summary_path)
     if state_blockers:
         blockers.extend(state_blockers)
         return blockers
@@ -336,6 +343,7 @@ def stress_blockers(
     summary: dict[str, Any],
     reseat_label: str,
     *,
+    summary_path: Path | None = None,
     start_label: str | None = None,
     min_start_to_reseat_samples: int = 1,
     min_start_to_reseat_seconds: float = 0,
@@ -343,8 +351,8 @@ def stress_blockers(
     allow_small_churn: bool = False,
 ) -> list[str]:
     blockers = base_stream_blockers(summary) if require_clean_stream else []
-    blockers.extend(audit_snapshot_blockers(summary))
-    blockers.extend(state_pull_blockers(summary))
+    blockers.extend(audit_snapshot_blockers(summary, summary_path))
+    blockers.extend(state_pull_blockers(summary, summary_path))
     if not require_clean_stream:
         allowed_flags = {"NO_NEW_DATA", "ZERO_CONTACT"}
         flags = set(summary.get("flags") or [])
@@ -400,7 +408,7 @@ def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocke
     for path, summary in records:
         if not predicate(summary, path):
             continue
-        blockers = blocker_fn(summary)
+        blockers = blocker_fn(summary, path)
         blockers.extend(run_artifact_scope_blockers(summary, path))
         fields = state_fields(summary)
         audit_snapshot = summary.get("audit_snapshot")
@@ -450,9 +458,10 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         records,
         lambda summary, _path: has_event(summary, "brief_contact_loss_reseat")
         or "brief-contact-loss" in str(summary.get("label", "")),
-        lambda summary: stress_blockers(
+        lambda summary, path: stress_blockers(
             summary,
             "brief_contact_loss_reseat",
+            summary_path=path,
             start_label="brief_contact_loss_start",
             min_start_to_reseat_samples=1,
             min_start_to_reseat_seconds=30,
@@ -462,9 +471,10 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         records,
         lambda summary, _path: has_event(summary, "sustained_silence_reseat")
         or "sustained-silence" in str(summary.get("label", "")),
-        lambda summary: stress_blockers(
+        lambda summary, path: stress_blockers(
             summary,
             "sustained_silence_reseat",
+            summary_path=path,
             start_label="sustained_silence_start",
             min_start_to_reseat_samples=2,
             min_start_to_reseat_seconds=150,
