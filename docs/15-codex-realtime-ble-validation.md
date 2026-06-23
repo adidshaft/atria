@@ -152,6 +152,26 @@ before using that interval as validation evidence.
 - `disc+` or `hrCont+` climbing several per tick while worn → churn regression.
 - `sessions.json` filling with sub-minute `Auto-saved` fragments → link flapping.
 
+## Current evidence (2026-06-23)
+
+Bounded evidence now proves the monitor and live stream are usable, but does not
+complete the full 2–3h validation:
+- `logs/live-device/counter-flush-smoke.log` passed the first gate on the
+  physical iPhone: connected to `ADIDSHAFT'S WHO`, `foreground_keepalive` armed,
+  `standardHR` present, and `rr source=0x2A37` present (`standard_2a37_frames=32`,
+  `standard_2a37_rr_frames=32`, `standard_2a37_rr_values=35`).
+- `logs/live-device/realtime-ble-monitor/rt-bounded-8min-20260623T051817Z/summary.json`
+  passed a bounded active run: 16 samples at 30s intervals, every real interval
+  had new raw notifications (`min_raw_notification_delta=15`), with
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, and no flags.
+- A delayed active-journal pull after that bounded run found
+  `segment-00000001.json` with 188 samples, RR samples present, and
+  `zeroHRSamples=0`, so the bounded run was not producing tiny saved fragments.
+
+Still required before marking this handoff complete: the full 2–3h worn monitor
+and the three stress tests above (app-switch, brief contact loss, sustained
+silence/reseat) with passing evidence.
+
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
   above are the source of truth**, not the console stream.
