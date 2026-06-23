@@ -40,6 +40,25 @@ def write_state_preferences(summary_path: Path, values: dict) -> None:
         plistlib.dump(values, handle)
 
 
+def write_final_coexistence_pull(root: Path, label: str = "whoop-uninstalled-final-test") -> Path:
+    path = root / label / "pull-summary.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join([
+            "process_status=running",
+            "process_name_status=atria",
+            "official_whoop_process_status=not_listed",
+            "official_whoop_process_count=0",
+            "official_whoop_main_process=0",
+            "official_whoop_widget_process=0",
+            "official_whoop_coexistence_risk=0",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    return path
+
+
 def passing_stream(**extra):
     data = {
         "status": "pass",
@@ -465,6 +484,29 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("official_whoop_coexistence_risk=0", section["operator_action"])
             self.assertIn("pull_atria_state.sh", section["next_command"])
             self.assertNotIn("--samples 91", section["next_command"])
+
+    def test_daytime_final_coexistence_pull_clears_coexistence_blocker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = passing_state()
+            state["fields"] = {
+                **state["fields"],
+                "official_whoop_process_status": "running",
+                "official_whoop_process_count": "2",
+                "official_whoop_main_process": "1",
+                "official_whoop_widget_process": "1",
+                "official_whoop_coexistence_risk": "1",
+            }
+            write_summary(root, "rt-daytime-whoop-coexistence", passing_stream(state_pull=state))
+            write_final_coexistence_pull(root)
+
+            report = audit.evaluate(root)
+            section = report["requirements"]["daytime_worn_monitor"]
+
+            self.assertEqual(section["status"], "pass")
+            self.assertEqual(section["blockers"], [])
+            self.assertEqual(section["coexistence_resolution"]["status"], "cleared")
+            self.assertIn("whoop-uninstalled-final-test", section["coexistence_resolution"]["summary_file"])
 
     def test_daytime_accepts_disconnect_continuity_checkpoint_duration(self):
         with tempfile.TemporaryDirectory() as tmp:
