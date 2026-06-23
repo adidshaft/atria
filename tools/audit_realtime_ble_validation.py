@@ -14,7 +14,7 @@ from typing import Any
 DEFAULT_ROOT = Path("logs/live-device/realtime-ble-monitor")
 MIN_DAYTIME_DURATION_SECONDS = 2 * 60 * 60
 MIN_DAYTIME_SAMPLES = 61
-MIN_APP_SWITCH_LIFECYCLE_COMMIT = "655c863"
+MIN_APP_SWITCH_LIFECYCLE_COMMIT = "2a0491d"
 
 NEXT_ACTIONS = {
     "daytime_worn_monitor": {
@@ -152,7 +152,7 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
 def app_switch_blockers(summary: dict[str, Any]) -> list[str]:
     blockers = base_stream_blockers(summary)
     if not commit_includes(summary.get("git_commit"), MIN_APP_SWITCH_LIFECYCLE_COMMIT):
-        blockers.append("app_switch_evidence_before_background_supervisor_resume")
+        blockers.append("app_switch_evidence_before_disconnect_continuity_fix")
     return blockers
 
 
