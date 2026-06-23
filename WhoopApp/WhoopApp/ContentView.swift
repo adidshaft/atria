@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -410,13 +411,14 @@ private struct CollectionReliabilityCard: View {
         let rrPresenceSamples: Int
         let rrPresenceValues: Int
         let rrPresenceAge: Int
+        let officialWhoopMayBeInstalled: Bool
 
         var checkpointSaved: Bool {
             checkpointLastStatus.hasPrefix("saved")
         }
 
         var protected: Bool {
-            longWear && checkpointArmed && (journal.fresh || checkpointSaved)
+            longWear && checkpointArmed && (journal.fresh || checkpointSaved) && !officialWhoopMayBeInstalled
         }
 
         var rrPresent: Bool {
@@ -441,6 +443,7 @@ private struct CollectionReliabilityCard: View {
         }
 
         var statusText: String {
+            if officialWhoopMayBeInstalled { return "WHOOP risk" }
             if protected && rrPresent { return "protected" }
             if protected { return "HR protected" }
             if longWear || checkpointArmed { return "warming" }
@@ -448,6 +451,9 @@ private struct CollectionReliabilityCard: View {
         }
 
         var action: String {
+            if officialWhoopMayBeInstalled {
+                return "Official WHOOP may reclaim BLE in the background. Close or remove WHOOP before relying on Atria."
+            }
             if !connected { return "Keep the phone near the strap until BLE reconnects." }
             if !longWear || !checkpointArmed { return "Keep Atria open so long-wear checkpoints arm." }
             if !journal.fresh && !checkpointSaved { return "Waiting for the first protected checkpoint." }
@@ -496,10 +502,18 @@ private struct CollectionReliabilityCard: View {
                            summary.watchdogLastStatus == "none" || summary.watchdogLastStatus == "ok")
             }
 
+            if summary.officialWhoopMayBeInstalled {
+                Label("WHOOP app or widgets can interrupt strap ownership and fragment saved sessions.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Label(summary.action, systemImage: summary.protected ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(summary.protected ? .green : .secondary)
-                .lineLimit(2)
+                .lineLimit(3)
                 .minimumScaleFactor(0.78)
         }
         .padding()
@@ -549,7 +563,8 @@ private struct CollectionReliabilityCard: View {
                        rrPresenceAcceptedGap: defaults.double(forKey: WhoopBLEManager.RRPresenceDefaults.acceptedGap),
                        rrPresenceSamples: defaults.integer(forKey: WhoopBLEManager.RRPresenceDefaults.samples),
                        rrPresenceValues: defaults.integer(forKey: WhoopBLEManager.RRPresenceDefaults.rrValues),
-                       rrPresenceAge: rrAge)
+                       rrPresenceAge: rrAge,
+                       officialWhoopMayBeInstalled: OfficialWhoopCoexistenceRisk.mayBeInstalled)
     }
 
     private func miniMetric(_ title: String,
@@ -597,11 +612,12 @@ private struct CollectionReliabilityCard: View {
             summary.effectiveRRPresenceStatus,
             "\(summary.rrPresenceValues)",
             summary.watchdogLastStatus,
-            "\(summary.watchdogRecoveries)"
+            "\(summary.watchdogRecoveries)",
+            "\(summary.officialWhoopMayBeInstalled ? 1 : 0)"
         ].joined(separator: "|")
         guard key != lastLogKey else { return }
         lastLogKey = key
-        WHOOPDebugLog("WHOOPDBG collection_reliability_ui reason=%@ protected=%d connected=%d hr=%d long_wear=%d checkpoint_armed=%d checkpoint_interval_s=%d checkpoint_source=%@ checkpoint_last_status=%@ checkpoint_last_samples=%d checkpoint_last_duration_s=%d journal_present=%d journal_fresh=%d journal_samples=%d journal_rr_values=%d journal_duration_s=%d journal_rr_max_gap_s=%.1f journal_rr_coverage_3s_percent=%d rr_present=%d rr_presence_status=%@ rr_presence_action=%@ rr_presence_rr_gap_s=%.1f rr_presence_accepted_gap_s=%.1f rr_presence_samples=%d rr_presence_values=%d rr_presence_age_s=%d sample_status=%@ sample_reason=%@ accepted_samples=%d accepted_gaps=%d max_accepted_gap_s=%.1f watchdog_recoveries=%d watchdog_last_status=%@ watchdog_last_source=%@ watchdog_last_action=%@ watchdog_last_age_s=%d fail_closed=1",
+        WHOOPDebugLog("WHOOPDBG collection_reliability_ui reason=%@ protected=%d connected=%d hr=%d long_wear=%d checkpoint_armed=%d checkpoint_interval_s=%d checkpoint_source=%@ checkpoint_last_status=%@ checkpoint_last_samples=%d checkpoint_last_duration_s=%d journal_present=%d journal_fresh=%d journal_samples=%d journal_rr_values=%d journal_duration_s=%d journal_rr_max_gap_s=%.1f journal_rr_coverage_3s_percent=%d rr_present=%d rr_presence_status=%@ rr_presence_action=%@ rr_presence_rr_gap_s=%.1f rr_presence_accepted_gap_s=%.1f rr_presence_samples=%d rr_presence_values=%d rr_presence_age_s=%d sample_status=%@ sample_reason=%@ accepted_samples=%d accepted_gaps=%d max_accepted_gap_s=%.1f watchdog_recoveries=%d watchdog_last_status=%@ watchdog_last_source=%@ watchdog_last_action=%@ watchdog_last_age_s=%d official_whoop_may_be_installed=%d fail_closed=1",
                       reason,
                       summary.protected ? 1 : 0,
                       summary.connected ? 1 : 0,
@@ -637,7 +653,15 @@ private struct CollectionReliabilityCard: View {
                       summary.watchdogLastStatus,
                       summary.watchdogLastSource,
                       summary.watchdogLastAction,
-                      summary.watchdogLastAge)
+                      summary.watchdogLastAge,
+                      summary.officialWhoopMayBeInstalled ? 1 : 0)
+    }
+}
+
+private enum OfficialWhoopCoexistenceRisk {
+    static var mayBeInstalled: Bool {
+        guard let url = URL(string: "whoop://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
     }
 }
 
@@ -845,16 +869,22 @@ struct ProfileOnboardingView: View {
             VStack(alignment: .leading, spacing: 14) {
                 onboardingNumberedStep(1,
                                        title: "Free the strap from WHOOP",
-                                       detail: "If the WHOOP app is still connected to your strap, disconnect it there first.")
+                                       detail: "Disconnect the strap in the official WHOOP app before relying on Atria.")
                 onboardingNumberedStep(2,
-                                       title: "Fully quit the WHOOP app",
-                                       detail: "Close it so it doesn't quietly grab the strap back in the background.")
+                                       title: "Close WHOOP and widgets",
+                                       detail: "WHOOP app, widgets, or background activity can reclaim BLE and fragment Atria's saved sessions.")
                 onboardingNumberedStep(3,
                                        title: "Keep your phone nearby",
                                        detail: "Wear the strap or tap it to wake it, and keep your phone unlocked while Atria connects.")
             }
             .padding(18)
             .atriaCard(cornerRadius: 22, emphasis: .soft)
+
+            Label("If WHOOP keeps running in the background, Atria will warn you instead of silently treating fragmented data as reliable.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
 
             Label("No strap handy right now? You can skip ahead and connect later — Atria keeps trying in the background.",
                   systemImage: "info.circle")

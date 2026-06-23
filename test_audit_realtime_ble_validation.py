@@ -420,6 +420,24 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("active_journal_not_active", blockers)
             self.assertIn("active_journal_duration_under_2h", blockers)
 
+    def test_daytime_blocks_when_official_whoop_process_coexists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = passing_state()
+            state["fields"] = {
+                **state["fields"],
+                "official_whoop_process_status": "running",
+                "official_whoop_process_count": "1",
+                "official_whoop_widget_process": "1",
+                "official_whoop_coexistence_risk": "1",
+            }
+            write_summary(root, "rt-daytime-whoop-widget", passing_stream(state_pull=state))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("official_whoop_coexistence_risk_present", blockers)
+
     def test_daytime_requires_embedded_audit_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

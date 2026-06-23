@@ -92,19 +92,47 @@ printf 'bundle_id=%s\n' "$bundle_id" | tee -a "$summary"
 printf 'evidence_dir=%s\n' "$evidence_dir" | tee -a "$summary"
 
 if xcrun devicectl device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
-  if grep -E 'Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop' "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
+  if grep -E 'Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|/Whoop\.app/PlugIns/WhoopWidgetExtension\.appex/WhoopWidgetExtension' "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
     printf 'process_status=running\n' | tee -a "$summary"
-    if grep -q '/Whoop\.app/Whoop' "$evidence_dir/process-check.txt"; then
-      printf 'process_name_status=legacy_whoop_executable\n' | tee -a "$summary"
-    else
+    if grep -Eq 'Atria|com\.adidshaft\.atria' "$evidence_dir/process-check.txt"; then
       printf 'process_name_status=atria\n' | tee -a "$summary"
+    else
+      printf 'process_name_status=not_atria\n' | tee -a "$summary"
+    fi
+    whoop_process_count=$(grep -Ec '/Whoop\.app/(Whoop|PlugIns/WhoopWidgetExtension\.appex/WhoopWidgetExtension)' "$evidence_dir/process-check.txt" || true)
+    if [[ "$whoop_process_count" -gt 0 ]]; then
+      printf 'official_whoop_process_status=running\n' | tee -a "$summary"
+      printf 'official_whoop_process_count=%s\n' "$whoop_process_count" | tee -a "$summary"
+      if grep -q '/Whoop\.app/Whoop' "$evidence_dir/process-check.txt"; then
+        printf 'official_whoop_main_process=1\n' | tee -a "$summary"
+      else
+        printf 'official_whoop_main_process=0\n' | tee -a "$summary"
+      fi
+      if grep -q '/Whoop\.app/PlugIns/WhoopWidgetExtension\.appex/WhoopWidgetExtension' "$evidence_dir/process-check.txt"; then
+        printf 'official_whoop_widget_process=1\n' | tee -a "$summary"
+      else
+        printf 'official_whoop_widget_process=0\n' | tee -a "$summary"
+      fi
+      printf 'official_whoop_coexistence_risk=1\n' | tee -a "$summary"
+    else
+      printf 'official_whoop_process_status=not_listed\n' | tee -a "$summary"
+      printf 'official_whoop_process_count=0\n' | tee -a "$summary"
+      printf 'official_whoop_main_process=0\n' | tee -a "$summary"
+      printf 'official_whoop_widget_process=0\n' | tee -a "$summary"
+      printf 'official_whoop_coexistence_risk=0\n' | tee -a "$summary"
     fi
     cat "$evidence_dir/process-check.txt" >> "$summary"
   else
     printf 'process_status=not_listed\n' | tee -a "$summary"
+    printf 'official_whoop_process_status=not_listed\n' | tee -a "$summary"
+    printf 'official_whoop_process_count=0\n' | tee -a "$summary"
+    printf 'official_whoop_main_process=0\n' | tee -a "$summary"
+    printf 'official_whoop_widget_process=0\n' | tee -a "$summary"
+    printf 'official_whoop_coexistence_risk=0\n' | tee -a "$summary"
   fi
 else
   printf 'process_status=unknown\n' | tee -a "$summary"
+  printf 'official_whoop_process_status=unknown\n' | tee -a "$summary"
 fi
 
 copy_from_container "Documents/sessions.json" "$evidence_dir/sessions.json" "sessions" || true

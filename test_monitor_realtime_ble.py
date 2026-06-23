@@ -159,6 +159,10 @@ class MonitorRealtimeBLETests(unittest.TestCase):
 
     def test_pull_state_summary_keeps_continuity_fields(self):
         text = """
+        process_name_status=atria
+        official_whoop_process_status=running
+        official_whoop_widget_process=1
+        official_whoop_coexistence_risk=1
         active_journal_continuity_status=active
         active_journal_continuity_reason=fresh_journal
         latest_session_points=188
@@ -169,6 +173,10 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         fields = monitor_realtime_ble.parse_key_value_lines(text)
         compact = monitor_realtime_ble.compact_pull_state_summary(fields)
 
+        self.assertEqual(compact["process_name_status"], "atria")
+        self.assertEqual(compact["official_whoop_process_status"], "running")
+        self.assertEqual(compact["official_whoop_widget_process"], "1")
+        self.assertEqual(compact["official_whoop_coexistence_risk"], "1")
         self.assertEqual(compact["active_journal_continuity_status"], "active")
         self.assertEqual(compact["active_journal_continuity_reason"], "fresh_journal")
         self.assertEqual(compact["latest_session_points"], "188")

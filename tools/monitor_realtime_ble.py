@@ -55,6 +55,12 @@ STATUS_KEYS = [
 
 PULL_STATE_SUMMARY_KEYS = [
     "process_status",
+    "process_name_status",
+    "official_whoop_process_status",
+    "official_whoop_process_count",
+    "official_whoop_main_process",
+    "official_whoop_widget_process",
+    "official_whoop_coexistence_risk",
     "sessions_status",
     "sessions_count",
     "file_durability_status",

@@ -412,6 +412,15 @@ complete the full 2–3h validation:
   `min_accepted_sample_delta=54`, `max_disconnect_delta=0`, and no flags. This
   proves the fixed build still streams, but it does not replace the required
   2+ hour rerun because the active journal had just restarted after install.
+- Official WHOOP coexistence is now an explicit gate. The physical process pull
+  must report whether `Whoop.app/Whoop` or
+  `Whoop.app/PlugIns/WhoopWidgetExtension.appex/WhoopWidgetExtension` is running
+  alongside Atria. A daytime run with `official_whoop_coexistence_risk=1` blocks
+  validation as `official_whoop_coexistence_risk_present` until we have a clean
+  standalone run or a dedicated coexistence run proves live recovery plus
+  historical backfill without active-journal fragmentation. The app also shows
+  setup/status copy warning that WHOOP apps, widgets, or background activity can
+  reclaim BLE ownership and fragment saved sessions.
 - `logs/live-device/counter-flush-smoke.log` passed the first gate on the
   physical iPhone: connected to `ADIDSHAFT'S WHO`, `foreground_keepalive` armed,
   `standardHR` present, and `rr source=0x2A37` present (`standard_2a37_frames=32`,
