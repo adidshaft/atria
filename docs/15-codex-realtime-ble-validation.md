@@ -205,7 +205,8 @@ churn, an OK `--pull-state` durability snapshot, and a recovered
 verifier requires the monitor-recorded `operator_actions` prompts at the same
 sample indices as the start and reseat markers; hand-authored event markers or
 prompts attached to the wrong sample do not satisfy the physical-action evidence
-contract.
+contract. The prompt text must match the known monitor action for that stress
+label.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
 requirement. For any candidate summary it also prints the key evidence metrics
@@ -267,7 +268,7 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `brief_contact_loss_start` with at least 30 seconds of planned monitor time
    between the markers. The summary must include same-sample `operator_actions`
    prompt records for both `brief_contact_loss_start` and
-   `brief_contact_loss_reseat`.
+   `brief_contact_loss_reseat`, with the expected monitor prompt text.
 
 **Sustained silence and reseat (>2.5 min):**
 1. Start this monitor:
@@ -289,7 +290,7 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `sustained_silence_start` with at least 150 seconds of planned monitor time
    between the markers. The summary must include same-sample `operator_actions`
    prompt records for both `sustained_silence_start` and
-   `sustained_silence_reseat`.
+   `sustained_silence_reseat`, with the expected monitor prompt text.
 
 ## PASS / FAIL
 

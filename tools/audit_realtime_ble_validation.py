@@ -15,6 +15,12 @@ DEFAULT_ROOT = Path("logs/live-device/realtime-ble-monitor")
 MIN_DAYTIME_DURATION_SECONDS = 2 * 60 * 60
 MIN_DAYTIME_SAMPLES = 61
 MIN_APP_SWITCH_LIFECYCLE_COMMIT = "2a0491d"
+EXPECTED_OPERATOR_ACTIONS = {
+    "brief_contact_loss_start": "Loosen or lift the strap for about 30 seconds.",
+    "brief_contact_loss_reseat": "Reseat the strap firmly now.",
+    "sustained_silence_start": "Take the strap off and set it down until the reseat marker.",
+    "sustained_silence_reseat": "Reseat the strap firmly now.",
+}
 
 NEXT_ACTIONS = {
     "daytime_worn_monitor": {
@@ -232,6 +238,7 @@ def event_outcome(summary: dict[str, Any], label: str) -> dict[str, Any] | None:
 
 
 def has_operator_action(summary: dict[str, Any], label: str, sample_index: int | None = None) -> bool:
+    expected = EXPECTED_OPERATOR_ACTIONS.get(label)
     actions = summary.get("operator_actions")
     if not isinstance(actions, list):
         return False
@@ -242,8 +249,11 @@ def has_operator_action(summary: dict[str, Any], label: str, sample_index: int |
             continue
         events = action.get("events")
         prompts = action.get("actions")
-        if isinstance(events, list) and label in events and isinstance(prompts, list) and prompts:
-            return True
+        if not (isinstance(events, list) and label in events and isinstance(prompts, list) and prompts):
+            continue
+        if expected is not None and expected not in prompts:
+            continue
+        return True
     return False
 
 
