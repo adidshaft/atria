@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,6 +248,38 @@ class MonitorRealtimeBLETests(unittest.TestCase):
             text = out.read_text(encoding="utf-8")
             self.assertIn("# Realtime BLE Validation Audit", text)
             self.assertIn("rt-clock-switch-ok", text)
+
+    def test_write_audit_snapshot_works_from_tools_script_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "realtime"
+            run = root / "rt-clock-switch-ok"
+            run.mkdir(parents=True)
+            (run / "summary.json").write_text(json.dumps({
+                "label": "rt-clock-switch-ok",
+                "status": "pass",
+                "samples": 4,
+                "started_at": "2026-06-23T00:00:00Z",
+                "finished_at": "2026-06-23T00:01:00Z",
+                "min_raw_notification_delta": 18,
+                "max_disconnect_delta": 0,
+                "max_hr_continuity_delta": 0,
+                "flags": [],
+            }), encoding="utf-8")
+            script = (
+                "import pathlib, monitor_realtime_ble as m; "
+                f"m.write_audit_snapshot(pathlib.Path({str(root)!r}), pathlib.Path({str(run / 'audit.md')!r}))"
+            )
+
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=Path(__file__).resolve().parent / "tools",
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue((run / "audit.md").exists())
 
     def test_command_string_quotes_monitor_arguments(self):
         command = monitor_realtime_ble.command_string([

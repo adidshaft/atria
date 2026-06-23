@@ -255,7 +255,10 @@ def pull_state_snapshot(device: str, bundle: str, out_dir: Path) -> dict[str, An
 
 
 def write_audit_snapshot(root: Path, destination: Path) -> dict[str, Any]:
-    from tools import audit_realtime_ble_validation as audit
+    try:
+        from tools import audit_realtime_ble_validation as audit
+    except ModuleNotFoundError:
+        import audit_realtime_ble_validation as audit
 
     report = audit.evaluate(root)
     destination.write_text(audit.markdown_summary(report), encoding="utf-8")

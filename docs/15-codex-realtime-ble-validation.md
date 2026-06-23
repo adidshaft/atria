@@ -217,11 +217,9 @@ blocks the final completion gate until the corrupt run is removed or rerun.
 ### Remaining Stress Test Commands
 
 Use these short targeted runs before or after the full 2–3h monitor. They do not
-replace the long worn window. Older app-switch evidence proved the previous
-lifecycle fix, but `655c863` changed true-background supervision; rerun
-app-switch with the command below so the summary includes current `git_commit`
-provenance. The contact-loss and sustained-silence commands create the other
-missing physical recovery artifacts.
+replace the long worn window. App-switch has fresh post-`655c863` passing
+evidence, but the command is kept here for repeatability. The contact-loss and
+sustained-silence commands create the other missing physical recovery artifacts.
 
 **App switch:**
 1. Start this monitor:
@@ -384,6 +382,18 @@ complete the full 2–3h validation:
   active journal, and `active_journal_peak_hr=81`. This is install/liveness
   evidence only; the long worn monitor and two contact-loss stress artifacts
   remain required.
+- Fresh post-`655c863` app-switch evidence:
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-20260623T071141Z/summary.json`
+  passed with `git_commit=9bafbfa51c585b81aa465f56f1b2b0e3d586d6a2`,
+  `samples=4`, `duration_s=363`, `min_raw_notification_delta=118`,
+  `min_accepted_sample_delta=118`, `max_disconnect_delta=0`,
+  `max_hr_continuity_delta=0`, no flags, and `state_pull.status=ok` with
+  `active_journal_continuity_status=active`. Clock was foregrounded between the
+  baseline and first 120s monitor tick, then Atria was returned before the tick;
+  the switched interval and both follow-up intervals advanced cleanly. The
+  monitor exposed a tooling bug after writing `summary.json`: `--audit-snapshot`
+  crashed when `tools/monitor_realtime_ble.py` was run as a script because the
+  audit import used the package path. That bug is fixed after this evidence run.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,
@@ -431,8 +441,7 @@ complete the full 2–3h validation:
   monitor tick that proves recovery.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor,
-brief contact-loss recovery, sustained-silence/reseat recovery, and a fresh
-app-switch run with `git_commit` provenance at or after `655c863`.
+brief contact-loss recovery, and sustained-silence/reseat recovery.
 
 Current verifier status:
 ```text
@@ -441,7 +450,7 @@ Status: incomplete
 daytime_worn_monitor: missing_evidence
 brief_contact_loss: missing_evidence
 sustained_silence_reseat: missing_evidence
-app_switch: app_switch_evidence_before_background_supervisor_resume
+app_switch: pass
 ```
 The live Markdown output is the authoritative next-step list; it prints the exact
 monitor command and operator action for each missing requirement.
