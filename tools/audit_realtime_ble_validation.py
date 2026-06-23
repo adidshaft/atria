@@ -206,6 +206,20 @@ def has_event(summary: dict[str, Any], label: str) -> bool:
     return any(label in labels for labels in events.values() if isinstance(labels, list))
 
 
+def event_sample_index(summary: dict[str, Any], label: str) -> int | None:
+    events = summary.get("events")
+    if not isinstance(events, dict):
+        return None
+    found: list[int] = []
+    for sample, labels in events.items():
+        if isinstance(labels, list) and label in labels:
+            try:
+                found.append(int(sample))
+            except (TypeError, ValueError):
+                continue
+    return min(found) if found else None
+
+
 def event_outcome(summary: dict[str, Any], label: str) -> dict[str, Any] | None:
     outcomes = summary.get("event_outcomes")
     if not isinstance(outcomes, list):
@@ -222,6 +236,7 @@ def stress_blockers(
     reseat_label: str,
     *,
     start_label: str | None = None,
+    min_start_to_reseat_samples: int = 1,
     require_clean_stream: bool = True,
     allow_small_churn: bool = False,
 ) -> list[str]:
@@ -241,6 +256,14 @@ def stress_blockers(
         blockers.append(f"missing_event_{start_label}")
     if not has_event(summary, reseat_label):
         blockers.append(f"missing_event_{reseat_label}")
+    if start_label:
+        start_index = event_sample_index(summary, start_label)
+        reseat_index = event_sample_index(summary, reseat_label)
+        if start_index is not None and reseat_index is not None:
+            if reseat_index <= start_index:
+                blockers.append(f"event_order_invalid_{start_label}_before_{reseat_label}")
+            elif reseat_index - start_index < min_start_to_reseat_samples:
+                blockers.append(f"event_spacing_too_short_{start_label}_to_{reseat_label}")
     outcome = event_outcome(summary, reseat_label)
     if outcome is None:
         blockers.append(f"missing_event_outcome_{reseat_label}")
@@ -297,6 +320,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
             summary,
             "brief_contact_loss_reseat",
             start_label="brief_contact_loss_start",
+            min_start_to_reseat_samples=1,
         ),
     )
     sustained = best_candidate(
@@ -307,6 +331,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
             summary,
             "sustained_silence_reseat",
             start_label="sustained_silence_start",
+            min_start_to_reseat_samples=2,
             require_clean_stream=False,
             allow_small_churn=True,
         ),

@@ -419,6 +419,30 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("missing_ok_state_pull", blockers)
 
+    def test_brief_contact_loss_rejects_reversed_event_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-brief-contact-loss-reversed", passing_stream(
+                samples=5,
+                state_pull=passing_state(),
+                events={"2": ["brief_contact_loss_start"], "1": ["brief_contact_loss_reseat"]},
+                event_outcomes=[{
+                    "events": ["brief_contact_loss_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 70,
+                    "next_disconnect_delta": 0,
+                    "next_hr_continuity_delta": 0,
+                }],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["brief_contact_loss"]["blockers"]
+
+            self.assertIn(
+                "event_order_invalid_brief_contact_loss_start_before_brief_contact_loss_reseat",
+                blockers,
+            )
+
     def test_sustained_silence_requires_state_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -443,6 +467,35 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
 
             self.assertIn("missing_ok_state_pull", blockers)
+
+    def test_sustained_silence_requires_two_sample_marker_spacing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-too-short", {
+                "status": "fail",
+                "samples": 7,
+                "state_pull": passing_state(),
+                "min_raw_notification_delta": 0,
+                "max_disconnect_delta": 1,
+                "max_hr_continuity_delta": 1,
+                "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
+                "events": {"1": ["sustained_silence_start"], "2": ["sustained_silence_reseat"]},
+                "event_outcomes": [{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 42,
+                    "next_disconnect_delta": 1,
+                    "next_hr_continuity_delta": 1,
+                }],
+            })
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn(
+                "event_spacing_too_short_sustained_silence_start_to_sustained_silence_reseat",
+                blockers,
+            )
 
     def test_sustained_silence_still_rejects_churn(self):
         with tempfile.TemporaryDirectory() as tmp:

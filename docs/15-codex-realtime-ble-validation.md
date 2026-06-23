@@ -250,7 +250,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `max_hr_continuity_delta=0`, and `event_outcomes` for
    `brief_contact_loss_reseat` has `status=recovered` with
    `next_raw_notification_delta > 0`. The audit also requires
-   `state_pull.status=ok` with saved-session file durability.
+   `state_pull.status=ok` with saved-session file durability, and the
+   `brief_contact_loss_reseat` marker must be at least one sample after
+   `brief_contact_loss_start`.
 
 **Sustained silence and reseat (>2.5 min):**
 1. Start this monitor:
@@ -267,7 +269,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    no churn storm (`max_disconnect_delta < 3`, `max_hr_continuity_delta < 3`),
    and `event_outcomes` for `sustained_silence_reseat` has `status=recovered`
    with `next_raw_notification_delta > 0`. The audit also requires
-   `state_pull.status=ok` with saved-session file durability.
+   `state_pull.status=ok` with saved-session file durability, and the
+   `sustained_silence_reseat` marker must be at least two samples after
+   `sustained_silence_start`.
 
 ## PASS / FAIL
 
