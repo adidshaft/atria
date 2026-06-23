@@ -5,11 +5,6 @@ device_id=${ATRIA_DEVICE_ID:-${WHOOP_DEVICE_ID:-}}
 bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 evidence_dir=""
 
-if [[ -z "$device_id" ]]; then
-  printf 'Set ATRIA_DEVICE_ID to your physical iPhone CoreDevice identifier.\n' >&2
-  exit 64
-fi
-
 usage() {
   cat <<'EOF'
 Usage:
@@ -54,6 +49,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$device_id" ]]; then
+  printf 'Set ATRIA_DEVICE_ID or pass --device with your physical iPhone CoreDevice identifier.\n' >&2
+  exit 64
+fi
 
 if [[ -z "$evidence_dir" ]]; then
   usage >&2

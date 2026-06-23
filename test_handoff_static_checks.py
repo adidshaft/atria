@@ -760,6 +760,10 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, script, needle)
 
         assert_not_contains(self, script, "active_journal_final_status=missing\\n' | tee -a \"$summary\"")
+        parse_args = script.find("while [[ $# -gt 0 ]]; do")
+        validate_device = script.find("Set ATRIA_DEVICE_ID or pass --device")
+        self.assertGreaterEqual(parse_args, 0)
+        self.assertGreater(validate_device, parse_args)
 
     def test_unsavable_active_journals_are_cleared_during_recovery(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
