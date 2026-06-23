@@ -308,13 +308,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--markdown", action="store_true")
+    parser.add_argument("--out", type=Path, default=None, help="Optional path to write the JSON or Markdown audit report.")
     args = parser.parse_args()
 
     report = evaluate(args.root)
+    output = markdown_summary(report) if args.markdown else json.dumps(report, indent=2, sort_keys=True) + "\n"
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(output, encoding="utf-8")
     if args.markdown:
-        print(markdown_summary(report), end="")
+        print(output, end="")
     else:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        print(output, end="")
     return 0 if report["status"] == "pass" else 1
 
 
