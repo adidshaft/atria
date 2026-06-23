@@ -248,13 +248,16 @@ other missing physical recovery artifacts.
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 \
-  --label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot
+  --label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot \
+  --event 1:app_switch_background --event 2:app_switch_return
 ```
-2. During the monitor, foreground another app for about 2 minutes, then return
-   to Atria before the next sample.
+2. When the monitor prints the sample index 1 operator prompt, foreground
+   another app. When it prints the sample index 2 prompt, return to Atria.
 3. Pass evidence: summary `status=pass`, positive raw and accepted deltas when
    present, `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, no flags, and
-   `audit.md` keeps `app_switch` at `pass`.
+   `audit.md` keeps `app_switch` at `pass`. The verifier rejects app-switch
+   summaries without the monitor-recorded switch-away and return prompts, so a
+   passive run cannot masquerade as lifecycle evidence.
 
 **Brief contact loss (<75s):**
 1. Start this monitor:

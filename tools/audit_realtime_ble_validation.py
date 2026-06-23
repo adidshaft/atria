@@ -16,6 +16,8 @@ MIN_DAYTIME_DURATION_SECONDS = 2 * 60 * 60
 MIN_DAYTIME_SAMPLES = 61
 MIN_APP_SWITCH_LIFECYCLE_COMMIT = "2a0491d"
 EXPECTED_OPERATOR_ACTIONS = {
+    "app_switch_background": "Switch away from Atria now and keep another app foregrounded.",
+    "app_switch_return": "Return to Atria now.",
     "brief_contact_loss_start": "Loosen or lift the strap for about 30 seconds.",
     "brief_contact_loss_reseat": "Reseat the strap firmly now.",
     "sustained_silence_start": "Take the strap off and set it down until the reseat marker.",
@@ -53,9 +55,10 @@ NEXT_ACTIONS = {
         "command": (
             "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
             "python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 "
-            "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot"
+            "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
+            "--event 1:app_switch_background --event 2:app_switch_return"
         ),
-        "operator_action": "Foreground another app for about 2 minutes during the monitor, then return to Atria.",
+        "operator_action": "At sample index=1, foreground another app; at sample index=2, return to Atria.",
     },
 }
 
@@ -159,6 +162,21 @@ def app_switch_blockers(summary: dict[str, Any]) -> list[str]:
     blockers = base_stream_blockers(summary)
     blockers.extend(audit_snapshot_blockers(summary))
     blockers.extend(state_pull_blockers(summary))
+    if not has_event(summary, "app_switch_background"):
+        blockers.append("missing_event_app_switch_background")
+    if not has_event(summary, "app_switch_return"):
+        blockers.append("missing_event_app_switch_return")
+    start_index = event_sample_index(summary, "app_switch_background")
+    return_index = event_sample_index(summary, "app_switch_return")
+    if not has_operator_action(summary, "app_switch_background", start_index):
+        blockers.append("missing_operator_action_app_switch_background")
+    if not has_operator_action(summary, "app_switch_return", return_index):
+        blockers.append("missing_operator_action_app_switch_return")
+    if start_index is not None and return_index is not None:
+        if return_index <= start_index:
+            blockers.append("event_order_invalid_app_switch_background_before_app_switch_return")
+        elif numeric(summary.get("planned_interval_s")) * (return_index - start_index) < 90:
+            blockers.append("event_elapsed_too_short_app_switch_background_to_app_switch_return")
     if not commit_includes(summary.get("git_commit"), MIN_APP_SWITCH_LIFECYCLE_COMMIT):
         blockers.append("app_switch_evidence_before_disconnect_continuity_fix")
     return blockers

@@ -67,6 +67,8 @@ PULL_STATE_SUMMARY_KEYS = [
 ]
 
 EVENT_ACTIONS = {
+    "app_switch_background": "Switch away from Atria now and keep another app foregrounded.",
+    "app_switch_return": "Return to Atria now.",
     "brief_contact_loss_start": "Loosen or lift the strap for about 30 seconds.",
     "brief_contact_loss_reseat": "Reseat the strap firmly now.",
     "sustained_silence_start": "Take the strap off and set it down until the reseat marker.",

@@ -466,12 +466,8 @@ struct AtriaHomeView: View {
     private var connectionToolbarButton: some View {
         switch model.statusStore.state.status {
         case .connected:
-            Button {
-                ble.disconnect()
-            } label: {
-                Image(systemName: "bolt.heart.fill")
-            }
-            .accessibilityLabel("Disconnect strap")
+            Image(systemName: "bolt.heart.fill")
+                .accessibilityLabel("Strap connected")
         case .connecting, .scanning:
             Image(systemName: "dot.radiowaves.left.and.right")
                 .accessibilityLabel("Connecting to strap")
