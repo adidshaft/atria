@@ -212,6 +212,19 @@ Use these short targeted runs before or after the full 2–3h monitor. They do n
 replace the long worn window, but they create clean artifacts for the two
 remaining physical recovery requirements.
 
+**App switch:**
+1. Start this monitor:
+```sh
+ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 \
+  --label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot
+```
+2. During the monitor, foreground another app for about 2 minutes, then return
+   to Atria before the next sample.
+3. Pass evidence: summary `status=pass`, positive raw and accepted deltas when
+   present, `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, no flags, and
+   `audit.md` keeps `app_switch` at `pass`.
+
 **Brief contact loss (<75s):**
 1. Start this monitor:
 ```sh
