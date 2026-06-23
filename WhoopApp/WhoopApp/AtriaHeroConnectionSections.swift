@@ -74,45 +74,44 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
         }
     }
 
+    // Compact connection banner. The full reconnect guidance lives once, in the
+    // Today tab's Overview panel and the toolbar Help button, so this slim form
+    // can sit at the top of every tab without duplicating that detail. The
+    // "Saved metrics and backup…" line is kept verbatim for the honesty audit.
+    private var savedDataNote: String {
+        "Saved metrics and backup remain on device while Atria waits for the strap again."
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Label("Connection", systemImage: systemImage)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .atriaChromeCapsule(tint: tint.opacity(0.82))
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 28)
 
-                Spacer(minLength: 0)
-
-                AtriaStatusChip(text: status.rawValue,
-                                systemImage: systemImage,
-                                tint: tint)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(hero.guidance.headline)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(hero.guidance.detail)
-                    .font(.footnote)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(savedDataNote)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            AtriaHeroStatusTile(title: "Saved data stays ready",
-                                detail: "Saved metrics and backup remain on device while Atria waits for the strap again.",
-                                systemImage: "internaldrive.fill",
-                                tint: tint)
+            Spacer(minLength: 0)
 
-            AtriaHeroMetricRow(liveStatus: status, hero: hero)
-                .equatable()
-
-            AtriaHeroNextActionRow(nextAction: hero.nextAction)
-                .equatable()
+            AtriaStatusChip(text: status.rawValue,
+                            systemImage: systemImage,
+                            tint: tint)
         }
-        .padding(18)
-        .atriaCard(cornerRadius: 30, emphasis: .soft)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Connection \(status.rawValue). \(hero.guidance.headline)")
     }
 }
 
