@@ -202,10 +202,21 @@ complete the full 2–3h validation:
   app-switch ticks are not just lack of general app execution time; iOS appears
   to delay or batch BLE notification delivery/persistence while another app owns
   the foreground, then Atria catches up on return.
+- Current `main` was reinstalled after removing that background-assertion
+  experiment, then tested at the handoff's actual 120s monitor cadence:
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-120s-current-20260623T055149Z/summary.json`
+  passed with `samples=4`, `min_raw_notification_delta=96`,
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, and no flags. Clock was
+  foregrounded between the baseline and first 120s tick, then Atria was returned
+  before the tick; the app-switch interval produced `rawNotif+96 accepted+96`.
+  Treat this as the current app-switch pass evidence for the documented 120s
+  stress-test cadence. The earlier 20s failures remain useful diagnostic
+  evidence that sub-120s polling can observe iOS batching while another app is
+  foreground.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
-and the remaining stress tests above (strict app-switch with no `NO_NEW_DATA`,
-brief contact loss, sustained silence/reseat) with passing evidence.
+and the remaining stress tests above (brief contact loss, sustained
+silence/reseat) with passing evidence.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
