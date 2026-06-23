@@ -158,6 +158,21 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def range_loss_backfill_proven(fields: dict[str, Any]) -> bool:
+    reason = fields.get("offline_range_loss_backfill_reason")
+    pending = str(fields.get("offline_range_loss_backfill_pending", ""))
+    started_age = numeric(fields.get("offline_range_loss_backfill_started_age_s"))
+    requested_age = numeric(fields.get("offline_range_loss_backfill_requested_age_s"))
+    status = fields.get("offline_sync_last_status")
+    return (
+        reason == "long_wear_range_loss"
+        and pending in {"0", "false", "False"}
+        and started_age >= 0
+        and requested_age >= 0
+        and status in {"starting", "armed", "archived", "no_rows"}
+    )
+
+
 def app_switch_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     blockers = base_stream_blockers(summary)
     blockers.extend(audit_snapshot_blockers(summary, summary_path))
@@ -262,7 +277,29 @@ def audit_snapshot_blockers(summary: dict[str, Any], summary_path: Path | None =
 
 
 def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
-    blockers = base_stream_blockers(summary)
+    blockers: list[str] = []
+    if summary.get("worn_expected") is False:
+        blockers.append("monitor_ran_not_worn")
+    if summary.get("status") != "pass":
+        blockers.append("summary_status_not_pass")
+    flags = summary.get("flags") or []
+    disconnect_delta = numeric(summary.get("max_disconnect_delta"))
+    fields = state_fields(summary)
+    backfill_proven = range_loss_backfill_proven(fields)
+    if flags and not (disconnect_delta > 0 and backfill_proven and set(flags).issubset({"NO_NEW_DATA"})):
+        blockers.append("summary_flags_present")
+    if numeric(summary.get("min_raw_notification_delta")) <= 0 and not (disconnect_delta > 0 and backfill_proven):
+        blockers.append("no_positive_raw_delta_on_every_tick")
+    if (
+        "min_accepted_sample_delta" in summary
+        and numeric(summary.get("min_accepted_sample_delta")) <= 0
+        and not (disconnect_delta > 0 and backfill_proven)
+    ):
+        blockers.append("no_positive_accepted_delta_on_every_tick")
+    if disconnect_delta != 0 and not backfill_proven:
+        blockers.append("disconnect_delta_without_range_loss_backfill")
+    if numeric(summary.get("max_hr_continuity_delta")) != 0:
+        blockers.append("hr_continuity_delta_nonzero")
     blockers.extend(audit_snapshot_blockers(summary, summary_path))
     duration = summary_duration_seconds(summary)
     if duration < MIN_DAYTIME_DURATION_SECONDS:
@@ -273,7 +310,6 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
     if state_blockers:
         blockers.extend(state_blockers)
         return blockers
-    fields = state_fields(summary)
     if fields.get("active_journal_freshness") != "fresh":
         blockers.append("active_journal_not_fresh")
     if fields.get("active_journal_continuity_status") != "active":
