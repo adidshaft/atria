@@ -177,6 +177,11 @@ def stress_blockers(
 ) -> list[str]:
     blockers = base_stream_blockers(summary) if require_clean_stream else []
     if not require_clean_stream:
+        allowed_flags = {"NO_NEW_DATA", "ZERO_CONTACT"}
+        flags = set(summary.get("flags") or [])
+        unexpected_flags = sorted(flags - allowed_flags)
+        if unexpected_flags:
+            blockers.append("unexpected_flags_" + "_".join(unexpected_flags))
         if numeric(summary.get("max_disconnect_delta")) >= 3:
             blockers.append("disconnect_churn")
         if numeric(summary.get("max_hr_continuity_delta")) >= 3:
