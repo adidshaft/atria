@@ -231,6 +231,20 @@ def event_outcome(summary: dict[str, Any], label: str) -> dict[str, Any] | None:
     return None
 
 
+def has_operator_action(summary: dict[str, Any], label: str) -> bool:
+    actions = summary.get("operator_actions")
+    if not isinstance(actions, list):
+        return False
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        events = action.get("events")
+        prompts = action.get("actions")
+        if isinstance(events, list) and label in events and isinstance(prompts, list) and prompts:
+            return True
+    return False
+
+
 def stress_blockers(
     summary: dict[str, Any],
     reseat_label: str,
@@ -257,6 +271,10 @@ def stress_blockers(
         blockers.append(f"missing_event_{start_label}")
     if not has_event(summary, reseat_label):
         blockers.append(f"missing_event_{reseat_label}")
+    if start_label and not has_operator_action(summary, start_label):
+        blockers.append(f"missing_operator_action_{start_label}")
+    if not has_operator_action(summary, reseat_label):
+        blockers.append(f"missing_operator_action_{reseat_label}")
     if start_label:
         start_index = event_sample_index(summary, start_label)
         reseat_index = event_sample_index(summary, reseat_label)
