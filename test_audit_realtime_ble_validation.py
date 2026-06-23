@@ -221,6 +221,33 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("active_journal_not_active", blockers)
             self.assertIn("active_journal_duration_under_2h", blockers)
 
+    def test_daytime_rejects_explicit_not_worn_monitor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-not-worn", passing_stream(
+                worn_expected=False,
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("monitor_ran_not_worn", blockers)
+
+    def test_app_switch_rejects_explicit_not_worn_monitor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-not-worn", passing_stream(
+                samples=4,
+                planned_interval_s=20,
+                worn_expected=False,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("monitor_ran_not_worn", blockers)
+
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
