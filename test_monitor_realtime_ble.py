@@ -246,6 +246,19 @@ class MonitorRealtimeBLETests(unittest.TestCase):
             self.assertIn("# Realtime BLE Validation Audit", text)
             self.assertIn("rt-clock-switch-ok", text)
 
+    def test_command_string_quotes_monitor_arguments(self):
+        command = monitor_realtime_ble.command_string([
+            "tools/monitor_realtime_ble.py",
+            "--label",
+            "rt-daytime-test",
+            "--event",
+            "1:brief contact",
+        ])
+
+        self.assertIn("tools/monitor_realtime_ble.py", command)
+        self.assertIn("--label rt-daytime-test", command)
+        self.assertIn("'1:brief contact'", command)
+
 
 if __name__ == "__main__":
     unittest.main()
