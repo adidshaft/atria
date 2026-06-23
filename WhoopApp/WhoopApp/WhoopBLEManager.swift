@@ -1556,12 +1556,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             guard UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
             guard status == .connected else { return }
             let backfillReason = UserDefaults.standard.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? reason
-            UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
-            WHOOPDebugLog("WHOOPDBG offline_sync status=starting_range_loss_backfill reason=%@ trigger=%@ action=force_historical_sync",
+            WHOOPDebugLog("WHOOPDBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=defer_if_live_link_connected",
                   backfillReason,
                   reason)
-            requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: true)
+            if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false) {
+                UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
+            }
         }
     }
 

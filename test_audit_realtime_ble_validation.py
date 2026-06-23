@@ -74,7 +74,7 @@ def passing_state_with_range_loss_backfill():
         "offline_range_loss_backfill_pending": "1",
         "offline_range_loss_backfill_reason": "long_wear_range_loss",
         "offline_range_loss_backfill_requested_age_s": "12.0",
-        "offline_range_loss_backfill_started_age_s": "4.0",
+        "offline_range_loss_backfill_started_age_s": "-1.0",
     }
     return state
 
@@ -85,6 +85,7 @@ def passing_state_with_completed_range_loss_backfill():
         **state["fields"],
         "offline_sync_last_status": "archived",
         "offline_range_loss_backfill_pending": "0",
+        "offline_range_loss_backfill_started_age_s": "4.0",
     }
     return state
 
