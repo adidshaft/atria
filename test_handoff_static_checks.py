@@ -89,7 +89,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "WHOOPDBG realtimeConfig history_only_probe=1 phase=early",
             "@discardableResult",
             "func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false)",
-            "private func startOfflineHistoricalSync(reason: String)",
+            "private func startOfflineHistoricalSync(reason: String, force: Bool)",
             "historyOnlyProbeEnabled = true",
             "historyOnlyProbeMode = true",
             "historyClockSyncEnabled = true",
@@ -102,6 +102,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "historySkipDataRangeRequest = true",
             "WHOOPDBG offline_sync status=armed",
             "live_realtime=skipped metrics_fail_closed=1",
+            "deferred_live_link",
+            "detail=live_link_connected action=keep_ble_stream",
+            "detail=live_link_connected_late action=keep_ble_stream",
             "private func finishOfflineHistoricalSync(reason: String)",
             "applyStandardHROnly(enabled: true, persist: true, reconnect: true, reason: \"offline_sync_complete\")",
             "central.cancelPeripheralConnection(peripheral)",
@@ -140,6 +143,31 @@ class HandoffStaticChecks(unittest.TestCase):
         )
         self.assertIsNotNone(unattended_mode)
         self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", unattended_mode.group("body"))
+
+        request_sync = re.search(
+            r"func requestOfflineHistoricalSyncIfNeeded\(reason: String, force: Bool = false\) -> Bool \{(?P<body>.*?)\n    \}",
+            ble,
+            re.S,
+        )
+        self.assertIsNotNone(request_sync)
+        request_body = request_sync.group("body")
+        live_defer_index = request_body.find("longWearModeEnabled, let peripheral, peripheral.state == .connected")
+        start_index = request_body.find("startOfflineHistoricalSync(reason: reason, force: force)")
+        self.assertGreaterEqual(live_defer_index, 0)
+        self.assertGreater(start_index, live_defer_index)
+        assert_contains(self, request_body, "return false")
+
+        start_sync = re.search(
+            r"private func startOfflineHistoricalSync\(reason: String, force: Bool\) \{(?P<body>.*?)\n    \}",
+            ble,
+            re.S,
+        )
+        self.assertIsNotNone(start_sync)
+        start_body = start_sync.group("body")
+        late_defer_index = start_body.find("force || !longWearModeEnabled || peripheral.state != .connected")
+        cancel_index = start_body.find("central.cancelPeripheralConnection(peripheral)")
+        self.assertGreaterEqual(late_defer_index, 0)
+        self.assertGreater(cancel_index, late_defer_index)
 
         assert_contains(self, ble, "currentSessionUsable: false")
         assert_contains(self, ble, "metricUsable: false")

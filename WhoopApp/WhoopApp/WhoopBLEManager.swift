@@ -1327,6 +1327,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             WHOOPDebugLog("WHOOPDBG offline_sync status=coalesced reason=%@", reason)
             return false
         }
+        if !force, longWearModeEnabled, let peripheral, peripheral.state == .connected {
+            pendingOfflineHistoricalSyncReason = reason
+            defaults.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            WHOOPDebugLog("WHOOPDBG offline_sync status=deferred reason=%@ detail=live_link_connected action=keep_ble_stream",
+                  reason)
+            return false
+        }
         let now = Date()
         let lastAttempt = defaults.object(forKey: OfflineSyncDefaults.lastAttemptAt) as? Date
         if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < offlineHistoricalSyncMinimumInterval {
@@ -1342,11 +1350,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(defaults.integer(forKey: OfflineSyncDefaults.attempts) + 1, forKey: OfflineSyncDefaults.attempts)
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        startOfflineHistoricalSync(reason: reason)
+        startOfflineHistoricalSync(reason: reason, force: force)
         return true
     }
 
-    private func startOfflineHistoricalSync(reason: String) {
+    private func startOfflineHistoricalSync(reason: String, force: Bool) {
         flushActiveSessionJournal(reason: "offline_sync_preflight_\(reason)")
         offlineHistoricalSyncInProgress = true
         historyOnlyProbeEnabled = true
@@ -1374,6 +1382,22 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               reason)
 
         if let peripheral {
+            guard force || !longWearModeEnabled || peripheral.state != .connected else {
+                offlineHistoricalSyncInProgress = false
+                historyOnlyProbeEnabled = false
+                historyOnlyProbeMode = false
+                historyOnlyProbeArmed = false
+                historyClockSyncEnabled = false
+                historyInitSweepCommands.removeAll()
+                historySkipDataRangeRequest = false
+                probeCommandMode = .withoutResponse
+                pendingOfflineHistoricalSyncReason = reason
+                UserDefaults.standard.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
+                UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                WHOOPDebugLog("WHOOPDBG offline_sync status=deferred reason=%@ detail=live_link_connected_late action=keep_ble_stream",
+                      reason)
+                return
+            }
             dbgLast = "offline sync reconnect"
             central.cancelPeripheralConnection(peripheral)
         } else if central.state == .poweredOn {
