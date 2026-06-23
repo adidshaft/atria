@@ -34,6 +34,11 @@ STATUS_KEYS = [
     "whoop.link.lastStatus",
     "whoop.link.lastReason",
     "whoop.watchdog.lastAction",
+    "whoop.keepalive.armed",
+    "whoop.keepalive.lastStatus",
+    "whoop.keepalive.lastAction",
+    "whoop.keepalive.lastSilence",
+    "whoop.keepalive.ticks",
     "whoop.radio.standardHROnly",
     "whoop.longWear.enabled",
 ]
@@ -183,6 +188,8 @@ def main() -> int:
             f"hrCont+{sample['delta']['whoop.watchdog.hrContinuityCount']} "
             f"sample={sample['current'].get('whoop.sample.lastStatus')} "
             f"lastAction={sample['current'].get('whoop.watchdog.lastAction')} "
+            f"keepalive={sample['current'].get('whoop.keepalive.lastAction')} "
+            f"keepaliveTicks={sample['current'].get('whoop.keepalive.ticks')} "
             f"flags={','.join(sample['flags']) or 'OK'}",
             flush=True,
         )

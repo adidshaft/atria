@@ -42,6 +42,15 @@ ATRIA_XCODE_DEVICE_ID=00008130-000C74820130001C \
   ./live_device_debug.sh --seconds 40 --long-wear-mode --leave-running \
   --log logs/live-device/rt-validate.log
 ```
+Important harness note: `--leave-running` performs a non-console `devicectl`
+relaunch after the evidence window. On the June 23 physical phone this could
+leave an Atria process present but suspended before SwiftUI/keepalive timers
+advanced (`whoop.keepalive.ticks` stayed flat and `rawNotif+0`). Do **not** count
+that non-console relaunch as proof of the monitor window. For the actual
+2–3-hour monitor, either keep an active/console launch alive in one terminal
+while running the monitor in another, or manually foreground Atria on the phone
+after the harness installs it and confirm `whoop.keepalive.ticks` and
+`rawNotifications` advance before starting the clock.
 Pull any container file live (no relaunch — relaunch drops the connection):
 ```sh
 xcrun devicectl device copy from --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
@@ -110,6 +119,11 @@ while True:
     prev=cur
 PY
 ```
+
+The wrapper also prints `keepalive=<action>` and `keepaliveTicks=<n>`. If
+`keepaliveTicks` stays flat across monitor ticks, the app is not actively running
+its live-link recovery loop; foreground Atria or relaunch with an active console
+before using that interval as validation evidence.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link
