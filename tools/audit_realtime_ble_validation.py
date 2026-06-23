@@ -345,6 +345,11 @@ def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocke
         if not predicate(summary, path):
             continue
         blockers = blocker_fn(summary)
+        fields = state_fields(summary)
+        audit_snapshot = summary.get("audit_snapshot")
+        audit_snapshot = audit_snapshot if isinstance(audit_snapshot, dict) else {}
+        state_pull = summary.get("state_pull")
+        state_pull = state_pull if isinstance(state_pull, dict) else {}
         candidates.append({
             "summary": str(path),
             "status": "pass" if not blockers else "incomplete",
@@ -355,6 +360,12 @@ def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocke
             "min_accepted_sample_delta": summary.get("min_accepted_sample_delta"),
             "max_disconnect_delta": summary.get("max_disconnect_delta"),
             "max_hr_continuity_delta": summary.get("max_hr_continuity_delta"),
+            "state_pull_status": state_pull.get("status"),
+            "file_durability_status": fields.get("file_durability_status"),
+            "active_journal_freshness": fields.get("active_journal_freshness"),
+            "active_journal_continuity_status": fields.get("active_journal_continuity_status"),
+            "audit_snapshot_status": audit_snapshot.get("status"),
+            "audit_snapshot_summary_count": audit_snapshot.get("summary_count"),
         })
     if not candidates:
         return {"summary": "missing", "status": "missing", "blockers": ["missing_evidence"]}
@@ -465,6 +476,15 @@ def markdown_summary(report: dict[str, Any]) -> str:
                 f"min_accepted_delta=`{metric(section, 'min_accepted_sample_delta')}`, "
                 f"max_disconnect_delta=`{metric(section, 'max_disconnect_delta')}`, "
                 f"max_hr_continuity_delta=`{metric(section, 'max_hr_continuity_delta')}`"
+            )
+            lines.append(
+                "  - Continuity: "
+                f"state_pull=`{metric(section, 'state_pull_status')}`, "
+                f"file_durability=`{metric(section, 'file_durability_status')}`, "
+                f"active_journal=`{metric(section, 'active_journal_continuity_status')}`, "
+                f"freshness=`{metric(section, 'active_journal_freshness')}`, "
+                f"audit_snapshot=`{metric(section, 'audit_snapshot_status')}`, "
+                f"audit_summaries=`{metric(section, 'audit_snapshot_summary_count')}`"
             )
         if section["status"] != "pass":
             lines.extend([

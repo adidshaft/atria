@@ -194,6 +194,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Invalid summaries:", markdown)
             self.assertIn("Evidence: samples=`4`, duration_s=`60`, min_raw_delta=`60`", markdown)
             self.assertIn("min_accepted_delta=`60`", markdown)
+            self.assertIn("Continuity: state_pull=`ok`, file_durability=`saved_sessions_present`", markdown)
+            self.assertIn("audit_snapshot=`incomplete`, audit_summaries=`4`", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
 
