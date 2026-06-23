@@ -3227,13 +3227,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   label)
             return false
         }
-        guard let saved = finishSession(label: label) else {
-            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=finish_failed samples=%d label=%@ source=long_wear_supervisor", session.count, label)
-            return false
-        }
+        let saved = snapshot
         let persisted = persistFinishedSession(saved, reason: "workout_auto_save_supervisor")
         let savedReadiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
-        WHOOPDebugLog("WHOOPDBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d hrv=%@ label=%@ source=long_wear_supervisor",
+        persistActiveSessionJournalIfNeeded(reason: "workout_auto_save_snapshot_supervisor", force: true)
+        WHOOPDebugLog("WHOOPDBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d hrv=%@ label=%@ source=long_wear_supervisor mode=snapshot_keep_live",
               persisted ? "saved" : "store_failed",
               savedReadiness.reason,
               savedReadiness.primaryBlocker,
@@ -3248,7 +3246,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               savedReadiness.thresholdHR,
               saved.hrv.map(String.init) ?? "learning",
               label)
-        return true
+        return false
     }
 
     private func scheduleNoDataWatchdogIfNeeded(timeout: TimeInterval,

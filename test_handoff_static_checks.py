@@ -355,6 +355,22 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreater(finish_index, preserve_index)
         self.assertGreater(reconnect_index, finish_index)
 
+    def test_long_wear_auto_save_keeps_live_session_open(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        auto_save = re.search(
+            r"private func runLongWearSupervisorAutoSave\(index: Int, label: String, rest: Int, maxHR: Int\) -> Bool \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(auto_save)
+        body = auto_save.group("body")
+        assert_not_contains(self, body, "finishSession(label: label)")
+        assert_contains(self, body, "let saved = snapshot")
+        assert_contains(self, body, "workout_auto_save_snapshot_supervisor")
+        assert_contains(self, body, "mode=snapshot_keep_live")
+        assert_contains(self, body, "return false")
+
     def test_live_sample_counters_flush_on_healthy_stream(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 

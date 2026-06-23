@@ -392,6 +392,26 @@ complete the full 2–3h validation:
   `offline_sync_last_reason=long_wear_range_loss`, and
   `offline_range_loss_backfill_pending=1`, proving the range-loss backfill
   marker stays durable without interrupting a healthy live HR stream.
+- `logs/live-device/realtime-ble-monitor/rt-daytime-20260623T131514Z/summary.json`
+  is the strongest live-stream run so far: `samples=91`, `duration_s=10920`,
+  `status=pass`, `min_raw_notification_delta=84`,
+  `min_accepted_sample_delta=84`, `max_disconnect_delta=1`,
+  `max_hr_continuity_delta=0`, and `flags=[]`. It included ordinary use,
+  an app switch, and a short nap. The final audit still blocked on
+  `active_journal_duration_under_2h`: the active journal reconstructed from
+  segments covered only 1390s even though every monitor tick advanced. The state
+  pull also showed recent tiny `Auto-saved` / `Long wear` saved-session
+  fragments and a stale legacy `Whoop.app/Whoop` process alongside Atria. The
+  legacy main process was terminated and the next build changes the long-wear
+  workout auto-save path to persist a snapshot without calling `finishSession`,
+  so supervisor auto-save cannot reset the live journal during validation.
+- After that snapshot auto-save fix, the updated build was installed and
+  launched on the physical iPhone. The readiness probe
+  `logs/live-device/realtime-ble-monitor/rt-snapshot-autosave-fix-readiness-20260623T162038Z/summary.json`
+  passed with `samples=2`, `min_raw_notification_delta=54`,
+  `min_accepted_sample_delta=54`, `max_disconnect_delta=0`, and no flags. This
+  proves the fixed build still streams, but it does not replace the required
+  2+ hour rerun because the active journal had just restarted after install.
 - `logs/live-device/counter-flush-smoke.log` passed the first gate on the
   physical iPhone: connected to `ADIDSHAFT'S WHO`, `foreground_keepalive` armed,
   `standardHR` present, and `rr source=0x2A37` present (`standard_2a37_frames=32`,
