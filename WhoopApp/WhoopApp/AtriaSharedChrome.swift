@@ -269,8 +269,11 @@ private struct AtriaCapsuleChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        // Static chrome — no .interactive(): these chips are decorative and
+        // appear on every card header, so live touch-refraction would resample
+        // the moving backdrop on every scrolled frame and cause jank.
         Capsule(style: .continuous)
-            .glassEffect(.regular.tint(glassTint).interactive(), in: .capsule)
+            .glassEffect(.regular.tint(glassTint), in: .capsule)
             .overlay(stroke)
     }
 
@@ -296,7 +299,7 @@ private struct AtriaIconChromeBackground: View {
 
     var body: some View {
         Circle()
-            .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)).interactive(), in: .circle)
+            .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)), in: .circle)
             .overlay(stroke)
     }
 
