@@ -42,6 +42,15 @@ Key fixes on `main` (HEAD region):
   or fragmenting the live session. The manual Disconnect button is tracked
   separately so user-requested disconnects stay disconnected instead of
   immediately reconnecting.
+- `4ec0757` — **protected long-wear default**. Normal startup now defaults to
+  protected long-wear collection with low-radio standard HR and offline sync
+  enabled, so users do not have to keep the phone unlocked or discover a hidden
+  mode before background-safe collection starts.
+- Current worktree after `4ec0757` — **monitor/harness hardening**. The harness
+  classifies iOS developer-profile trust launch failures explicitly, and the
+  realtime monitor only raises `KEEPALIVE_NOT_ADVANCING` when the keepalive tick
+  is flat and the live stream is also stalled. Positive raw/accepted 2A37 data
+  remains the primary proof that the link is alive during app switches.
 
 ## Device + paths (constants)
 
@@ -174,11 +183,13 @@ PY
 ```
 
 The wrapper also prints `keepalive=<action>`, `keepaliveTicks=<n>`, and
-`keepaliveTicks+<delta>`. If long-wear keepalive is armed and
-`keepaliveTicks+0` repeats across monitor ticks, the tool flags
-`KEEPALIVE_NOT_ADVANCING`: the app is not actively running its live-link
-recovery loop. Foreground Atria or relaunch with an active console before using
-that interval as validation evidence.
+`keepaliveTicks+<delta>`. If long-wear keepalive is armed,
+`keepaliveTicks+0` repeats, and the same tick has no new raw 2A37 data, the tool
+flags `KEEPALIVE_NOT_ADVANCING`: the app is not actively running its live-link
+recovery loop while the stream is stalled. Foreground Atria or relaunch with an
+active console before using that interval as validation evidence. Flat keepalive
+ticks do not fail a tick that is already proving positive raw and accepted HR
+progress.
 
 Audit the collected realtime BLE evidence at any point:
 ```sh
@@ -238,10 +249,10 @@ blocks the final completion gate until the corrupt run is removed or rerun.
 ### Remaining Stress Test Commands
 
 Use these short targeted runs before or after the full 2–3h monitor. They do not
-replace the long worn window. App-switch has earlier passing evidence, but it
-must be rerun after `2a0491d` so the disconnect-continuity callback fix is part
-of the proven build. The contact-loss and sustained-silence commands create the
-other missing physical recovery artifacts.
+replace the long worn window. App-switch has current passing physical evidence
+after the disconnect-continuity and protected-default fixes. The contact-loss
+and sustained-silence commands create the other missing physical recovery
+artifacts.
 
 **App switch:**
 1. Start this monitor:
@@ -258,6 +269,17 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `audit.md` keeps `app_switch` at `pass`. The verifier rejects app-switch
    summaries without the monitor-recorded switch-away and return prompts, so a
    passive run cannot masquerade as lifecycle evidence.
+
+Current passing app-switch evidence:
+`logs/live-device/realtime-ble-monitor/rt-app-switch-20260623T081354Z/summary.json`
+ran on physical iPhone with Clock foregrounded between the monitor-recorded
+`app_switch_background` and `app_switch_return` prompts. It passed with
+`samples=4`, `duration_s=363`, `min_raw_notification_delta=113`,
+`min_accepted_sample_delta=113`, `max_disconnect_delta=0`,
+`max_hr_continuity_delta=0`, `flags=[]`, `state_pull.status=ok`,
+`file_durability_status=saved_sessions_present`,
+`active_journal_continuity_status=active`, and
+`active_journal_freshness=fresh`.
 
 **Brief contact loss (<75s):**
 1. Start this monitor:
@@ -439,7 +461,7 @@ complete the full 2–3h validation:
   previous app-switch monitor predates the disconnect-continuity callback fix, so
   the verifier now requires a fresh `rt-app-switch-*` monitor summary whose
   `git_commit` includes `2a0491d`.
-- Fresh post-`2a0491d` app-switch evidence:
+- Superseded post-`2a0491d` app-switch evidence:
   `logs/live-device/realtime-ble-monitor/rt-app-switch-20260623T073612Z/summary.json`
   passed with `git_commit=291f7f8a822a15f989f164ad3a3cdb3c856ebf52`,
   `samples=4`, `duration_s=363`, `min_raw_notification_delta=99`,
@@ -449,8 +471,24 @@ complete the full 2–3h validation:
   after the baseline sample for about 105 seconds, then Atria was returned before
   the first 120s tick. The app-switch interval advanced cleanly
   (`rawNotif+99 accepted+99`), and both follow-up intervals also advanced cleanly
-  (`rawNotif+127 accepted+127`, `rawNotif+118 accepted+118`). This is the current
-  authoritative app-switch pass evidence for the disconnect-continuity build.
+  (`rawNotif+127 accepted+127`, `rawNotif+118 accepted+118`). This run is useful
+  continuity evidence, but it is no longer the authoritative app-switch pass
+  because it predates the explicit operator-prompt requirement.
+- Current marked app-switch evidence:
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-20260623T081354Z/summary.json`
+  passed with `git_commit=4ec07578575784a4ff981a3160b4e72dd92024eb`,
+  `samples=4`, `duration_s=363`, `min_raw_notification_delta=113`,
+  `min_accepted_sample_delta=113`, `max_disconnect_delta=0`,
+  `max_hr_continuity_delta=0`, no flags, and `state_pull.status=ok` with
+  `file_durability_status=saved_sessions_present`,
+  `active_journal_continuity_status=active`, and
+  `active_journal_freshness=fresh`. The monitor recorded same-sample
+  `operator_actions` for `app_switch_background` at sample 1 and
+  `app_switch_return` at sample 2. Clock was foregrounded during that marked
+  away window, and raw/accepted 2A37 samples advanced throughout
+  (`rawNotif+126 accepted+126`, `rawNotif+113 accepted+113`,
+  `rawNotif+125 accepted+125`) with zero disconnect and HR-continuity churn.
+  This is the current authoritative app-switch pass evidence.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,

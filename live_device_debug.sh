@@ -2758,6 +2758,7 @@ else:
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     stopped_for_deadline = False
     app_exit_code = None
+    launch_output_lines = []
     try:
         while time.time() < deadline:
             line = ""
@@ -2767,6 +2768,7 @@ else:
                     line = proc.stdout.readline()
             if line:
                 line = line.rstrip()
+                launch_output_lines.append(line)
                 emit(line)
                 if not launch_seen and "Launched application with" in line:
                     launch_seen = True
@@ -2831,6 +2833,7 @@ else:
 
     if rest:
         for line in rest.splitlines():
+            launch_output_lines.append(line)
             emit(line)
             if "WHOOPDBG" in line:
                 ingest_whoopdbg(line)
@@ -2908,6 +2911,15 @@ emit("WHOOPDBG_SUMMARY_END")
 
 if not replay_log and not pull_only:
     if not launch_seen:
+        launch_output = "\n".join(launch_output_lines)
+        if (
+            "invalid code signature" in launch_output
+            or "profile has not been explicitly trusted" in launch_output
+            or "BSErrorCodeDescription = RequestDenied" in launch_output
+        ):
+            emit("HARNESS_ERROR=developer_profile_not_trusted")
+            emit("HARNESS_NEXT_ACTION=trust_developer_profile_in_ios_settings_then_retry")
+            sys.exit(2)
         emit("HARNESS_ERROR=app_launch_not_confirmed")
         sys.exit(2)
     if not lines:
