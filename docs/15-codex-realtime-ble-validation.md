@@ -202,9 +202,10 @@ For sustained silence, only the expected off-wrist `NO_NEW_DATA` /
 unexpected flags still fail the requirement. The verifier also requires bounded
 churn, an OK `--pull-state` durability snapshot, and a recovered
 `sustained_silence_reseat` event outcome. For both stress requirements, the
-verifier requires the monitor-recorded `operator_actions` prompts for the start
-and reseat markers; hand-authored event markers without those prompt records do
-not satisfy the physical-action evidence contract.
+verifier requires the monitor-recorded `operator_actions` prompts at the same
+sample indices as the start and reseat markers; hand-authored event markers or
+prompts attached to the wrong sample do not satisfy the physical-action evidence
+contract.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
 requirement. For any candidate summary it also prints the key evidence metrics
@@ -264,8 +265,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `state_pull.status=ok` with saved-session file durability, and the
    `brief_contact_loss_reseat` marker must be at least one sample after
    `brief_contact_loss_start` with at least 30 seconds of planned monitor time
-   between the markers. The summary must include `operator_actions` prompt
-   records for both `brief_contact_loss_start` and `brief_contact_loss_reseat`.
+   between the markers. The summary must include same-sample `operator_actions`
+   prompt records for both `brief_contact_loss_start` and
+   `brief_contact_loss_reseat`.
 
 **Sustained silence and reseat (>2.5 min):**
 1. Start this monitor:
@@ -285,8 +287,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `state_pull.status=ok` with saved-session file durability, and the
    `sustained_silence_reseat` marker must be at least two samples after
    `sustained_silence_start` with at least 150 seconds of planned monitor time
-   between the markers. The summary must include `operator_actions` prompt
-   records for both `sustained_silence_start` and `sustained_silence_reseat`.
+   between the markers. The summary must include same-sample `operator_actions`
+   prompt records for both `sustained_silence_start` and
+   `sustained_silence_reseat`.
 
 ## PASS / FAIL
 
