@@ -369,6 +369,16 @@ complete the full 2–3h validation:
   `active_journal_rr_values=149`, and `active_journal_duration_s=681`. This is
   state-readiness evidence only; it does not replace the long monitor because it
   cannot prove every 120s tick had new raw notifications.
+- Latest non-disruptive continuation pull:
+  `logs/live-device/state-pulls/goal-continuation-20260623T065651Z/pull-summary.txt`
+  reported `process_status=running`, `sessions_status=ok`,
+  `sessions_count=219`, `file_durability_status=saved_sessions_present`,
+  and a fresh reconstructed Long wear active journal
+  (`active_journal_samples=86`, `active_journal_duration_s=81`,
+  `active_journal_peak_hr=111`). This is only liveness/durability evidence:
+  the active journal was `hr_only` with `active_journal_rr_values=0` and
+  `active_journal_continuity_status=hr_only`, so it does not satisfy the worn
+  realtime BLE monitor, RR continuity, or stress-test requirements.
 - `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
   `pull_atria_state.sh` evidence into the monitor `summary.json`, including
   active journal continuity, latest saved-session points/RR points, and file
