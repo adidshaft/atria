@@ -118,6 +118,56 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("active_journal_not_active", blockers)
             self.assertIn("active_journal_duration_under_2h", blockers)
 
+    def test_sustained_silence_allows_expected_off_wrist_no_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-off-wrist", {
+                "status": "fail",
+                "samples": 7,
+                "min_raw_notification_delta": 0,
+                "max_disconnect_delta": 1,
+                "max_hr_continuity_delta": 1,
+                "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
+                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+                "event_outcomes": [{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 42,
+                    "next_disconnect_delta": 1,
+                    "next_hr_continuity_delta": 1,
+                }],
+            })
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["requirements"]["sustained_silence_reseat"]["status"], "pass")
+
+    def test_sustained_silence_still_rejects_churn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-churn", {
+                "status": "fail",
+                "samples": 7,
+                "min_raw_notification_delta": 0,
+                "max_disconnect_delta": 3,
+                "max_hr_continuity_delta": 0,
+                "flags": ["NO_NEW_DATA"],
+                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+                "event_outcomes": [{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 42,
+                    "next_disconnect_delta": 3,
+                    "next_hr_continuity_delta": 0,
+                }],
+            })
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn("disconnect_churn", blockers)
+            self.assertIn("event_disconnect_churn_sustained_silence_reseat", blockers)
+
 
 if __name__ == "__main__":
     unittest.main()

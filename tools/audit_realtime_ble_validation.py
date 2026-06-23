@@ -126,8 +126,22 @@ def event_outcome(summary: dict[str, Any], label: str) -> dict[str, Any] | None:
     return None
 
 
-def stress_blockers(summary: dict[str, Any], reseat_label: str, *, allow_small_churn: bool = False) -> list[str]:
-    blockers = base_stream_blockers(summary)
+def stress_blockers(
+    summary: dict[str, Any],
+    reseat_label: str,
+    *,
+    start_label: str | None = None,
+    require_clean_stream: bool = True,
+    allow_small_churn: bool = False,
+) -> list[str]:
+    blockers = base_stream_blockers(summary) if require_clean_stream else []
+    if not require_clean_stream:
+        if numeric(summary.get("max_disconnect_delta")) >= 3:
+            blockers.append("disconnect_churn")
+        if numeric(summary.get("max_hr_continuity_delta")) >= 3:
+            blockers.append("hr_continuity_churn")
+    if start_label and not has_event(summary, start_label):
+        blockers.append(f"missing_event_{start_label}")
     if not has_event(summary, reseat_label):
         blockers.append(f"missing_event_{reseat_label}")
     outcome = event_outcome(summary, reseat_label)
@@ -181,13 +195,23 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         paths,
         lambda summary, _path: has_event(summary, "brief_contact_loss_reseat")
         or "brief-contact-loss" in str(summary.get("label", "")),
-        lambda summary: stress_blockers(summary, "brief_contact_loss_reseat"),
+        lambda summary: stress_blockers(
+            summary,
+            "brief_contact_loss_reseat",
+            start_label="brief_contact_loss_start",
+        ),
     )
     sustained = best_candidate(
         paths,
         lambda summary, _path: has_event(summary, "sustained_silence_reseat")
         or "sustained-silence" in str(summary.get("label", "")),
-        lambda summary: stress_blockers(summary, "sustained_silence_reseat", allow_small_churn=True),
+        lambda summary: stress_blockers(
+            summary,
+            "sustained_silence_reseat",
+            start_label="sustained_silence_start",
+            require_clean_stream=False,
+            allow_small_churn=True,
+        ),
     )
     app_switch = best_candidate(
         paths,
