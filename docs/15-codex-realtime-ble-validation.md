@@ -283,12 +283,12 @@ complete the full 2–3h validation:
   window produced `rawNotif+24`. This is the current short-cadence app-switch
   pass evidence.
 - Current continuation readiness:
-  `logs/live-device/realtime-ble-monitor/rt-goal-continuation-readiness-20260623T061511Z/summary.json`
-  passed with `samples=2`, `min_raw_notification_delta=33`,
+  `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
+  passed with `samples=2`, `min_raw_notification_delta=21`,
   `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, no flags, and
   `state_pull.status=ok`. The active journal was fresh and active
-  (`active_journal_samples=158`, `active_journal_rr_values=33`,
-  `active_journal_duration_s=150`). This proves the current installed app is
+  (`active_journal_samples=584`, `active_journal_rr_values=149`,
+  `active_journal_duration_s=560`). This proves the current installed app is
   still live and writing durable state, but it is only readiness evidence, not
   the full 2–3h worn validation.
 - `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
