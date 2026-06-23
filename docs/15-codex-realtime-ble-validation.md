@@ -217,9 +217,10 @@ requirement. For any candidate summary it also prints the key evidence metrics
 (`samples`, `duration_s`, raw-notification delta, accepted-sample delta when
 available, disconnect delta, and HR-continuity delta), plus the state-pull,
 file-durability, active-journal, and embedded-audit snapshot statuses, so a
-failed run can be diagnosed without opening `summary.json`. Saved audit reports
-include a generation timestamp and the number of local monitor summaries
-inspected.
+failed run can be diagnosed without opening `summary.json`. Each requirement
+also prints how many local candidate summaries matched before blockers were
+applied. Saved audit reports include a generation timestamp and the number of
+local monitor summaries inspected.
 If an interrupted run leaves a corrupt `summary.json`, the audit reports it
 under `Invalid Summaries`, continues evaluating the valid run artifacts, and
 blocks the final completion gate until the corrupt run is removed or rerun.

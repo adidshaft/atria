@@ -368,9 +368,16 @@ def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocke
             "audit_snapshot_summary_count": audit_snapshot.get("summary_count"),
         })
     if not candidates:
-        return {"summary": "missing", "status": "missing", "blockers": ["missing_evidence"]}
+        return {
+            "summary": "missing",
+            "status": "missing",
+            "blockers": ["missing_evidence"],
+            "candidate_count": 0,
+        }
     candidates.sort(key=lambda item: (item["status"] == "pass", -len(item["blockers"]), item["summary"]))
-    return candidates[-1]
+    best = candidates[-1]
+    best["candidate_count"] = len(candidates)
+    return best
 
 
 def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
@@ -465,6 +472,7 @@ def markdown_summary(report: dict[str, Any]) -> str:
         lines.extend([
             f"- `{name}`: `{section['status']}`",
             f"  - Summary: `{section['summary']}`",
+            f"  - Candidates: `{section.get('candidate_count', 'missing')}`",
             f"  - Blockers: `{', '.join(section.get('blockers', [])) or 'none'}`",
         ])
         if section["summary"] != "missing":
