@@ -104,12 +104,15 @@ Pull the full state snapshot without relaunching the app:
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 \
-  --label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state
+  --label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot
 ```
    `--pull-state` runs `pull_atria_state.sh` after the monitor completes and
    embeds active-journal/session continuity fields in `summary.json` under
    `state_pull`. This gives the pass/fail audit one artifact for both live BLE
    counters and the "continuous session, not tiny fragments" requirement.
+   `--audit-snapshot` writes the verifier's Markdown output to `audit.md` in the
+   same run directory and records its status/blockers in `summary.json` under
+   `audit_snapshot`, so each physical run carries its own current audit result.
    For targeted stress runs, add one or more `--event SAMPLE:LABEL` flags to
    annotate the JSONL/summary timeline. The summary also includes
    `event_outcomes`, which reports the next sample's raw-data, disconnect, and
@@ -117,7 +120,7 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 \
-  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot \
   --event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat
 ```
    Use the inline loop only if the repo tool is unavailable:
@@ -209,7 +212,7 @@ remaining physical recovery requirements.
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 \
-  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot \
   --event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat
 ```
 2. After sample `index=1` prints, loosen/lift the strap for about 30 seconds,
@@ -224,7 +227,7 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 7 --interval 120 \
-  --label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot \
   --event 1:sustained_silence_start --event 3:sustained_silence_reseat
 ```
 2. After sample `index=1` prints, take the strap off and set it down for at
