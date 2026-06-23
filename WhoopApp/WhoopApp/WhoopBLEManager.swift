@@ -1373,11 +1373,15 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               maxHR)
     }
 
-    func handleSceneBackgroundTransition(reason: String) {
+    func handleSceneBackgroundTransition(reason: String, rest: Int, maxHR: Int) {
         foregroundInteractiveMode = false
         flushLifecycleRealtimeState(reason: reason)
         updatePhoneMotionAuditState(reason: reason)
-        ensureForegroundKeepaliveWatchdog(reason: reason)
+        if longWearModeEnabled {
+            startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
+        } else {
+            ensureForegroundKeepaliveWatchdog(reason: reason)
+        }
         reassertHeartRateNotificationsIfConnected(reason: reason)
         WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
               reason,

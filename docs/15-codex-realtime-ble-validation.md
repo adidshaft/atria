@@ -32,6 +32,11 @@ Key fixes on `main` (HEAD region):
   `handleUnattendedMode`. The path flushes realtime state, keeps the foreground
   keepalive armed, reasserts the standard HR notify/read path when connected,
   and explicitly avoids `startLongWearMode` or `cancelPeripheralConnection`.
+- current HEAD — **background supervisor resume**. True `.background`
+  transitions now resume the full long-wear supervisor with the current
+  rest/max-HR profile after flushing, while transient `.inactive` app-switch
+  states remain checkpoint-only. This keeps unattended collection protected by
+  the same watchdog/checkpoint path used for normal background wear.
 
 ## Device + paths (constants)
 
@@ -196,8 +201,8 @@ available, disconnect delta, and HR-continuity delta) so a failed run can be
 diagnosed without opening `summary.json`. Saved audit reports include a
 generation timestamp and the number of local monitor summaries inspected.
 If an interrupted run leaves a corrupt `summary.json`, the audit reports it
-under `Invalid Summaries` and continues evaluating the valid run artifacts; rerun
-or remove the corrupt run before relying on the final completion gate.
+under `Invalid Summaries`, continues evaluating the valid run artifacts, and
+blocks the final completion gate until the corrupt run is removed or rerun.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link
@@ -368,6 +373,15 @@ complete the full 2–3h validation:
   before the evidence deadline, so it is treated as a console-harness artifact,
   not as normal user app-switch evidence. Use non-disruptive container pulls or
   the checked-in monitor summaries as authoritative evidence for this handoff.
+- After the background-supervisor resume patch, the fixed Debug build was
+  installed on the physical iPhone and relaunched normally. A non-disruptive
+  pull at
+  `logs/live-device/state-pulls/app-switch-supervisor-20260623T070647Z/pull-summary.txt`
+  showed `process_status=running`, `sessions_count=220`,
+  `file_durability_status=saved_sessions_preserved`, a fresh reconstructed
+  active journal, and `active_journal_peak_hr=81`. This is install/liveness
+  evidence only; the long worn monitor and two contact-loss stress artifacts
+  remain required.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,

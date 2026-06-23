@@ -301,6 +301,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         if section["status"] != "pass"
         for blocker in section.get("blockers", [])
     ]
+    blockers.extend(f"invalid_summary:{item['summary']}" for item in invalid_summaries)
     return {
         "status": "pass" if not blockers else "incomplete",
         "root": str(root),

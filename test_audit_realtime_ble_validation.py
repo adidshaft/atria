@@ -159,8 +159,47 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertEqual(report["valid_summary_count"], 1)
             self.assertEqual(len(report["invalid_summaries"]), 1)
             self.assertIn("rt-daytime-partial/summary.json", report["invalid_summaries"][0]["summary"])
+            self.assertIn("invalid_summary:", " ".join(report["blockers"]))
             self.assertIn("## Invalid Summaries", markdown)
             self.assertIn("JSONDecodeError", markdown)
+
+    def test_invalid_summary_blocks_otherwise_passing_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-pass", passing_stream(state_pull=passing_state()))
+            write_summary(root, "rt-brief-contact-loss-pass", passing_stream(
+                samples=5,
+                events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
+                event_outcomes=[{
+                    "events": ["brief_contact_loss_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 70,
+                    "next_disconnect_delta": 0,
+                    "next_hr_continuity_delta": 0,
+                }],
+            ))
+            write_summary(root, "rt-sustained-silence-pass", passing_stream(
+                samples=7,
+                events={"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+                event_outcomes=[{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 80,
+                    "next_disconnect_delta": 1,
+                    "next_hr_continuity_delta": 1,
+                }],
+            ))
+            write_summary(root, "rt-clock-switch-pass", passing_stream(samples=4, planned_interval_s=20))
+            bad = root / "rt-daytime-corrupt" / "summary.json"
+            bad.parent.mkdir()
+            bad.write_text("{", encoding="utf-8")
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["status"], "incomplete")
+            self.assertEqual(report["valid_summary_count"], 4)
+            self.assertTrue(any(blocker.startswith("invalid_summary:") for blocker in report["blockers"]))
+            self.assertIn("## Invalid Summaries", audit.markdown_summary(report))
 
     def test_markdown_prints_missing_for_absent_optional_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
