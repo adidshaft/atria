@@ -33,14 +33,39 @@ immediately by `didDisconnectPeripheral`. New watchdog action:
 **Verified on device:** builds, installs, streams HR+RR (`hr=64`, RR via
 `0x2A37`), 54 HR samples in 30s, no teardown storm.
 
-**Still needs a worn-strap + backgrounded test by Codex/owner:** lock the screen
-or switch apps for ~2 min with the strap worn, then pull
-`Documents/atria-active-session.json` and confirm samples kept arriving with no
-multi-second gaps, and that `whoop.watchdog.hrContinuityCount` did NOT climb.
-Live counters to watch (pull the prefs plist, read with `plistlib`):
-`whoop.link.disconnects`, `whoop.watchdog.hrContinuityCount`,
-`whoop.watchdog.acceptedHRCount`, and the new `reassert_keep_connection` action
-in `whoop.watchdog.lastAction`.
+### 0a. Overnight "collected nothing" fix — foreground silent-link keepalive
+
+A worn overnight run collected **zero** samples after the evening
+(`whoop.sample.rawNotifications` frozen, last session ~20:16) while
+`whoop.link.lastStatus` still read `connected`. Root cause: in long-wear mode the
+full supervisor + all data-gap watchdogs are **paused while the app is
+foreground** (to avoid radio churn during active viewing). But screen-on /
+auto-lock-off all-night collection keeps the app foreground, so a link that was
+nominally `.connected` but had gone completely silent had nothing to recover it.
+
+Fix (`WhoopBLEManager.swift`): `startForegroundKeepaliveWatchdog` — armed
+whenever foreground + long-wear (incl. cold launch). Idle while data flows; after
+75s of total `2A37` silence on a connected link it re-asserts the subscription,
+then after a further 75s escalates to a backoff-guarded `requestFreshScanReconnect`.
+Critical detail: it falls back to its own arm time for the silence reference,
+because a **state-restored** connection (the overnight case) has neither
+`lastRawHRNotificationAt` nor `connectedAt`.
+
+**Device-verified on a silent restored link:** keepalive fired and reconnected —
+`link.attempts 1046→1047, successes 842→843` over 195s; single bounded recovery,
+no churn. Logs: `foreground_keepalive armed=1`, then `status=silent
+action=reassert_notify` → `action=fresh_scan_reconnect`.
+
+### Still needs a worn overnight re-test (owner/Codex)
+Wear the strap, keep the app foreground with auto-lock off overnight, then in the
+morning pull `Documents/sessions.json` + the prefs plist and confirm:
+- a continuous overnight session (not just an evening one),
+- `whoop.sample.rawNotifications` climbed through the night,
+- `whoop.watchdog.hrContinuityCount` did NOT spike (teardown fix holding),
+- if any silent gap occurred, `foreground_keepalive` recovered it.
+Pull prefs with `plistlib`; watch `whoop.link.disconnects`,
+`whoop.watchdog.hrContinuityCount`, and the `reassert_keep_connection` /
+`foreground_keepalive` actions.
 
 ## Hard constraint for this session
 
