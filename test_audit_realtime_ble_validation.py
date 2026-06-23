@@ -77,6 +77,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertEqual(report["requirements"]["app_switch"]["status"], "pass")
             self.assertIn("T", report["generated_at"])
             self.assertEqual(report["summary_count"], 1)
+            self.assertEqual(report["valid_summary_count"], 1)
             self.assertIn("rt-daytime-", report["requirements"]["daytime_worn_monitor"]["next_command"])
             self.assertIn("loosen/lift", report["requirements"]["brief_contact_loss"]["operator_action"])
             self.assertIn("take the strap off", report["requirements"]["sustained_silence_reseat"]["operator_action"])
@@ -131,10 +132,35 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Operator action: Wear the strap continuously", markdown)
             self.assertIn("Generated at:", markdown)
             self.assertIn("Summaries inspected:", markdown)
+            self.assertIn("Valid summaries:", markdown)
+            self.assertIn("Invalid summaries:", markdown)
             self.assertIn("Evidence: samples=`4`, duration_s=`60`, min_raw_delta=`60`", markdown)
             self.assertIn("min_accepted_delta=`60`", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
+
+    def test_invalid_summary_is_reported_without_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-ok", passing_stream(
+                samples=4,
+                started_at="2026-06-23T00:00:00Z",
+                finished_at="2026-06-23T00:01:00Z",
+                planned_interval_s=20,
+            ))
+            bad = root / "rt-daytime-partial" / "summary.json"
+            bad.parent.mkdir()
+            bad.write_text("{", encoding="utf-8")
+
+            report = audit.evaluate(root)
+            markdown = audit.markdown_summary(report)
+
+            self.assertEqual(report["summary_count"], 2)
+            self.assertEqual(report["valid_summary_count"], 1)
+            self.assertEqual(len(report["invalid_summaries"]), 1)
+            self.assertIn("rt-daytime-partial/summary.json", report["invalid_summaries"][0]["summary"])
+            self.assertIn("## Invalid Summaries", markdown)
+            self.assertIn("JSONDecodeError", markdown)
 
     def test_markdown_prints_missing_for_absent_optional_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:

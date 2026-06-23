@@ -88,6 +88,20 @@ def latest_summaries(root: Path) -> list[Path]:
     return sorted(root.glob("*/summary.json"), key=lambda path: path.stat().st_mtime)
 
 
+def load_summary_records(paths: list[Path]) -> tuple[list[tuple[Path, dict[str, Any]]], list[dict[str, str]]]:
+    records: list[tuple[Path, dict[str, Any]]] = []
+    invalid: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            records.append((path, load_json(path)))
+        except (OSError, json.JSONDecodeError) as exc:
+            invalid.append({
+                "summary": str(path),
+                "error": exc.__class__.__name__,
+            })
+    return records, invalid
+
+
 def summary_duration_seconds(summary: dict[str, Any]) -> float:
     start = parse_time(summary.get("started_at"))
     finish = parse_time(summary.get("finished_at"))
@@ -210,10 +224,9 @@ def stress_blockers(
     return blockers
 
 
-def best_candidate(paths: list[Path], predicate, blocker_fn) -> dict[str, Any]:
+def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocker_fn) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
-    for path in paths:
-        summary = load_json(path)
+    for path, summary in records:
         if not predicate(summary, path):
             continue
         blockers = blocker_fn(summary)
@@ -236,14 +249,15 @@ def best_candidate(paths: list[Path], predicate, blocker_fn) -> dict[str, Any]:
 
 def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
     paths = latest_summaries(root)
+    records, invalid_summaries = load_summary_records(paths)
     daytime = best_candidate(
-        paths,
+        records,
         lambda summary, _path: str(summary.get("label", "")).startswith("rt-daytime-")
         or summary_duration_seconds(summary) >= MIN_DAYTIME_DURATION_SECONDS,
         daytime_blockers,
     )
     brief = best_candidate(
-        paths,
+        records,
         lambda summary, _path: has_event(summary, "brief_contact_loss_reseat")
         or "brief-contact-loss" in str(summary.get("label", "")),
         lambda summary: stress_blockers(
@@ -253,7 +267,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         ),
     )
     sustained = best_candidate(
-        paths,
+        records,
         lambda summary, _path: has_event(summary, "sustained_silence_reseat")
         or "sustained-silence" in str(summary.get("label", "")),
         lambda summary: stress_blockers(
@@ -265,7 +279,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         ),
     )
     app_switch = best_candidate(
-        paths,
+        records,
         lambda summary, _path: "app-switch" in str(summary.get("label", ""))
         or "clock-switch" in str(summary.get("label", "")),
         base_stream_blockers,
@@ -292,6 +306,8 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         "root": str(root),
         "generated_at": utc_now(),
         "summary_count": len(paths),
+        "valid_summary_count": len(records),
+        "invalid_summaries": invalid_summaries,
         "requirements": sections,
         "blockers": blockers,
     }
@@ -309,6 +325,8 @@ def markdown_summary(report: dict[str, Any]) -> str:
         f"- Evidence root: `{report['root']}`",
         f"- Generated at: `{report.get('generated_at', 'missing')}`",
         f"- Summaries inspected: `{report.get('summary_count', 'missing')}`",
+        f"- Valid summaries: `{report.get('valid_summary_count', report.get('summary_count', 'missing'))}`",
+        f"- Invalid summaries: `{len(report.get('invalid_summaries', []))}`",
         "",
         "## Requirements",
     ]
@@ -333,6 +351,13 @@ def markdown_summary(report: dict[str, Any]) -> str:
                 f"  - Next command: `{section.get('next_command', 'missing')}`",
                 f"  - Operator action: {section.get('operator_action', 'missing')}",
             ])
+    invalid = report.get("invalid_summaries", [])
+    if invalid:
+        lines.extend(["", "## Invalid Summaries"])
+        for item in invalid[:10]:
+            lines.append(f"- `{item.get('summary', 'missing')}`: `{item.get('error', 'unknown')}`")
+        if len(invalid) > 10:
+            lines.append(f"- ... `{len(invalid) - 10}` more")
     return "\n".join(lines) + "\n"
 
 
