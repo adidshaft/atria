@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 import sys
 import time
@@ -264,6 +265,10 @@ def write_audit_snapshot(root: Path, destination: Path) -> dict[str, Any]:
     }
 
 
+def command_string(argv: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in argv)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default=os.environ.get("ATRIA_DEVICE_ID", DEFAULT_DEVICE))
@@ -365,6 +370,9 @@ def main() -> int:
         "label": args.label,
         "started_at": samples[0]["captured_at"] if samples else utc_now(),
         "finished_at": utc_now(),
+        "command": command_string(sys.argv),
+        "device": args.device,
+        "bundle": args.bundle,
         "jsonl": str(jsonl_path),
         "out_dir": str(out_dir),
         "planned_samples": args.samples,

@@ -113,6 +113,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `--audit-snapshot` writes the verifier's Markdown output to `audit.md` in the
    same run directory and records its status/blockers in `summary.json` under
    `audit_snapshot`, so each physical run carries its own current audit result.
+   `summary.json` also records the exact monitor `command`, `device`, and
+   `bundle` used for the run so evidence can be reproduced or challenged later.
    For targeted stress runs, add one or more `--event SAMPLE:LABEL` flags to
    annotate the JSONL/summary timeline. The summary also includes
    `event_outcomes`, which reports the next sample's raw-data, disconnect, and
