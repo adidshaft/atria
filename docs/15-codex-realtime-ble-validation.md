@@ -155,6 +155,43 @@ before using that interval as validation evidence.
      `foreground_keepalive` logs `status=silent action=reassert_notify` then
      `action=fresh_scan_reconnect`; on reseating, data resumes within a cycle.
 
+### Remaining Stress Test Commands
+
+Use these short targeted runs before or after the full 2–3h monitor. They do not
+replace the long worn window, but they create clean artifacts for the two
+remaining physical recovery requirements.
+
+**Brief contact loss (<75s):**
+1. Start this monitor:
+```sh
+ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 \
+  --label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat
+```
+2. After sample `index=1` prints, loosen/lift the strap for about 30 seconds,
+   then reseat it firmly before sample `index=2`.
+3. Pass evidence: summary `status=pass`, `max_disconnect_delta=0`,
+   `max_hr_continuity_delta=0`, and `event_outcomes` for
+   `brief_contact_loss_reseat` has `status=recovered` with
+   `next_raw_notification_delta > 0`.
+
+**Sustained silence and reseat (>2.5 min):**
+1. Start this monitor:
+```sh
+ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  python3 tools/monitor_realtime_ble.py --samples 7 --interval 120 \
+  --label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state \
+  --event 1:sustained_silence_start --event 3:sustained_silence_reseat
+```
+2. After sample `index=1` prints, take the strap off and set it down for at
+   least 2.5 minutes. Reseat it firmly after sample `index=3` prints.
+3. Pass evidence: summary should show a recovery action in the latest/nearby
+   watchdog or keepalive fields (`reassert_notify` or `fresh_scan_reconnect`),
+   no churn storm (`max_disconnect_delta < 3`, `max_hr_continuity_delta < 3`),
+   and `event_outcomes` for `sustained_silence_reseat` has `status=recovered`
+   with `next_raw_notification_delta > 0`.
+
 ## PASS / FAIL
 
 **PASS** over the worn window:
