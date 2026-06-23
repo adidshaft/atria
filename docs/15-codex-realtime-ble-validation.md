@@ -158,4 +158,5 @@ before using that interval as validation evidence.
 - UserDefaults persist across reinstall, so counters are cumulative — always work
   in **deltas**, not absolutes.
 - Keep `python3 test_handoff_static_checks.py` green for any code change
-  (27 tests; it locks honesty copy + the standard-HR-only write guard).
+  (current suite also locks keepalive/app-switch behavior and healthy-stream
+  counter flushing).

@@ -166,7 +166,7 @@ def main() -> int:
         else:
             current = read_preferences(prefs_path)
             delta = compute_delta(previous, current)
-            flags = evaluate_sample(delta, current, worn=not args.not_worn)
+            flags = [] if previous is None else evaluate_sample(delta, current, worn=not args.not_worn)
             sample = {
                 "sample": index,
                 "captured_at": utc_now(),

@@ -249,6 +249,29 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, keepalive_body, "let effectiveSilenceTimeout = hasSeenPacket ? silenceTimeout : initialSilenceTimeout")
         assert_contains(self, keepalive_body, "let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow")
 
+    def test_live_sample_counters_flush_on_healthy_stream(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        raw = re.search(
+            r"private func recordRawHRNotification\(hr: Int, at sampleTime: Date\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(raw)
+        raw_body = raw.group("body")
+        self.assertGreater(raw_body.find("sampleDiagnostics.rawNotifications += 1"), -1)
+        self.assertGreater(raw_body.rfind("scheduleSampleDiagnosticsFlush()"), raw_body.find("lastRawHRNotificationAt = sampleTime"))
+
+        accepted = re.search(
+            r"private func recordAcceptedHRSample\(rate: Int, at sampleTime: Date\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(accepted)
+        accepted_body = accepted.group("body")
+        self.assertGreater(accepted_body.find("sampleDiagnostics.acceptedSamples += 1"), -1)
+        self.assertGreater(accepted_body.rfind("scheduleSampleDiagnosticsFlush()"), accepted_body.find("sampleDiagnostics.lastReason == \"accepted_gap\""))
+
     def test_healthkit_hrv_export_uses_validated_sdnn_only(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
 
