@@ -167,9 +167,16 @@ complete the full 2–3h validation:
 - A delayed active-journal pull after that bounded run found
   `segment-00000001.json` with 188 samples, RR samples present, and
   `zeroHRSamples=0`, so the bounded run was not producing tiny saved fragments.
+- `logs/live-device/realtime-ble-monitor/rt-app-switch-stress-20260623T052919Z/summary.json`
+  passed the app-switch stress test: Atria was backgrounded by launching Clock
+  for about two minutes, then foregrounded again; all real 30s monitor intervals
+  had new raw notifications (`min_raw_notification_delta=21`), with
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, and no flags. A
+  post-stress active-journal pull found a Long wear segment with 72 samples,
+  73 RR samples, and `zeroHRSamples=0`.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
-and the three stress tests above (app-switch, brief contact loss, sustained
+and the remaining stress tests above (brief contact loss, sustained
 silence/reseat) with passing evidence.
 
 ## Notes / gotchas
