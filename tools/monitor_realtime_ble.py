@@ -43,6 +43,14 @@ STATUS_KEYS = [
     "whoop.keepalive.ticks",
     "whoop.radio.standardHROnly",
     "whoop.longWear.enabled",
+    "whoop.offlineSync.enabled",
+    "whoop.offlineSync.attempts",
+    "whoop.offlineSync.lastStatus",
+    "whoop.offlineSync.lastReason",
+    "whoop.offlineSync.rangeLossBackfillPending",
+    "whoop.offlineSync.rangeLossBackfillReason",
+    "whoop.offlineSync.rangeLossBackfillRequestedAt",
+    "whoop.offlineSync.rangeLossBackfillStartedAt",
 ]
 
 PULL_STATE_SUMMARY_KEYS = [

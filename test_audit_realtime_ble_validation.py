@@ -71,10 +71,20 @@ def passing_state_with_range_loss_backfill():
         **state["fields"],
         "offline_sync_last_status": "armed",
         "offline_sync_last_reason": "long_wear_range_loss",
-        "offline_range_loss_backfill_pending": "0",
+        "offline_range_loss_backfill_pending": "1",
         "offline_range_loss_backfill_reason": "long_wear_range_loss",
         "offline_range_loss_backfill_requested_age_s": "12.0",
         "offline_range_loss_backfill_started_age_s": "4.0",
+    }
+    return state
+
+
+def passing_state_with_completed_range_loss_backfill():
+    state = passing_state_with_range_loss_backfill()
+    state["fields"] = {
+        **state["fields"],
+        "offline_sync_last_status": "archived",
+        "offline_range_loss_backfill_pending": "0",
     }
     return state
 
@@ -527,6 +537,21 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                 max_disconnect_delta=2,
                 flags=["NO_NEW_DATA"],
                 state_pull=passing_state_with_range_loss_backfill(),
+            ))
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["requirements"]["daytime_worn_monitor"]["status"], "pass")
+
+    def test_daytime_allows_range_loss_when_backfill_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-range-loss-archived", passing_stream(
+                min_raw_notification_delta=0,
+                min_accepted_sample_delta=0,
+                max_disconnect_delta=2,
+                flags=["NO_NEW_DATA"],
+                state_pull=passing_state_with_completed_range_loss_backfill(),
             ))
 
             report = audit.evaluate(root)
