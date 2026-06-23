@@ -139,6 +139,7 @@ class MonitorRealtimeBLETests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "pass")
         self.assertEqual(summary["min_raw_notification_delta"], 12)
+        self.assertEqual(summary["min_accepted_sample_delta"], 12)
 
     def test_pull_state_summary_keeps_continuity_fields(self):
         text = """

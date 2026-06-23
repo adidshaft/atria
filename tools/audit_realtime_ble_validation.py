@@ -111,6 +111,8 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
         blockers.append("summary_flags_present")
     if numeric(summary.get("min_raw_notification_delta")) <= 0:
         blockers.append("no_positive_raw_delta_on_every_tick")
+    if "min_accepted_sample_delta" in summary and numeric(summary.get("min_accepted_sample_delta")) <= 0:
+        blockers.append("no_positive_accepted_delta_on_every_tick")
     if numeric(summary.get("max_disconnect_delta")) != 0:
         blockers.append("disconnect_delta_nonzero")
     if numeric(summary.get("max_hr_continuity_delta")) != 0:
@@ -222,6 +224,7 @@ def best_candidate(paths: list[Path], predicate, blocker_fn) -> dict[str, Any]:
             "samples": summary.get("samples"),
             "duration_s": int(summary_duration_seconds(summary)),
             "min_raw_notification_delta": summary.get("min_raw_notification_delta"),
+            "min_accepted_sample_delta": summary.get("min_accepted_sample_delta"),
             "max_disconnect_delta": summary.get("max_disconnect_delta"),
             "max_hr_continuity_delta": summary.get("max_hr_continuity_delta"),
         })
@@ -295,6 +298,10 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
 
 
 def markdown_summary(report: dict[str, Any]) -> str:
+    def metric(section: dict[str, Any], key: str) -> Any:
+        value = section.get(key)
+        return "missing" if value is None else value
+
     lines = [
         "# Realtime BLE Validation Audit",
         "",
@@ -314,11 +321,12 @@ def markdown_summary(report: dict[str, Any]) -> str:
         if section["summary"] != "missing":
             lines.append(
                 "  - Evidence: "
-                f"samples=`{section.get('samples', 'missing')}`, "
-                f"duration_s=`{section.get('duration_s', 'missing')}`, "
-                f"min_raw_delta=`{section.get('min_raw_notification_delta', 'missing')}`, "
-                f"max_disconnect_delta=`{section.get('max_disconnect_delta', 'missing')}`, "
-                f"max_hr_continuity_delta=`{section.get('max_hr_continuity_delta', 'missing')}`"
+                f"samples=`{metric(section, 'samples')}`, "
+                f"duration_s=`{metric(section, 'duration_s')}`, "
+                f"min_raw_delta=`{metric(section, 'min_raw_notification_delta')}`, "
+                f"min_accepted_delta=`{metric(section, 'min_accepted_sample_delta')}`, "
+                f"max_disconnect_delta=`{metric(section, 'max_disconnect_delta')}`, "
+                f"max_hr_continuity_delta=`{metric(section, 'max_hr_continuity_delta')}`"
             )
         if section["status"] != "pass":
             lines.extend([

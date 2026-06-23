@@ -139,6 +139,7 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
     deltas = [sample["delta"] for sample in samples[1:]]
     flags = sorted({flag for sample in samples for flag in sample["flags"]})
     raw_deltas = [delta["whoop.sample.rawNotifications"] for delta in deltas]
+    accepted_deltas = [delta["whoop.sample.acceptedSamples"] for delta in deltas]
     disconnect_deltas = [delta["whoop.link.disconnects"] for delta in deltas]
     hr_continuity_deltas = [delta["whoop.watchdog.hrContinuityCount"] for delta in deltas]
     return {
@@ -147,6 +148,7 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
         "worn_expected": worn,
         "flags": flags,
         "min_raw_notification_delta": min(raw_deltas) if raw_deltas else 0,
+        "min_accepted_sample_delta": min(accepted_deltas) if accepted_deltas else 0,
         "max_disconnect_delta": max(disconnect_deltas) if disconnect_deltas else 0,
         "max_hr_continuity_delta": max(hr_continuity_deltas) if hr_continuity_deltas else 0,
         "latest": samples[-1]["current"] if samples else {},
