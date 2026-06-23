@@ -188,8 +188,11 @@ def audit_snapshot_blockers(summary: dict[str, Any]) -> list[str]:
         return ["missing_audit_snapshot"]
     if snapshot.get("status") not in {"pass", "incomplete"}:
         return ["audit_snapshot_status_missing"]
-    if not snapshot.get("path"):
+    snapshot_path = snapshot.get("path")
+    if not snapshot_path:
         return ["audit_snapshot_path_missing"]
+    if not Path(str(snapshot_path)).exists():
+        return ["audit_snapshot_file_missing"]
     if numeric(snapshot.get("summary_count")) <= 0:
         return ["audit_snapshot_summary_count_missing"]
     return []
