@@ -124,7 +124,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "if syncStarted",
             "try? await Task.sleep(for: .seconds(185))",
             "case .background:",
-            "ble.handleSceneBackgroundTransition(reason: \"scene_background\")",
+            "ble.handleSceneBackgroundTransition(reason: \"scene_background\",",
+            "rest: store.baseline.restingInt ?? 60",
+            "maxHR: store.profile.maxHR",
             "case .inactive:",
             "ble.flushLifecycleRealtimeState(reason: \"scene_inactive_checkpoint\")",
             "handleBackgroundTask",
@@ -157,15 +159,16 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", unattended_mode.group("body"))
 
         scene_background_transition = re.search(
-            r"func handleSceneBackgroundTransition\(reason: String\) \{(?P<body>.*?)\n    \}",
+            r"func handleSceneBackgroundTransition\(reason: String, rest: Int, maxHR: Int\) \{(?P<body>.*?)\n    \}",
             ble,
             re.S,
         )
         self.assertIsNotNone(scene_background_transition)
         transition_body = scene_background_transition.group("body")
         assert_contains(self, transition_body, "flushLifecycleRealtimeState(reason: reason)")
+        assert_contains(self, transition_body, "if longWearModeEnabled")
+        assert_contains(self, transition_body, "startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)")
         assert_contains(self, transition_body, "reassertHeartRateNotificationsIfConnected(reason: reason)")
-        self.assertNotIn("startLongWearMode", transition_body)
         self.assertNotIn("cancelPeripheralConnection", transition_body)
 
         request_sync = re.search(
