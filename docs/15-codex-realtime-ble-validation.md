@@ -195,6 +195,9 @@ requirement. For any candidate summary it also prints the key evidence metrics
 available, disconnect delta, and HR-continuity delta) so a failed run can be
 diagnosed without opening `summary.json`. Saved audit reports include a
 generation timestamp and the number of local monitor summaries inspected.
+If an interrupted run leaves a corrupt `summary.json`, the audit reports it
+under `Invalid Summaries` and continues evaluating the valid run artifacts; rerun
+or remove the corrupt run before relying on the final completion gate.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link
