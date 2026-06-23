@@ -8,6 +8,8 @@ from pathlib import Path
 
 from tools import audit_realtime_ble_validation as audit
 
+STATE_PULL_SUMMARY_FILE = Path(__file__).resolve()
+
 
 def write_summary(root: Path, label: str, payload: dict) -> Path:
     path = root / label / "summary.json"
@@ -41,6 +43,7 @@ def passing_stream(**extra):
 def passing_state():
     return {
         "status": "ok",
+        "summary_file": str(STATE_PULL_SUMMARY_FILE),
         "fields": {
             "active_journal_freshness": "fresh",
             "active_journal_continuity_status": "active",
@@ -148,6 +151,15 @@ def passing_sustained_silence(**extra):
 
 
 class AuditRealtimeBLEValidationTests(unittest.TestCase):
+    def setUp(self):
+        global STATE_PULL_SUMMARY_FILE
+        self._state_pull_tmp = tempfile.TemporaryDirectory()
+        STATE_PULL_SUMMARY_FILE = Path(self._state_pull_tmp.name) / "pull-summary.txt"
+        STATE_PULL_SUMMARY_FILE.write_text("file_durability_status=saved_sessions_present\n", encoding="utf-8")
+
+    def tearDown(self):
+        self._state_pull_tmp.cleanup()
+
     def test_documented_commands_match_audit_next_actions(self):
         doc = " ".join(
             Path("docs/15-codex-realtime-ble-validation.md")
@@ -354,6 +366,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             write_summary(root, "rt-daytime-weak", passing_stream(
                 state_pull={
                     "status": "ok",
+                    "summary_file": str(STATE_PULL_SUMMARY_FILE),
                     "fields": {
                         "active_journal_freshness": "stale",
                         "active_journal_continuity_status": "stalled",
@@ -468,6 +481,20 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("missing_ok_state_pull", blockers)
             self.assertIn("missing_audit_snapshot", blockers)
+
+    def test_app_switch_requires_state_pull_summary_file_to_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = passing_state()
+            state["summary_file"] = str(Path(tmp) / "missing-pull-summary.txt")
+            write_summary(root, "rt-clock-switch-missing-state-file", passing_app_switch(
+                state_pull=state,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("state_pull_summary_file_not_found", blockers)
 
     def test_app_switch_requires_operator_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
