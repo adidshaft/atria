@@ -61,6 +61,9 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("brief_contact_loss:missing_evidence", report["blockers"])
             self.assertIn("sustained_silence_reseat:missing_evidence", report["blockers"])
             self.assertEqual(report["requirements"]["app_switch"]["status"], "pass")
+            self.assertIn("rt-daytime-", report["requirements"]["daytime_worn_monitor"]["next_command"])
+            self.assertIn("loosen/lift", report["requirements"]["brief_contact_loss"]["operator_action"])
+            self.assertIn("take the strap off", report["requirements"]["sustained_silence_reseat"]["operator_action"])
 
     def test_full_report_passes_with_all_required_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +97,24 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["blockers"], [])
+
+    def test_markdown_prints_next_actions_only_for_incomplete_requirements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-ok", passing_stream(
+                samples=4,
+                started_at="2026-06-23T00:00:00Z",
+                finished_at="2026-06-23T00:01:00Z",
+                planned_interval_s=20,
+            ))
+
+            report = audit.evaluate(root)
+            markdown = audit.markdown_summary(report)
+
+            self.assertIn("Next command: `ATRIA_DEVICE_ID=", markdown)
+            self.assertIn("Operator action: Wear the strap continuously", markdown)
+            app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
+            self.assertNotIn("Next command:", app_switch_section)
 
     def test_daytime_requires_state_pull_continuity_not_just_green_ticks(self):
         with tempfile.TemporaryDirectory() as tmp:

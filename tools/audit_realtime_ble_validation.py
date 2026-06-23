@@ -14,6 +14,43 @@ DEFAULT_ROOT = Path("logs/live-device/realtime-ble-monitor")
 MIN_DAYTIME_DURATION_SECONDS = 2 * 60 * 60
 MIN_DAYTIME_SAMPLES = 61
 
+NEXT_ACTIONS = {
+    "daytime_worn_monitor": {
+        "command": (
+            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 "
+            "--label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state"
+        ),
+        "operator_action": "Wear the strap continuously for the full 2+ hour monitor window.",
+    },
+    "brief_contact_loss": {
+        "command": (
+            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 "
+            "--label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state "
+            "--event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat"
+        ),
+        "operator_action": "After sample index=1, loosen/lift the strap for about 30 seconds, then reseat before sample index=2.",
+    },
+    "sustained_silence_reseat": {
+        "command": (
+            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "python3 tools/monitor_realtime_ble.py --samples 7 --interval 120 "
+            "--label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state "
+            "--event 1:sustained_silence_start --event 3:sustained_silence_reseat"
+        ),
+        "operator_action": "After sample index=1, take the strap off for at least 2.5 minutes, then reseat after sample index=3.",
+    },
+    "app_switch": {
+        "command": (
+            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 "
+            "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state"
+        ),
+        "operator_action": "Foreground another app for about 2 minutes during the monitor, then return to Atria.",
+    },
+}
+
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -225,6 +262,11 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         "sustained_silence_reseat": sustained,
         "app_switch": app_switch,
     }
+    for name, section in sections.items():
+        action = NEXT_ACTIONS.get(name, {})
+        if action:
+            section["next_command"] = action["command"]
+            section["operator_action"] = action["operator_action"]
     blockers = [
         f"{name}:{blocker}"
         for name, section in sections.items()
@@ -254,6 +296,11 @@ def markdown_summary(report: dict[str, Any]) -> str:
             f"  - Summary: `{section['summary']}`",
             f"  - Blockers: `{', '.join(section.get('blockers', [])) or 'none'}`",
         ])
+        if section["status"] != "pass":
+            lines.extend([
+                f"  - Next command: `{section.get('next_command', 'missing')}`",
+                f"  - Operator action: {section.get('operator_action', 'missing')}",
+            ])
     return "\n".join(lines) + "\n"
 
 
