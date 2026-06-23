@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,10 @@ NEXT_ACTIONS = {
         "operator_action": "Foreground another app for about 2 minutes during the monitor, then return to Atria.",
     },
 }
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -276,6 +280,8 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
     return {
         "status": "pass" if not blockers else "incomplete",
         "root": str(root),
+        "generated_at": utc_now(),
+        "summary_count": len(paths),
         "requirements": sections,
         "blockers": blockers,
     }
@@ -287,6 +293,8 @@ def markdown_summary(report: dict[str, Any]) -> str:
         "",
         f"- Status: `{report['status']}`",
         f"- Evidence root: `{report['root']}`",
+        f"- Generated at: `{report.get('generated_at', 'missing')}`",
+        f"- Summaries inspected: `{report.get('summary_count', 'missing')}`",
         "",
         "## Requirements",
     ]

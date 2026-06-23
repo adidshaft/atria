@@ -170,7 +170,8 @@ do not fail the requirement by themselves; the verifier instead requires bounded
 churn plus a recovered `sustained_silence_reseat` event outcome.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
-requirement.
+requirement. Saved audit reports include a generation timestamp and the number
+of local monitor summaries inspected.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link

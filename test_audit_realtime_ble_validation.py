@@ -63,6 +63,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("brief_contact_loss:missing_evidence", report["blockers"])
             self.assertIn("sustained_silence_reseat:missing_evidence", report["blockers"])
             self.assertEqual(report["requirements"]["app_switch"]["status"], "pass")
+            self.assertIn("T", report["generated_at"])
+            self.assertEqual(report["summary_count"], 1)
             self.assertIn("rt-daytime-", report["requirements"]["daytime_worn_monitor"]["next_command"])
             self.assertIn("loosen/lift", report["requirements"]["brief_contact_loss"]["operator_action"])
             self.assertIn("take the strap off", report["requirements"]["sustained_silence_reseat"]["operator_action"])
@@ -115,6 +117,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("Next command: `ATRIA_DEVICE_ID=", markdown)
             self.assertIn("Operator action: Wear the strap continuously", markdown)
+            self.assertIn("Generated at:", markdown)
+            self.assertIn("Summaries inspected:", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
 
