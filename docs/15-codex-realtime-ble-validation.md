@@ -349,9 +349,11 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 - `hrContinuityCount` stays ~flat while worn (teardown fix holds).
 - If the phone leaves BLE range, the disconnect is treated as recoverable:
   Atria checkpoints the active journal, reconnects without fragmenting the
-  session, marks `offline_range_loss_backfill_pending=1`, and starts a forced
-  offline/historical backfill after reconnect (`offline_sync_last_reason` /
-  `offline_range_loss_backfill_reason=long_wear_range_loss`).
+  session, marks `offline_range_loss_backfill_pending=1`, and records a
+  deferred offline/historical backfill after reconnect without stealing a
+  healthy live HR stream (`offline_sync_last_reason` /
+  `offline_range_loss_backfill_reason=long_wear_range_loss`; while the link is
+  live, `offline_sync_last_status=deferred_live_link` or `armed` is acceptable).
 - Any induced silence is recovered by `foreground_keepalive` (reassert→reconnect),
   and data resumes after reseating — **single** recovery, not a churn storm.
 
@@ -381,6 +383,15 @@ complete the full 2–3h validation:
   final active journal was only 354s. A user-induced app switch around sample 57
   also showed the background collection path is still a weak point: the app
   resumed, but the run does not prove clean background sampling.
+- After the live-safe range-loss backfill change, the updated build was installed
+  and launched on the physical iPhone. The readiness probe
+  `logs/live-device/realtime-ble-monitor/rt-live-safe-backfill-readiness-20260623T131145Z/summary.json`
+  passed with `samples=2`, `min_raw_notification_delta=37`,
+  `min_accepted_sample_delta=37`, `max_disconnect_delta=0`, and no flags. Its
+  state pull showed `offline_sync_last_status=deferred_live_link`,
+  `offline_sync_last_reason=long_wear_range_loss`, and
+  `offline_range_loss_backfill_pending=1`, proving the range-loss backfill
+  marker stays durable without interrupting a healthy live HR stream.
 - `logs/live-device/counter-flush-smoke.log` passed the first gate on the
   physical iPhone: connected to `ADIDSHAFT'S WHO`, `foreground_keepalive` armed,
   `standardHR` present, and `rr source=0x2A37` present (`standard_2a37_frames=32`,
