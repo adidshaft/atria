@@ -700,6 +700,21 @@ complete the full 2–3h validation:
   `official_whoop_coexistence_risk=1`). The remaining pass requires rerunning
   with WHOOP still absent at the final pull, or deliberately proving reliable
   coexistence under that condition.
+- After adding the `link_last_auto_save_*` state-pull fields, WHOOP main/widget
+  were terminated again and
+  `logs/live-device/realtime-ble-monitor/rt-whoop-cleared-readiness-20260623T194257Z/summary.json`
+  passed a short current-tooling readiness probe on
+  `git_commit=997fd96462197e931afcd014126e6937417b976c`: `samples=2`,
+  `min_raw_notification_delta=63`, `min_accepted_sample_delta=63`,
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, and no flags. Its
+  embedded state pull showed `official_whoop_process_status=not_listed`,
+  `official_whoop_coexistence_risk=0`,
+  `active_journal_continuity_status=active`, `active_journal_freshness=fresh`,
+  `active_journal_duration_s=792`, `active_journal_samples=825`,
+  `link_last_auto_save_status=checkpointed_continuity`,
+  `link_last_auto_save_samples=8160`, and
+  `link_last_auto_save_duration_s=7857`. This is the clean starting condition
+  for the next completion run, but it is only a 60s readiness artifact.
 
 Still required before marking this handoff complete: rerun the full 2–3h worn
 monitor on the current build and get a passing audit with fresh/active
