@@ -130,7 +130,7 @@ private struct AtriaHeroHeadlineBlock: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Label("Today", systemImage: "sparkles")
+                Label("Today", systemImage: "house.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)

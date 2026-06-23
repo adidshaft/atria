@@ -1047,7 +1047,7 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "sparkles")
+                Image(systemName: "gearshape.2.fill")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(tint)
                     .frame(width: 34, height: 34)
