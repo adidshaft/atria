@@ -1373,6 +1373,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               maxHR)
     }
 
+    func handleSceneBackgroundTransition(reason: String) {
+        foregroundInteractiveMode = false
+        flushLifecycleRealtimeState(reason: reason)
+        updatePhoneMotionAuditState(reason: reason)
+        ensureForegroundKeepaliveWatchdog(reason: reason)
+        reassertHeartRateNotificationsIfConnected(reason: reason)
+        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
+              reason,
+              status == .connected ? 1 : 0)
+    }
+
     @discardableResult
     func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false) -> Bool {
         let defaults = UserDefaults.standard
