@@ -649,11 +649,32 @@ complete the full 2–3h validation:
   running alongside the official WHOOP widget extension. It is not a daytime
   pass artifact because the app had just been reinstalled/launched and the
   active journal contained only a fresh one-sample segment.
+- Current-build preflight after `3159e33`:
+  `logs/live-device/realtime-ble-monitor/rt-current-whoop-coexistence-readiness-20260623T163246Z/summary.json`
+  passed a short readiness stream on the physical iPhone with
+  `git_commit=3159e33493e4fb829809574e87b78173bff7cca4`, `samples=2`,
+  `min_raw_notification_delta=37`, `min_accepted_sample_delta=37`,
+  `max_disconnect_delta=1`, `max_hr_continuity_delta=0`, and no flags. Its
+  state pull showed `process_name_status=atria`,
+  `official_whoop_process_status=running`, `official_whoop_widget_process=1`,
+  `official_whoop_coexistence_risk=1`,
+  `file_durability_status=saved_sessions_present`,
+  `latest_session_points=131`, and a fresh active journal
+  (`active_journal_samples=37`, `active_journal_duration_s=46`). This proves the
+  current build is still streaming and preserving files, but the official WHOOP
+  widget remains present. Do **not** spend a 91-sample daytime run in this state
+  unless the run is explicitly a coexistence-failure/proof experiment: the normal
+  completion gate requires `official_whoop_coexistence_risk=0` or a dedicated
+  coexistence run that proves no active-journal fragmentation.
 
 Still required before marking this handoff complete: rerun the full 2–3h worn
 monitor on the current build and get a passing audit with fresh/active
 `--pull-state` continuity, `active_journal_duration_s >= 7200`, no tiny-session
-fragmentation, and no `official_whoop_coexistence_risk_present` blocker.
+fragmentation, and no `official_whoop_coexistence_risk_present` blocker. Before
+starting that full run, pull state and confirm
+`official_whoop_coexistence_risk=0`; if it is still `1`, close/remove/disable the
+official WHOOP widget/app path first or treat the next run as a dedicated
+coexistence failure/proof run rather than completion evidence.
 
 Current verifier status:
 ```text
