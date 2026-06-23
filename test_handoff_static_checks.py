@@ -124,13 +124,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "if syncStarted",
             "try? await Task.sleep(for: .seconds(185))",
             "case .background:",
+            "ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,\n                                                maxHR: store.profile.maxHR,\n                                                reason: \"scene_background\")",
             "case .inactive:",
-            "ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,\n                                                maxHR: store.profile.maxHR,\n                                                reason: \"scene_inactive\")",
             "ble.flushLifecycleRealtimeState(reason: \"scene_inactive_checkpoint\")",
             "handleBackgroundTask",
             "performSceneBackgroundMaintenance",
         ]:
             assert_contains(self, app, needle)
+
+        inactive_case = re.search(
+            r"case \.inactive:(?P<body>.*?)case \.active:",
+            app,
+            re.S,
+        )
+        self.assertIsNotNone(inactive_case)
+        self.assertNotIn("handleUnattendedMode", inactive_case.group("body"))
 
         scene_background = re.search(
             r"private func performSceneBackgroundMaintenance\(reason: String\) \{(?P<body>.*?)\n    \}",

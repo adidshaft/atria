@@ -21,12 +21,12 @@ Three commits on `main` (HEAD region):
   75s of total `2A37` silence and reconnects after a further 75s. It uses its own
   arm time as the silence reference so a **state-restored** connection (no
   `connectedAt`) is still covered.
-- `1ade2cd` — **app-switch lifecycle fix**. iOS can sit in `.inactive` before
-  fully backgrounding during app switching; Atria now moves BLE long-wear
-  supervision to unattended mode immediately on `.inactive` and flushes realtime
-  sample diagnostics plus the active journal on lifecycle exits. This prevents
-  the strap link from depending on foreground-only timers when the user switches
-  away without closing the app.
+- current HEAD — **app-switch lifecycle fix**. iOS can sit in `.inactive` during
+  app switching; Atria now keeps BLE in its current mode during that transient,
+  checkpoints realtime state, and only moves to unattended mode on true
+  `.background`. On foreground return it re-asserts the standard HR notify/read
+  path without disconnecting the strap. This prevents transient app switches
+  from restarting long-wear supervision or waiting for the next keepalive tick.
 
 ## Device + paths (constants)
 
@@ -264,6 +264,15 @@ complete the full 2–3h validation:
   stress-test cadence. The earlier 20s failures remain useful diagnostic
   evidence that sub-120s polling can observe iOS batching while another app is
   foreground.
+- After the latest app-switch lifecycle patch, the updated build was installed
+  on the physical iPhone and retested with a 20s Clock switch monitor:
+  `logs/live-device/realtime-ble-monitor/rt-clock-switch-reassert-20260623T061228Z/summary.json`
+  passed with `samples=4`, `min_raw_notification_delta=18`,
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, no flags, and
+  `state_pull.status=ok` with `active_journal_continuity_status=active`. The
+  switched-away windows produced `rawNotif+21` and `rawNotif+18`; the return
+  window produced `rawNotif+24`. This is the current short-cadence app-switch
+  pass evidence.
 - `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
   `pull_atria_state.sh` evidence into the monitor `summary.json`, including
   active journal continuity, latest saved-session points/RR points, and file
