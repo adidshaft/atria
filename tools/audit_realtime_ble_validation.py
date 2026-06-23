@@ -177,6 +177,16 @@ def range_loss_backfill_proven(fields: dict[str, Any]) -> bool:
     )
 
 
+def official_whoop_coexistence_detected(fields: dict[str, Any]) -> bool:
+    return (
+        str(fields.get("official_whoop_coexistence_risk", "")).lower() in {"1", "true", "yes"}
+        or fields.get("official_whoop_process_status") == "running"
+        or numeric(fields.get("official_whoop_process_count")) > 0
+        or str(fields.get("official_whoop_main_process", "")).lower() in {"1", "true", "yes"}
+        or str(fields.get("official_whoop_widget_process", "")).lower() in {"1", "true", "yes"}
+    )
+
+
 def app_switch_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     blockers = base_stream_blockers(summary)
     blockers.extend(audit_snapshot_blockers(summary, summary_path))
@@ -290,6 +300,7 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
     disconnect_delta = numeric(summary.get("max_disconnect_delta"))
     fields = state_fields(summary)
     backfill_proven = range_loss_backfill_proven(fields)
+    coexistence_detected = official_whoop_coexistence_detected(fields)
     if flags and not (disconnect_delta > 0 and backfill_proven and set(flags).issubset({"NO_NEW_DATA"})):
         blockers.append("summary_flags_present")
     if numeric(summary.get("min_raw_notification_delta")) <= 0 and not (disconnect_delta > 0 and backfill_proven):
@@ -322,6 +333,8 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
         blockers.append("active_journal_duration_under_2h")
     if numeric(fields.get("active_journal_samples")) < MIN_DAYTIME_SAMPLES:
         blockers.append("active_journal_too_few_samples")
+    if coexistence_detected:
+        blockers.append("official_whoop_coexistence_risk_present")
     if fields.get("file_durability_status") not in {"saved_sessions_present", "saved_sessions_preserved"}:
         blockers.append("file_durability_not_proven")
     return blockers

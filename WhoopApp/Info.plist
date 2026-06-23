@@ -11,6 +11,10 @@
 	<string>Atria</string>
 	<key>CFBundleName</key>
 	<string>Atria</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whoop</string>
+	</array>
 	<key>NSHealthShareUsageDescription</key>
 	<string>This app reads Health only to confirm locally captured Atria data appears in Apple Health.</string>
 	<key>NSHealthUpdateUsageDescription</key>

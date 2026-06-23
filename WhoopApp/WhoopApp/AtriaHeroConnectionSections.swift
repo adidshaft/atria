@@ -233,7 +233,7 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                 .equatable()
         case .disconnected:
             AtriaHeroStatusTile(title: "Automatic setup is ready",
-                                detail: "Atria keeps scanning with minimal interruption. Use Scan now only if you just disconnected the strap from the WHOOP app.",
+                                detail: "Atria keeps scanning. If WHOOP or its widget is still running, close it first so it cannot reclaim the strap.",
                                 systemImage: "bolt.horizontal.circle",
                                 tint: .blue)
                 .equatable()
