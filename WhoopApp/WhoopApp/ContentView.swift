@@ -718,9 +718,12 @@ struct ProfileOnboardingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: OnboardingStep = .welcome
+    @State private var whoopMayBeInstalled = OfficialWhoopCoexistenceRisk.mayBeInstalled
+    @State private var didRecheckWhoop = false
 
     private enum OnboardingStep: Int, CaseIterable {
         case welcome
+        case coexistence
         case connect
         case profile
 
@@ -733,6 +736,16 @@ struct ProfileOnboardingView: View {
         self.onComplete = onComplete
     }
 
+    private func recheckWhoop() {
+        let installed = OfficialWhoopCoexistenceRisk.mayBeInstalled
+        didRecheckWhoop = true
+        if reduceMotion {
+            whoopMayBeInstalled = installed
+        } else {
+            withAnimation(.snappy(duration: 0.28)) { whoopMayBeInstalled = installed }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -743,6 +756,7 @@ struct ProfileOnboardingView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         switch step {
                         case .welcome: welcomeStep
+                        case .coexistence: coexistenceStep
                         case .connect: connectStep
                         case .profile: profileStep
                         }
@@ -790,6 +804,7 @@ struct ProfileOnboardingView: View {
     private var primaryButtonTitle: String {
         switch step {
         case .welcome: return "Get started"
+        case .coexistence: return whoopMayBeInstalled ? "I’ll do this — continue" : "Continue"
         case .connect: return "Continue"
         case .profile: return "Use this profile"
         }
@@ -850,7 +865,107 @@ struct ProfileOnboardingView: View {
         }
     }
 
-    // MARK: - Step 2: Connect your strap
+    // MARK: - Step 2: WHOOP coexistence
+
+    @ViewBuilder
+    private var coexistenceStep: some View {
+        if whoopMayBeInstalled {
+            whoopConflictStep
+        } else {
+            whoopClearStep
+        }
+    }
+
+    private var whoopConflictStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(.orange)
+                Text("Make room for Atria")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                Text("The WHOOP app is on this phone. It keeps grabbing your strap in the background, which makes Atria’s readings drop and jump.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Pick one")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                onboardingNumberedStep(1,
+                                       title: "Delete the WHOOP app (recommended)",
+                                       detail: "Press and hold the WHOOP icon on your Home Screen → Remove App → Delete App.")
+                onboardingNumberedStep(2,
+                                       title: "Or fully disable it",
+                                       detail: "Open WHOOP, log out, then in iPhone Settings turn off WHOOP’s Bluetooth and Background App Refresh.")
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Why this matters", systemImage: "info.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("iOS only lets one app read the strap at a time. Atria can’t close WHOOP for you, so WHOOP has to step aside for steady readings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    recheckWhoop()
+                } label: {
+                    Label("I removed it — recheck", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.orange)
+
+                if didRecheckWhoop && whoopMayBeInstalled {
+                    Label("WHOOP still detected. Make sure it’s fully deleted, then recheck.",
+                          systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+        }
+    }
+
+    private var whoopClearStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(.green)
+                Text(didRecheckWhoop ? "Nicely done" : "You’re clear")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                Text("No conflicting WHOOP app detected. Atria has your strap to itself, so readings stay steady.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                onboardingFeatureRow(icon: "antenna.radiowaves.left.and.right",
+                                     tint: .green,
+                                     title: "One reader at a time",
+                                     detail: "iOS only lets one app hold the strap. With WHOOP out of the way, Atria keeps a stable connection.")
+                onboardingFeatureRow(icon: "bell.badge",
+                                     tint: .blue,
+                                     title: "We’ll warn you",
+                                     detail: "If WHOOP shows up later and your readings start dropping, Atria will flag it for you.")
+            }
+            .padding(18)
+            .atriaCard(cornerRadius: 22, emphasis: .soft)
+        }
+    }
+
+    // MARK: - Step 3: Connect your strap
 
     private var connectStep: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -868,25 +983,16 @@ struct ProfileOnboardingView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 onboardingNumberedStep(1,
-                                       title: "Free the strap from WHOOP",
-                                       detail: "Disconnect the strap in the official WHOOP app before relying on Atria.")
+                                       title: "Put the strap on",
+                                       detail: "Wear it snug, or tap it once to wake it so it starts advertising over Bluetooth.")
                 onboardingNumberedStep(2,
-                                       title: "Close WHOOP and widgets",
-                                       detail: "WHOOP app, widgets, or background activity can reclaim BLE and fragment Atria's saved sessions.")
-                onboardingNumberedStep(3,
                                        title: "Keep your phone nearby",
-                                       detail: "Wear the strap or tap it to wake it, and keep your phone unlocked while Atria connects.")
+                                       detail: "Stay unlocked for the first connection. Atria finds the strap and connects on its own.")
             }
             .padding(18)
             .atriaCard(cornerRadius: 22, emphasis: .soft)
 
-            Label("If WHOOP keeps running in the background, Atria will warn you instead of silently treating fragmented data as reliable.",
-                  systemImage: "exclamationmark.triangle.fill")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Label("No strap handy right now? You can skip ahead and connect later — Atria keeps trying in the background.",
+            Label("No strap handy right now? Skip ahead — Atria keeps looking in the background and connects when it’s near.",
                   systemImage: "info.circle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -894,7 +1000,7 @@ struct ProfileOnboardingView: View {
         }
     }
 
-    // MARK: - Step 3: Profile
+    // MARK: - Step 4: Profile
 
     private var profileStep: some View {
         VStack(alignment: .leading, spacing: 18) {
