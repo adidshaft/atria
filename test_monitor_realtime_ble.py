@@ -260,6 +260,11 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertIn("--label rt-daytime-test", command)
         self.assertIn("'1:brief contact'", command)
 
+    def test_git_commit_returns_current_commit(self):
+        commit = monitor_realtime_ble.git_commit()
+
+        self.assertRegex(commit, r"^[0-9a-f]{40}$|^unknown$")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -271,6 +271,18 @@ def command_string(argv: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
 
 
+def git_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default=os.environ.get("ATRIA_DEVICE_ID", DEFAULT_DEVICE))
@@ -373,6 +385,7 @@ def main() -> int:
         "started_at": samples[0]["captured_at"] if samples else utc_now(),
         "finished_at": utc_now(),
         "command": command_string(sys.argv),
+        "git_commit": git_commit(),
         "device": args.device,
         "bundle": args.bundle,
         "jsonl": str(jsonl_path),
