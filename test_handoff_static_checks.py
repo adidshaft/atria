@@ -214,6 +214,40 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
+    def test_production_capture_defaults_enable_protected_long_wear(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "static let protectedLongWearMigrated",
+            "defaults.set(true, forKey: CaptureDefaults.protectedLongWearMigrated)",
+            "defaults.set(true, forKey: LongWearDefaults.enabled)",
+            "defaults.set(true, forKey: RadioDefaults.standardHROnly)",
+            "longWearModeEnabled = true",
+            "standardHROnlyMode = true",
+            "standardHROnlyEnabled = true",
+            "recordRadioMode(\"standard_hr_only\", reason: \"protected_default\")",
+            "mode=protected_long_wear_default",
+            "long_wear_default=1",
+            "standard_hr_only_default=1",
+            "offline_sync_default=1",
+            "protected_background_collection_default",
+        ]:
+            assert_contains(self, text, needle)
+
+    def test_harness_classifies_untrusted_developer_profile_launch(self):
+        text = source(ROOT / "live_device_debug.sh")
+
+        for needle in [
+            "launch_output_lines = []",
+            "launch_output_lines.append(line)",
+            "\"invalid code signature\" in launch_output",
+            "\"profile has not been explicitly trusted\" in launch_output",
+            "\"BSErrorCodeDescription = RequestDenied\" in launch_output",
+            "HARNESS_ERROR=developer_profile_not_trusted",
+            "HARNESS_NEXT_ACTION=trust_developer_profile_in_ios_settings_then_retry",
+        ]:
+            assert_contains(self, text, needle)
+
     def test_state_restoration_reuses_restored_peripheral(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 

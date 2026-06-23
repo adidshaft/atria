@@ -139,7 +139,8 @@ def evaluate_sample(delta: dict[str, int], current: dict[str, Any], worn: bool) 
     if current.get("whoop.link.lastStatus") not in {None, "connected"}:
         flags.append("NOT_CONNECTED")
     if current.get("whoop.longWear.enabled") and current.get("whoop.keepalive.armed"):
-        if delta["whoop.keepalive.ticks"] <= 0:
+        stream_stalled = worn and delta["whoop.sample.rawNotifications"] <= 0
+        if stream_stalled and delta["whoop.keepalive.ticks"] <= 0:
             flags.append("KEEPALIVE_NOT_ADVANCING")
     return flags
 

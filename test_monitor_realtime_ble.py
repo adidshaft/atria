@@ -56,7 +56,7 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertNotIn("NO_NEW_DATA", flags)
         self.assertNotIn("ZERO_CONTACT", flags)
 
-    def test_long_wear_flags_flat_keepalive_ticks(self):
+    def test_long_wear_allows_flat_keepalive_ticks_when_stream_advances(self):
         delta = {
             **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
             "whoop.sample.rawNotifications": 12,
@@ -71,6 +71,20 @@ class MonitorRealtimeBLETests(unittest.TestCase):
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
 
+        self.assertNotIn("KEEPALIVE_NOT_ADVANCING", flags)
+
+    def test_long_wear_flags_flat_keepalive_ticks_when_stream_stalls(self):
+        delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
+        current = {
+            "whoop.sample.lastStatus": "accepted",
+            "whoop.link.lastStatus": "connected",
+            "whoop.longWear.enabled": True,
+            "whoop.keepalive.armed": True,
+        }
+
+        flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
+
+        self.assertIn("NO_NEW_DATA", flags)
         self.assertIn("KEEPALIVE_NOT_ADVANCING", flags)
 
     def test_long_wear_allows_advancing_keepalive_ticks(self):
