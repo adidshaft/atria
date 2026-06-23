@@ -63,6 +63,21 @@ NEXT_ACTIONS = {
     },
 }
 
+COEXISTENCE_ACTION = {
+    "command": (
+        "./pull_atria_state.sh --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+        "--bundle-id com.adidshaft.atria "
+        "--evidence-dir logs/live-device/realtime-ble-monitor/whoop-cleared-final-$(date -u +%Y%m%dT%H%M%SZ) "
+        "&& python3 tools/audit_realtime_ble_validation.py --markdown"
+    ),
+    "operator_action": (
+        "Close, disable, or uninstall the official WHOOP app/widget first; then "
+        "confirm the final state pull reports official_whoop_coexistence_risk=0. "
+        "If WHOOP is intentionally kept installed/running, treat the next run as "
+        "a dedicated coexistence proof rather than ordinary completion evidence."
+    ),
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -605,6 +620,11 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
     }
     for name, section in sections.items():
         action = NEXT_ACTIONS.get(name, {})
+        if (
+            name == "daytime_worn_monitor"
+            and section.get("blockers") == ["official_whoop_coexistence_risk_present"]
+        ):
+            action = COEXISTENCE_ACTION
         if action:
             section["next_command"] = action["command"]
             section["operator_action"] = action["operator_action"]

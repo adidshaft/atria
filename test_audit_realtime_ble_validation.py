@@ -448,6 +448,24 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("official_whoop_coexistence_risk_present", blockers)
 
+    def test_daytime_coexistence_blocker_reports_coexistence_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = passing_state()
+            state["fields"] = {
+                **state["fields"],
+                "official_whoop_process_status": "running",
+                "official_whoop_coexistence_risk": "1",
+            }
+            write_summary(root, "rt-daytime-whoop-coexistence", passing_stream(state_pull=state))
+
+            report = audit.evaluate(root)
+            section = report["requirements"]["daytime_worn_monitor"]
+
+            self.assertIn("official_whoop_coexistence_risk=0", section["operator_action"])
+            self.assertIn("pull_atria_state.sh", section["next_command"])
+            self.assertNotIn("--samples 91", section["next_command"])
+
     def test_daytime_accepts_disconnect_continuity_checkpoint_duration(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
