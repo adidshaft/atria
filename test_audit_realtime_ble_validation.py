@@ -453,6 +453,30 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("operator_action_sample_mismatch_brief_contact_loss_start", blockers)
             self.assertIn("operator_action_sample_mismatch_brief_contact_loss_reseat", blockers)
 
+    def test_brief_contact_loss_requires_expected_operator_prompt_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-brief-contact-loss-wrong-prompt-text", passing_brief_contact_loss(
+                operator_actions=[
+                    {
+                        "sample": 1,
+                        "events": ["brief_contact_loss_start"],
+                        "actions": ["Do something with the strap."],
+                    },
+                    {
+                        "sample": 2,
+                        "events": ["brief_contact_loss_reseat"],
+                        "actions": ["Continue."],
+                    },
+                ],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["brief_contact_loss"]["blockers"]
+
+            self.assertIn("missing_operator_action_brief_contact_loss_start", blockers)
+            self.assertIn("missing_operator_action_brief_contact_loss_reseat", blockers)
+
     def test_brief_contact_loss_rejects_reversed_event_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -531,6 +555,30 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("operator_action_sample_mismatch_sustained_silence_start", blockers)
             self.assertIn("operator_action_sample_mismatch_sustained_silence_reseat", blockers)
+
+    def test_sustained_silence_requires_expected_operator_prompt_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-wrong-prompt-text", passing_sustained_silence(
+                operator_actions=[
+                    {
+                        "sample": 1,
+                        "events": ["sustained_silence_start"],
+                        "actions": ["Do something with the strap."],
+                    },
+                    {
+                        "sample": 3,
+                        "events": ["sustained_silence_reseat"],
+                        "actions": ["Continue."],
+                    },
+                ],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn("missing_operator_action_sustained_silence_start", blockers)
+            self.assertIn("missing_operator_action_sustained_silence_reseat", blockers)
 
     def test_sustained_silence_requires_two_sample_marker_spacing(self):
         with tempfile.TemporaryDirectory() as tmp:
