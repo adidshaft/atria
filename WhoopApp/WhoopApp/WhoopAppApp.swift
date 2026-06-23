@@ -61,10 +61,14 @@ struct WhoopAppApp: App {
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
-                        // alerts, and multitasking transitions. Checkpoint the active
-                        // journal immediately, then delay the heavier store flush unless
-                        // the app actually stays away.
-                        ble.flushActiveSessionJournal(reason: "scene_inactive_checkpoint")
+                        // alerts, and multitasking transitions. Move BLE supervision to
+                        // unattended immediately so app-switching does not leave the strap
+                        // on foreground-only timers, then delay the heavier store flush
+                        // unless the app actually stays away.
+                        ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,
+                                                maxHR: store.profile.maxHR,
+                                                reason: "scene_inactive")
+                        ble.flushLifecycleRealtimeState(reason: "scene_inactive_checkpoint")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -80,14 +84,14 @@ struct WhoopAppApp: App {
                     @unknown default:
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
-                        ble.flushActiveSessionJournal(reason: "scene_unknown")
+                        ble.flushLifecycleRealtimeState(reason: "scene_unknown")
                         store.requestPersistenceFlush(reason: "scene_unknown")
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
-                    ble.flushActiveSessionJournal(reason: "app_will_terminate")
+                    ble.flushLifecycleRealtimeState(reason: "app_will_terminate")
                     store.flushScheduledPersistence(reason: "app_will_terminate")
                 }
         }
@@ -144,7 +148,7 @@ struct WhoopAppApp: App {
             }
         }
 
-        ble.flushActiveSessionJournal(reason: reason)
+        ble.flushLifecycleRealtimeState(reason: reason)
         store.requestPersistenceFlush(reason: reason)
         scheduleBackgroundMaintenance(reason: reason)
 
