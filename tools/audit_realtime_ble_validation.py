@@ -102,6 +102,8 @@ def summary_duration_seconds(summary: dict[str, Any]) -> float:
 
 def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
+    if summary.get("worn_expected") is False:
+        blockers.append("monitor_ran_not_worn")
     if summary.get("status") != "pass":
         blockers.append("summary_status_not_pass")
     flags = summary.get("flags") or []
