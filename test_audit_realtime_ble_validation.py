@@ -64,6 +64,18 @@ def passing_brief_contact_loss(**extra):
         planned_interval_s=120,
         state_pull=passing_state(),
         events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
+        operator_actions=[
+            {
+                "sample": 1,
+                "events": ["brief_contact_loss_start"],
+                "actions": ["Loosen or lift the strap for about 30 seconds."],
+            },
+            {
+                "sample": 2,
+                "events": ["brief_contact_loss_reseat"],
+                "actions": ["Reseat the strap firmly now."],
+            },
+        ],
         event_outcomes=[{
             "events": ["brief_contact_loss_reseat"],
             "status": "recovered",
@@ -87,6 +99,18 @@ def passing_sustained_silence(**extra):
         "max_hr_continuity_delta": 1,
         "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
         "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+        "operator_actions": [
+            {
+                "sample": 1,
+                "events": ["sustained_silence_start"],
+                "actions": ["Take the strap off and set it down until the reseat marker."],
+            },
+            {
+                "sample": 3,
+                "events": ["sustained_silence_reseat"],
+                "actions": ["Reseat the strap firmly now."],
+            },
+        ],
         "event_outcomes": [{
             "events": ["sustained_silence_reseat"],
             "status": "recovered",
@@ -392,6 +416,19 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("missing_ok_state_pull", blockers)
 
+    def test_brief_contact_loss_requires_operator_prompts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-brief-contact-loss-no-prompts", passing_brief_contact_loss(
+                operator_actions=[],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["brief_contact_loss"]["blockers"]
+
+            self.assertIn("missing_operator_action_brief_contact_loss_start", blockers)
+            self.assertIn("missing_operator_action_brief_contact_loss_reseat", blockers)
+
     def test_brief_contact_loss_rejects_reversed_event_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -433,6 +470,19 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
 
             self.assertIn("missing_ok_state_pull", blockers)
+
+    def test_sustained_silence_requires_operator_prompts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-no-prompts", passing_sustained_silence(
+                operator_actions=[],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn("missing_operator_action_sustained_silence_start", blockers)
+            self.assertIn("missing_operator_action_sustained_silence_reseat", blockers)
 
     def test_sustained_silence_requires_two_sample_marker_spacing(self):
         with tempfile.TemporaryDirectory() as tmp:
