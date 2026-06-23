@@ -35,7 +35,7 @@ struct AtriaHomeView: View {
 
         var systemImage: String {
             switch self {
-            case .overview: return "sparkles"
+            case .overview: return "house.fill"
             case .vitals: return "heart.text.square"
             case .collection: return "waveform.badge.magnifyingglass"
             }
@@ -97,7 +97,7 @@ struct AtriaHomeView: View {
                 .allowsHitTesting(false)
 
             TabView(selection: $selectedTab) {
-                Tab("Today", systemImage: "sparkles", value: HomeTab.overview) {
+                Tab("Today", systemImage: "house.fill", value: HomeTab.overview) {
                     tabNavigation(title: "Today") {
                         if hasUnlockedPrimaryContent {
                             overviewContent

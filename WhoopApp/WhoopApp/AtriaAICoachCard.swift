@@ -23,7 +23,7 @@ struct AtriaAICoachCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: "sparkles")
+                Image(systemName: "brain.head.profile")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.indigo)
                     .frame(width: 38, height: 38)
