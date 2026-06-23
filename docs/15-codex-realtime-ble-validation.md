@@ -193,7 +193,8 @@ worn-validation handoff.
 For sustained silence, only the expected off-wrist `NO_NEW_DATA` /
 `ZERO_CONTACT` flags are tolerated. `KEEPALIVE_NOT_ADVANCING` and any other
 unexpected flags still fail the requirement. The verifier also requires bounded
-churn plus a recovered `sustained_silence_reseat` event outcome.
+churn, an OK `--pull-state` durability snapshot, and a recovered
+`sustained_silence_reseat` event outcome.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
 requirement. For any candidate summary it also prints the key evidence metrics
@@ -248,7 +249,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 3. Pass evidence: summary `status=pass`, `max_disconnect_delta=0`,
    `max_hr_continuity_delta=0`, and `event_outcomes` for
    `brief_contact_loss_reseat` has `status=recovered` with
-   `next_raw_notification_delta > 0`.
+   `next_raw_notification_delta > 0`. The audit also requires
+   `state_pull.status=ok` with saved-session file durability.
 
 **Sustained silence and reseat (>2.5 min):**
 1. Start this monitor:
@@ -264,7 +266,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    watchdog or keepalive fields (`reassert_notify` or `fresh_scan_reconnect`),
    no churn storm (`max_disconnect_delta < 3`, `max_hr_continuity_delta < 3`),
    and `event_outcomes` for `sustained_silence_reseat` has `status=recovered`
-   with `next_raw_notification_delta > 0`.
+   with `next_raw_notification_delta > 0`. The audit also requires
+   `state_pull.status=ok` with saved-session file durability.
 
 ## PASS / FAIL
 

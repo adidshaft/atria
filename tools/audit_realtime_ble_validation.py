@@ -164,6 +164,16 @@ def state_fields(summary: dict[str, Any]) -> dict[str, Any]:
     return fields if isinstance(fields, dict) else {}
 
 
+def state_pull_blockers(summary: dict[str, Any]) -> list[str]:
+    state = summary.get("state_pull")
+    if not isinstance(state, dict) or state.get("status") != "ok":
+        return ["missing_ok_state_pull"]
+    fields = state_fields(summary)
+    if fields.get("file_durability_status") not in {"saved_sessions_present", "saved_sessions_preserved"}:
+        return ["file_durability_not_proven"]
+    return []
+
+
 def daytime_blockers(summary: dict[str, Any]) -> list[str]:
     blockers = base_stream_blockers(summary)
     duration = summary_duration_seconds(summary)
@@ -171,9 +181,9 @@ def daytime_blockers(summary: dict[str, Any]) -> list[str]:
         blockers.append("daytime_monitor_under_2h")
     if numeric(summary.get("samples")) < MIN_DAYTIME_SAMPLES:
         blockers.append("daytime_monitor_too_few_samples")
-    state = summary.get("state_pull")
-    if not isinstance(state, dict) or state.get("status") != "ok":
-        blockers.append("missing_ok_state_pull")
+    state_blockers = state_pull_blockers(summary)
+    if state_blockers:
+        blockers.extend(state_blockers)
         return blockers
     fields = state_fields(summary)
     if fields.get("active_journal_freshness") != "fresh":
@@ -216,6 +226,7 @@ def stress_blockers(
     allow_small_churn: bool = False,
 ) -> list[str]:
     blockers = base_stream_blockers(summary) if require_clean_stream else []
+    blockers.extend(state_pull_blockers(summary))
     if not require_clean_stream:
         allowed_flags = {"NO_NEW_DATA", "ZERO_CONTACT"}
         flags = set(summary.get("flags") or [])
