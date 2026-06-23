@@ -420,6 +420,18 @@ complete the full 2–3h validation:
   previous app-switch monitor predates the disconnect-continuity callback fix, so
   the verifier now requires a fresh `rt-app-switch-*` monitor summary whose
   `git_commit` includes `2a0491d`.
+- Fresh post-`2a0491d` app-switch evidence:
+  `logs/live-device/realtime-ble-monitor/rt-app-switch-20260623T073612Z/summary.json`
+  passed with `git_commit=291f7f8a822a15f989f164ad3a3cdb3c856ebf52`,
+  `samples=4`, `duration_s=363`, `min_raw_notification_delta=99`,
+  `min_accepted_sample_delta=99`, `max_disconnect_delta=0`,
+  `max_hr_continuity_delta=0`, no flags, and `state_pull.status=ok` with
+  `file_durability_status=saved_sessions_preserved`. Clock was foregrounded
+  after the baseline sample for about 105 seconds, then Atria was returned before
+  the first 120s tick. The app-switch interval advanced cleanly
+  (`rawNotif+99 accepted+99`), and both follow-up intervals also advanced cleanly
+  (`rawNotif+127 accepted+127`, `rawNotif+118 accepted+118`). This is the current
+  authoritative app-switch pass evidence for the disconnect-continuity build.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,
@@ -466,9 +478,8 @@ complete the full 2–3h validation:
   contact-loss and sustained-silence runs so the physical action is tied to the
   monitor tick that proves recovery.
 
-Still required before marking this handoff complete: a fresh post-`2a0491d`
-app-switch monitor, the full 2–3h worn monitor, brief contact-loss recovery, and
-sustained-silence/reseat recovery.
+Still required before marking this handoff complete: the full 2–3h worn monitor,
+brief contact-loss recovery, and sustained-silence/reseat recovery.
 
 Current verifier status:
 ```text
@@ -477,7 +488,7 @@ Status: incomplete
 daytime_worn_monitor: missing_evidence
 brief_contact_loss: missing_evidence
 sustained_silence_reseat: missing_evidence
-app_switch: app_switch_evidence_before_disconnect_continuity_fix
+app_switch: pass
 ```
 The live Markdown output is the authoritative next-step list; it prints the exact
 monitor command and operator action for each missing requirement.
