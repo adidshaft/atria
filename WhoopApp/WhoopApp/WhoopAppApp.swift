@@ -55,9 +55,7 @@ struct WhoopAppApp: App {
                     case .background:
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
-                        ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,
-                                                maxHR: store.profile.maxHR,
-                                                reason: "scene_background")
+                        ble.handleSceneBackgroundTransition(reason: "scene_background")
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
