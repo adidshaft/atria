@@ -27,6 +27,11 @@ Key fixes on `main` (HEAD region):
   `.background`. On foreground return it re-asserts the standard HR notify/read
   path without disconnecting the strap. This prevents transient app switches
   from restarting long-wear supervision or waiting for the next keepalive tick.
+- `7edf8fd` — **background app-switch hardening**. `.background` scene changes
+  now use a dedicated checkpoint/keep-link path instead of reusing
+  `handleUnattendedMode`. The path flushes realtime state, keeps the foreground
+  keepalive armed, reasserts the standard HR notify/read path when connected,
+  and explicitly avoids `startLongWearMode` or `cancelPeripheralConnection`.
 
 ## Device + paths (constants)
 
@@ -302,6 +307,30 @@ complete the full 2–3h validation:
   switched-away windows produced `rawNotif+21` and `rawNotif+18`; the return
   window produced `rawNotif+24`. This is the current short-cadence app-switch
   pass evidence.
+- After `7edf8fd`, the updated build was installed on the physical iPhone with
+  `./live_device_debug.sh --seconds 45 --long-wear-mode --reset-link-diagnostics
+  --log auto --leave-running`. The launch log
+  `logs/live-device/20260623T064017Z.log` showed CoreBluetooth state restoration
+  to `ADIDSHAFT'S WHO`, `foreground_keepalive armed=1`, `2A37 notifying=1`,
+  standard HR frames, `standard_2a37_frames=43`, and low-radio mode ready. A
+  non-disruptive state pull immediately after normal end-user relaunch,
+  `logs/live-device/state-pulls/app-switch-fix-20260623T064128Z/pull-summary.txt`,
+  reported `process_status=running`, saved sessions preserved, and a fresh active
+  journal.
+- A normal non-console switch to Clock after that build kept Atria running:
+  `logs/live-device/state-pulls/app-switch-background-20260623T064205Z/pull-summary.txt`
+  reported `process_status=running`, `sessions_count=219`,
+  `file_durability_status=saved_sessions_preserved`,
+  `live_stream_consistency_status=interrupted_not_file_loss`,
+  `active_journal_freshness=fresh`, and an active Long wear segment updated after
+  the switch. This is not a replacement for the strict monitor summary because it
+  does not prove every 120s tick advanced; it is device evidence that ordinary
+  app switching no longer tears down the process or loses saved files.
+- A separate console-attached app-switch attempt after `7edf8fd` launched Clock
+  while `devicectl --console` owned Atria. That process exited with `signal 9`
+  before the evidence deadline, so it is treated as a console-harness artifact,
+  not as normal user app-switch evidence. Use non-disruptive container pulls or
+  the checked-in monitor summaries as authoritative evidence for this handoff.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,
