@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,15 @@ def write_summary(root: Path, label: str, payload: dict) -> Path:
         audit_snapshot["path"] = str(audit_file)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def write_state_preferences(summary_path: Path, values: dict) -> None:
+    state_file = summary_path.parent / "state" / "pull-summary.txt"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    if not state_file.exists():
+        state_file.write_text("file_durability_status=saved_sessions_present\n", encoding="utf-8")
+    with (state_file.parent / "preferences.plist").open("wb") as handle:
+        plistlib.dump(values, handle)
 
 
 def passing_stream(**extra):
@@ -454,6 +464,31 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                 max_disconnect_delta=1,
                 state_pull=state,
             ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertNotIn("active_journal_duration_under_2h", blockers)
+            self.assertNotIn("active_journal_too_few_samples", blockers)
+
+    def test_daytime_enriches_disconnect_continuity_checkpoint_from_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = passing_state_with_range_loss_backfill()
+            state["fields"] = {
+                **state["fields"],
+                "active_journal_duration_s": "488",
+                "active_journal_samples": "510",
+            }
+            summary_path = write_summary(root, "rt-daytime-continuity-preferences", passing_stream(
+                max_disconnect_delta=1,
+                state_pull=state,
+            ))
+            write_state_preferences(summary_path, {
+                "whoop.link.lastAutoSaveStatus": "checkpointed_continuity",
+                "whoop.link.lastAutoSaveSamples": 8160,
+                "whoop.link.lastAutoSaveDuration": 7857,
+            })
 
             report = audit.evaluate(root)
             blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
