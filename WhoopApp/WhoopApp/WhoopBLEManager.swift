@@ -690,6 +690,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var hrContinuityWatchdogTask: Task<Void, Never>?
     private var rrPresenceWatchdogTask: Task<Void, Never>?
     private var acceptedHRWatchdogTask: Task<Void, Never>?
+    /// Lightweight safety net for the screen-on / app-foreground long-wear case,
+    /// where the full supervisor is intentionally paused. Recovers a link that is
+    /// nominally `.connected` but has gone completely silent (no 2A37 packets at
+    /// all) — the failure mode behind "wore it all night, collected nothing."
+    private var foregroundKeepaliveTask: Task<Void, Never>?
+    private var foregroundKeepaliveReassertAt: Date?
     private var debugActiveJournalFlushTask: Task<Void, Never>?
     private var debugManualCheckpointTask: Task<Void, Never>?
     private var debugNoDataWatchdogTask: Task<Void, Never>?
@@ -1159,6 +1165,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func stopLongWearMode(reason: String) {
+        stopForegroundKeepaliveWatchdog(reason: reason)
         pauseLongWearAutomation(reason: reason)
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
         UserDefaults.standard.set("long_wear_stopped", forKey: CheckpointDefaults.lastStatus)
@@ -1189,6 +1196,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     func handleInteractiveForeground(rest: Int, maxHR: Int) {
         resumeForegroundScanIfNeeded(reason: "scene_active")
+        // Arm the silent-link safety net whenever we are foreground + long-wear,
+        // including a fresh foreground launch where foregroundInteractiveMode is
+        // already true (the all-night, screen-on scenario). Idempotent: only
+        // starts when not already running.
+        if longWearModeEnabled, foregroundKeepaliveTask == nil {
+            startForegroundKeepaliveWatchdog(reason: "scene_active")
+        }
         if foregroundInteractiveMode {
             return
         }
@@ -1199,9 +1213,74 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         pauseLongWearAutomation(reason: "scene_active")
         updatePhoneMotionAuditState(reason: "scene_active")
-        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=1 action=defer_automation rest_hr=%d max_hr=%d",
+        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=1 action=defer_automation_keepalive_armed rest_hr=%d max_hr=%d",
               rest,
               maxHR)
+    }
+
+    /// Runs only while the app is foreground + long-wear (the supervisor is
+    /// paused). It does nothing while data flows. If the link is `.connected`
+    /// but has produced no 2A37 packet for an extended window — the silent-dead
+    /// link that lost an entire overnight of collection — it re-asserts the
+    /// subscription, then escalates to a fresh-scan reconnect if silence
+    /// persists. requestFreshScanReconnect already backs off exponentially, so a
+    /// strap that is simply set down does not churn.
+    private func startForegroundKeepaliveWatchdog(reason: String) {
+        foregroundKeepaliveTask?.cancel()
+        foregroundKeepaliveReassertAt = nil
+        let silenceTimeout: TimeInterval = 75
+        let checkInterval: TimeInterval = 20
+        WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=1 reason=%@ silence_timeout_s=%.0f check_interval_s=%.0f",
+              reason, silenceTimeout, checkInterval)
+        foregroundKeepaliveTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(checkInterval))
+                if Task.isCancelled { break }
+                guard foregroundInteractiveMode, longWearModeEnabled else { continue }
+                guard status == .connected, let peripheral else { continue }
+                let now = Date()
+                guard let reference = lastRawHRNotificationAt ?? connectedAt else { continue }
+                let silence = now.timeIntervalSince(reference)
+                guard silence >= silenceTimeout else {
+                    foregroundKeepaliveReassertAt = nil
+                    continue
+                }
+                // First escalation: re-assert the 2A37 subscription and keep the
+                // connection. Many silent links resume from a fresh subscribe.
+                if foregroundKeepaliveReassertAt == nil {
+                    foregroundKeepaliveReassertAt = now
+                    if let characteristic = heartRateCharacteristic {
+                        if characteristic.properties.contains(.notify) {
+                            peripheral.setNotifyValue(true, for: characteristic)
+                        }
+                        if characteristic.properties.contains(.read) {
+                            peripheral.readValue(for: characteristic)
+                        }
+                    } else if peripheral.state == .connected {
+                        peripheral.discoverServices([UUIDs.heartRateService])
+                    }
+                    WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=reassert_notify",
+                          silence)
+                    continue
+                }
+                // Still silent after a re-assert window: the link is effectively
+                // dead. Reconnect (backoff-guarded) and let it re-establish.
+                guard now.timeIntervalSince(foregroundKeepaliveReassertAt ?? now) >= silenceTimeout else { continue }
+                foregroundKeepaliveReassertAt = nil
+                persistActiveSessionJournalIfNeeded(reason: "foreground_keepalive_reconnect", force: true)
+                WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=fresh_scan_reconnect",
+                      silence)
+                requestFreshScanReconnect(peripheral: peripheral, reason: "foreground_keepalive")
+            }
+        }
+    }
+
+    private func stopForegroundKeepaliveWatchdog(reason: String) {
+        guard foregroundKeepaliveTask != nil else { return }
+        foregroundKeepaliveTask?.cancel()
+        foregroundKeepaliveTask = nil
+        foregroundKeepaliveReassertAt = nil
+        WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=0 reason=%@", reason)
     }
 
     func setForegroundHighFrequencyDisplayMode(_ enabled: Bool) {
@@ -1214,6 +1293,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             return
         }
         foregroundInteractiveMode = false
+        stopForegroundKeepaliveWatchdog(reason: reason)
         guard longWearModeEnabled else {
             updatePhoneMotionAuditState(reason: reason)
             return
