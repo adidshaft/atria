@@ -43,6 +43,27 @@ STATUS_KEYS = [
     "whoop.longWear.enabled",
 ]
 
+PULL_STATE_SUMMARY_KEYS = [
+    "process_status",
+    "sessions_status",
+    "sessions_count",
+    "file_durability_status",
+    "latest_session_label",
+    "latest_session_points",
+    "latest_session_rr_points",
+    "latest_session_duration_s",
+    "active_journal_final_status",
+    "active_journal_reconstructed_from_segments",
+    "active_journal_samples",
+    "active_journal_rr_values",
+    "active_journal_freshness",
+    "active_journal_continuity_status",
+    "active_journal_continuity_reason",
+    "active_journal_duration_s",
+    "active_journal_interruption_class",
+    "live_stream_consistency_status",
+]
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -127,6 +148,51 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
     }
 
 
+def parse_key_value_lines(text: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            parsed[key] = value
+    return parsed
+
+
+def compact_pull_state_summary(fields: dict[str, str]) -> dict[str, str]:
+    return {key: fields[key] for key in PULL_STATE_SUMMARY_KEYS if key in fields}
+
+
+def pull_state_snapshot(device: str, bundle: str, out_dir: Path) -> dict[str, Any]:
+    evidence_dir = out_dir / "state"
+    result = subprocess.run(
+        [
+            "./pull_atria_state.sh",
+            "--device",
+            device,
+            "--bundle-id",
+            bundle,
+            "--evidence-dir",
+            str(evidence_dir),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    fields = parse_key_value_lines(result.stdout)
+    summary_path = evidence_dir / "pull-summary.txt"
+    if summary_path.exists():
+        fields.update(parse_key_value_lines(summary_path.read_text(encoding="utf-8", errors="replace")))
+    return {
+        "status": "ok" if result.returncode == 0 else "failed",
+        "exit_code": result.returncode,
+        "evidence_dir": str(evidence_dir),
+        "summary_file": str(summary_path),
+        "fields": compact_pull_state_summary(fields),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default=os.environ.get("ATRIA_DEVICE_ID", DEFAULT_DEVICE))
@@ -136,6 +202,11 @@ def main() -> int:
     parser.add_argument("--label", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     parser.add_argument("--out-dir", type=Path, default=Path("logs/live-device/realtime-ble-monitor"))
     parser.add_argument("--not-worn", action="store_true", help="Do not flag zero contact or rawNotif+0 as failures.")
+    parser.add_argument(
+        "--pull-state",
+        action="store_true",
+        help="After the monitor finishes, non-disruptively pull sessions and active journal evidence into the run directory.",
+    )
     args = parser.parse_args()
 
     if args.samples < 1:
@@ -206,7 +277,17 @@ def main() -> int:
         "planned_samples": args.samples,
         "planned_interval_s": args.interval,
     })
+    if args.pull_state:
+        state = pull_state_snapshot(args.device, args.bundle, out_dir)
+        summary["state_pull"] = state
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_text = ""
+    if "state_pull" in summary:
+        state_pull = summary["state_pull"]
+        state_fields = state_pull.get("fields", {})
+        continuity = state_fields.get("active_journal_continuity_status", "missing")
+        latest_points = state_fields.get("latest_session_points", "missing")
+        state_text = f" state_pull={state_pull.get('status')} continuity={continuity} latest_points={latest_points}"
     print(
         "ATRIA_REALTIME_BLE_SUMMARY "
         f"status={summary['status']} samples={summary['samples']} "
@@ -214,7 +295,8 @@ def main() -> int:
         f"max_disconnect_delta={summary['max_disconnect_delta']} "
         f"max_hr_continuity_delta={summary['max_hr_continuity_delta']} "
         f"flags={','.join(summary['flags']) or 'none'} "
-        f"summary={summary_path}",
+        f"summary={summary_path}"
+        f"{state_text}",
         flush=True,
     )
     return 0

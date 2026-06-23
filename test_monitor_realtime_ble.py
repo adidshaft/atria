@@ -101,6 +101,24 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertEqual(summary["status"], "pass")
         self.assertEqual(summary["min_raw_notification_delta"], 12)
 
+    def test_pull_state_summary_keeps_continuity_fields(self):
+        text = """
+        active_journal_continuity_status=active
+        active_journal_continuity_reason=fresh_journal
+        latest_session_points=188
+        live_stream_consistency_status=interrupted_not_file_loss
+        noisy line without separator
+        """
+
+        fields = monitor_realtime_ble.parse_key_value_lines(text)
+        compact = monitor_realtime_ble.compact_pull_state_summary(fields)
+
+        self.assertEqual(compact["active_journal_continuity_status"], "active")
+        self.assertEqual(compact["active_journal_continuity_reason"], "fresh_journal")
+        self.assertEqual(compact["latest_session_points"], "188")
+        self.assertEqual(compact["live_stream_consistency_status"], "interrupted_not_file_loss")
+        self.assertNotIn("noisy line without separator", compact)
+
 
 if __name__ == "__main__":
     unittest.main()
