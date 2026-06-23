@@ -157,7 +157,7 @@ Audit the collected realtime BLE evidence at any point:
 python3 tools/audit_realtime_ble_validation.py --markdown
 ```
 This verifier is intentionally conservative. It only passes when all four
-requirements are proven from checked-in monitor summaries: the 2+ hour worn
+requirements are proven from local monitor summaries: the 2+ hour worn
 monitor with fresh/active `--pull-state` continuity, brief contact-loss recovery,
 sustained-silence/reseat recovery, and app-switch continuity.
 For sustained silence, expected off-wrist `NO_NEW_DATA` / `ZERO_CONTACT` flags
