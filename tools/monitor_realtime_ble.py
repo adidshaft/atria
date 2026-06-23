@@ -27,6 +27,7 @@ COUNTER_KEYS = [
     "whoop.watchdog.acceptedHRCount",
     "whoop.sample.rawNotifications",
     "whoop.sample.acceptedSamples",
+    "whoop.keepalive.ticks",
 ]
 
 STATUS_KEYS = [
@@ -127,6 +128,9 @@ def evaluate_sample(delta: dict[str, int], current: dict[str, Any], worn: bool) 
         flags.append("ZERO_CONTACT")
     if current.get("whoop.link.lastStatus") not in {None, "connected"}:
         flags.append("NOT_CONNECTED")
+    if current.get("whoop.longWear.enabled") and current.get("whoop.keepalive.armed"):
+        if delta["whoop.keepalive.ticks"] <= 0:
+            flags.append("KEEPALIVE_NOT_ADVANCING")
     return flags
 
 
@@ -326,6 +330,7 @@ def main() -> int:
             f"accepted+{sample['delta']['whoop.sample.acceptedSamples']} "
             f"disc+{sample['delta']['whoop.link.disconnects']} "
             f"hrCont+{sample['delta']['whoop.watchdog.hrContinuityCount']} "
+            f"keepaliveTicks+{sample['delta']['whoop.keepalive.ticks']} "
             f"sample={sample['current'].get('whoop.sample.lastStatus')} "
             f"lastAction={sample['current'].get('whoop.watchdog.lastAction')} "
             f"keepalive={sample['current'].get('whoop.keepalive.lastAction')} "

@@ -152,10 +152,12 @@ while True:
 PY
 ```
 
-The wrapper also prints `keepalive=<action>` and `keepaliveTicks=<n>`. If
-`keepaliveTicks` stays flat across monitor ticks, the app is not actively running
-its live-link recovery loop; foreground Atria or relaunch with an active console
-before using that interval as validation evidence.
+The wrapper also prints `keepalive=<action>`, `keepaliveTicks=<n>`, and
+`keepaliveTicks+<delta>`. If long-wear keepalive is armed and
+`keepaliveTicks+0` repeats across monitor ticks, the tool flags
+`KEEPALIVE_NOT_ADVANCING`: the app is not actively running its live-link
+recovery loop. Foreground Atria or relaunch with an active console before using
+that interval as validation evidence.
 
 Audit the collected realtime BLE evidence at any point:
 ```sh
@@ -240,6 +242,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 **FAIL signals** (capture the log + prefs and report):
 - A monitor tick shows `rawNotif+0` while the strap is worn with a pulse → silent
   stall not recovered (check `foreground_keepalive` lines; confirm it armed).
+- A monitor tick shows `KEEPALIVE_NOT_ADVANCING` while long-wear keepalive is
+  armed → the app may be suspended or not running the recovery loop; foreground
+  Atria or relaunch with active console evidence before restarting validation.
 - `disc+` or `hrCont+` climbing several per tick while worn → churn regression.
 - `sessions.json` filling with sub-minute `Auto-saved` fragments → link flapping.
 
