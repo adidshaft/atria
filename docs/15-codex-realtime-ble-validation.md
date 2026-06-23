@@ -159,7 +159,8 @@ python3 tools/audit_realtime_ble_validation.py --markdown
 To preserve a local audit snapshot alongside the ignored physical-device logs:
 ```sh
 python3 tools/audit_realtime_ble_validation.py --markdown \
-  --out logs/live-device/realtime-ble-monitor/audit-$(date -u +%Y%m%dT%H%M%SZ).md
+  --out logs/live-device/realtime-ble-monitor/audit-$(date -u +%Y%m%dT%H%M%SZ).md \
+  --allow-incomplete
 ```
 This verifier is intentionally conservative. It only passes when all four
 requirements are proven from local monitor summaries: the 2+ hour worn

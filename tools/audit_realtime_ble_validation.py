@@ -317,6 +317,11 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--out", type=Path, default=None, help="Optional path to write the JSON or Markdown audit report.")
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Exit 0 after writing/printing an incomplete report. Use only for archiving snapshots, not as a completion gate.",
+    )
     args = parser.parse_args()
 
     report = evaluate(args.root)
@@ -328,7 +333,7 @@ def main() -> int:
         print(output, end="")
     else:
         print(output, end="")
-    return 0 if report["status"] == "pass" else 1
+    return 0 if report["status"] == "pass" or args.allow_incomplete else 1
 
 
 if __name__ == "__main__":

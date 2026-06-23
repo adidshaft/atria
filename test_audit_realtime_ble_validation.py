@@ -148,6 +148,31 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("# Realtime BLE Validation Audit", text)
             self.assertIn("Next command:", text)
 
+    def test_cli_allows_incomplete_when_archiving_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "logs"
+            out = Path(tmp) / "audit" / "report.md"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/audit_realtime_ble_validation.py",
+                    "--root",
+                    str(root),
+                    "--markdown",
+                    "--out",
+                    str(out),
+                    "--allow-incomplete",
+                ],
+                cwd=Path(__file__).resolve().parent,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("Status: `incomplete`", out.read_text(encoding="utf-8"))
+
     def test_cli_writes_json_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "logs"
