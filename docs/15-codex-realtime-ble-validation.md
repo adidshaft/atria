@@ -193,6 +193,15 @@ complete the full 2–3h validation:
   "rawNotifications increases on every monitor tick" criterion. Treat it as
   evidence that app-switch teardown is fixed, with remaining work to prove or
   improve realtime persistence while another app owns the foreground.
+- A short experiment adding a held `UIApplication` background assertion across
+  `.inactive`/`.background` was built and tested, then intentionally not kept:
+  `logs/live-device/realtime-ble-monitor/rt-bg-assertion-switch-20260623T054737Z/summary.json`
+  still failed the strict app-switch criterion (`flags=NO_NEW_DATA`,
+  `min_raw_notification_delta=0`) even though `keepaliveTicks` advanced from 37
+  to 43 and `max_disconnect_delta=0`. The failed experiment suggests the stale
+  app-switch ticks are not just lack of general app execution time; iOS appears
+  to delay or batch BLE notification delivery/persistence while another app owns
+  the foreground, then Atria catches up on return.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
 and the remaining stress tests above (strict app-switch with no `NO_NEW_DATA`,
