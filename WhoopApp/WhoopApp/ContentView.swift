@@ -834,10 +834,17 @@ struct ProfileOnboardingView: View {
 
     private var welcomeStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: "bolt.heart.fill")
-                    .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(.pink)
+            VStack(alignment: .leading, spacing: 14) {
+                Image("AtriaLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    }
+                    .accessibilityLabel("Atria")
                 Text("Welcome to Atria")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                 Text("Your strap, your data — free and entirely on your phone.")
@@ -1237,9 +1244,12 @@ private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
         configuration.label
             .font(.headline.weight(.semibold))
             .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.92 : 1))
-            .padding(.vertical, 15)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 30)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 20)
             .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(
                         LinearGradient(colors: colorScheme == .dark
                             ? [
@@ -1254,11 +1264,12 @@ private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
                                        endPoint: .bottomTrailing)
                     )
                     .overlay {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
                             .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.28), lineWidth: 1)
                     }
             )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
     }
 }
 
