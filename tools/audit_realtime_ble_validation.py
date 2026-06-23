@@ -231,12 +231,14 @@ def event_outcome(summary: dict[str, Any], label: str) -> dict[str, Any] | None:
     return None
 
 
-def has_operator_action(summary: dict[str, Any], label: str) -> bool:
+def has_operator_action(summary: dict[str, Any], label: str, sample_index: int | None = None) -> bool:
     actions = summary.get("operator_actions")
     if not isinstance(actions, list):
         return False
     for action in actions:
         if not isinstance(action, dict):
+            continue
+        if sample_index is not None and numeric(action.get("sample")) != sample_index:
             continue
         events = action.get("events")
         prompts = action.get("actions")
@@ -278,6 +280,10 @@ def stress_blockers(
     if start_label:
         start_index = event_sample_index(summary, start_label)
         reseat_index = event_sample_index(summary, reseat_label)
+        if start_index is not None and not has_operator_action(summary, start_label, start_index):
+            blockers.append(f"operator_action_sample_mismatch_{start_label}")
+        if reseat_index is not None and not has_operator_action(summary, reseat_label, reseat_index):
+            blockers.append(f"operator_action_sample_mismatch_{reseat_label}")
         if start_index is not None and reseat_index is not None:
             if reseat_index <= start_index:
                 blockers.append(f"event_order_invalid_{start_label}_before_{reseat_label}")
