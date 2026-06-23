@@ -1230,6 +1230,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         foregroundKeepaliveReassertAt = nil
         let silenceTimeout: TimeInterval = 75
         let checkInterval: TimeInterval = 20
+        let armedAt = Date()
         WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=1 reason=%@ silence_timeout_s=%.0f check_interval_s=%.0f",
               reason, silenceTimeout, checkInterval)
         foregroundKeepaliveTask = Task { @MainActor in
@@ -1239,7 +1240,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 guard foregroundInteractiveMode, longWearModeEnabled else { continue }
                 guard status == .connected, let peripheral else { continue }
                 let now = Date()
-                guard let reference = lastRawHRNotificationAt ?? connectedAt else { continue }
+                // Fall back to the keepalive's own arm time so silence is always
+                // measurable — a state-restored connection (the overnight case)
+                // can have no lastRawHRNotificationAt and no connectedAt at all,
+                // which previously left this watchdog unable to ever fire.
+                let reference = lastRawHRNotificationAt ?? connectedAt ?? armedAt
                 let silence = now.timeIntervalSince(reference)
                 guard silence >= silenceTimeout else {
                     foregroundKeepaliveReassertAt = nil
