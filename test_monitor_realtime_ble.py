@@ -163,6 +163,9 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         official_whoop_process_status=running
         official_whoop_widget_process=1
         official_whoop_coexistence_risk=1
+        link_last_auto_save_status=checkpointed_continuity
+        link_last_auto_save_samples=8160
+        link_last_auto_save_duration_s=7857
         active_journal_continuity_status=active
         active_journal_continuity_reason=fresh_journal
         latest_session_points=188
@@ -177,6 +180,9 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertEqual(compact["official_whoop_process_status"], "running")
         self.assertEqual(compact["official_whoop_widget_process"], "1")
         self.assertEqual(compact["official_whoop_coexistence_risk"], "1")
+        self.assertEqual(compact["link_last_auto_save_status"], "checkpointed_continuity")
+        self.assertEqual(compact["link_last_auto_save_samples"], "8160")
+        self.assertEqual(compact["link_last_auto_save_duration_s"], "7857")
         self.assertEqual(compact["active_journal_continuity_status"], "active")
         self.assertEqual(compact["active_journal_continuity_reason"], "fresh_journal")
         self.assertEqual(compact["latest_session_points"], "188")
