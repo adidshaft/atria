@@ -145,6 +145,15 @@ The wrapper also prints `keepalive=<action>` and `keepaliveTicks=<n>`. If
 its live-link recovery loop; foreground Atria or relaunch with an active console
 before using that interval as validation evidence.
 
+Audit the collected realtime BLE evidence at any point:
+```sh
+python3 tools/audit_realtime_ble_validation.py --markdown
+```
+This verifier is intentionally conservative. It only passes when all four
+requirements are proven from checked-in monitor summaries: the 2+ hour worn
+monitor with fresh/active `--pull-state` continuity, brief contact-loss recovery,
+sustained-silence/reseat recovery, and app-switch continuity.
+
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link
      stays `connected` (disc delta ~0); data resumes. (Background hands off to the
@@ -304,6 +313,16 @@ Still required before marking this handoff complete: the full 2–3h worn monito
 and the remaining stress tests above (brief contact loss, sustained
 silence/reseat) with passing evidence.
 
+Current verifier status:
+```text
+python3 tools/audit_realtime_ble_validation.py --markdown
+Status: incomplete
+daytime_worn_monitor: missing_evidence
+brief_contact_loss: missing_evidence
+sustained_silence_reseat: missing_evidence
+app_switch: pass
+```
+
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
   above are the source of truth**, not the console stream.
@@ -312,3 +331,6 @@ silence/reseat) with passing evidence.
 - Keep `python3 test_handoff_static_checks.py` green for any code change
   (current suite also locks keepalive/app-switch behavior and healthy-stream
   counter flushing).
+- Keep `python3 tools/audit_realtime_ble_validation.py --markdown` as the
+  completion gate for this document; do not mark the goal complete while it
+  reports `incomplete`.
