@@ -521,6 +521,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
     enum CaptureDefaults {
         static let configured = "whoop.capture.defaultsConfigured"
+        static let protectedLongWearMigrated = "whoop.capture.protectedLongWearMigrated"
     }
     enum LongWearDefaults {
         static let enabled = "whoop.longWear.enabled"
@@ -1013,8 +1014,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: CaptureDefaults.configured) else { return }
         defaults.set(true, forKey: CaptureDefaults.configured)
-        defaults.set(false, forKey: LongWearDefaults.enabled)
-        defaults.set(false, forKey: RadioDefaults.standardHROnly)
+        defaults.set(true, forKey: CaptureDefaults.protectedLongWearMigrated)
+        defaults.set(true, forKey: LongWearDefaults.enabled)
+        defaults.set(true, forKey: RadioDefaults.standardHROnly)
         defaults.set(true, forKey: OfflineSyncDefaults.enabled)
         if defaults.object(forKey: LongWearDefaults.checkpointInterval) == nil {
             defaults.set(60.0, forKey: LongWearDefaults.checkpointInterval)
@@ -1041,12 +1043,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             defaults.set(CollectionProfile.balanced.rawValue, forKey: CollectionProfileDefaults.profile)
         }
         collectionProfile = CollectionProfile.load(defaults: defaults)
-        longWearModeEnabled = false
+        longWearModeEnabled = true
         updateSessionPointCacheMode()
-        standardHROnlyMode = false
-        standardHROnlyEnabled = false
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
         let explicitMode = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 1 : 0
-        WHOOPDebugLog("WHOOPDBG capture_defaults status=enabled mode=full_protocol_interactive_default long_wear_default=0 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
+        recordRadioMode("standard_hr_only", reason: "protected_default")
+        WHOOPDebugLog("WHOOPDBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
               explicitMode)
     }
 
@@ -1055,16 +1058,18 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard !arguments.contains("--whoop-full-protocol-mode") else { return }
         guard defaults.bool(forKey: CaptureDefaults.configured) else { return }
         guard !defaults.bool(forKey: LongWearDefaults.userSelected) else { return }
-        guard defaults.bool(forKey: LongWearDefaults.enabled) || defaults.bool(forKey: RadioDefaults.standardHROnly) else { return }
+        guard !defaults.bool(forKey: CaptureDefaults.protectedLongWearMigrated) else { return }
 
-        defaults.set(false, forKey: LongWearDefaults.enabled)
-        defaults.set(false, forKey: RadioDefaults.standardHROnly)
-        longWearModeEnabled = false
+        defaults.set(true, forKey: CaptureDefaults.protectedLongWearMigrated)
+        defaults.set(true, forKey: LongWearDefaults.enabled)
+        defaults.set(true, forKey: RadioDefaults.standardHROnly)
+        longWearModeEnabled = true
         updateSessionPointCacheMode()
-        standardHROnlyMode = false
-        standardHROnlyEnabled = false
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
         forceFreshScanOnRestore = true
-        WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=disabled reason=full_protocol_default")
+        recordRadioMode("standard_hr_only", reason: "protected_default_migration")
+        WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=enabled reason=protected_background_collection_default")
     }
 
     private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
