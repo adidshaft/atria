@@ -118,8 +118,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `--audit-snapshot` writes the verifier's Markdown output to `audit.md` in the
    same run directory and records its status/blockers in `summary.json` under
    `audit_snapshot`, so each physical run carries its own current audit result.
-   `summary.json` also records the exact monitor `command`, `device`, and
-   `bundle` used for the run so evidence can be reproduced or challenged later.
+   `summary.json` also records the raw argv `command`, copy-pasteable
+   `invocation`, effective `device`, and `bundle` used for the run so evidence
+   can be reproduced or challenged later.
    New summaries include `min_accepted_sample_delta`; when present, the audit
    requires it to stay positive for worn clean-stream requirements, so raw BLE
    notification churn cannot masquerade as accepted HR collection.

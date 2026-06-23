@@ -294,6 +294,26 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         self.assertIn("--label rt-daytime-test", command)
         self.assertIn("'1:brief contact'", command)
 
+    def test_invocation_string_records_effective_device_and_bundle(self):
+        command = monitor_realtime_ble.invocation_string(
+            ["tools/monitor_realtime_ble.py", "--label", "rt-daytime-test"],
+            device="device with space",
+            bundle="com.example.custom",
+        )
+
+        self.assertIn("ATRIA_DEVICE_ID='device with space'", command)
+        self.assertIn("ATRIA_BUNDLE_ID=com.example.custom", command)
+        self.assertIn("tools/monitor_realtime_ble.py --label rt-daytime-test", command)
+
+    def test_invocation_string_keeps_default_command_clean(self):
+        command = monitor_realtime_ble.invocation_string(
+            ["tools/monitor_realtime_ble.py", "--samples", "2"],
+            device=monitor_realtime_ble.DEFAULT_DEVICE,
+            bundle=monitor_realtime_ble.DEFAULT_BUNDLE,
+        )
+
+        self.assertEqual(command, "tools/monitor_realtime_ble.py --samples 2")
+
     def test_git_commit_returns_current_commit(self):
         commit = monitor_realtime_ble.git_commit()
 
