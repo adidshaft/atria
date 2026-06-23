@@ -86,6 +86,9 @@ PULL_STATE_SUMMARY_KEYS = [
     "offline_range_loss_backfill_reason",
     "offline_range_loss_backfill_requested_age_s",
     "offline_range_loss_backfill_started_age_s",
+    "link_last_auto_save_status",
+    "link_last_auto_save_samples",
+    "link_last_auto_save_duration_s",
 ]
 
 EVENT_ACTIONS = {

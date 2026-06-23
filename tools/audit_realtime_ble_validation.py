@@ -187,6 +187,18 @@ def official_whoop_coexistence_detected(fields: dict[str, Any]) -> bool:
     )
 
 
+def continuity_checkpoint_duration(fields: dict[str, Any]) -> int:
+    if fields.get("link_last_auto_save_status") != "checkpointed_continuity":
+        return 0
+    return numeric(fields.get("link_last_auto_save_duration_s"))
+
+
+def continuity_checkpoint_samples(fields: dict[str, Any]) -> int:
+    if fields.get("link_last_auto_save_status") != "checkpointed_continuity":
+        return 0
+    return numeric(fields.get("link_last_auto_save_samples"))
+
+
 def app_switch_blockers(summary: dict[str, Any], summary_path: Path | None = None) -> list[str]:
     blockers = base_stream_blockers(summary)
     blockers.extend(audit_snapshot_blockers(summary, summary_path))
@@ -301,6 +313,14 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
     fields = state_fields(summary)
     backfill_proven = range_loss_backfill_proven(fields)
     coexistence_detected = official_whoop_coexistence_detected(fields)
+    continuity_duration = max(
+        numeric(fields.get("active_journal_duration_s")),
+        continuity_checkpoint_duration(fields),
+    )
+    continuity_samples = max(
+        numeric(fields.get("active_journal_samples")),
+        continuity_checkpoint_samples(fields),
+    )
     if flags and not (disconnect_delta > 0 and backfill_proven and set(flags).issubset({"NO_NEW_DATA"})):
         blockers.append("summary_flags_present")
     if numeric(summary.get("min_raw_notification_delta")) <= 0 and not (disconnect_delta > 0 and backfill_proven):
@@ -329,9 +349,9 @@ def daytime_blockers(summary: dict[str, Any], summary_path: Path | None = None) 
         blockers.append("active_journal_not_fresh")
     if fields.get("active_journal_continuity_status") != "active":
         blockers.append("active_journal_not_active")
-    if numeric(fields.get("active_journal_duration_s")) < MIN_DAYTIME_DURATION_SECONDS:
+    if continuity_duration < MIN_DAYTIME_DURATION_SECONDS:
         blockers.append("active_journal_duration_under_2h")
-    if numeric(fields.get("active_journal_samples")) < MIN_DAYTIME_SAMPLES:
+    if continuity_samples < MIN_DAYTIME_SAMPLES:
         blockers.append("active_journal_too_few_samples")
     if coexistence_detected:
         blockers.append("official_whoop_coexistence_risk_present")

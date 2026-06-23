@@ -211,6 +211,9 @@ def emit_offline_sync_preferences():
     print(f"offline_range_loss_backfill_reason={prefs.get('whoop.offlineSync.rangeLossBackfillReason') or 'none'}")
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
+    print(f"link_last_auto_save_status={prefs.get('whoop.link.lastAutoSaveStatus') or 'none'}")
+    print(f"link_last_auto_save_samples={int(prefs.get('whoop.link.lastAutoSaveSamples') or 0)}")
+    print(f"link_last_auto_save_duration_s={int(prefs.get('whoop.link.lastAutoSaveDuration') or 0)}")
 
 emit_offline_sync_preferences()
 

@@ -666,6 +666,40 @@ complete the full 2–3h validation:
   unless the run is explicitly a coexistence-failure/proof experiment: the normal
   completion gate requires `official_whoop_coexistence_risk=0` or a dedicated
   coexistence run that proves no active-journal fragmentation.
+- After terminating the official WHOOP widget extension, a clean preflight
+  `logs/live-device/realtime-ble-monitor/rt-widget-cleared-readiness-20260623T163616Z/summary.json`
+  passed with `git_commit=92f463ba704dc20e4b663a7d26a7a51d872cbd07`,
+  `samples=2`, `min_raw_notification_delta=63`,
+  `min_accepted_sample_delta=63`, `max_disconnect_delta=0`,
+  `max_hr_continuity_delta=0`, and no flags. Its state pull showed
+  `official_whoop_process_status=not_listed`,
+  `official_whoop_coexistence_risk=0`,
+  `active_journal_continuity_status=active`, `active_journal_freshness=fresh`,
+  `active_journal_duration_s=256`, and `active_journal_samples=255`.
+- Full current-build daytime run
+  `logs/live-device/realtime-ble-monitor/rt-daytime-20260623T163743Z/summary.json`
+  ran for 91 samples from 2026-06-23 16:37:44Z to 19:39:12Z and passed the live
+  stream counters: `status=pass`, `min_raw_notification_delta=61`,
+  `min_accepted_sample_delta=61`, `max_disconnect_delta=1`,
+  `max_hr_continuity_delta=0`, and `flags=[]`. The user reported switching apps
+  during the run, which matches the single disconnect delta; the final state pull
+  still had durable range-loss backfill intent
+  (`offline_sync_last_status=deferred_live_link`,
+  `offline_sync_last_reason=long_wear_range_loss`,
+  `offline_range_loss_backfill_pending=1`). The same pull also showed a
+  disconnect continuity checkpoint in preferences:
+  `link_last_auto_save_status=checkpointed_continuity`,
+  `link_last_auto_save_samples=8160`, and
+  `link_last_auto_save_duration_s=7857`, while the resumed active journal was
+  fresh and active but only 488s. Tooling now preserves these
+  `link_last_auto_save_*` fields and treats a sufficiently long
+  `checkpointed_continuity` record as proof that a recoverable disconnect did
+  not lose the long-wear file. This run is **still not completion evidence**
+  because the official WHOOP app and widget had respawned by the final state pull
+  (`official_whoop_main_process=1`, `official_whoop_widget_process=1`,
+  `official_whoop_coexistence_risk=1`). The remaining pass requires rerunning
+  with WHOOP still absent at the final pull, or deliberately proving reliable
+  coexistence under that condition.
 
 Still required before marking this handoff complete: rerun the full 2–3h worn
 monitor on the current build and get a passing audit with fresh/active
