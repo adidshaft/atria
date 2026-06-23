@@ -72,6 +72,14 @@ PY
 
 2. **Run the monitor loop** (copy/paste, leave running). It snapshots every 120s
    and prints deltas + flags:
+   Prefer the checked-in wrapper below; it writes JSONL samples and a final
+   summary under `logs/live-device/realtime-ble-monitor/<label>/`:
+```sh
+ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 \
+  --label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ)
+```
+   Use the inline loop only if the repo tool is unavailable:
 ```sh
 python3 - <<'PY'
 import subprocess, plistlib, time, os
