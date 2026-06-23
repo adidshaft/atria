@@ -50,11 +50,13 @@ Key fixes on `main` (HEAD region):
   same-sample operator prompts for app-switch stress runs, and the current
   physical app-switch proof uses those prompts instead of passive lifecycle
   timing.
-- `e045615`, `421e3bb`, and `dcb34c5` — **audit artifact hardening**. Passing
-  summaries must carry local `--audit-snapshot` and `--pull-state` artifacts,
-  with `pull-summary.txt` and `audit.md` scoped to the same monitor run
-  directory. This prevents copied or hand-edited summaries from satisfying the
-  completion gate without the underlying durability evidence.
+- `e045615`, `421e3bb`, `dcb34c5`, and `cb83b27` — **audit artifact hardening**.
+  Passing summaries must carry local `--audit-snapshot` and `--pull-state`
+  artifacts, with `pull-summary.txt` and `audit.md` resolved and scoped to the
+  same monitor run directory. This prevents copied or hand-edited summaries from
+  satisfying the completion gate without the underlying durability evidence,
+  while still accepting run-relative artifact paths produced by future monitor
+  runs.
 - `443d960` — **latest app-switch diagnostics recorded**. Additional same-device
   troubleshooting runs showed positive raw/accepted 2A37 progress and zero
   disconnect delta while Clock was foregrounded, but they remain diagnostic
