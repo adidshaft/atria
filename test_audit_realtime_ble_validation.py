@@ -355,7 +355,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("monitor_ran_not_worn", blockers)
 
-    def test_app_switch_requires_current_lifecycle_generation(self):
+    def test_app_switch_requires_current_disconnect_continuity_generation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_summary(root, "rt-clock-switch-old-code", passing_stream(
@@ -369,7 +369,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["app_switch"]["blockers"]
 
             self.assertEqual(report["requirements"]["app_switch"]["status"], "incomplete")
-            self.assertIn("app_switch_evidence_before_background_supervisor_resume", blockers)
+            self.assertIn("app_switch_evidence_before_disconnect_continuity_fix", blockers)
 
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:

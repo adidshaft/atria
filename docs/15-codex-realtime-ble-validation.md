@@ -37,6 +37,11 @@ Key fixes on `main` (HEAD region):
   rest/max-HR profile after flushing, while transient `.inactive` app-switch
   states remain checkpoint-only. This keeps unattended collection protected by
   the same watchdog/checkpoint path used for normal background wear.
+- `2a0491d` — **disconnect continuity fix**. A transient BLE disconnect during
+  long-wear now checkpoints the active journal and reconnects without finishing
+  or fragmenting the live session. The manual Disconnect button is tracked
+  separately so user-requested disconnects stay disconnected instead of
+  immediately reconnecting.
 
 ## Device + paths (constants)
 
@@ -221,9 +226,10 @@ blocks the final completion gate until the corrupt run is removed or rerun.
 ### Remaining Stress Test Commands
 
 Use these short targeted runs before or after the full 2–3h monitor. They do not
-replace the long worn window. App-switch has fresh post-`655c863` passing
-evidence, but the command is kept here for repeatability. The contact-loss and
-sustained-silence commands create the other missing physical recovery artifacts.
+replace the long worn window. App-switch has earlier passing evidence, but it
+must be rerun after `2a0491d` so the disconnect-continuity callback fix is part
+of the proven build. The contact-loss and sustained-silence commands create the
+other missing physical recovery artifacts.
 
 **App switch:**
 1. Start this monitor:
@@ -406,6 +412,14 @@ complete the full 2–3h validation:
   monitor exposed a tooling bug after writing `summary.json`: `--audit-snapshot`
   crashed when `tools/monitor_realtime_ble.py` was run as a script because the
   audit import used the package path. That bug is fixed after this evidence run.
+- After the user reported that switching apps could still immediately disconnect
+  or fragment the collection, `2a0491d` was built, installed on the physical
+  iPhone, launched, and checked with a non-disruptive state pull. The pull showed
+  `process_status=running`, saved sessions preserved, historical archive
+  present, and a fresh active journal. This proves install/liveness only. The
+  previous app-switch monitor predates the disconnect-continuity callback fix, so
+  the verifier now requires a fresh `rt-app-switch-*` monitor summary whose
+  `git_commit` includes `2a0491d`.
 - Current continuation readiness:
   `logs/live-device/realtime-ble-monitor/rt-continuation-readiness-20260623T062113Z/summary.json`
   passed with `samples=2`, `min_raw_notification_delta=21`,
@@ -452,8 +466,9 @@ complete the full 2–3h validation:
   contact-loss and sustained-silence runs so the physical action is tied to the
   monitor tick that proves recovery.
 
-Still required before marking this handoff complete: the full 2–3h worn monitor,
-brief contact-loss recovery, and sustained-silence/reseat recovery.
+Still required before marking this handoff complete: a fresh post-`2a0491d`
+app-switch monitor, the full 2–3h worn monitor, brief contact-loss recovery, and
+sustained-silence/reseat recovery.
 
 Current verifier status:
 ```text
@@ -462,7 +477,7 @@ Status: incomplete
 daytime_worn_monitor: missing_evidence
 brief_contact_loss: missing_evidence
 sustained_silence_reseat: missing_evidence
-app_switch: pass
+app_switch: app_switch_evidence_before_disconnect_continuity_fix
 ```
 The live Markdown output is the authoritative next-step list; it prints the exact
 monitor command and operator action for each missing requirement.
