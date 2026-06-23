@@ -737,7 +737,9 @@ app_switch: pass
 ```
 The live Markdown output is the authoritative next-step list; it currently
 selects the completed 91-sample daytime run and blocks only on official WHOOP
-coexistence at the final pull.
+coexistence at the final pull. When that is the only blocker, the verifier's
+next action is the WHOOP-cleared final state pull / audit command, not another
+blind 91-sample monitor.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
