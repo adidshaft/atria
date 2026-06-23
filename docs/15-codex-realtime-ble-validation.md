@@ -115,6 +115,9 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `audit_snapshot`, so each physical run carries its own current audit result.
    `summary.json` also records the exact monitor `command`, `device`, and
    `bundle` used for the run so evidence can be reproduced or challenged later.
+   New summaries include `min_accepted_sample_delta`; when present, the audit
+   requires it to stay positive for worn clean-stream requirements, so raw BLE
+   notification churn cannot masquerade as accepted HR collection.
    For targeted stress runs, add one or more `--event SAMPLE:LABEL` flags to
    annotate the JSONL/summary timeline. The summary also includes
    `event_outcomes`, which reports the next sample's raw-data, disconnect, and
@@ -188,10 +191,10 @@ churn plus a recovered `sustained_silence_reseat` event outcome.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
 requirement. For any candidate summary it also prints the key evidence metrics
-(`samples`, `duration_s`, raw-notification delta, disconnect delta, and
-HR-continuity delta) so a failed run can be diagnosed without opening
-`summary.json`. Saved audit reports include a generation timestamp and the
-number of local monitor summaries inspected.
+(`samples`, `duration_s`, raw-notification delta, accepted-sample delta when
+available, disconnect delta, and HR-continuity delta) so a failed run can be
+diagnosed without opening `summary.json`. Saved audit reports include a
+generation timestamp and the number of local monitor summaries inspected.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link

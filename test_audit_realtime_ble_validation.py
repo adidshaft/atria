@@ -24,6 +24,7 @@ def passing_stream(**extra):
         "started_at": "2026-06-23T00:00:00Z",
         "finished_at": "2026-06-23T03:00:00Z",
         "min_raw_notification_delta": 60,
+        "min_accepted_sample_delta": 60,
         "max_disconnect_delta": 0,
         "max_hr_continuity_delta": 0,
         "flags": [],
@@ -120,8 +121,28 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Generated at:", markdown)
             self.assertIn("Summaries inspected:", markdown)
             self.assertIn("Evidence: samples=`4`, duration_s=`60`, min_raw_delta=`60`", markdown)
+            self.assertIn("min_accepted_delta=`60`", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
+
+    def test_markdown_prints_missing_for_absent_optional_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-legacy", {
+                "status": "pass",
+                "samples": 4,
+                "started_at": "2026-06-23T00:00:00Z",
+                "finished_at": "2026-06-23T00:01:00Z",
+                "min_raw_notification_delta": 18,
+                "max_disconnect_delta": 0,
+                "max_hr_continuity_delta": 0,
+                "flags": [],
+            })
+
+            markdown = audit.markdown_summary(audit.evaluate(root))
+
+            self.assertIn("min_accepted_delta=`missing`", markdown)
+            self.assertNotIn("min_accepted_delta=`None`", markdown)
 
     def test_cli_writes_markdown_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +255,19 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
 
             self.assertIn("monitor_ran_not_worn", blockers)
+
+    def test_daytime_rejects_future_summary_without_accepted_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-no-accepted", passing_stream(
+                min_accepted_sample_delta=0,
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("no_positive_accepted_delta_on_every_tick", blockers)
 
     def test_app_switch_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
