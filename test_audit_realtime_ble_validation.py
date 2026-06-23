@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +117,57 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Operator action: Wear the strap continuously", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
+
+    def test_cli_writes_markdown_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "logs"
+            out = Path(tmp) / "audit" / "report.md"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/audit_realtime_ble_validation.py",
+                    "--root",
+                    str(root),
+                    "--markdown",
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parent,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("# Realtime BLE Validation Audit", text)
+            self.assertIn("Next command:", text)
+
+    def test_cli_writes_json_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "logs"
+            out = Path(tmp) / "audit" / "report.json"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/audit_realtime_ble_validation.py",
+                    "--root",
+                    str(root),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parent,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "incomplete")
+            self.assertIn("daytime_worn_monitor", report["requirements"])
 
     def test_daytime_requires_state_pull_continuity_not_just_green_ticks(self):
         with tempfile.TemporaryDirectory() as tmp:
