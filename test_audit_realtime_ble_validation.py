@@ -28,6 +28,11 @@ def passing_stream(**extra):
         "max_disconnect_delta": 0,
         "max_hr_continuity_delta": 0,
         "flags": [],
+        "audit_snapshot": {
+            "status": "incomplete",
+            "path": "/tmp/audit.md",
+            "summary_count": 4,
+        },
     }
     data.update(extra)
     return data
@@ -53,6 +58,7 @@ def passing_app_switch(**extra):
         finished_at="2026-06-23T00:01:00Z",
         planned_interval_s=20,
         git_commit=audit.MIN_APP_SWITCH_LIFECYCLE_COMMIT,
+        state_pull=passing_state(),
     )
     data.update(extra)
     return data
@@ -98,6 +104,11 @@ def passing_sustained_silence(**extra):
         "max_disconnect_delta": 1,
         "max_hr_continuity_delta": 1,
         "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
+        "audit_snapshot": {
+            "status": "incomplete",
+            "path": "/tmp/audit.md",
+            "summary_count": 4,
+        },
         "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
         "operator_actions": [
             {
@@ -341,6 +352,19 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("active_journal_not_active", blockers)
             self.assertIn("active_journal_duration_under_2h", blockers)
 
+    def test_daytime_requires_embedded_audit_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-no-audit-snapshot", passing_stream(
+                audit_snapshot=None,
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("missing_audit_snapshot", blockers)
+
     def test_daytime_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -395,6 +419,20 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertEqual(report["requirements"]["app_switch"]["status"], "incomplete")
             self.assertIn("app_switch_evidence_before_disconnect_continuity_fix", blockers)
 
+    def test_app_switch_requires_state_pull_and_audit_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-no-state", passing_app_switch(
+                state_pull=None,
+                audit_snapshot=None,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("missing_ok_state_pull", blockers)
+            self.assertIn("missing_audit_snapshot", blockers)
+
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -415,6 +453,18 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["brief_contact_loss"]["blockers"]
 
             self.assertIn("missing_ok_state_pull", blockers)
+
+    def test_brief_contact_loss_requires_embedded_audit_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-brief-contact-loss-no-audit-snapshot", passing_brief_contact_loss(
+                audit_snapshot=None,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["brief_contact_loss"]["blockers"]
+
+            self.assertIn("missing_audit_snapshot", blockers)
 
     def test_brief_contact_loss_requires_operator_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -518,6 +568,18 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
 
             self.assertIn("missing_ok_state_pull", blockers)
+
+    def test_sustained_silence_requires_embedded_audit_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-no-audit-snapshot", passing_sustained_silence(
+                audit_snapshot=None,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn("missing_audit_snapshot", blockers)
 
     def test_sustained_silence_requires_operator_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:

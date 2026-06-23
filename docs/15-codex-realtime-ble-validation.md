@@ -194,6 +194,9 @@ This verifier is intentionally conservative. It only passes when all four
 requirements are proven from local monitor summaries: the 2+ hour worn
 monitor with fresh/active `--pull-state` continuity, brief contact-loss recovery,
 sustained-silence/reseat recovery, and app-switch continuity.
+Every passing requirement summary must include the embedded `audit_snapshot`
+written by `--audit-snapshot`; app-switch also requires the same OK
+`--pull-state` durability snapshot as the other physical runs.
 Summaries that explicitly record `worn_expected=false` are rejected for these
 requirements; `--not-worn` is useful for diagnostics, but it cannot satisfy this
 worn-validation handoff.

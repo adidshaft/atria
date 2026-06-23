@@ -157,6 +157,8 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
 
 def app_switch_blockers(summary: dict[str, Any]) -> list[str]:
     blockers = base_stream_blockers(summary)
+    blockers.extend(audit_snapshot_blockers(summary))
+    blockers.extend(state_pull_blockers(summary))
     if not commit_includes(summary.get("git_commit"), MIN_APP_SWITCH_LIFECYCLE_COMMIT):
         blockers.append("app_switch_evidence_before_disconnect_continuity_fix")
     return blockers
@@ -180,8 +182,22 @@ def state_pull_blockers(summary: dict[str, Any]) -> list[str]:
     return []
 
 
+def audit_snapshot_blockers(summary: dict[str, Any]) -> list[str]:
+    snapshot = summary.get("audit_snapshot")
+    if not isinstance(snapshot, dict):
+        return ["missing_audit_snapshot"]
+    if snapshot.get("status") not in {"pass", "incomplete"}:
+        return ["audit_snapshot_status_missing"]
+    if not snapshot.get("path"):
+        return ["audit_snapshot_path_missing"]
+    if numeric(snapshot.get("summary_count")) <= 0:
+        return ["audit_snapshot_summary_count_missing"]
+    return []
+
+
 def daytime_blockers(summary: dict[str, Any]) -> list[str]:
     blockers = base_stream_blockers(summary)
+    blockers.extend(audit_snapshot_blockers(summary))
     duration = summary_duration_seconds(summary)
     if duration < MIN_DAYTIME_DURATION_SECONDS:
         blockers.append("daytime_monitor_under_2h")
@@ -268,6 +284,7 @@ def stress_blockers(
     allow_small_churn: bool = False,
 ) -> list[str]:
     blockers = base_stream_blockers(summary) if require_clean_stream else []
+    blockers.extend(audit_snapshot_blockers(summary))
     blockers.extend(state_pull_blockers(summary))
     if not require_clean_stream:
         allowed_flags = {"NO_NEW_DATA", "ZERO_CONTACT"}
