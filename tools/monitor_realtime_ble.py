@@ -64,6 +64,14 @@ PULL_STATE_SUMMARY_KEYS = [
     "active_journal_duration_s",
     "active_journal_interruption_class",
     "live_stream_consistency_status",
+    "offline_sync_enabled",
+    "offline_sync_attempts",
+    "offline_sync_last_status",
+    "offline_sync_last_reason",
+    "offline_range_loss_backfill_pending",
+    "offline_range_loss_backfill_reason",
+    "offline_range_loss_backfill_requested_age_s",
+    "offline_range_loss_backfill_started_age_s",
 ]
 
 EVENT_ACTIONS = {

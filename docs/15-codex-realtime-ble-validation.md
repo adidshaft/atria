@@ -346,7 +346,12 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   collection — no silent stalls).
 - `sessions.json` grows a **continuous** session (large `points` count), not a
   pile of tiny `Auto-saved` fragments.
-- `hrContinuityCount` and `disconnects` stay ~flat while worn (teardown fix holds).
+- `hrContinuityCount` stays ~flat while worn (teardown fix holds).
+- If the phone leaves BLE range, the disconnect is treated as recoverable:
+  Atria checkpoints the active journal, reconnects without fragmenting the
+  session, marks `offline_range_loss_backfill_pending=1`, and starts a forced
+  offline/historical backfill after reconnect (`offline_sync_last_reason` /
+  `offline_range_loss_backfill_reason=long_wear_range_loss`).
 - Any induced silence is recovered by `foreground_keepalive` (reassert→reconnect),
   and data resumes after reseating — **single** recovery, not a churn storm.
 
@@ -356,7 +361,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 - A monitor tick shows `KEEPALIVE_NOT_ADVANCING` while long-wear keepalive is
   armed → the app may be suspended or not running the recovery loop; foreground
   Atria or relaunch with active console evidence before restarting validation.
-- `disc+` or `hrCont+` climbing several per tick while worn → churn regression.
+- `disc+` climbing without a matching range-loss backfill record, or `hrCont+`
+  climbing several per tick while worn → churn/regression.
 - `sessions.json` filling with sub-minute `Auto-saved` fragments → link flapping.
 
 ## Current evidence (2026-06-23)

@@ -65,6 +65,20 @@ def passing_state():
     }
 
 
+def passing_state_with_range_loss_backfill():
+    state = passing_state()
+    state["fields"] = {
+        **state["fields"],
+        "offline_sync_last_status": "armed",
+        "offline_sync_last_reason": "long_wear_range_loss",
+        "offline_range_loss_backfill_pending": "0",
+        "offline_range_loss_backfill_reason": "long_wear_range_loss",
+        "offline_range_loss_backfill_requested_age_s": "12.0",
+        "offline_range_loss_backfill_started_age_s": "4.0",
+    }
+    return state
+
+
 def passing_app_switch(**extra):
     data = passing_stream(
         samples=4,
@@ -503,6 +517,34 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
 
             self.assertIn("no_positive_accepted_delta_on_every_tick", blockers)
+
+    def test_daytime_allows_range_loss_when_backfill_is_proven(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-range-loss-backfilled", passing_stream(
+                min_raw_notification_delta=0,
+                min_accepted_sample_delta=0,
+                max_disconnect_delta=2,
+                flags=["NO_NEW_DATA"],
+                state_pull=passing_state_with_range_loss_backfill(),
+            ))
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["requirements"]["daytime_worn_monitor"]["status"], "pass")
+
+    def test_daytime_rejects_disconnect_without_range_loss_backfill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-range-loss-no-backfill", passing_stream(
+                max_disconnect_delta=2,
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("disconnect_delta_without_range_loss_backfill", blockers)
 
     def test_app_switch_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:

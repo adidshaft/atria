@@ -540,6 +540,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let lastStatus = "whoop.offlineSync.lastStatus"
         static let lastReason = "whoop.offlineSync.lastReason"
         static let attempts = "whoop.offlineSync.attempts"
+        static let rangeLossBackfillPending = "whoop.offlineSync.rangeLossBackfillPending"
+        static let rangeLossBackfillRequestedAt = "whoop.offlineSync.rangeLossBackfillRequestedAt"
+        static let rangeLossBackfillStartedAt = "whoop.offlineSync.rangeLossBackfillStartedAt"
+        static let rangeLossBackfillReason = "whoop.offlineSync.rangeLossBackfillReason"
     }
     enum KeepaliveDefaults {
         static let armed = "whoop.keepalive.armed"
@@ -674,6 +678,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncInProgress = false
     private var pendingOfflineHistoricalSyncReason: String?
     private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
+    private var rangeLossBackfillTask: Task<Void, Never>?
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
@@ -1520,6 +1525,37 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func markRangeLossBackfillRequired(reason: String) {
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+        defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+        defaults.set(reason, forKey: OfflineSyncDefaults.rangeLossBackfillReason)
+        pendingOfflineHistoricalSyncReason = reason
+        WHOOPDebugLog("WHOOPDBG offline_sync status=pending_range_loss_backfill reason=%@ action=sync_after_reconnect",
+              reason)
+    }
+
+    private func scheduleRangeLossBackfillIfNeeded(reason: String) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else { return }
+        guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
+        guard !offlineHistoricalSyncInProgress else { return }
+        rangeLossBackfillTask?.cancel()
+        rangeLossBackfillTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            guard UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
+            guard status == .connected else { return }
+            let backfillReason = UserDefaults.standard.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? reason
+            UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
+            WHOOPDebugLog("WHOOPDBG offline_sync status=starting_range_loss_backfill reason=%@ trigger=%@ action=force_historical_sync",
+                  backfillReason,
+                  reason)
+            requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: true)
+        }
+    }
+
     private func resumeForegroundScanIfNeeded(reason: String) {
         guard peripheral == nil else { return }
         guard status == .disconnected || status == .poweredOff else { return }
@@ -1595,6 +1631,26 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let lastType = defaults.string(forKey: ProtocolDefaults.lastPacketType) ?? "none"
         let lastKind = evidenceToken(defaults.string(forKey: ProtocolDefaults.lastPacketKind) ?? "none")
         return "protocol_packets=\(defaults.integer(forKey: ProtocolDefaults.packets)); protocol_imu_frames=\(defaults.integer(forKey: ProtocolDefaults.imuFrames)); protocol_diagnostic_frames=\(defaults.integer(forKey: ProtocolDefaults.diagnosticFrames)); protocol_event_frames=\(defaults.integer(forKey: ProtocolDefaults.eventFrames)); protocol_unknown_frames=\(defaults.integer(forKey: ProtocolDefaults.unknownFrames)); protocol_last_type=\(lastType); protocol_last_kind=\(lastKind); protocol_last_len=\(defaults.integer(forKey: ProtocolDefaults.lastPacketLength))"
+    }
+
+    static func offlineSyncEvidence() -> String {
+        let defaults = UserDefaults.standard
+        let status = evidenceToken(defaults.string(forKey: OfflineSyncDefaults.lastStatus) ?? "none")
+        let reason = evidenceToken(defaults.string(forKey: OfflineSyncDefaults.lastReason) ?? "none")
+        let rangeReason = evidenceToken(defaults.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? "none")
+        let requestedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
+        let startedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
+        let requestedAge = requestedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
+        let startedAge = startedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
+        return String(format: "offline_sync_enabled=%d; offline_sync_attempts=%d; offline_sync_last_status=%@; offline_sync_last_reason=%@; offline_range_loss_backfill_pending=%d; offline_range_loss_backfill_reason=%@; offline_range_loss_backfill_requested_age_s=%.1f; offline_range_loss_backfill_started_age_s=%.1f",
+                      defaults.bool(forKey: OfflineSyncDefaults.enabled) ? 1 : 0,
+                      defaults.integer(forKey: OfflineSyncDefaults.attempts),
+                      status,
+                      reason,
+                      defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) ? 1 : 0,
+                      rangeReason,
+                      requestedAge,
+                      startedAge)
     }
 
     static func watchdogRecoveryEvidence() -> String {
@@ -1757,6 +1813,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               defaults.integer(forKey: LinkDefaults.failures),
               dbgMTU,
               peripheral.name ?? deviceName)
+        scheduleRangeLossBackfillIfNeeded(reason: "did_connect")
     }
 
     private func recordLinkObservedConnected(reason: String, peripheral: CBPeripheral) {
@@ -8295,6 +8352,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             var autoSaveDuration = 0
             if shouldPreserveLongWearSession {
                 persistActiveSessionJournalIfNeeded(reason: "disconnect_continuity_checkpoint", force: true)
+                markRangeLossBackfillRequired(reason: "long_wear_range_loss")
                 autoSaveStatus = session.isEmpty ? "skipped_continuity_empty" : "checkpointed_continuity"
                 autoSaveDuration = max(0, Int(((session.last?.t ?? sessionStart).timeIntervalSince(sessionStart)).rounded()))
             } else if session.count >= autoSaveMinSamples,
