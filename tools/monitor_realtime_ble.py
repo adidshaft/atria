@@ -274,6 +274,16 @@ def command_string(argv: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
 
 
+def invocation_string(argv: list[str], *, device: str, bundle: str) -> str:
+    prefixes = []
+    if device != DEFAULT_DEVICE or os.environ.get("ATRIA_DEVICE_ID"):
+        prefixes.append(f"ATRIA_DEVICE_ID={shlex.quote(device)}")
+    if bundle != DEFAULT_BUNDLE:
+        prefixes.append(f"ATRIA_BUNDLE_ID={shlex.quote(bundle)}")
+    command = command_string(argv)
+    return " ".join([*prefixes, command]) if prefixes else command
+
+
 def git_commit() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -388,6 +398,7 @@ def main() -> int:
         "started_at": samples[0]["captured_at"] if samples else utc_now(),
         "finished_at": utc_now(),
         "command": command_string(sys.argv),
+        "invocation": invocation_string(sys.argv, device=args.device, bundle=args.bundle),
         "git_commit": git_commit(),
         "device": args.device,
         "bundle": args.bundle,
