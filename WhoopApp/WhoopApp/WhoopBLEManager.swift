@@ -816,6 +816,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private let maxScanRetries = 4
     private var forceFreshScanOnRestore = false
     private var forceFreshScanAfterDisconnect = false
+    private var userRequestedDisconnect = false
     private var connectedAt: Date?
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
     // Flush less often so incoming HR/RR traffic doesn't compete with disk work.
@@ -4731,6 +4732,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     func disconnect() {
         reconnectWatchdogTask?.cancel()
+        userRequestedDisconnect = true
         if let p = peripheral { central.cancelPeripheralConnection(p) }
     }
 
@@ -8272,16 +8274,25 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             let useFreshScan = forceFreshScanAfterDisconnect
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
+            let wasUserRequestedDisconnect = userRequestedDisconnect
+            let shouldPreserveLongWearSession = longWearModeEnabled && !wasUserRequestedDisconnect
+            userRequestedDisconnect = false
             connectedAt = nil
             txCharacteristic = nil
             heartRateCharacteristic = nil
             lastMissingHeartRateDiscoveryAt = nil
             dbgTxReady = false
-            // Don't lose the run: auto-save the session before reconnecting clears it.
+            // Don't fragment long-wear runs on transient lifecycle/radio drops.
+            // The active journal is enough durability for a reconnect; the
+            // session should only be finished on explicit stop or long-gap roll.
             var autoSaveStatus = "skipped"
             var autoSaveSamples = session.count
             var autoSaveDuration = 0
-            if session.count >= autoSaveMinSamples,
+            if shouldPreserveLongWearSession {
+                persistActiveSessionJournalIfNeeded(reason: "disconnect_continuity_checkpoint", force: true)
+                autoSaveStatus = session.isEmpty ? "skipped_continuity_empty" : "checkpointed_continuity"
+                autoSaveDuration = max(0, Int(((session.last?.t ?? sessionStart).timeIntervalSince(sessionStart)).rounded()))
+            } else if session.count >= autoSaveMinSamples,
                let saved = finishSession(label: captureLabel.isEmpty ? "Auto-saved" : captureLabel) {
                 if persistFinishedSession(saved, reason: "disconnect_auto_save") {
                     autoSaveStatus = "saved"
@@ -8305,6 +8316,14 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                   autoSaveSamples,
                   autoSaveDuration,
                   reconnectPolicy)
+            if wasUserRequestedDisconnect {
+                if self.peripheral === peripheral {
+                    self.peripheral = nil
+                }
+                assignIfChanged(\.status, .disconnected)
+                WHOOPDebugLog("WHOOPDBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
+                return
+            }
             if useFreshScan {
                 if self.peripheral === peripheral {
                     self.peripheral = nil
