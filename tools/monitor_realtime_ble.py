@@ -284,6 +284,17 @@ def write_audit_snapshot(root: Path, destination: Path) -> dict[str, Any]:
     }
 
 
+def finalize_summary(summary_path: Path, summary: dict[str, Any], audit_root: Path | None = None) -> None:
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if audit_root is None:
+        return
+    audit_path = summary_path.parent / "audit.md"
+    summary["audit_snapshot"] = write_audit_snapshot(audit_root, audit_path)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary["audit_snapshot"] = write_audit_snapshot(audit_root, audit_path)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def command_string(argv: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
 
@@ -444,11 +455,8 @@ def main() -> int:
     if args.pull_state:
         state = pull_state_snapshot(args.device, args.bundle, out_dir)
         summary["state_pull"] = state
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if args.audit_snapshot:
-        audit_root = (Path.cwd() / args.out_dir).resolve()
-        summary["audit_snapshot"] = write_audit_snapshot(audit_root, out_dir / "audit.md")
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    audit_root = (Path.cwd() / args.out_dir).resolve() if args.audit_snapshot else None
+    finalize_summary(summary_path, summary, audit_root)
     state_text = ""
     if "state_pull" in summary:
         state_pull = summary["state_pull"]

@@ -307,6 +307,41 @@ class MonitorRealtimeBLETests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertTrue((run / "audit.md").exists())
 
+    def test_finalize_summary_refreshes_embedded_audit_after_snapshot_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "realtime"
+            run = root / "rt-app-switch-pass"
+            run.mkdir(parents=True)
+            summary_path = run / "summary.json"
+            calls = []
+            original = monitor_realtime_ble.write_audit_snapshot
+
+            def fake_write_audit_snapshot(audit_root, destination):
+                payload = json.loads(summary_path.read_text(encoding="utf-8"))
+                saw_snapshot = "audit_snapshot" in payload
+                calls.append(saw_snapshot)
+                destination.write_text(
+                    "app_switch pass\n" if saw_snapshot else "app_switch missing_audit_snapshot\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "status": "incomplete",
+                    "path": str(destination),
+                    "summary_count": 1,
+                    "blockers": [] if saw_snapshot else ["app_switch:missing_audit_snapshot"],
+                }
+
+            try:
+                monitor_realtime_ble.write_audit_snapshot = fake_write_audit_snapshot
+                monitor_realtime_ble.finalize_summary(summary_path, {"status": "pass"}, root)
+            finally:
+                monitor_realtime_ble.write_audit_snapshot = original
+
+            final = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(calls, [False, True])
+            self.assertEqual(final["audit_snapshot"]["blockers"], [])
+            self.assertIn("app_switch pass", (run / "audit.md").read_text(encoding="utf-8"))
+
     def test_command_string_quotes_monitor_arguments(self):
         command = monitor_realtime_ble.command_string([
             "tools/monitor_realtime_ble.py",
