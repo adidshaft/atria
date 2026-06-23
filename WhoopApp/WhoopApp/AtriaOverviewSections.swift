@@ -26,6 +26,7 @@ struct AtriaOverviewTabContent: View {
                     AtriaDisconnectedOverviewHost(statusStore: statusStore,
                                                  homeStatsStore: homeStatsStore,
                                                  snapshotStore: snapshotStore,
+                                                 store: store,
                                                  context: connectionContext,
                                                  onShowConnectionGuide: onShowConnectionGuide,
                                                  onOpenVitals: onOpenVitals,
@@ -107,20 +108,32 @@ private struct AtriaDisconnectedOverviewHost: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    @ObservedObject var store: SessionStore
     let context: AtriaConnectionGuideContext
     let onShowConnectionGuide: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
 
+    private var hasTrendHistory: Bool {
+        store.sessions.filter { $0.points.count >= 8 }.count >= 2
+    }
+
     var body: some View {
-        AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
-                                       stats: homeStatsStore.state,
-                                       snapshot: snapshotStore.state,
-                                       context: context,
-                                       onShowConnectionGuide: onShowConnectionGuide,
-                                       onOpenVitals: onOpenVitals,
-                                       onOpenCollection: onOpenCollection)
-            .equatable()
+        VStack(spacing: 18) {
+            AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
+                                           stats: homeStatsStore.state,
+                                           snapshot: snapshotStore.state,
+                                           context: context,
+                                           onShowConnectionGuide: onShowConnectionGuide,
+                                           onOpenVitals: onOpenVitals,
+                                           onOpenCollection: onOpenCollection)
+                .equatable()
+
+            // Trends are local history — show them even while the strap is away.
+            if hasTrendHistory {
+                AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
+            }
+        }
     }
 }
 
@@ -377,7 +390,7 @@ struct AtriaOverviewLeadingSection: View {
                 AtriaOverviewBehaviorJournalSection(store: store)
 
                 if snapshotStore.diagnosticsReady {
-                    AtriaOverviewTrendSectionHost(snapshotStore: snapshotStore)
+                    AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
                 } else {
                     AtriaLoadingPanel(title: "Preparing trends",
                                       subtitle: "Saved trends stay off the launch path and load after the first screen is stable.")
