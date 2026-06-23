@@ -276,6 +276,34 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, keepalive_body, "let effectiveSilenceTimeout = hasSeenPacket ? silenceTimeout : initialSilenceTimeout")
         assert_contains(self, keepalive_body, "let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow")
 
+    def test_long_wear_disconnect_preserves_session_continuity(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "private var userRequestedDisconnect = false",
+            "userRequestedDisconnect = true",
+            "let wasUserRequestedDisconnect = userRequestedDisconnect",
+            "let shouldPreserveLongWearSession = longWearModeEnabled && !wasUserRequestedDisconnect",
+            "persistActiveSessionJournalIfNeeded(reason: \"disconnect_continuity_checkpoint\", force: true)",
+            "autoSaveStatus = session.isEmpty ? \"skipped_continuity_empty\" : \"checkpointed_continuity\"",
+            "WHOOPDBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected",
+        ]:
+            assert_contains(self, text, needle)
+
+        disconnect_handler = re.search(
+            r"nonisolated func centralManager\(_ central: CBCentralManager,\s+didDisconnectPeripheral peripheral: CBPeripheral, error: Error\?\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(disconnect_handler)
+        body = disconnect_handler.group("body")
+        preserve_index = body.find("if shouldPreserveLongWearSession")
+        finish_index = body.find("finishSession(label:")
+        reconnect_index = body.find("recordLinkAttempt(reason: \"did_disconnect_reconnect\"")
+        self.assertGreaterEqual(preserve_index, 0)
+        self.assertGreater(finish_index, preserve_index)
+        self.assertGreater(reconnect_index, finish_index)
+
     def test_live_sample_counters_flush_on_healthy_stream(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 
