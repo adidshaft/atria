@@ -21,6 +21,12 @@ Three commits on `main` (HEAD region):
   75s of total `2A37` silence and reconnects after a further 75s. It uses its own
   arm time as the silence reference so a **state-restored** connection (no
   `connectedAt`) is still covered.
+- `1ade2cd` — **app-switch lifecycle fix**. iOS can sit in `.inactive` before
+  fully backgrounding during app switching; Atria now moves BLE long-wear
+  supervision to unattended mode immediately on `.inactive` and flushes realtime
+  sample diagnostics plus the active journal on lifecycle exits. This prevents
+  the strap link from depending on foreground-only timers when the user switches
+  away without closing the app.
 
 ## Device + paths (constants)
 
@@ -174,10 +180,23 @@ complete the full 2–3h validation:
   `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, and no flags. A
   post-stress active-journal pull found a Long wear segment with 72 samples,
   73 RR samples, and `zeroHRSamples=0`.
+- After the user reported immediate disconnect on app switch, `1ade2cd` was
+  installed on the physical iPhone and re-tested:
+  `logs/live-device/realtime-ble-monitor/rt-inactive-switch-fix-20260623T053744Z/summary.json`
+  and
+  `logs/live-device/realtime-ble-monitor/rt-inactive-flush-switch-fix-20260623T054209Z/summary.json`
+  both kept `max_disconnect_delta=0` and `max_hr_continuity_delta=0` while Clock
+  was foregrounded and Atria was returned to foreground. The strap link did not
+  disconnect or churn. However, each short app-switch run still had one
+  `NO_NEW_DATA` monitor poll followed by a large catch-up delta (`rawNotif+41`
+  or `rawNotif+46`), so this is **not** full pass evidence for the strict
+  "rawNotifications increases on every monitor tick" criterion. Treat it as
+  evidence that app-switch teardown is fixed, with remaining work to prove or
+  improve realtime persistence while another app owns the foreground.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
-and the remaining stress tests above (brief contact loss, sustained
-silence/reseat) with passing evidence.
+and the remaining stress tests above (strict app-switch with no `NO_NEW_DATA`,
+brief contact loss, sustained silence/reseat) with passing evidence.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
