@@ -344,6 +344,8 @@ brief_contact_loss: missing_evidence
 sustained_silence_reseat: missing_evidence
 app_switch: pass
 ```
+The live Markdown output is the authoritative next-step list; it prints the exact
+monitor command and operator action for each missing requirement.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
