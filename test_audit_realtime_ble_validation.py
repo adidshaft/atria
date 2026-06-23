@@ -46,6 +46,18 @@ def passing_state():
     }
 
 
+def passing_app_switch(**extra):
+    data = passing_stream(
+        samples=4,
+        started_at="2026-06-23T00:00:00Z",
+        finished_at="2026-06-23T00:01:00Z",
+        planned_interval_s=20,
+        git_commit=audit.MIN_APP_SWITCH_LIFECYCLE_COMMIT,
+    )
+    data.update(extra)
+    return data
+
+
 class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_documented_commands_match_audit_next_actions(self):
         doc = " ".join(
@@ -61,12 +73,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_incomplete_when_required_physical_evidence_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-clock-switch-ok", passing_stream(
-                samples=4,
-                started_at="2026-06-23T00:00:00Z",
-                finished_at="2026-06-23T00:01:00Z",
-                planned_interval_s=20,
-            ))
+            write_summary(root, "rt-clock-switch-ok", passing_app_switch())
 
             report = audit.evaluate(root)
 
@@ -108,7 +115,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                     "next_hr_continuity_delta": 1,
                 }],
             ))
-            write_summary(root, "rt-clock-switch-pass", passing_stream(samples=4, planned_interval_s=20))
+            write_summary(root, "rt-clock-switch-pass", passing_app_switch())
 
             report = audit.evaluate(root)
 
@@ -118,12 +125,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_markdown_prints_next_actions_only_for_incomplete_requirements(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-clock-switch-ok", passing_stream(
-                samples=4,
-                started_at="2026-06-23T00:00:00Z",
-                finished_at="2026-06-23T00:01:00Z",
-                planned_interval_s=20,
-            ))
+            write_summary(root, "rt-clock-switch-ok", passing_app_switch())
 
             report = audit.evaluate(root)
             markdown = audit.markdown_summary(report)
@@ -142,12 +144,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_invalid_summary_is_reported_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-clock-switch-ok", passing_stream(
-                samples=4,
-                started_at="2026-06-23T00:00:00Z",
-                finished_at="2026-06-23T00:01:00Z",
-                planned_interval_s=20,
-            ))
+            write_summary(root, "rt-clock-switch-ok", passing_app_switch())
             bad = root / "rt-daytime-partial" / "summary.json"
             bad.parent.mkdir()
             bad.write_text("{", encoding="utf-8")
@@ -189,7 +186,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                     "next_hr_continuity_delta": 1,
                 }],
             ))
-            write_summary(root, "rt-clock-switch-pass", passing_stream(samples=4, planned_interval_s=20))
+            write_summary(root, "rt-clock-switch-pass", passing_app_switch())
             bad = root / "rt-daytime-corrupt" / "summary.json"
             bad.parent.mkdir()
             bad.write_text("{", encoding="utf-8")
@@ -348,9 +345,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_app_switch_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-clock-switch-not-worn", passing_stream(
-                samples=4,
-                planned_interval_s=20,
+            write_summary(root, "rt-clock-switch-not-worn", passing_app_switch(
                 worn_expected=False,
             ))
 
@@ -358,6 +353,22 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["app_switch"]["blockers"]
 
             self.assertIn("monitor_ran_not_worn", blockers)
+
+    def test_app_switch_requires_current_lifecycle_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-old-code", passing_stream(
+                samples=4,
+                started_at="2026-06-23T00:00:00Z",
+                finished_at="2026-06-23T00:01:00Z",
+                planned_interval_s=20,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertEqual(report["requirements"]["app_switch"]["status"], "incomplete")
+            self.assertIn("app_switch_evidence_before_background_supervisor_resume", blockers)
 
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:

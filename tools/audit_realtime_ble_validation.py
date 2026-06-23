@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 DEFAULT_ROOT = Path("logs/live-device/realtime-ble-monitor")
 MIN_DAYTIME_DURATION_SECONDS = 2 * 60 * 60
 MIN_DAYTIME_SAMPLES = 61
+MIN_APP_SWITCH_LIFECYCLE_COMMIT = "655c863"
 
 NEXT_ACTIONS = {
     "daytime_worn_monitor": {
@@ -114,6 +116,19 @@ def summary_duration_seconds(summary: dict[str, Any]) -> float:
     return 0.0
 
 
+def commit_includes(commit: object, ancestor: str) -> bool:
+    if not isinstance(commit, str) or not commit or commit == "unknown":
+        return False
+    if commit.startswith(ancestor) or ancestor.startswith(commit):
+        return True
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, commit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
 def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     if summary.get("worn_expected") is False:
@@ -131,6 +146,13 @@ def base_stream_blockers(summary: dict[str, Any]) -> list[str]:
         blockers.append("disconnect_delta_nonzero")
     if numeric(summary.get("max_hr_continuity_delta")) != 0:
         blockers.append("hr_continuity_delta_nonzero")
+    return blockers
+
+
+def app_switch_blockers(summary: dict[str, Any]) -> list[str]:
+    blockers = base_stream_blockers(summary)
+    if not commit_includes(summary.get("git_commit"), MIN_APP_SWITCH_LIFECYCLE_COMMIT):
+        blockers.append("app_switch_evidence_before_background_supervisor_resume")
     return blockers
 
 
@@ -282,7 +304,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         records,
         lambda summary, _path: "app-switch" in str(summary.get("label", ""))
         or "clock-switch" in str(summary.get("label", "")),
-        base_stream_blockers,
+        app_switch_blockers,
     )
     sections = {
         "daytime_worn_monitor": daytime,
