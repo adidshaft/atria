@@ -569,7 +569,10 @@ private struct AtriaConnectionGuideSheet: View {
     }
 
     private var guideSubtitle: String {
-        context.isFirstHandoff
+        if context.officialWhoopCoexistenceRisk == .suspected {
+            return "Atria cannot kill the official WHOOP app from inside iOS. Remove or disable WHOOP first, then reconnect here for reliable readings."
+        }
+        return context.isFirstHandoff
             ? "Atria scans for the strap, connects when iOS makes it available, and keeps saving data without requiring the display to stay awake."
             : "Atria keeps saved data intact while it reconnects and picks live readings back up."
     }
@@ -631,8 +634,15 @@ private struct AtriaConnectionGuideSheet: View {
     }
 
     private var manualSteps: [AtriaConnectionGuideStep] {
+        let coexistenceStep = AtriaConnectionGuideStep(
+            title: context.officialWhoopCoexistenceRisk == .suspected ? "Remove WHOOP first" : "Check WHOOP coexistence",
+            detail: context.coexistenceDetail,
+            systemImage: "exclamationmark.triangle.fill",
+            tint: context.officialWhoopCoexistenceRisk == .suspected ? .red : .orange
+        )
         if context.isFirstHandoff {
             return [
+                coexistenceStep,
                 AtriaConnectionGuideStep(title: "Keep the strap nearby",
                                          detail: "Wear the charged strap near this iPhone so iOS can hand Atria the live stream.",
                                          systemImage: "bolt.horizontal.circle",
@@ -649,6 +659,7 @@ private struct AtriaConnectionGuideSheet: View {
         }
 
         return [
+            coexistenceStep,
             AtriaConnectionGuideStep(title: "Keep the strap nearby",
                                      detail: "Atria reconnects in the background as the strap and iPhone become available.",
                                      systemImage: "iphone.radiowaves.left.and.right",
@@ -665,6 +676,13 @@ private struct AtriaConnectionGuideSheet: View {
     }
 
     private var automaticItems: [String] {
+        if context.officialWhoopCoexistenceRisk == .suspected {
+            return [
+                "Atria keeps saved data intact while the live BLE owner changes.",
+                "Atria warns instead of pretending collection is reliable when WHOOP may reclaim the strap.",
+                "After WHOOP is removed or disabled, Atria reconnects and resumes normal collection."
+            ]
+        }
         if context.isFirstHandoff {
             return [
                 "Atria starts scanning automatically as soon as Bluetooth is available.",

@@ -199,6 +199,9 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     }
 
     private var setupDetail: String {
+        if context.officialWhoopCoexistenceRisk == .suspected {
+            return "Atria cannot kill another iOS app. Remove or disable the official WHOOP app/widget, then reconnect here."
+        }
         switch status {
         case .connecting:
             return "Keep your phone unlocked and nearby while Atria finishes connecting."
@@ -214,11 +217,15 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     }
 
     private var setupItems: [String] {
-        [
-            "Disconnect the strap inside the WHOOP app if WHOOP still owns the live connection.",
-            "Fully quit the WHOOP app so it does not quietly reclaim the strap.",
+        var items = [
+            "If the official WHOOP app is installed, uninstall it or disable its widget/background access before relying on Atria.",
+            "Atria cannot terminate WHOOP from inside iOS; it can only detect risky connection behavior and warn clearly.",
             "Keep this phone unlocked and the strap nearby until Atria completes the first setup."
         ]
+        if context.officialWhoopCoexistenceRisk == .suspected {
+            items[2] = "After removing WHOOP, reopen Atria and let the automatic scan reconnect the strap."
+        }
+        return items
     }
 
     var body: some View {
@@ -237,6 +244,10 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if context.officialWhoopCoexistenceRisk != .cleared {
+                AtriaDisconnectedOverviewCoexistenceCard(context: context)
+            }
 
             AtriaOverviewActionStrip(title: "Quick actions",
                                      primaryTitle: "Vitals",
@@ -1058,6 +1069,36 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+}
+
+private struct AtriaDisconnectedOverviewCoexistenceCard: View, Equatable {
+    let context: AtriaConnectionGuideContext
+
+    private var tint: Color {
+        context.officialWhoopCoexistenceRisk == .suspected ? .red : .orange
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(context.coexistenceTitle)
+                    .font(.subheadline.weight(.semibold))
+                Text(context.coexistenceDetail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 }
 
