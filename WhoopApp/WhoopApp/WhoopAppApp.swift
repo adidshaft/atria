@@ -61,13 +61,10 @@ struct WhoopAppApp: App {
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
                         // Inactive is often a short transient state during gestures,
-                        // alerts, and multitasking transitions. Move BLE supervision to
-                        // unattended immediately so app-switching does not leave the strap
-                        // on foreground-only timers, then delay the heavier store flush
-                        // unless the app actually stays away.
-                        ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,
-                                                maxHR: store.profile.maxHR,
-                                                reason: "scene_inactive")
+                        // alerts, and multitasking transitions. Keep the BLE manager in
+                        // its current mode here; true backgrounding is handled by the
+                        // `.background` case. Flipping modes on every app-switch gesture
+                        // can restart long-wear supervision while the app is still live.
                         ble.flushLifecycleRealtimeState(reason: "scene_inactive_checkpoint")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = Task { @MainActor in

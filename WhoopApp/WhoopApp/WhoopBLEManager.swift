@@ -1210,6 +1210,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         // already true (the all-night, screen-on scenario). Idempotent: only
         // starts when not already running.
         ensureForegroundKeepaliveWatchdog(reason: "scene_active")
+        reassertHeartRateNotificationsIfConnected(reason: "scene_active")
         if foregroundInteractiveMode {
             return
         }
@@ -1223,6 +1224,25 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=1 action=defer_automation_keepalive_armed rest_hr=%d max_hr=%d",
               rest,
               maxHR)
+    }
+
+    private func reassertHeartRateNotificationsIfConnected(reason: String) {
+        guard status == .connected, let peripheral else { return }
+        if let characteristic = heartRateCharacteristic {
+            if characteristic.properties.contains(.notify) {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+            if characteristic.properties.contains(.read) {
+                peripheral.readValue(for: characteristic)
+            }
+            WHOOPDebugLog("WHOOPDBG ble_notify_reassert status=requested reason=%@ source=foreground_return action=keep_connection",
+                          reason)
+            return
+        }
+        guard peripheral.state == .connected else { return }
+        peripheral.discoverServices([UUIDs.heartRateService])
+        WHOOPDebugLog("WHOOPDBG ble_notify_reassert status=discover_services reason=%@ source=foreground_return action=keep_connection",
+                      reason)
     }
 
     /// Runs while long-wear is enabled, including app-switch/background
