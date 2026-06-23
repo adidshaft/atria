@@ -30,7 +30,7 @@ def passing_stream(**extra):
         "flags": [],
         "audit_snapshot": {
             "status": "incomplete",
-            "path": "/tmp/audit.md",
+            "path": str(Path(__file__).resolve()),
             "summary_count": 4,
         },
     }
@@ -106,7 +106,7 @@ def passing_sustained_silence(**extra):
         "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
         "audit_snapshot": {
             "status": "incomplete",
-            "path": "/tmp/audit.md",
+            "path": str(Path(__file__).resolve()),
             "summary_count": 4,
         },
         "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
@@ -364,6 +364,23 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
 
             self.assertIn("missing_audit_snapshot", blockers)
+
+    def test_daytime_requires_audit_snapshot_file_to_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-missing-audit-file", passing_stream(
+                audit_snapshot={
+                    "status": "incomplete",
+                    "path": str(Path(tmp) / "missing-audit.md"),
+                    "summary_count": 4,
+                },
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("audit_snapshot_file_missing", blockers)
 
     def test_daytime_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
