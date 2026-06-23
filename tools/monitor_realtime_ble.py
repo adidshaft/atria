@@ -164,6 +164,22 @@ def compact_pull_state_summary(fields: dict[str, str]) -> dict[str, str]:
     return {key: fields[key] for key in PULL_STATE_SUMMARY_KEYS if key in fields}
 
 
+def parse_sample_events(values: list[str]) -> dict[int, list[str]]:
+    events: dict[int, list[str]] = {}
+    for value in values:
+        if ":" not in value:
+            raise ValueError(f"event must be SAMPLE:LABEL, got {value!r}")
+        sample_text, label = value.split(":", 1)
+        sample = int(sample_text)
+        if sample < 0:
+            raise ValueError(f"event sample must be >= 0, got {sample}")
+        label = label.strip()
+        if not label:
+            raise ValueError(f"event label must not be empty, got {value!r}")
+        events.setdefault(sample, []).append(label)
+    return events
+
+
 def pull_state_snapshot(device: str, bundle: str, out_dir: Path) -> dict[str, Any]:
     evidence_dir = out_dir / "state"
     result = subprocess.run(
@@ -207,10 +223,22 @@ def main() -> int:
         action="store_true",
         help="After the monitor finishes, non-disruptively pull sessions and active journal evidence into the run directory.",
     )
+    parser.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="SAMPLE:LABEL",
+        help="Annotate a sample index in samples.jsonl/summary.json, e.g. --event 2:brief_contact_loss_reseat.",
+    )
     args = parser.parse_args()
 
     if args.samples < 1:
         print("--samples must be >= 1", file=sys.stderr)
+        return 64
+    try:
+        sample_events = parse_sample_events(args.event)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 64
 
     out_dir = (Path.cwd() / args.out_dir / args.label).resolve()
@@ -248,6 +276,9 @@ def main() -> int:
                 "flags": flags,
             }
             previous = current
+        sample_events_for_index = sample_events.get(index, [])
+        if sample_events_for_index:
+            sample["events"] = sample_events_for_index
         samples.append(sample)
         with jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(sample, sort_keys=True) + "\n")
@@ -261,6 +292,7 @@ def main() -> int:
             f"lastAction={sample['current'].get('whoop.watchdog.lastAction')} "
             f"keepalive={sample['current'].get('whoop.keepalive.lastAction')} "
             f"keepaliveTicks={sample['current'].get('whoop.keepalive.ticks')} "
+            f"events={','.join(sample_events_for_index) or 'none'} "
             f"flags={','.join(sample['flags']) or 'OK'}",
             flush=True,
         )
@@ -276,6 +308,7 @@ def main() -> int:
         "out_dir": str(out_dir),
         "planned_samples": args.samples,
         "planned_interval_s": args.interval,
+        "events": {str(key): value for key, value in sorted(sample_events.items())},
     })
     if args.pull_state:
         state = pull_state_snapshot(args.device, args.bundle, out_dir)
