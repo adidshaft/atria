@@ -252,7 +252,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    `next_raw_notification_delta > 0`. The audit also requires
    `state_pull.status=ok` with saved-session file durability, and the
    `brief_contact_loss_reseat` marker must be at least one sample after
-   `brief_contact_loss_start`.
+   `brief_contact_loss_start` with at least 30 seconds of planned monitor time
+   between the markers.
 
 **Sustained silence and reseat (>2.5 min):**
 1. Start this monitor:
@@ -271,7 +272,8 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
    with `next_raw_notification_delta > 0`. The audit also requires
    `state_pull.status=ok` with saved-session file durability, and the
    `sustained_silence_reseat` marker must be at least two samples after
-   `sustained_silence_start`.
+   `sustained_silence_start` with at least 150 seconds of planned monitor time
+   between the markers.
 
 ## PASS / FAIL
 

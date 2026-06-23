@@ -58,6 +58,47 @@ def passing_app_switch(**extra):
     return data
 
 
+def passing_brief_contact_loss(**extra):
+    data = passing_stream(
+        samples=5,
+        planned_interval_s=120,
+        state_pull=passing_state(),
+        events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
+        event_outcomes=[{
+            "events": ["brief_contact_loss_reseat"],
+            "status": "recovered",
+            "next_raw_notification_delta": 70,
+            "next_disconnect_delta": 0,
+            "next_hr_continuity_delta": 0,
+        }],
+    )
+    data.update(extra)
+    return data
+
+
+def passing_sustained_silence(**extra):
+    data = {
+        "status": "fail",
+        "samples": 7,
+        "planned_interval_s": 120,
+        "state_pull": passing_state(),
+        "min_raw_notification_delta": 0,
+        "max_disconnect_delta": 1,
+        "max_hr_continuity_delta": 1,
+        "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
+        "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+        "event_outcomes": [{
+            "events": ["sustained_silence_reseat"],
+            "status": "recovered",
+            "next_raw_notification_delta": 42,
+            "next_disconnect_delta": 1,
+            "next_hr_continuity_delta": 1,
+        }],
+    }
+    data.update(extra)
+    return data
+
+
 class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_documented_commands_match_audit_next_actions(self):
         doc = " ".join(
@@ -93,30 +134,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_summary(root, "rt-daytime-pass", passing_stream(state_pull=passing_state()))
-            write_summary(root, "rt-brief-contact-loss-pass", passing_stream(
-                samples=5,
-                state_pull=passing_state(),
-                events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
-                event_outcomes=[{
-                    "events": ["brief_contact_loss_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 70,
-                    "next_disconnect_delta": 0,
-                    "next_hr_continuity_delta": 0,
-                }],
-            ))
-            write_summary(root, "rt-sustained-silence-pass", passing_stream(
-                samples=7,
-                state_pull=passing_state(),
-                events={"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                event_outcomes=[{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 80,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            ))
+            write_summary(root, "rt-brief-contact-loss-pass", passing_brief_contact_loss())
+            write_summary(root, "rt-sustained-silence-pass", passing_sustained_silence())
             write_summary(root, "rt-clock-switch-pass", passing_app_switch())
 
             report = audit.evaluate(root)
@@ -166,30 +185,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_summary(root, "rt-daytime-pass", passing_stream(state_pull=passing_state()))
-            write_summary(root, "rt-brief-contact-loss-pass", passing_stream(
-                samples=5,
-                state_pull=passing_state(),
-                events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
-                event_outcomes=[{
-                    "events": ["brief_contact_loss_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 70,
-                    "next_disconnect_delta": 0,
-                    "next_hr_continuity_delta": 0,
-                }],
-            ))
-            write_summary(root, "rt-sustained-silence-pass", passing_stream(
-                samples=7,
-                state_pull=passing_state(),
-                events={"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                event_outcomes=[{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 80,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            ))
+            write_summary(root, "rt-brief-contact-loss-pass", passing_brief_contact_loss())
+            write_summary(root, "rt-sustained-silence-pass", passing_sustained_silence())
             write_summary(root, "rt-clock-switch-pass", passing_app_switch())
             bad = root / "rt-daytime-corrupt" / "summary.json"
             bad.parent.mkdir()
@@ -377,23 +374,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-sustained-silence-off-wrist", {
-                "status": "fail",
-                "samples": 7,
-                "state_pull": passing_state(),
-                "min_raw_notification_delta": 0,
-                "max_disconnect_delta": 1,
-                "max_hr_continuity_delta": 1,
-                "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
-                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                "event_outcomes": [{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 42,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            })
+            write_summary(root, "rt-sustained-silence-off-wrist", passing_sustained_silence())
 
             report = audit.evaluate(root)
 
@@ -402,16 +383,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_brief_contact_loss_requires_state_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-brief-contact-loss-no-state", passing_stream(
-                samples=5,
-                events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
-                event_outcomes=[{
-                    "events": ["brief_contact_loss_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 70,
-                    "next_disconnect_delta": 0,
-                    "next_hr_continuity_delta": 0,
-                }],
+            write_summary(root, "rt-brief-contact-loss-no-state", passing_brief_contact_loss(
+                state_pull=None,
             ))
 
             report = audit.evaluate(root)
@@ -422,17 +395,8 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_brief_contact_loss_rejects_reversed_event_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-brief-contact-loss-reversed", passing_stream(
-                samples=5,
-                state_pull=passing_state(),
+            write_summary(root, "rt-brief-contact-loss-reversed", passing_brief_contact_loss(
                 events={"2": ["brief_contact_loss_start"], "1": ["brief_contact_loss_reseat"]},
-                event_outcomes=[{
-                    "events": ["brief_contact_loss_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 70,
-                    "next_disconnect_delta": 0,
-                    "next_hr_continuity_delta": 0,
-                }],
             ))
 
             report = audit.evaluate(root)
@@ -443,25 +407,27 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                 blockers,
             )
 
+    def test_brief_contact_loss_rejects_short_elapsed_marker_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-brief-contact-loss-short-elapsed", passing_brief_contact_loss(
+                planned_interval_s=20,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["brief_contact_loss"]["blockers"]
+
+            self.assertIn(
+                "event_elapsed_too_short_brief_contact_loss_start_to_brief_contact_loss_reseat",
+                blockers,
+            )
+
     def test_sustained_silence_requires_state_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-sustained-silence-no-state", {
-                "status": "fail",
-                "samples": 7,
-                "min_raw_notification_delta": 0,
-                "max_disconnect_delta": 1,
-                "max_hr_continuity_delta": 1,
-                "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
-                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                "event_outcomes": [{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 42,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            })
+            write_summary(root, "rt-sustained-silence-no-state", passing_sustained_silence(
+                state_pull=None,
+            ))
 
             report = audit.evaluate(root)
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
@@ -471,23 +437,9 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_sustained_silence_requires_two_sample_marker_spacing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-sustained-silence-too-short", {
-                "status": "fail",
-                "samples": 7,
-                "state_pull": passing_state(),
-                "min_raw_notification_delta": 0,
-                "max_disconnect_delta": 1,
-                "max_hr_continuity_delta": 1,
-                "flags": ["NO_NEW_DATA", "ZERO_CONTACT"],
-                "events": {"1": ["sustained_silence_start"], "2": ["sustained_silence_reseat"]},
-                "event_outcomes": [{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 42,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            })
+            write_summary(root, "rt-sustained-silence-too-short", passing_sustained_silence(
+                events={"1": ["sustained_silence_start"], "2": ["sustained_silence_reseat"]},
+            ))
 
             report = audit.evaluate(root)
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
@@ -497,26 +449,36 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                 blockers,
             )
 
+    def test_sustained_silence_rejects_short_elapsed_marker_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-short-elapsed", passing_sustained_silence(
+                planned_interval_s=60,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn(
+                "event_elapsed_too_short_sustained_silence_start_to_sustained_silence_reseat",
+                blockers,
+            )
+
     def test_sustained_silence_still_rejects_churn(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-sustained-silence-churn", {
-                "status": "fail",
-                "samples": 7,
-                "state_pull": passing_state(),
-                "min_raw_notification_delta": 0,
-                "max_disconnect_delta": 3,
-                "max_hr_continuity_delta": 0,
-                "flags": ["NO_NEW_DATA"],
-                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                "event_outcomes": [{
+            write_summary(root, "rt-sustained-silence-churn", passing_sustained_silence(
+                max_disconnect_delta=3,
+                max_hr_continuity_delta=0,
+                flags=["NO_NEW_DATA"],
+                event_outcomes=[{
                     "events": ["sustained_silence_reseat"],
                     "status": "recovered",
                     "next_raw_notification_delta": 42,
                     "next_disconnect_delta": 3,
                     "next_hr_continuity_delta": 0,
                 }],
-            })
+            ))
 
             report = audit.evaluate(root)
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
@@ -527,23 +489,9 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def test_sustained_silence_rejects_unexpected_keepalive_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_summary(root, "rt-sustained-silence-keepalive-flat", {
-                "status": "fail",
-                "samples": 7,
-                "state_pull": passing_state(),
-                "min_raw_notification_delta": 0,
-                "max_disconnect_delta": 1,
-                "max_hr_continuity_delta": 1,
-                "flags": ["NO_NEW_DATA", "ZERO_CONTACT", "KEEPALIVE_NOT_ADVANCING"],
-                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
-                "event_outcomes": [{
-                    "events": ["sustained_silence_reseat"],
-                    "status": "recovered",
-                    "next_raw_notification_delta": 42,
-                    "next_disconnect_delta": 1,
-                    "next_hr_continuity_delta": 1,
-                }],
-            })
+            write_summary(root, "rt-sustained-silence-keepalive-flat", passing_sustained_silence(
+                flags=["NO_NEW_DATA", "ZERO_CONTACT", "KEEPALIVE_NOT_ADVANCING"],
+            ))
 
             report = audit.evaluate(root)
             blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]

@@ -237,6 +237,7 @@ def stress_blockers(
     *,
     start_label: str | None = None,
     min_start_to_reseat_samples: int = 1,
+    min_start_to_reseat_seconds: float = 0,
     require_clean_stream: bool = True,
     allow_small_churn: bool = False,
 ) -> list[str]:
@@ -264,6 +265,10 @@ def stress_blockers(
                 blockers.append(f"event_order_invalid_{start_label}_before_{reseat_label}")
             elif reseat_index - start_index < min_start_to_reseat_samples:
                 blockers.append(f"event_spacing_too_short_{start_label}_to_{reseat_label}")
+            elif min_start_to_reseat_seconds > 0:
+                elapsed = numeric(summary.get("planned_interval_s")) * (reseat_index - start_index)
+                if elapsed < min_start_to_reseat_seconds:
+                    blockers.append(f"event_elapsed_too_short_{start_label}_to_{reseat_label}")
     outcome = event_outcome(summary, reseat_label)
     if outcome is None:
         blockers.append(f"missing_event_outcome_{reseat_label}")
@@ -321,6 +326,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
             "brief_contact_loss_reseat",
             start_label="brief_contact_loss_start",
             min_start_to_reseat_samples=1,
+            min_start_to_reseat_seconds=30,
         ),
     )
     sustained = best_candidate(
@@ -332,6 +338,7 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
             "sustained_silence_reseat",
             start_label="sustained_silence_start",
             min_start_to_reseat_samples=2,
+            min_start_to_reseat_seconds=150,
             require_clean_stream=False,
             allow_small_churn=True,
         ),
