@@ -46,11 +46,20 @@ Key fixes on `main` (HEAD region):
   protected long-wear collection with low-radio standard HR and offline sync
   enabled, so users do not have to keep the phone unlocked or discover a hidden
   mode before background-safe collection starts.
-- Current worktree after `4ec0757` — **monitor/harness hardening**. The harness
-  classifies iOS developer-profile trust launch failures explicitly, and the
-  realtime monitor only raises `KEEPALIVE_NOT_ADVANCING` when the keepalive tick
-  is flat and the live stream is also stalled. Positive raw/accepted 2A37 data
-  remains the primary proof that the link is alive during app switches.
+- `1aea814` — **marked app-switch evidence**. The monitor now records
+  same-sample operator prompts for app-switch stress runs, and the current
+  physical app-switch proof uses those prompts instead of passive lifecycle
+  timing.
+- `e045615`, `421e3bb`, and `dcb34c5` — **audit artifact hardening**. Passing
+  summaries must carry local `--audit-snapshot` and `--pull-state` artifacts,
+  with `pull-summary.txt` and `audit.md` scoped to the same monitor run
+  directory. This prevents copied or hand-edited summaries from satisfying the
+  completion gate without the underlying durability evidence.
+- `443d960` — **latest app-switch diagnostics recorded**. Additional same-device
+  troubleshooting runs showed positive raw/accepted 2A37 progress and zero
+  disconnect delta while Clock was foregrounded, but they remain diagnostic
+  evidence only; the audit still requires the missing daytime/contact-loss/
+  sustained-silence physical runs.
 
 ## Device + paths (constants)
 
