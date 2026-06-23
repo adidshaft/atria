@@ -1337,7 +1337,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow
                 guard now.timeIntervalSince(foregroundKeepaliveReassertAt ?? now) >= reconnectWindow else { continue }
                 foregroundKeepaliveReassertAt = nil
-                persistActiveSessionJournalIfNeeded(reason: "foreground_keepalive_reconnect", force: true)
+                preserveLongWearRangeLossRecovery(reason: "foreground_keepalive")
                 defaults.set("silent", forKey: KeepaliveDefaults.lastStatus)
                 defaults.set("fresh_scan_reconnect", forKey: KeepaliveDefaults.lastAction)
                 WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=fresh_scan_reconnect",
@@ -1533,6 +1533,15 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         pendingOfflineHistoricalSyncReason = reason
         WHOOPDebugLog("WHOOPDBG offline_sync status=pending_range_loss_backfill reason=%@ action=sync_after_reconnect",
               reason)
+    }
+
+    private func preserveLongWearRangeLossRecovery(reason: String) {
+        guard longWearModeEnabled else { return }
+        persistActiveSessionJournalIfNeeded(reason: "\(reason)_continuity_checkpoint", force: true)
+        markRangeLossBackfillRequired(reason: "long_wear_range_loss")
+        if status == .connected {
+            scheduleRangeLossBackfillIfNeeded(reason: reason)
+        }
     }
 
     private func scheduleRangeLossBackfillIfNeeded(reason: String) {
@@ -3322,6 +3331,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               timeout,
               session.count,
               snapshot == nil ? "skipped" : "saved")
+        preserveLongWearRangeLossRecovery(reason: "no_data_watchdog")
         guard let peripheral else { return }
         requestFreshScanReconnect(peripheral: peripheral, reason: "no_data_watchdog")
     }
@@ -4007,6 +4017,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               timeout,
               session.count,
               snapshot == nil ? "skipped" : "saved")
+        preserveLongWearRangeLossRecovery(reason: "accepted_hr_watchdog")
         requestFreshScanReconnect(peripheral: peripheral, reason: "accepted_hr_watchdog")
     }
 
@@ -4807,6 +4818,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   self.status == .connecting,
                   peripheral.state != .connected else { return }
             self.recordLinkFailure(reason: "\(reason)_watchdog", error: nil)
+            self.preserveLongWearRangeLossRecovery(reason: "\(reason)_watchdog")
             self.realtimeArmed = false
             self.txCharacteristic = nil
             self.dbgTxReady = false
@@ -8239,8 +8251,10 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                     startScan(reason: reason)
                 }
             case .poweredOff:
+                preserveLongWearRangeLossRecovery(reason: "central_powered_off")
                 self.assignIfChanged(\.status, .poweredOff)
             default:
+                preserveLongWearRangeLossRecovery(reason: "central_unavailable")
                 self.assignIfChanged(\.status, .disconnected)
             }
         }
@@ -8268,6 +8282,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                 self.reconnectWatchdogTask?.cancel()
                 self.connectedAt = Date()
                 self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
+                self.scheduleRangeLossBackfillIfNeeded(reason: "state_restore_connected")
                 restoredPeripheral.discoverServices(Self.UUIDs.discoveryServices)
                 WHOOPDebugLog("WHOOPDBG ble_restore status=connected name=%@", self.deviceName)
             case .connecting:
@@ -8351,8 +8366,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             var autoSaveSamples = session.count
             var autoSaveDuration = 0
             if shouldPreserveLongWearSession {
-                persistActiveSessionJournalIfNeeded(reason: "disconnect_continuity_checkpoint", force: true)
-                markRangeLossBackfillRequired(reason: "long_wear_range_loss")
+                preserveLongWearRangeLossRecovery(reason: "disconnect")
                 autoSaveStatus = session.isEmpty ? "skipped_continuity_empty" : "checkpointed_continuity"
                 autoSaveDuration = max(0, Int(((session.last?.t ?? sessionStart).timeIntervalSince(sessionStart)).rounded()))
             } else if session.count >= autoSaveMinSamples,

@@ -19,6 +19,7 @@ Pulled files, when present:
   - atria-active-session.json
   - atria-active-session.segments/
   - historical-archive.jsonl
+  - app preferences plist
   - process-check.txt
   - pull-summary.txt
 EOF
@@ -133,11 +134,14 @@ if [[ "$active_status" != "ok" ]]; then
 fi
 
 copy_from_container "Documents/whoop-historical/historical-archive.jsonl" "$evidence_dir/historical-archive.jsonl" "historical_archive" || true
+copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
 python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
 import datetime as dt
 import json
+import plistlib
 import sys
+import time
 from pathlib import Path
 
 evidence = Path(sys.argv[1])
@@ -152,6 +156,35 @@ def app_time(value):
         parsed = dt.datetime.fromisoformat(text)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
     return None
+
+def bool_int(value):
+    return 1 if bool(value) else 0
+
+def emit_offline_sync_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"preferences_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    requested_at = prefs.get("whoop.offlineSync.rangeLossBackfillRequestedAt")
+    started_at = prefs.get("whoop.offlineSync.rangeLossBackfillStartedAt")
+    requested_age = max(0.0, now - float(requested_at)) if isinstance(requested_at, (int, float)) and requested_at > 0 else -1.0
+    started_age = max(0.0, now - float(started_at)) if isinstance(started_at, (int, float)) and started_at > 0 else -1.0
+    print(f"offline_sync_enabled={bool_int(prefs.get('whoop.offlineSync.enabled'))}")
+    print(f"offline_sync_attempts={int(prefs.get('whoop.offlineSync.attempts') or 0)}")
+    print(f"offline_sync_last_status={prefs.get('whoop.offlineSync.lastStatus') or 'none'}")
+    print(f"offline_sync_last_reason={prefs.get('whoop.offlineSync.lastReason') or 'none'}")
+    print(f"offline_range_loss_backfill_pending={bool_int(prefs.get('whoop.offlineSync.rangeLossBackfillPending'))}")
+    print(f"offline_range_loss_backfill_reason={prefs.get('whoop.offlineSync.rangeLossBackfillReason') or 'none'}")
+    print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
+    print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
+
+emit_offline_sync_preferences()
 
 def rr_window_audit(prefix, rr, relative_times=False, emit=True):
     rr_values = []

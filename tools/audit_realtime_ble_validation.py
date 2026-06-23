@@ -164,12 +164,13 @@ def range_loss_backfill_proven(fields: dict[str, Any]) -> bool:
     started_age = numeric(fields.get("offline_range_loss_backfill_started_age_s"))
     requested_age = numeric(fields.get("offline_range_loss_backfill_requested_age_s"))
     status = fields.get("offline_sync_last_status")
+    completed_or_running = pending in {"0", "false", "False"} and status in {"starting", "archived", "no_rows"}
+    armed_or_deferred = pending in {"1", "true", "True"} and status in {"armed", "deferred_live_link"}
     return (
         reason == "long_wear_range_loss"
-        and pending in {"0", "false", "False"}
         and started_age >= 0
         and requested_age >= 0
-        and status in {"starting", "armed", "archived", "no_rows"}
+        and (completed_or_running or armed_or_deferred)
     )
 
 

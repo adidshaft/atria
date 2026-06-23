@@ -369,6 +369,18 @@ ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
 
 Bounded evidence now proves the monitor and live stream are usable, but does not
 complete the full 2–3h validation:
+- `logs/live-device/realtime-ble-monitor/rt-daytime-range-loss-fix-20260623T110607Z/summary.json`
+  ran for 61 samples / 7277s on the physical iPhone with the strap worn. It
+  recovered from multiple real distance/radio gaps and the final state pull
+  preserved sessions plus explicit range-loss backfill evidence
+  (`offline_sync_last_reason=long_wear_range_loss`,
+  `offline_range_loss_backfill_pending=1`,
+  `offline_range_loss_backfill_reason=long_wear_range_loss`). It is **not** a
+  pass for the daytime gate yet because the monitor still saw `NO_NEW_DATA`,
+  `KEEPALIVE_NOT_ADVANCING`, `NOT_CONNECTED`, and `DISCONNECT_CHURN`, and the
+  final active journal was only 354s. A user-induced app switch around sample 57
+  also showed the background collection path is still a weak point: the app
+  resumed, but the run does not prove clean background sampling.
 - `logs/live-device/counter-flush-smoke.log` passed the first gate on the
   physical iPhone: connected to `ADIDSHAFT'S WHO`, `foreground_keepalive` armed,
   `standardHR` present, and `rr source=0x2A37` present (`standard_2a37_frames=32`,
