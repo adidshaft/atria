@@ -522,9 +522,13 @@ private struct AtriaCollectionStatusCardHost: View {
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: collectionLiveStore.state.modeLabel,
-                                systemImage: "record.circle",
-                                tint: .blue)
+                AtriaStatusChip(text: collectionLiveStore.state.coexistenceStatusText,
+                                systemImage: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? "exclamationmark.triangle.fill" : "record.circle",
+                                tint: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? .red : .blue)
+            }
+
+            if collectionLiveStore.state.officialWhoopCoexistenceRisk != .cleared {
+                AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialWhoopCoexistenceRisk)
             }
 
             ViewThatFits {
@@ -547,6 +551,45 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaInlineQuickStat(label: "Backup", value: homeStatsStore.state.backupValue)
         AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
         AtriaInlineQuickStat(label: "Saving mode", value: collectionLiveStore.state.modeLabel)
+    }
+}
+
+private struct AtriaCollectionCoexistenceWarning: View, Equatable {
+    let risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
+
+    private var title: String {
+        risk == .suspected ? "WHOOP may be interrupting data" : "Check official WHOOP before long collection"
+    }
+
+    private var detail: String {
+        risk == .suspected
+            ? "Atria cannot kill another iOS app. Uninstall or fully disable the official WHOOP app/widget, then reconnect before relying on overnight or workout readings."
+            : "If the official WHOOP app is installed, it may reclaim the strap. Remove or disable it if readings drop or sessions fragment."
+    }
+
+    private var tint: Color {
+        risk == .suspected ? .red : .orange
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(AtriaIconTileBackground(cornerRadius: 10, tint: tint))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .atriaRaisedCard(cornerRadius: 18, emphasis: .soft)
     }
 }
 

@@ -301,7 +301,33 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     enum Status: String { case poweredOff = "Bluetooth off", scanning = "Scanning…",
         connecting = "Connecting…", connected = "Connected", disconnected = "Disconnected" }
 
+    enum OfficialWhoopCoexistenceRisk: String {
+        case advisory
+        case suspected
+        case cleared
+
+        fileprivate static func load(defaults: UserDefaults = .standard) -> OfficialWhoopCoexistenceRisk {
+            guard let raw = defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk),
+                  let value = OfficialWhoopCoexistenceRisk(rawValue: raw) else {
+                return .advisory
+            }
+            return value
+        }
+
+        var label: String {
+            switch self {
+            case .advisory:
+                return "WHOOP check"
+            case .suspected:
+                return "WHOOP may interfere"
+            case .cleared:
+                return "Atria owns strap"
+            }
+        }
+    }
+
     @Published var status: Status = .disconnected
+    @Published private(set) var officialWhoopCoexistenceRisk: OfficialWhoopCoexistenceRisk = OfficialWhoopCoexistenceRisk.load()
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
@@ -449,6 +475,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let lastAutoSaveStatus = "whoop.link.lastAutoSaveStatus"
         static let lastAutoSaveSamples = "whoop.link.lastAutoSaveSamples"
         static let lastAutoSaveDuration = "whoop.link.lastAutoSaveDuration"
+        static let officialWhoopCoexistenceRisk = "whoop.link.officialWhoopCoexistenceRisk"
+        static let officialWhoopCoexistenceReason = "whoop.link.officialWhoopCoexistenceReason"
+    }
+
+    static func officialWhoopCoexistenceRisk(defaults: UserDefaults = .standard) -> OfficialWhoopCoexistenceRisk {
+        OfficialWhoopCoexistenceRisk.load(defaults: defaults)
     }
     enum SampleDefaults {
         static let rawNotifications = "whoop.sample.rawNotifications"
@@ -1607,7 +1639,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let reason = evidenceToken(defaults.string(forKey: LinkDefaults.lastReason) ?? "none")
         let error = evidenceToken(defaults.string(forKey: LinkDefaults.lastError) ?? "none")
         let save = evidenceToken(defaults.string(forKey: LinkDefaults.lastAutoSaveStatus) ?? "none")
-        return "ble_link_attempts=\(defaults.integer(forKey: LinkDefaults.attempts)); ble_link_disconnects=\(defaults.integer(forKey: LinkDefaults.disconnects)); ble_link_successes=\(defaults.integer(forKey: LinkDefaults.successes)); ble_link_failures=\(defaults.integer(forKey: LinkDefaults.failures)); ble_link_last_status=\(status); ble_link_last_reason=\(reason); ble_link_last_error=\(error); ble_link_last_autosave=\(save); ble_link_last_autosave_samples=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveSamples)); ble_link_last_autosave_duration_s=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveDuration))"
+        let coexistenceRisk = evidenceToken(defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk) ?? OfficialWhoopCoexistenceRisk.advisory.rawValue)
+        let coexistenceReason = evidenceToken(defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceReason) ?? "onboarding_advisory")
+        return "ble_link_attempts=\(defaults.integer(forKey: LinkDefaults.attempts)); ble_link_disconnects=\(defaults.integer(forKey: LinkDefaults.disconnects)); ble_link_successes=\(defaults.integer(forKey: LinkDefaults.successes)); ble_link_failures=\(defaults.integer(forKey: LinkDefaults.failures)); ble_link_last_status=\(status); ble_link_last_reason=\(reason); ble_link_last_error=\(error); ble_link_last_autosave=\(save); ble_link_last_autosave_samples=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveSamples)); ble_link_last_autosave_duration_s=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveDuration)); official_whoop_coexistence_risk=\(coexistenceRisk); official_whoop_coexistence_reason=\(coexistenceReason)"
     }
 
     static func sampleGapEvidence() -> String {
@@ -1800,6 +1834,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(attempts, forKey: LinkDefaults.attempts)
         defaults.set("connecting", forKey: LinkDefaults.lastStatus)
         defaults.set(reason, forKey: LinkDefaults.lastReason)
+        refreshOfficialWhoopCoexistenceRisk(reason: "link_attempt")
         WHOOPDebugLog("WHOOPDBG ble_link status=connecting reason=%@ attempts=%d disconnects=%d failures=%d name=%@",
               reason,
               attempts,
@@ -1816,6 +1851,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
         defaults.set("did_connect", forKey: LinkDefaults.lastReason)
         defaults.set("none", forKey: LinkDefaults.lastError)
+        persistOfficialWhoopCoexistenceRisk(.cleared, reason: "atria_connected")
         WHOOPDebugLog("WHOOPDBG ble_link status=connected successes=%d attempts=%d disconnects=%d failures=%d mtu=%d name=%@",
               successes,
               defaults.integer(forKey: LinkDefaults.attempts),
@@ -1834,6 +1870,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
         defaults.set(reason, forKey: LinkDefaults.lastReason)
         defaults.set("none", forKey: LinkDefaults.lastError)
+        persistOfficialWhoopCoexistenceRisk(.cleared, reason: "atria_observed_connected")
         WHOOPDebugLog("WHOOPDBG ble_link status=connected reason=%@ successes=%d attempts=%d disconnects=%d failures=%d name=%@",
               reason,
               successes,
@@ -1856,7 +1893,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             LinkDefaults.lastError,
             LinkDefaults.lastAutoSaveStatus,
             LinkDefaults.lastAutoSaveSamples,
-            LinkDefaults.lastAutoSaveDuration
+            LinkDefaults.lastAutoSaveDuration,
+            LinkDefaults.officialWhoopCoexistenceRisk,
+            LinkDefaults.officialWhoopCoexistenceReason
         ].forEach { defaults.removeObject(forKey: $0) }
         WHOOPDebugLog("WHOOPDBG ble_link reset=1 reason=launch_arg")
     }
@@ -2347,12 +2386,38 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("failed", forKey: LinkDefaults.lastStatus)
         defaults.set(reason, forKey: LinkDefaults.lastReason)
         defaults.set(errorText, forKey: LinkDefaults.lastError)
+        if failures >= 2 || defaults.integer(forKey: LinkDefaults.successes) == 0 {
+            persistOfficialWhoopCoexistenceRisk(.suspected, reason: "connect_failure_\(reason)")
+        }
         WHOOPDebugLog("WHOOPDBG ble_link status=failed reason=%@ error=%@ attempts=%d disconnects=%d failures=%d action=fresh_scan",
               reason,
               errorText,
               defaults.integer(forKey: LinkDefaults.attempts),
               defaults.integer(forKey: LinkDefaults.disconnects),
               failures)
+    }
+
+    private func refreshOfficialWhoopCoexistenceRisk(reason: String) {
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk) == nil {
+            persistOfficialWhoopCoexistenceRisk(.advisory, reason: reason)
+        } else {
+            assignIfChanged(\.officialWhoopCoexistenceRisk, Self.officialWhoopCoexistenceRisk(defaults: defaults))
+        }
+    }
+
+    private func persistOfficialWhoopCoexistenceRisk(_ risk: OfficialWhoopCoexistenceRisk,
+                                                    reason: String) {
+        let defaults = UserDefaults.standard
+        let previous = Self.officialWhoopCoexistenceRisk(defaults: defaults)
+        defaults.set(risk.rawValue, forKey: LinkDefaults.officialWhoopCoexistenceRisk)
+        defaults.set(reason, forKey: LinkDefaults.officialWhoopCoexistenceReason)
+        assignIfChanged(\.officialWhoopCoexistenceRisk, risk)
+        guard previous != risk else { return }
+        WHOOPDebugLog("WHOOPDBG official_whoop_coexistence status=%@ reason=%@ action=%@",
+                      risk.rawValue,
+                      reason,
+                      risk == .suspected ? "show_user_uninstall_guidance" : "continue")
     }
 
     private func requestFreshScanReconnect(peripheral target: CBPeripheral, reason: String) {
@@ -8347,10 +8412,14 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             defaults.set("disconnected", forKey: LinkDefaults.lastStatus)
             defaults.set("did_disconnect", forKey: LinkDefaults.lastReason)
             defaults.set(errorText, forKey: LinkDefaults.lastError)
+            let connectedDuration = connectedAt.map { Date().timeIntervalSince($0) } ?? 0
             let useFreshScan = forceFreshScanAfterDisconnect
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
             let wasUserRequestedDisconnect = userRequestedDisconnect
+            if !wasUserRequestedDisconnect && connectedDuration > 0 && connectedDuration < 90 {
+                persistOfficialWhoopCoexistenceRisk(.suspected, reason: "short_disconnect_after_connect")
+            }
             let shouldPreserveLongWearSession = longWearModeEnabled && !wasUserRequestedDisconnect
             userRequestedDisconnect = false
             connectedAt = nil

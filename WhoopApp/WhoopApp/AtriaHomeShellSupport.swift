@@ -100,6 +100,7 @@ struct AtriaConnectionGuideContext: Equatable {
     let failures: Int
     let lastStatus: String
     let lastReason: String
+    let officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
 
     var isFirstHandoff: Bool {
         !hasEverConnected
@@ -123,6 +124,9 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var progressDetail: String {
+        if officialWhoopCoexistenceRisk == .suspected {
+            return "Atria has seen connection behavior that can happen when the official WHOOP app or widget is still holding the strap."
+        }
         if hasEverConnected {
             return "Atria keeps reconnecting in the background and saves what the strap makes available."
         }
@@ -137,10 +141,35 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var actionSummary: String {
+        if officialWhoopCoexistenceRisk == .suspected {
+            return "Remove or fully disable the official WHOOP app before relying on Atria for overnight or workout collection."
+        }
         if hasEverConnected {
             return "You can lock the phone after setup; Atria resumes from saved sessions and background reconnects."
         }
         return "After the first successful connection, Atria handles reconnects and saved-session recovery automatically."
+    }
+
+    var coexistenceTitle: String {
+        switch officialWhoopCoexistenceRisk {
+        case .advisory:
+            return "Before relying on Atria"
+        case .suspected:
+            return "WHOOP may be interfering"
+        case .cleared:
+            return "Atria has the strap"
+        }
+    }
+
+    var coexistenceDetail: String {
+        switch officialWhoopCoexistenceRisk {
+        case .advisory:
+            return "If the official WHOOP app or widget is installed, iOS may let it reclaim the strap. Atria cannot kill another app, so uninstall or fully disable WHOOP if readings keep dropping."
+        case .suspected:
+            return "Atria cannot terminate another iOS app. For reliable readings, uninstall WHOOP or remove its widget/background access, then reopen Atria and reconnect."
+        case .cleared:
+            return "The current Atria connection is active. If WHOOP is reinstalled later and drops return, Atria will warn here."
+        }
     }
 }
 

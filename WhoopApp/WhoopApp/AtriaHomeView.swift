@@ -718,7 +718,8 @@ struct AtriaHomeView: View {
             attempts: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.attempts),
             failures: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.failures),
             lastStatus: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastStatus) ?? "idle",
-            lastReason: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastReason) ?? "waiting"
+            lastReason: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastReason) ?? "waiting",
+            officialWhoopCoexistenceRisk: model.statusStore.state.officialWhoopCoexistenceRisk
         )
     }
 
@@ -948,6 +949,7 @@ private struct AtriaStandByMetric: View {
 final class AtriaHomeModel {
     struct StatusState: Equatable {
         var status: WhoopBLEManager.Status
+        var officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
     }
 
     struct CoreLiveState: Equatable {
@@ -993,12 +995,14 @@ final class AtriaHomeModel {
         var standardHROnlyEnabled: Bool
         var longWearModeEnabled: Bool
         var collectionProfile: WhoopBLEManager.CollectionProfile
+        var officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
 
         var recordingState: String { isRecording ? "Recording" : (captureWasValidationReady ? "Ready" : "Idle") }
         var captureFileLabel: String { lastCaptureFile.isEmpty ? "None" : "Saved" }
         var modeLabel: String {
             longWearModeEnabled ? "Long wear" : collectionProfile.label
         }
+        var coexistenceStatusText: String { officialWhoopCoexistenceRisk.label }
     }
 
     struct HeroSnapshot: Equatable {
@@ -1284,7 +1288,8 @@ final class AtriaHomeModel {
         let initialLiveSessionDerived = Self.makeLiveSessionDerived(samples: ble.session,
                                                                     rest: Self.currentRestingHeartRate(ble: ble, store: store),
                                                                     maxHR: store.profile.maxHR)
-        let initialStatus = StatusState(status: ble.status)
+        let initialStatus = StatusState(status: ble.status,
+                                        officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble, liveSessionDerived: initialLiveSessionDerived)
         let initialHeroPulse = Self.makeHeroPulseState(ble: ble)
         let initialPulseLive = Self.makePulseLiveState(ble: ble)
@@ -1355,6 +1360,16 @@ final class AtriaHomeModel {
                 self.publishStatus()
                 self.publishCoreLive()
                 self.refreshHeroSnapshot()
+            }
+            .store(in: &cancellables)
+
+        ble.$officialWhoopCoexistenceRisk
+            .removeDuplicates()
+            .map { _ in () }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.publishStatus()
+                self.publishCollectionLive()
             }
             .store(in: &cancellables)
 
@@ -1446,7 +1461,8 @@ final class AtriaHomeModel {
             ble.$lastCaptureFile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$standardHROnlyEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$longWearModeEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$collectionProfile.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$collectionProfile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$officialWhoopCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -1527,7 +1543,8 @@ final class AtriaHomeModel {
     }
 
     private func publishStatus() {
-        let next = StatusState(status: ble.status)
+        let next = StatusState(status: ble.status,
+                               officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
         guard next != statusStore.state else { return }
         statusStore.state = next
     }
@@ -1705,7 +1722,8 @@ final class AtriaHomeModel {
                                    lastCaptureFile: ble.lastCaptureFile,
                                    standardHROnlyEnabled: ble.standardHROnlyEnabled,
                                    longWearModeEnabled: ble.longWearModeEnabled,
-                                   collectionProfile: ble.collectionProfile)
+                                   collectionProfile: ble.collectionProfile,
+                                   officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
     }
 
     private static func makeHeroSnapshot(ble: WhoopBLEManager,
