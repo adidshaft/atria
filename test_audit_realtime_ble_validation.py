@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from tools import audit_realtime_ble_validation as audit
+
+
+def write_summary(root: Path, label: str, payload: dict) -> Path:
+    path = root / label / "summary.json"
+    path.parent.mkdir(parents=True)
+    payload = {"label": label, **payload}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def passing_stream(**extra):
+    data = {
+        "status": "pass",
+        "samples": 91,
+        "started_at": "2026-06-23T00:00:00Z",
+        "finished_at": "2026-06-23T03:00:00Z",
+        "min_raw_notification_delta": 60,
+        "max_disconnect_delta": 0,
+        "max_hr_continuity_delta": 0,
+        "flags": [],
+    }
+    data.update(extra)
+    return data
+
+
+def passing_state():
+    return {
+        "status": "ok",
+        "fields": {
+            "active_journal_freshness": "fresh",
+            "active_journal_continuity_status": "active",
+            "active_journal_duration_s": "10800",
+            "active_journal_samples": "10000",
+            "file_durability_status": "saved_sessions_present",
+        },
+    }
+
+
+class AuditRealtimeBLEValidationTests(unittest.TestCase):
+    def test_incomplete_when_required_physical_evidence_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-ok", passing_stream(
+                samples=4,
+                started_at="2026-06-23T00:00:00Z",
+                finished_at="2026-06-23T00:01:00Z",
+                planned_interval_s=20,
+            ))
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["status"], "incomplete")
+            self.assertIn("daytime_worn_monitor:missing_evidence", report["blockers"])
+            self.assertIn("brief_contact_loss:missing_evidence", report["blockers"])
+            self.assertIn("sustained_silence_reseat:missing_evidence", report["blockers"])
+            self.assertEqual(report["requirements"]["app_switch"]["status"], "pass")
+
+    def test_full_report_passes_with_all_required_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-pass", passing_stream(state_pull=passing_state()))
+            write_summary(root, "rt-brief-contact-loss-pass", passing_stream(
+                samples=5,
+                events={"1": ["brief_contact_loss_start"], "2": ["brief_contact_loss_reseat"]},
+                event_outcomes=[{
+                    "events": ["brief_contact_loss_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 70,
+                    "next_disconnect_delta": 0,
+                    "next_hr_continuity_delta": 0,
+                }],
+            ))
+            write_summary(root, "rt-sustained-silence-pass", passing_stream(
+                samples=7,
+                events={"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+                event_outcomes=[{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 80,
+                    "next_disconnect_delta": 1,
+                    "next_hr_continuity_delta": 1,
+                }],
+            ))
+            write_summary(root, "rt-clock-switch-pass", passing_stream(samples=4, planned_interval_s=20))
+
+            report = audit.evaluate(root)
+
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["blockers"], [])
+
+    def test_daytime_requires_state_pull_continuity_not_just_green_ticks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-daytime-weak", passing_stream(
+                state_pull={
+                    "status": "ok",
+                    "fields": {
+                        "active_journal_freshness": "stale",
+                        "active_journal_continuity_status": "stalled",
+                        "active_journal_duration_s": "150",
+                        "active_journal_samples": "158",
+                        "file_durability_status": "saved_sessions_present",
+                    },
+                },
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("active_journal_not_fresh", blockers)
+            self.assertIn("active_journal_not_active", blockers)
+            self.assertIn("active_journal_duration_under_2h", blockers)
+
+
+if __name__ == "__main__":
+    unittest.main()
