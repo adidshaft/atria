@@ -47,6 +47,17 @@ def passing_state():
 
 
 class AuditRealtimeBLEValidationTests(unittest.TestCase):
+    def test_documented_commands_match_audit_next_actions(self):
+        doc = " ".join(
+            Path("docs/15-codex-realtime-ble-validation.md")
+            .read_text(encoding="utf-8")
+            .replace("\\\n", " ")
+            .split()
+        )
+
+        for action in audit.NEXT_ACTIONS.values():
+            self.assertIn(action["command"], doc)
+
     def test_incomplete_when_required_physical_evidence_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
