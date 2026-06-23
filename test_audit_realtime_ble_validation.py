@@ -55,10 +55,23 @@ def passing_app_switch(**extra):
     data = passing_stream(
         samples=4,
         started_at="2026-06-23T00:00:00Z",
-        finished_at="2026-06-23T00:01:00Z",
-        planned_interval_s=20,
+        finished_at="2026-06-23T00:06:00Z",
+        planned_interval_s=120,
         git_commit=audit.MIN_APP_SWITCH_LIFECYCLE_COMMIT,
         state_pull=passing_state(),
+        events={"1": ["app_switch_background"], "2": ["app_switch_return"]},
+        operator_actions=[
+            {
+                "sample": 1,
+                "events": ["app_switch_background"],
+                "actions": ["Switch away from Atria now and keep another app foregrounded."],
+            },
+            {
+                "sample": 2,
+                "events": ["app_switch_return"],
+                "actions": ["Return to Atria now."],
+            },
+        ],
     )
     data.update(extra)
     return data
@@ -196,7 +209,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Invalid summaries:", markdown)
             self.assertIn("Candidates: `0`", markdown)
             self.assertIn("Candidates: `1`", markdown)
-            self.assertIn("Evidence: samples=`4`, duration_s=`60`, min_raw_delta=`60`", markdown)
+            self.assertIn("Evidence: samples=`4`, duration_s=`360`, min_raw_delta=`60`", markdown)
             self.assertIn("min_accepted_delta=`60`", markdown)
             self.assertIn("Continuity: state_pull=`ok`, file_durability=`saved_sessions_present`", markdown)
             self.assertIn("audit_snapshot=`incomplete`, audit_summaries=`4`", markdown)
@@ -455,6 +468,48 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("missing_ok_state_pull", blockers)
             self.assertIn("missing_audit_snapshot", blockers)
+
+    def test_app_switch_requires_operator_prompts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-no-prompts", passing_app_switch(
+                operator_actions=[],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("missing_operator_action_app_switch_background", blockers)
+            self.assertIn("missing_operator_action_app_switch_return", blockers)
+
+    def test_app_switch_rejects_unmarked_passive_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-unmarked", passing_app_switch(
+                events={},
+                operator_actions=[],
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("missing_event_app_switch_background", blockers)
+            self.assertIn("missing_event_app_switch_return", blockers)
+
+    def test_app_switch_rejects_short_elapsed_marker_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-clock-switch-short", passing_app_switch(
+                planned_interval_s=20,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn(
+                "event_elapsed_too_short_app_switch_background_to_app_switch_return",
+                blockers,
+            )
 
     def test_sustained_silence_allows_expected_off_wrist_no_data(self):
         with tempfile.TemporaryDirectory() as tmp:
