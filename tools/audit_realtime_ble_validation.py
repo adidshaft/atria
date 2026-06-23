@@ -115,6 +115,18 @@ def latest_summaries(root: Path) -> list[Path]:
     return sorted(root.glob("*/summary.json"), key=lambda path: path.stat().st_mtime)
 
 
+def parse_key_value_lines(text: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            parsed[key] = value
+    return parsed
+
+
 def load_summary_records(paths: list[Path]) -> tuple[list[tuple[Path, dict[str, Any]]], list[dict[str, str]]]:
     records: list[tuple[Path, dict[str, Any]]] = []
     invalid: list[dict[str, str]] = []
@@ -201,6 +213,42 @@ def official_whoop_coexistence_detected(fields: dict[str, Any]) -> bool:
         or str(fields.get("official_whoop_main_process", "")).lower() in {"1", "true", "yes"}
         or str(fields.get("official_whoop_widget_process", "")).lower() in {"1", "true", "yes"}
     )
+
+
+def official_whoop_coexistence_cleared(fields: dict[str, Any]) -> bool:
+    return (
+        fields.get("process_status") == "running"
+        and fields.get("process_name_status") == "atria"
+        and str(fields.get("official_whoop_coexistence_risk", "")).lower() in {"0", "false", "no"}
+        and fields.get("official_whoop_process_status") == "not_listed"
+        and numeric(fields.get("official_whoop_process_count")) == 0
+        and str(fields.get("official_whoop_main_process", "")).lower() in {"0", "false", "no"}
+        and str(fields.get("official_whoop_widget_process", "")).lower() in {"0", "false", "no"}
+    )
+
+
+def latest_coexistence_resolution(root: Path, after_path: Path | None) -> dict[str, Any] | None:
+    if not root.exists():
+        return None
+    after_mtime = after_path.stat().st_mtime if after_path and after_path.exists() else 0
+    candidates: list[dict[str, Any]] = []
+    for path in root.glob("whoop-*-final-*/pull-summary.txt"):
+        try:
+            if path.stat().st_mtime < after_mtime:
+                continue
+            fields = parse_key_value_lines(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if official_whoop_coexistence_cleared(fields):
+            candidates.append({
+                "summary_file": str(path),
+                "fields": fields,
+                "mtime": path.stat().st_mtime,
+            })
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item["mtime"])
+    return candidates[-1]
 
 
 def continuity_checkpoint_duration(fields: dict[str, Any]) -> int:
@@ -618,6 +666,20 @@ def evaluate(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         "sustained_silence_reseat": sustained,
         "app_switch": app_switch,
     }
+    if "official_whoop_coexistence_risk_present" in daytime.get("blockers", []):
+        summary_path = Path(daytime["summary"]) if daytime.get("summary") not in {None, "missing"} else None
+        resolution = latest_coexistence_resolution(root, summary_path)
+        if resolution is not None:
+            daytime["blockers"] = [
+                blocker for blocker in daytime["blockers"]
+                if blocker != "official_whoop_coexistence_risk_present"
+            ]
+            daytime["coexistence_resolution"] = {
+                "status": "cleared",
+                "summary_file": resolution["summary_file"],
+            }
+            if not daytime["blockers"]:
+                daytime["status"] = "pass"
     for name, section in sections.items():
         action = NEXT_ACTIONS.get(name, {})
         if (
@@ -689,6 +751,11 @@ def markdown_summary(report: dict[str, Any]) -> str:
                 f"freshness=`{metric(section, 'active_journal_freshness')}`, "
                 f"audit_snapshot=`{metric(section, 'audit_snapshot_status')}`, "
                 f"audit_summaries=`{metric(section, 'audit_snapshot_summary_count')}`"
+            )
+        resolution = section.get("coexistence_resolution")
+        if isinstance(resolution, dict):
+            lines.append(
+                f"  - Coexistence resolution: `{resolution.get('status', 'missing')}` via `{resolution.get('summary_file', 'missing')}`"
             )
         if section["status"] != "pass":
             lines.extend([

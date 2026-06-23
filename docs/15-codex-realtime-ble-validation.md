@@ -715,31 +715,36 @@ complete the full 2–3h validation:
   `link_last_auto_save_samples=8160`, and
   `link_last_auto_save_duration_s=7857`. This is the clean starting condition
   for the next completion run, but it is only a 60s readiness artifact.
+- The official WHOOP app bundle was identified as `com.whoop.iphone` and
+  uninstalled from the validation iPhone with
+  `xcrun devicectl device uninstall app --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B com.whoop.iphone`.
+  The follow-up final pull
+  `logs/live-device/realtime-ble-monitor/whoop-uninstalled-final-20260623T195924Z/pull-summary.txt`
+  reported Atria as the only relevant process and
+  `official_whoop_coexistence_risk=0`. This is the reliable validation-device
+  way to stop WHOOP respawn; repeatedly terminating PIDs is not durable because
+  iOS/WidgetKit can relaunch the main app or widget extension.
 
-Still required before marking this handoff complete: resolve the official WHOOP
-coexistence blocker. The completed 91-sample daytime run is now the selected
+The handoff gate now passes. The completed 91-sample daytime run is the selected
 audit candidate and proves the live-stream plus continuity-checkpoint side; the
-remaining audit blocker is `official_whoop_coexistence_risk_present` from the
-final process pull. The next completion evidence must either end with
-`official_whoop_coexistence_risk=0`, or intentionally prove reliable WHOOP
-coexistence without active-journal fragmentation.
+WHOOP coexistence blocker is resolved by the post-run
+`whoop-uninstalled-final-*` state pull that proves the official WHOOP app/widget
+is no longer installed/running on the validation phone.
 
 Current verifier status:
 ```text
 python3 tools/audit_realtime_ble_validation.py --markdown
-Status: incomplete
-daytime_worn_monitor: incomplete
+Status: pass
+daytime_worn_monitor: pass
   summary: logs/live-device/realtime-ble-monitor/rt-daytime-20260623T163743Z/summary.json
-  blocker: official_whoop_coexistence_risk_present
+  coexistence_resolution: logs/live-device/realtime-ble-monitor/whoop-uninstalled-final-20260623T195924Z/pull-summary.txt
 brief_contact_loss: pass
 sustained_silence_reseat: pass
 app_switch: pass
 ```
 The live Markdown output is the authoritative next-step list; it currently
-selects the completed 91-sample daytime run and blocks only on official WHOOP
-coexistence at the final pull. When that is the only blocker, the verifier's
-next action is the WHOOP-cleared final state pull / audit command, not another
-blind 91-sample monitor.
+selects the completed 91-sample daytime run and the WHOOP-uninstalled final pull
+as resolution evidence.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
