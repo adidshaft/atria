@@ -92,8 +92,12 @@ PY
 ```sh
 ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B \
   python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 \
-  --label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ)
+  --label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state
 ```
+   `--pull-state` runs `pull_atria_state.sh` after the monitor completes and
+   embeds active-journal/session continuity fields in `summary.json` under
+   `state_pull`. This gives the pass/fail audit one artifact for both live BLE
+   counters and the "continuous session, not tiny fragments" requirement.
    Use the inline loop only if the repo tool is unavailable:
 ```sh
 python3 - <<'PY'
@@ -213,6 +217,17 @@ complete the full 2–3h validation:
   stress-test cadence. The earlier 20s failures remain useful diagnostic
   evidence that sub-120s polling can observe iOS batching while another app is
   foreground.
+- `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
+  `pull_atria_state.sh` evidence into the monitor `summary.json`, including
+  active journal continuity, latest saved-session points/RR points, and file
+  durability status. Use it for the remaining full-window and stress evidence so
+  the handoff proves both live counter continuity and durable session continuity.
+  Smoke evidence:
+  `logs/live-device/realtime-ble-monitor/rt-pull-state-smoke-20260623T055958Z/summary.json`
+  passed the live counter monitor (`min_raw_notification_delta=13`,
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`) and embedded
+  `state_pull.status=ok`. That smoke is tooling proof only; its active journal
+  was stale, so it is not long-window pass evidence.
 
 Still required before marking this handoff complete: the full 2–3h worn monitor
 and the remaining stress tests above (brief contact loss, sustained
