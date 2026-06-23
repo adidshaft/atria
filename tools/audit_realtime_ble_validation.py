@@ -205,6 +205,39 @@ def state_pull_blockers(summary: dict[str, Any]) -> list[str]:
     return []
 
 
+def resolve_run_artifact(path_value: object, run_dir: Path) -> Path | None:
+    if not path_value:
+        return None
+    artifact_path = Path(str(path_value))
+    if not artifact_path.is_absolute():
+        artifact_path = run_dir / artifact_path
+    return artifact_path
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def run_artifact_scope_blockers(summary: dict[str, Any], summary_path: Path) -> list[str]:
+    blockers: list[str] = []
+    run_dir = summary_path.parent
+    state = summary.get("state_pull")
+    if isinstance(state, dict) and state.get("summary_file"):
+        state_file = resolve_run_artifact(state.get("summary_file"), run_dir)
+        if state_file and state_file.exists() and not is_relative_to(state_file, run_dir):
+            blockers.append("state_pull_summary_file_outside_run")
+    snapshot = summary.get("audit_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("path"):
+        audit_file = resolve_run_artifact(snapshot.get("path"), run_dir)
+        if audit_file and audit_file.exists() and not is_relative_to(audit_file, run_dir):
+            blockers.append("audit_snapshot_file_outside_run")
+    return blockers
+
+
 def audit_snapshot_blockers(summary: dict[str, Any]) -> list[str]:
     snapshot = summary.get("audit_snapshot")
     if not isinstance(snapshot, dict):
@@ -368,6 +401,7 @@ def best_candidate(records: list[tuple[Path, dict[str, Any]]], predicate, blocke
         if not predicate(summary, path):
             continue
         blockers = blocker_fn(summary)
+        blockers.extend(run_artifact_scope_blockers(summary, path))
         fields = state_fields(summary)
         audit_snapshot = summary.get("audit_snapshot")
         audit_snapshot = audit_snapshot if isinstance(audit_snapshot, dict) else {}

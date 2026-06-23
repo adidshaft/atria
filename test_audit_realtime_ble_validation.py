@@ -15,6 +15,17 @@ def write_summary(root: Path, label: str, payload: dict) -> Path:
     path = root / label / "summary.json"
     path.parent.mkdir(parents=True)
     payload = {"label": label, **payload}
+    state_pull = payload.get("state_pull")
+    if isinstance(state_pull, dict) and state_pull.get("summary_file") == str(STATE_PULL_SUMMARY_FILE):
+        state_file = path.parent / "state" / "pull-summary.txt"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text("file_durability_status=saved_sessions_present\n", encoding="utf-8")
+        state_pull["summary_file"] = str(state_file)
+    audit_snapshot = payload.get("audit_snapshot")
+    if isinstance(audit_snapshot, dict) and audit_snapshot.get("path") == str(Path(__file__).resolve()):
+        audit_file = path.parent / "audit.md"
+        audit_file.write_text("# Realtime BLE Validation Audit\n", encoding="utf-8")
+        audit_snapshot["path"] = str(audit_file)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -414,6 +425,26 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
 
             self.assertIn("audit_snapshot_file_missing", blockers)
 
+    def test_daytime_rejects_audit_snapshot_file_outside_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = Path(tmp) / "other-run" / "audit.md"
+            outside.parent.mkdir()
+            outside.write_text("# copied audit\n", encoding="utf-8")
+            write_summary(root, "rt-daytime-copied-audit", passing_stream(
+                audit_snapshot={
+                    "status": "incomplete",
+                    "path": str(outside),
+                    "summary_count": 4,
+                },
+                state_pull=passing_state(),
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["daytime_worn_monitor"]["blockers"]
+
+            self.assertIn("audit_snapshot_file_outside_run", blockers)
+
     def test_daytime_rejects_explicit_not_worn_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -495,6 +526,23 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             blockers = report["requirements"]["app_switch"]["blockers"]
 
             self.assertIn("state_pull_summary_file_not_found", blockers)
+
+    def test_app_switch_rejects_state_pull_summary_file_outside_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = Path(tmp) / "other-run" / "pull-summary.txt"
+            outside.parent.mkdir()
+            outside.write_text("file_durability_status=saved_sessions_present\n", encoding="utf-8")
+            state = passing_state()
+            state["summary_file"] = str(outside)
+            write_summary(root, "rt-clock-switch-copied-state", passing_app_switch(
+                state_pull=state,
+            ))
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["app_switch"]["blockers"]
+
+            self.assertIn("state_pull_summary_file_outside_run", blockers)
 
     def test_app_switch_requires_operator_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
