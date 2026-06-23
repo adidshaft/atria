@@ -160,6 +160,9 @@ This verifier is intentionally conservative. It only passes when all four
 requirements are proven from checked-in monitor summaries: the 2+ hour worn
 monitor with fresh/active `--pull-state` continuity, brief contact-loss recovery,
 sustained-silence/reseat recovery, and app-switch continuity.
+For sustained silence, expected off-wrist `NO_NEW_DATA` / `ZERO_CONTACT` flags
+do not fail the requirement by themselves; the verifier instead requires bounded
+churn plus a recovered `sustained_silence_reseat` event outcome.
 
 3. **Stress tests during the window** (do each, watch the next monitor tick):
    - **App-switch:** open another app for ~2 min, return to Atria. Expect: link
