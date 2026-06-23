@@ -124,6 +124,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "if syncStarted",
             "try? await Task.sleep(for: .seconds(185))",
             "case .background:",
+            "case .inactive:",
+            "ble.handleUnattendedMode(rest: store.baseline.restingInt ?? 60,\n                                                maxHR: store.profile.maxHR,\n                                                reason: \"scene_inactive\")",
+            "ble.flushLifecycleRealtimeState(reason: \"scene_inactive_checkpoint\")",
             "handleBackgroundTask",
             "performSceneBackgroundMaintenance",
         ]:
@@ -136,6 +139,7 @@ class HandoffStaticChecks(unittest.TestCase):
         )
         self.assertIsNotNone(scene_background)
         self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", scene_background.group("body"))
+        assert_contains(self, scene_background.group("body"), "ble.flushLifecycleRealtimeState(reason: reason)")
         unattended_mode = re.search(
             r"func handleUnattendedMode\(rest: Int, maxHR: Int, reason: String\) \{(?P<body>.*?)\n    \}",
             ble,
@@ -271,6 +275,16 @@ class HandoffStaticChecks(unittest.TestCase):
         accepted_body = accepted.group("body")
         self.assertGreater(accepted_body.find("sampleDiagnostics.acceptedSamples += 1"), -1)
         self.assertGreater(accepted_body.rfind("scheduleSampleDiagnosticsFlush()"), accepted_body.find("sampleDiagnostics.lastReason == \"accepted_gap\""))
+
+        lifecycle = re.search(
+            r"func flushLifecycleRealtimeState\(reason: String\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(lifecycle)
+        lifecycle_body = lifecycle.group("body")
+        assert_contains(self, lifecycle_body, "flushSampleDiagnostics()")
+        assert_contains(self, lifecycle_body, "flushActiveSessionJournal(reason: reason)")
 
     def test_healthkit_hrv_export_uses_validated_sdnn_only(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")

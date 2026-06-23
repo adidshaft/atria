@@ -2212,6 +2212,15 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         persistActiveSessionJournalIfNeeded(reason: reason, force: true)
     }
 
+    func flushLifecycleRealtimeState(reason: String) {
+        flushSampleDiagnostics()
+        flushActiveSessionJournal(reason: reason)
+        WHOOPDebugLog("WHOOPDBG lifecycle_realtime_flush status=ok reason=%@ raw=%d accepted=%d",
+                      reason,
+                      sampleDiagnostics.rawNotifications,
+                      sampleDiagnostics.acceptedSamples)
+    }
+
     private func scheduleDebugActiveJournalFlush(after seconds: TimeInterval) {
         debugActiveJournalFlushTask?.cancel()
         WHOOPDebugLog("WHOOPDBG active_session_journal debug_flush_schedule delay_s=%.1f", seconds)
