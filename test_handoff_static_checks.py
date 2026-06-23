@@ -211,6 +211,44 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertNotIn("cancelPeripheralConnection", body)
         self.assertNotIn("full_protocol_fresh_scan", body)
 
+    def test_long_wear_keepalive_survives_app_switch(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "enum KeepaliveDefaults",
+            "private func ensureForegroundKeepaliveWatchdog(reason: String)",
+            "ensureForegroundKeepaliveWatchdog(reason: \"scene_active\")",
+            "ensureForegroundKeepaliveWatchdog(reason: reason)",
+            "foreground_keepalive armed=1",
+            "foreground_keepalive status=silent",
+            "let initialSilenceTimeout: TimeInterval = 8",
+            "let initialReconnectWindow: TimeInterval = 20",
+        ]:
+            assert_contains(self, text, needle)
+
+        handle_unattended = re.search(
+            r"func handleUnattendedMode\(rest: Int, maxHR: Int, reason: String\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(handle_unattended)
+        unattended_body = handle_unattended.group("body")
+        assert_contains(self, unattended_body, "ensureForegroundKeepaliveWatchdog(reason: reason)")
+        self.assertNotIn("stopForegroundKeepaliveWatchdog(reason: reason)\n        guard longWearModeEnabled", unattended_body)
+
+        keepalive = re.search(
+            r"private func startForegroundKeepaliveWatchdog\(reason: String\) \{(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(keepalive)
+        keepalive_body = keepalive.group("body")
+        self.assertNotIn("guard foregroundInteractiveMode, longWearModeEnabled", keepalive_body)
+        assert_contains(self, keepalive_body, "guard longWearModeEnabled else { continue }")
+        assert_contains(self, keepalive_body, "let hasSeenPacket = lastRawHRNotificationAt != nil")
+        assert_contains(self, keepalive_body, "let effectiveSilenceTimeout = hasSeenPacket ? silenceTimeout : initialSilenceTimeout")
+        assert_contains(self, keepalive_body, "let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow")
+
     def test_healthkit_hrv_export_uses_validated_sdnn_only(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
 

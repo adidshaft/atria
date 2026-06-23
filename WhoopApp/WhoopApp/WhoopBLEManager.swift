@@ -540,6 +540,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let lastReason = "whoop.offlineSync.lastReason"
         static let attempts = "whoop.offlineSync.attempts"
     }
+    enum KeepaliveDefaults {
+        static let armed = "whoop.keepalive.armed"
+        static let lastStatus = "whoop.keepalive.lastStatus"
+        static let lastReason = "whoop.keepalive.lastReason"
+        static let lastAction = "whoop.keepalive.lastAction"
+        static let lastSilence = "whoop.keepalive.lastSilence"
+        static let ticks = "whoop.keepalive.ticks"
+    }
     enum CollectionProfileDefaults {
         static let profile = "atria.collection.profile"
     }
@@ -690,10 +698,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var hrContinuityWatchdogTask: Task<Void, Never>?
     private var rrPresenceWatchdogTask: Task<Void, Never>?
     private var acceptedHRWatchdogTask: Task<Void, Never>?
-    /// Lightweight safety net for the screen-on / app-foreground long-wear case,
-    /// where the full supervisor is intentionally paused. Recovers a link that is
-    /// nominally `.connected` but has gone completely silent (no 2A37 packets at
-    /// all) — the failure mode behind "wore it all night, collected nothing."
+    /// Lightweight safety net for long-wear live links. It remains armed across
+    /// foreground/app-switch transitions because a nominally `.connected` link
+    /// can go completely silent (no 2A37 packets at all) while other supervisor
+    /// work is paused or background-throttled.
     private var foregroundKeepaliveTask: Task<Void, Never>?
     private var foregroundKeepaliveReassertAt: Date?
     private var debugActiveJournalFlushTask: Task<Void, Never>?
@@ -1145,6 +1153,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             acceptedHRTimeout: acceptedHRWatchdogTimeout
         )
         scheduleLongWearSupervisor(config: config)
+        ensureForegroundKeepaliveWatchdog(reason: reason)
         WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
               reason,
               standardHROnlyMode ? "standard_hr_only" : "full_protocol",
@@ -1200,9 +1209,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         // including a fresh foreground launch where foregroundInteractiveMode is
         // already true (the all-night, screen-on scenario). Idempotent: only
         // starts when not already running.
-        if longWearModeEnabled, foregroundKeepaliveTask == nil {
-            startForegroundKeepaliveWatchdog(reason: "scene_active")
-        }
+        ensureForegroundKeepaliveWatchdog(reason: "scene_active")
         if foregroundInteractiveMode {
             return
         }
@@ -1218,36 +1225,60 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               maxHR)
     }
 
-    /// Runs only while the app is foreground + long-wear (the supervisor is
-    /// paused). It does nothing while data flows. If the link is `.connected`
-    /// but has produced no 2A37 packet for an extended window — the silent-dead
-    /// link that lost an entire overnight of collection — it re-asserts the
+    /// Runs while long-wear is enabled, including app-switch/background
+    /// transitions. It does nothing while data flows. If the link is `.connected`
+    /// but has produced no 2A37 packet for an extended window, it re-asserts the
     /// subscription, then escalates to a fresh-scan reconnect if silence
-    /// persists. requestFreshScanReconnect already backs off exponentially, so a
-    /// strap that is simply set down does not churn.
+    /// persists. requestFreshScanReconnect already backs off exponentially.
+    private func ensureForegroundKeepaliveWatchdog(reason: String) {
+        guard longWearModeEnabled else {
+            stopForegroundKeepaliveWatchdog(reason: reason)
+            return
+        }
+        guard foregroundKeepaliveTask == nil else { return }
+        startForegroundKeepaliveWatchdog(reason: reason)
+    }
+
     private func startForegroundKeepaliveWatchdog(reason: String) {
         foregroundKeepaliveTask?.cancel()
         foregroundKeepaliveReassertAt = nil
         let silenceTimeout: TimeInterval = 75
+        let initialSilenceTimeout: TimeInterval = 8
+        let initialReconnectWindow: TimeInterval = 20
         let checkInterval: TimeInterval = 20
         let armedAt = Date()
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: KeepaliveDefaults.armed)
+        defaults.set("armed", forKey: KeepaliveDefaults.lastStatus)
+        defaults.set(reason, forKey: KeepaliveDefaults.lastReason)
+        defaults.set("observe", forKey: KeepaliveDefaults.lastAction)
+        defaults.set(0.0, forKey: KeepaliveDefaults.lastSilence)
         WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=1 reason=%@ silence_timeout_s=%.0f check_interval_s=%.0f",
               reason, silenceTimeout, checkInterval)
         foregroundKeepaliveTask = Task { @MainActor in
+            var nextSleep = initialSilenceTimeout
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(checkInterval))
+                try? await Task.sleep(for: .seconds(nextSleep))
+                nextSleep = checkInterval
                 if Task.isCancelled { break }
-                guard foregroundInteractiveMode, longWearModeEnabled else { continue }
+                guard longWearModeEnabled else { continue }
                 guard status == .connected, let peripheral else { continue }
                 let now = Date()
+                let defaults = UserDefaults.standard
+                defaults.set(defaults.integer(forKey: KeepaliveDefaults.ticks) + 1, forKey: KeepaliveDefaults.ticks)
                 // Fall back to the keepalive's own arm time so silence is always
                 // measurable — a state-restored connection (the overnight case)
                 // can have no lastRawHRNotificationAt and no connectedAt at all,
                 // which previously left this watchdog unable to ever fire.
                 let reference = lastRawHRNotificationAt ?? connectedAt ?? armedAt
                 let silence = now.timeIntervalSince(reference)
-                guard silence >= silenceTimeout else {
+                let hasSeenPacket = lastRawHRNotificationAt != nil
+                let effectiveSilenceTimeout = hasSeenPacket ? silenceTimeout : initialSilenceTimeout
+                defaults.set(silence, forKey: KeepaliveDefaults.lastSilence)
+                guard silence >= effectiveSilenceTimeout else {
                     foregroundKeepaliveReassertAt = nil
+                    defaults.set("observing", forKey: KeepaliveDefaults.lastStatus)
+                    defaults.set("observe", forKey: KeepaliveDefaults.lastAction)
                     continue
                 }
                 // First escalation: re-assert the 2A37 subscription and keep the
@@ -1264,15 +1295,20 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     } else if peripheral.state == .connected {
                         peripheral.discoverServices([UUIDs.heartRateService])
                     }
+                    defaults.set("silent", forKey: KeepaliveDefaults.lastStatus)
+                    defaults.set("reassert_notify", forKey: KeepaliveDefaults.lastAction)
                     WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=reassert_notify",
                           silence)
                     continue
                 }
                 // Still silent after a re-assert window: the link is effectively
                 // dead. Reconnect (backoff-guarded) and let it re-establish.
-                guard now.timeIntervalSince(foregroundKeepaliveReassertAt ?? now) >= silenceTimeout else { continue }
+                let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow
+                guard now.timeIntervalSince(foregroundKeepaliveReassertAt ?? now) >= reconnectWindow else { continue }
                 foregroundKeepaliveReassertAt = nil
                 persistActiveSessionJournalIfNeeded(reason: "foreground_keepalive_reconnect", force: true)
+                defaults.set("silent", forKey: KeepaliveDefaults.lastStatus)
+                defaults.set("fresh_scan_reconnect", forKey: KeepaliveDefaults.lastAction)
                 WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=fresh_scan_reconnect",
                       silence)
                 requestFreshScanReconnect(peripheral: peripheral, reason: "foreground_keepalive")
@@ -1285,6 +1321,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         foregroundKeepaliveTask?.cancel()
         foregroundKeepaliveTask = nil
         foregroundKeepaliveReassertAt = nil
+        UserDefaults.standard.set(false, forKey: KeepaliveDefaults.armed)
+        UserDefaults.standard.set("stopped", forKey: KeepaliveDefaults.lastStatus)
+        UserDefaults.standard.set(reason, forKey: KeepaliveDefaults.lastReason)
+        UserDefaults.standard.set("stop", forKey: KeepaliveDefaults.lastAction)
         WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=0 reason=%@", reason)
     }
 
@@ -1295,15 +1335,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     func handleUnattendedMode(rest: Int, maxHR: Int, reason: String) {
         if !foregroundInteractiveMode {
+            ensureForegroundKeepaliveWatchdog(reason: reason)
             return
         }
         foregroundInteractiveMode = false
-        stopForegroundKeepaliveWatchdog(reason: reason)
         guard longWearModeEnabled else {
+            stopForegroundKeepaliveWatchdog(reason: reason)
             updatePhoneMotionAuditState(reason: reason)
             return
         }
         updatePhoneMotionAuditState(reason: reason)
+        ensureForegroundKeepaliveWatchdog(reason: reason)
         startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
         WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=resume_automation reason=%@ rest_hr=%d max_hr=%d",
               reason,
