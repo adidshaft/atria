@@ -62,6 +62,7 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedPrimaryContent = false
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
+    @State private var showSettings = false
     @State private var connectionGuideSnoozedUntil: Date?
     @State private var connectionGuidePresentationToken = UUID()
     @State private var connectionGuidePresentationTask: Task<Void, Never>?
@@ -171,6 +172,13 @@ struct AtriaHomeView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showSettings) {
+            AtriaSettingsView(profile: model.profileStore.profile,
+                              restingBaseline: store.baseline.restingInt,
+                              onUpdateProfile: store.updateProfile,
+                              hapticSettings: hapticSettings,
+                              onUpdateHaptics: { hapticSettings = $0 })
         }
         .onAppear {
             guard !hasUnlockedPrimaryContent else { return }
@@ -459,6 +467,13 @@ struct AtriaHomeView: View {
                 Image(systemName: "clock.arrow.circlepath")
             }
             .accessibilityLabel("History")
+
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
         }
     }
 
