@@ -208,7 +208,10 @@ sustained-silence/reseat recovery, and app-switch continuity.
 Every passing requirement summary must include the embedded `audit_snapshot`
 written by `--audit-snapshot`, and the referenced `audit.md` file must be
 present locally; app-switch also requires the same OK `--pull-state` durability
-snapshot as the other physical runs.
+snapshot as the other physical runs. The embedded `state_pull.summary_file`
+must also point to an existing local `pull-summary.txt`, so a copied or
+hand-edited `summary.json` cannot claim state durability without the underlying
+state-pull artifact.
 Summaries that explicitly record `worn_expected=false` are rejected for these
 requirements; `--not-worn` is useful for diagnostics, but it cannot satisfy this
 worn-validation handoff.

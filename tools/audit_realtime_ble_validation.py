@@ -194,6 +194,11 @@ def state_pull_blockers(summary: dict[str, Any]) -> list[str]:
     state = summary.get("state_pull")
     if not isinstance(state, dict) or state.get("status") != "ok":
         return ["missing_ok_state_pull"]
+    summary_file = state.get("summary_file")
+    if not summary_file:
+        return ["state_pull_summary_file_missing"]
+    if not Path(str(summary_file)).exists():
+        return ["state_pull_summary_file_not_found"]
     fields = state_fields(summary)
     if fields.get("file_durability_status") not in {"saved_sessions_present", "saved_sessions_preserved"}:
         return ["file_durability_not_proven"]
