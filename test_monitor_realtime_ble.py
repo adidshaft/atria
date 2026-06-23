@@ -133,6 +133,53 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         with self.assertRaises(ValueError):
             monitor_realtime_ble.parse_sample_events(["brief_contact_loss_start"])
 
+    def test_event_outcomes_mark_recovered_next_sample(self):
+        samples = [
+            {
+                "sample": 1,
+                "events": ["brief_contact_loss_reseat"],
+                "delta": {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
+                "flags": [],
+            },
+            {
+                "sample": 2,
+                "delta": {
+                    **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
+                    "whoop.sample.rawNotifications": 18,
+                    "whoop.sample.acceptedSamples": 18,
+                    "whoop.link.disconnects": 0,
+                    "whoop.watchdog.hrContinuityCount": 0,
+                },
+                "flags": [],
+            },
+        ]
+
+        outcomes = monitor_realtime_ble.event_outcomes(samples)
+
+        self.assertEqual(outcomes[0]["status"], "recovered")
+        self.assertEqual(outcomes[0]["next_raw_notification_delta"], 18)
+        self.assertEqual(outcomes[0]["next_disconnect_delta"], 0)
+
+    def test_event_outcomes_mark_no_new_data_next_sample(self):
+        samples = [
+            {
+                "sample": 1,
+                "events": ["sustained_silence_reseat"],
+                "delta": {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
+                "flags": [],
+            },
+            {
+                "sample": 2,
+                "delta": {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
+                "flags": ["NO_NEW_DATA"],
+            },
+        ]
+
+        outcomes = monitor_realtime_ble.event_outcomes(samples)
+
+        self.assertEqual(outcomes[0]["status"], "no_new_data_after_event")
+        self.assertEqual(outcomes[0]["next_raw_notification_delta"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

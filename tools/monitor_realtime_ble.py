@@ -148,6 +148,44 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
     }
 
 
+def event_outcomes(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    outcomes: list[dict[str, Any]] = []
+    by_index = {int(sample["sample"]): sample for sample in samples if "sample" in sample}
+    for sample in samples:
+        events = sample.get("events") or []
+        if not events:
+            continue
+        sample_index = int(sample["sample"])
+        next_sample = by_index.get(sample_index + 1)
+        next_delta = next_sample.get("delta", {}) if next_sample else {}
+        next_flags = next_sample.get("flags", []) if next_sample else []
+        raw_delta = numeric(next_delta.get("whoop.sample.rawNotifications"))
+        disconnect_delta = numeric(next_delta.get("whoop.link.disconnects"))
+        hr_continuity_delta = numeric(next_delta.get("whoop.watchdog.hrContinuityCount"))
+        status = "pending_next_sample"
+        if next_sample:
+            if raw_delta > 0 and disconnect_delta < 3 and hr_continuity_delta < 3:
+                status = "recovered"
+            elif "NO_NEW_DATA" in next_flags:
+                status = "no_new_data_after_event"
+            elif disconnect_delta >= 3 or hr_continuity_delta >= 3:
+                status = "churn_after_event"
+            else:
+                status = "observed"
+        outcomes.append({
+            "sample": sample_index,
+            "events": events,
+            "status": status,
+            "next_sample": sample_index + 1 if next_sample else None,
+            "next_raw_notification_delta": raw_delta,
+            "next_accepted_sample_delta": numeric(next_delta.get("whoop.sample.acceptedSamples")),
+            "next_disconnect_delta": disconnect_delta,
+            "next_hr_continuity_delta": hr_continuity_delta,
+            "next_flags": next_flags,
+        })
+    return outcomes
+
+
 def parse_key_value_lines(text: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for raw_line in text.splitlines():
@@ -310,6 +348,9 @@ def main() -> int:
         "planned_interval_s": args.interval,
         "events": {str(key): value for key, value in sorted(sample_events.items())},
     })
+    outcomes = event_outcomes(samples)
+    if outcomes:
+        summary["event_outcomes"] = outcomes
     if args.pull_state:
         state = pull_state_snapshot(args.device, args.bundle, out_dir)
         summary["state_pull"] = state
