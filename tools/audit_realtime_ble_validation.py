@@ -311,6 +311,15 @@ def markdown_summary(report: dict[str, Any]) -> str:
             f"  - Summary: `{section['summary']}`",
             f"  - Blockers: `{', '.join(section.get('blockers', [])) or 'none'}`",
         ])
+        if section["summary"] != "missing":
+            lines.append(
+                "  - Evidence: "
+                f"samples=`{section.get('samples', 'missing')}`, "
+                f"duration_s=`{section.get('duration_s', 'missing')}`, "
+                f"min_raw_delta=`{section.get('min_raw_notification_delta', 'missing')}`, "
+                f"max_disconnect_delta=`{section.get('max_disconnect_delta', 'missing')}`, "
+                f"max_hr_continuity_delta=`{section.get('max_hr_continuity_delta', 'missing')}`"
+            )
         if section["status"] != "pass":
             lines.extend([
                 f"  - Next command: `{section.get('next_command', 'missing')}`",

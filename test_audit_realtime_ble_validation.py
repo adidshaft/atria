@@ -119,6 +119,7 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("Operator action: Wear the strap continuously", markdown)
             self.assertIn("Generated at:", markdown)
             self.assertIn("Summaries inspected:", markdown)
+            self.assertIn("Evidence: samples=`4`, duration_s=`60`, min_raw_delta=`60`", markdown)
             app_switch_section = markdown.split("- `app_switch`: `pass`", 1)[1]
             self.assertNotIn("Next command:", app_switch_section)
 
