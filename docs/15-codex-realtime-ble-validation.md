@@ -9,7 +9,7 @@ You (Codex) have the cabled iPhone. Start cold; everything you need is below.
 
 ## What was fixed (validate these)
 
-Three commits on `main` (HEAD region):
+Key fixes on `main` (HEAD region):
 - `3647a1d` — HR-continuity & accepted-HR watchdogs no longer **tear down a still-
   `.connected` link** for brief HR gaps; they re-assert the subscription and keep
   the connection (new action `reassert_keep_connection`). Reserve teardown for a
@@ -21,7 +21,7 @@ Three commits on `main` (HEAD region):
   75s of total `2A37` silence and reconnects after a further 75s. It uses its own
   arm time as the silence reference so a **state-restored** connection (no
   `connectedAt`) is still covered.
-- current HEAD — **app-switch lifecycle fix**. iOS can sit in `.inactive` during
+- `90966e3` — **app-switch lifecycle fix**. iOS can sit in `.inactive` during
   app switching; Atria now keeps BLE in its current mode during that transient,
   checkpoints realtime state, and only moves to unattended mode on true
   `.background`. On foreground return it re-asserts the standard HR notify/read
@@ -273,6 +273,15 @@ complete the full 2–3h validation:
   switched-away windows produced `rawNotif+21` and `rawNotif+18`; the return
   window produced `rawNotif+24`. This is the current short-cadence app-switch
   pass evidence.
+- Current continuation readiness:
+  `logs/live-device/realtime-ble-monitor/rt-goal-continuation-readiness-20260623T061511Z/summary.json`
+  passed with `samples=2`, `min_raw_notification_delta=33`,
+  `max_disconnect_delta=0`, `max_hr_continuity_delta=0`, no flags, and
+  `state_pull.status=ok`. The active journal was fresh and active
+  (`active_journal_samples=158`, `active_journal_rr_values=33`,
+  `active_journal_duration_s=150`). This proves the current installed app is
+  still live and writing durable state, but it is only readiness evidence, not
+  the full 2–3h worn validation.
 - `tools/monitor_realtime_ble.py --pull-state` now captures end-of-run
   `pull_atria_state.sh` evidence into the monitor `summary.json`, including
   active journal continuity, latest saved-session points/RR points, and file
