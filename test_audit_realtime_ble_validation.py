@@ -271,6 +271,31 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
             self.assertIn("disconnect_churn", blockers)
             self.assertIn("event_disconnect_churn_sustained_silence_reseat", blockers)
 
+    def test_sustained_silence_rejects_unexpected_keepalive_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_summary(root, "rt-sustained-silence-keepalive-flat", {
+                "status": "fail",
+                "samples": 7,
+                "min_raw_notification_delta": 0,
+                "max_disconnect_delta": 1,
+                "max_hr_continuity_delta": 1,
+                "flags": ["NO_NEW_DATA", "ZERO_CONTACT", "KEEPALIVE_NOT_ADVANCING"],
+                "events": {"1": ["sustained_silence_start"], "3": ["sustained_silence_reseat"]},
+                "event_outcomes": [{
+                    "events": ["sustained_silence_reseat"],
+                    "status": "recovered",
+                    "next_raw_notification_delta": 42,
+                    "next_disconnect_delta": 1,
+                    "next_hr_continuity_delta": 1,
+                }],
+            })
+
+            report = audit.evaluate(root)
+            blockers = report["requirements"]["sustained_silence_reseat"]["blockers"]
+
+            self.assertIn("unexpected_flags_KEEPALIVE_NOT_ADVANCING", blockers)
+
 
 if __name__ == "__main__":
     unittest.main()

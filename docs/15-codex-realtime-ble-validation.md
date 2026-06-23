@@ -173,8 +173,9 @@ This verifier is intentionally conservative. It only passes when all four
 requirements are proven from local monitor summaries: the 2+ hour worn
 monitor with fresh/active `--pull-state` continuity, brief contact-loss recovery,
 sustained-silence/reseat recovery, and app-switch continuity.
-For sustained silence, expected off-wrist `NO_NEW_DATA` / `ZERO_CONTACT` flags
-do not fail the requirement by themselves; the verifier instead requires bounded
+For sustained silence, only the expected off-wrist `NO_NEW_DATA` /
+`ZERO_CONTACT` flags are tolerated. `KEEPALIVE_NOT_ADVANCING` and any other
+unexpected flags still fail the requirement. The verifier also requires bounded
 churn plus a recovered `sustained_silence_reseat` event outcome.
 When the audit is incomplete, its Markdown output includes the exact next
 monitor command plus the required physical operator action for each missing
