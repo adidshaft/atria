@@ -62,6 +62,21 @@ Key fixes on `main` (HEAD region):
   disconnect delta while Clock was foregrounded, but they remain diagnostic
   evidence only; the audit still requires the missing daytime/contact-loss/
   sustained-silence physical runs.
+- `49fc986` — **live-safe range-loss backfill**. Range-loss recovery now records
+  durable backfill intent without probing historical sync while a healthy live
+  HR stream is active; `deferred_live_link` / `armed` range-loss state is
+  accepted as evidence that backfill intent survived reconnect without stealing
+  the live BLE path.
+- `642fbed` — **snapshot autosave keeps long wear live**. Long-wear supervisor
+  auto-save now persists a saved-session snapshot without finishing the active
+  journal, so auto-save cannot reset the live session into tiny fragments during
+  validation.
+- `3eb815d` — **official WHOOP coexistence gate**. Physical state pulls now
+  detect the official WHOOP main app and widget extension separately, monitor
+  summaries preserve those fields, and daytime validation blocks when
+  `official_whoop_coexistence_risk=1` until a clean standalone run or proven
+  coexistence run shows no active-journal fragmentation. The app also shows
+  explicit onboarding/status copy when WHOOP may interfere.
 
 ## Device + paths (constants)
 
@@ -620,24 +635,39 @@ complete the full 2–3h validation:
 - `tools/monitor_realtime_ble.py --event SAMPLE:LABEL` now records stress
   annotations in both `samples.jsonl` and `summary.json`, and derives
   `event_outcomes` from the next monitor sample (`recovered`,
-  `no_new_data_after_event`, or `churn_after_event`). Use it for the remaining
-  contact-loss and sustained-silence runs so the physical action is tied to the
-  monitor tick that proves recovery.
+  `no_new_data_after_event`, or `churn_after_event`). The current audit passes
+  the marked brief contact-loss and sustained-silence/reseat requirements using
+  those artifacts, so the remaining blocker is the long daytime active-journal
+  duration, not missing stress evidence.
+- Latest WHOOP coexistence state pull after `3eb815d`:
+  `logs/live-device/realtime-ble-monitor/whoop-coexistence-state-20260623T162955Z/pull-summary.txt`
+  reported `process_status=running`, `process_name_status=atria`,
+  `official_whoop_process_status=running`, `official_whoop_main_process=0`,
+  `official_whoop_widget_process=1`, and
+  `official_whoop_coexistence_risk=1`. This proves the updated non-disruptive
+  process pull detects the exact coexistence case observed on the phone: Atria
+  running alongside the official WHOOP widget extension. It is not a daytime
+  pass artifact because the app had just been reinstalled/launched and the
+  active journal contained only a fresh one-sample segment.
 
-Still required before marking this handoff complete: the full 2–3h worn monitor,
-brief contact-loss recovery, and sustained-silence/reseat recovery.
+Still required before marking this handoff complete: rerun the full 2–3h worn
+monitor on the current build and get a passing audit with fresh/active
+`--pull-state` continuity, `active_journal_duration_s >= 7200`, no tiny-session
+fragmentation, and no `official_whoop_coexistence_risk_present` blocker.
 
 Current verifier status:
 ```text
 python3 tools/audit_realtime_ble_validation.py --markdown
 Status: incomplete
-daytime_worn_monitor: missing_evidence
-brief_contact_loss: missing_evidence
-sustained_silence_reseat: missing_evidence
+daytime_worn_monitor: incomplete
+  blocker: active_journal_duration_under_2h
+brief_contact_loss: pass
+sustained_silence_reseat: pass
 app_switch: pass
 ```
-The live Markdown output is the authoritative next-step list; it prints the exact
-monitor command and operator action for each missing requirement.
+The live Markdown output is the authoritative next-step list; it currently
+prints the exact 91-sample daytime monitor command and operator action for the
+remaining long worn run.
 
 ## Notes / gotchas
 - Device console (`devicectl --console`) is flaky on iOS 27; the **container pulls
