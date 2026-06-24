@@ -243,6 +243,35 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
 
+    def test_advanced_metrics_temp_spo2_probe_is_research_only(self):
+        probe = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaResearchProbe.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "enum AtriaResearchProbe",
+            "case metadata = \"0x31\"",
+            "case historical = \"0x2f\"",
+            "(90...100).contains(value)",
+            "(2_500...4_200).contains(value)",
+            "oxygenOffsetSummary",
+            "temperatureOffsetSummary",
+        ]:
+            assert_contains(self, probe, needle)
+
+        for needle in [
+            "guard supportsSpO2Probe || supportsSkinTempProbe else { return }",
+            "AtriaResearchProbe.analyze(payload: payload, source: source)",
+            "WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated",
+            "metric_promotions=0 healthkit_write=0 raw_storage=0",
+            "recordResearchProbeCandidate(payload: payload, source: .metadata)",
+            "recordResearchProbeCandidate(payload: payload, source: .historical)",
+        ]:
+            assert_contains(self, ble, needle)
+
+        assert_not_contains(self, healthkit, ".oxygenSaturation")
+        assert_not_contains(self, healthkit, "HKQuantitySample(type: oxygen")
+
     def test_production_capture_defaults_land_on_balanced_profile(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 
