@@ -332,6 +332,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
+    /// Best-effort: WHOOP exposes only a level (2A19), no charge flag. We infer
+    /// charging when the level rises between readings, and clear it when it falls.
+    @Published var batteryIsCharging: Bool = false
     private(set) var manufacturer: String = "—"
     private(set) var frames: [WhoopFrame] = []        // decoded proprietary frames (append-only ring buffer)
     private(set) var lastHeartRates: [Int] = []       // small rolling window for a sparkline
@@ -8443,6 +8446,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             assignIfChanged(\.status, .connected)
+            assignIfChanged(\.batteryIsCharging, false)
             connectedAt = Date()
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -8681,8 +8685,17 @@ extension WhoopBLEManager: CBPeripheralDelegate {
             return
         }
         if uuid == UUIDs.batteryLevel {
+            let newLevel = Int(data.first ?? 0)
             Task { @MainActor in
-                assignIfChanged(\.batteryLevel, Int(data.first ?? 0))
+                let previous = batteryLevel
+                if previous >= 0 {
+                    if newLevel - previous >= 2 {
+                        assignIfChanged(\.batteryIsCharging, true)
+                    } else if newLevel < previous {
+                        assignIfChanged(\.batteryIsCharging, false)
+                    }
+                }
+                assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19")
                 WHOOPDebugLog("WHOOPDBG battery level=%d source=2A19 bytes=%@ persisted=1",
                       batteryLevel,
