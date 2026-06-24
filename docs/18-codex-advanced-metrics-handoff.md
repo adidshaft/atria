@@ -19,8 +19,8 @@ test_handoff_static_checks.py`, no `https://` clients).
   persisted on saved sessions as `activeCalories`/`caloriesConfidence`. It only
   produces `kcal` when sex + weight are set; otherwise the UI stays learning.
 - VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
-  formula directly and requires measured HRmax plus 7 resting baselines before
-  leaving learning copy.
+  formula directly and returns only learning copy until measured HRmax plus 7
+  resting baselines are present.
 - WHOOP model/capability gates: **metadata-aware scaffold shipped**. Proprietary
   WHOOP service marks a strap as 4.0-class for SpO₂/temp probes. Metadata (`0x31`)
   is now scanned for explicit, redacted generation tokens and only then promotes
