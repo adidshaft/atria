@@ -61,6 +61,10 @@ struct SavedSession: Codable, Identifiable {
     var sensorResearchProbeFrames: Int? = nil
     var spo2ResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateFrames: Int? = nil
+    /// Keytel HR->energy estimate persisted with the session when sex and weight
+    /// are present. It is an estimate only, never a measured calorie value.
+    var activeCalories: Double? = nil
+    var caloriesConfidence: String? = nil
     /// Phone accelerometer audit captured by the cabled Atria app. This can
     /// corroborate that the debug rig was still, but it is not wrist/strap IMU
     /// and must not validate sleep motion by itself.

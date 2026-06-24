@@ -1852,6 +1852,11 @@ final class HealthKitExporter {
     private func activeEnergyKilocalories(for session: SavedSession,
                                           rest: Int,
                                           profile: AthleteProfile) -> Double? {
+        if session.caloriesConfidence == "estimate",
+           let activeCalories = session.activeCalories,
+           activeCalories > 0 {
+            return activeCalories
+        }
         let samples = session.points.map { point in
             HRSample(t: session.start.addingTimeInterval(max(0, point.t)), bpm: point.bpm)
         }

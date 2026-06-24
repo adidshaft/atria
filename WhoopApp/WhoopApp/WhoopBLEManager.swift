@@ -8340,6 +8340,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                         imuStillnessRatio: imu.stillnessRatio,
                                                         imuMovementIntensity: imu.movementIntensity,
                                                         strapSteps: strapStepResearchCount > 0 ? strapStepResearchCount : nil)
+        let profile = AthleteProfile.load()
+        let activeCalories = Metrics.activeCalories(session,
+                                                    rest: restingHR ?? min(averageHR, session.map(\.bpm).min() ?? averageHR),
+                                                    profile: profile)
+        let caloriesConfidence: String? = session.count > 1 ? (profile.hasEnergyProfile ? "estimate" : "needs_profile") : nil
         return SavedSession(id: liveSessionID, start: start, end: last.t,
                             label: label.trimmingCharacters(in: .whitespaces), points: points,
                             hrv: hrv > 0 ? hrv : nil,
@@ -8374,6 +8379,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             sensorResearchProbeFrames: researchProbeFrameCount > 0 ? researchProbeFrameCount : nil,
                             spo2ResearchCandidateFrames: researchProbeOxygenCandidateFrames > 0 ? researchProbeOxygenCandidateFrames : nil,
                             skinTempResearchCandidateFrames: researchProbeTemperatureCandidateFrames > 0 ? researchProbeTemperatureCandidateFrames : nil,
+                            activeCalories: activeCalories,
+                            caloriesConfidence: caloriesConfidence,
                             phoneMotionSource: phoneMotion.source,
                             phoneMotionValidated: phoneMotion.validated,
                             phoneMotionSamples: phoneMotion.samples > 0 ? phoneMotion.samples : nil,
