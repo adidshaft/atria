@@ -38,8 +38,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   research layout evidence (`imuScale`, `imuEndian`, `imuSampleRateHz`) on
   sessions. The Data tab now has a developer-only IMU audit card summarizing
   frames, sample rate, layout, gravity status, and strap-step research counts with
-  phone-step agreement; raw IMU frames are not stored and sleep/steps are not
-  promoted yet.
+  phone-step agreement. A research-only sleep/wake classifier stores sleep/wake
+  labels from IMU stillness + HR context for the same audit surface; raw IMU frames
+  are not stored and sleep/steps are not promoted yet.
 - Skin temp + SpO₂ discovery: **research-only probe scaffold shipped in code**.
   Metadata (`0x31`) and historical (`0x2f`) frames are scanned behind the existing
   4.0-class capability gates for aggregate-only candidate offsets: SpO₂-like bytes

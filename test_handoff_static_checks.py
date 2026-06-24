@@ -214,6 +214,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_advanced_metrics_imu_decoder_is_research_gated(self):
         decoder = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaIMUDecoder.swift")
         steps = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaStrapStepResearch.swift")
+        sleep = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSleepWakeResearch.swift")
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
 
@@ -238,6 +239,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "imuInferredEndian = decoded.endian.rawValue",
             "AtriaStrapStepResearch.estimate(samples: decoded.samples",
             "strap_steps_research=%d phone_step_agreement=%@",
+            "AtriaSleepWakeResearch.classify(duration:",
             "imuValidationState = imuGravityValidatedFrameCount > 0 ? \"gravity_validated_research\" : \"research_unvalidated\"",
         ]:
             assert_contains(self, ble, needle)
@@ -252,6 +254,15 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, steps, needle)
 
         for needle in [
+            "enum AtriaSleepWakeResearch",
+            "state: \"sleep_research\"",
+            "state: \"wake_research\"",
+            "confidence: \"research\"",
+            "low_motion_low_hr",
+        ]:
+            assert_contains(self, sleep, needle)
+
+        for needle in [
             "var imuSampleCount: Int? = nil",
             "var imuFrameCount: Int? = nil",
             "var imuSampleRateHz: Double? = nil",
@@ -264,6 +275,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var strapStepResearchCount: Int? = nil",
             "var strapStepResearchAgreement: Double? = nil",
             "var strapStepResearchState: String? = nil",
+            "var sleepWakeResearchState: String? = nil",
+            "var sleepWakeResearchConfidence: String? = nil",
+            "var sleepWakeResearchReason: String? = nil",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -758,6 +772,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Research only; compare with phone motion before steps or sleep.",
             "AtriaMetricTile(label: \"Strap steps\"",
+            "AtriaMetricTile(label: \"Sleep/wake\"",
             "agreementText",
             "IMUAuditSummary(sessions: sessions)",
         ]:

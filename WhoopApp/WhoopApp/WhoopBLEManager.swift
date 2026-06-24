@@ -8333,6 +8333,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let phoneSteps = phoneStepEvidenceSummary()
         let imu = imuFeatureSummary()
         let respiratoryRate = hrvSnapshot?.isReady == true ? hrvSnapshot?.respiratoryRate : nil
+        let averageHR = session.map(\.bpm).reduce(0, +) / max(session.count, 1)
+        let sleepWake = AtriaSleepWakeResearch.classify(duration: last.t.timeIntervalSince(start),
+                                                        averageHR: averageHR,
+                                                        restingHR: restingHR ?? min(averageHR, session.map(\.bpm).min() ?? averageHR),
+                                                        imuStillnessRatio: imu.stillnessRatio,
+                                                        imuMovementIntensity: imu.movementIntensity,
+                                                        strapSteps: strapStepResearchCount > 0 ? strapStepResearchCount : nil)
         return SavedSession(id: liveSessionID, start: start, end: last.t,
                             label: label.trimmingCharacters(in: .whitespaces), points: points,
                             hrv: hrv > 0 ? hrv : nil,
@@ -8361,6 +8368,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             strapStepResearchAgreement: AtriaStrapStepResearch.agreement(strapSteps: strapStepResearchCount,
                                                                                          phoneSteps: phoneSteps.steps > 0 ? phoneSteps.steps : nil),
                             strapStepResearchState: strapStepResearchCount > 0 ? strapStepResearchState : nil,
+                            sleepWakeResearchState: sleepWake.state == "learning" ? nil : sleepWake.state,
+                            sleepWakeResearchConfidence: sleepWake.confidence == "none" ? nil : sleepWake.confidence,
+                            sleepWakeResearchReason: sleepWake.reason,
                             phoneMotionSource: phoneMotion.source,
                             phoneMotionValidated: phoneMotion.validated,
                             phoneMotionSamples: phoneMotion.samples > 0 ? phoneMotion.samples : nil,
