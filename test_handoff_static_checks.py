@@ -178,6 +178,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, transition_body, "flushLifecycleRealtimeState(reason: reason)")
         assert_contains(self, transition_body, "if longWearModeEnabled")
         assert_contains(self, transition_body, "startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)")
+
         assert_contains(self, transition_body, "reassertHeartRateNotificationsIfConnected(reason: reason)")
         self.assertNotIn("cancelPeripheralConnection", transition_body)
 
@@ -209,6 +210,38 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, ble, "currentSessionUsable: false")
         assert_contains(self, ble, "metricUsable: false")
         assert_contains(self, ble, "usabilityReason: \"provisional_historical_layout_old_or_unvalidated\"")
+
+    def test_advanced_metrics_imu_decoder_is_research_gated(self):
+        decoder = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaIMUDecoder.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+
+        for needle in [
+            "static func syntheticRestPayload",
+            "static func syntheticShakePayload",
+            "static func selfTestPassed() -> Bool",
+            "abs(rest.meanMagnitudeG - 1.0) <= 0.05",
+            "abs(shake.meanMagnitudeG - 2.0) <= 0.10",
+            "gravityValidated ? \"gravity_validated\" : \"research_unvalidated\"",
+        ]:
+            assert_contains(self, decoder, needle)
+
+        for needle in [
+            "AtriaIMUDecoder.decode(payload: payload)",
+            "recordIMUFeatures(decoded)",
+            "WHOOPDBG imu_candidate validated=%d validation_state=%@",
+            "imuValidationState = imuGravityValidatedFrameCount > 0 ? \"gravity_validated_research\" : \"research_unvalidated\"",
+        ]:
+            assert_contains(self, ble, needle)
+
+        for needle in [
+            "var imuSampleCount: Int? = nil",
+            "var imuStillnessRatio: Double? = nil",
+            "var imuMovementIntensity: Double? = nil",
+            "var imuActivityBursts: Int? = nil",
+            "var imuValidationState: String? = nil",
+        ]:
+            assert_contains(self, sessions, needle)
 
     def test_production_capture_defaults_land_on_balanced_profile(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")

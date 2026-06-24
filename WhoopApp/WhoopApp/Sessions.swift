@@ -40,6 +40,14 @@ struct SavedSession: Codable, Identifiable {
     var motionShortMin: Double? = nil
     var motionShortMax: Double? = nil
     var motionShortOverOneCount: Int? = nil
+    /// Research-gated features decoded from WHOOP `0x33` candidate IMU frames.
+    /// Raw frames are not stored. These fields stay unvalidated until gravity and
+    /// phone-motion comparisons prove the layout on-device.
+    var imuSampleCount: Int? = nil
+    var imuStillnessRatio: Double? = nil
+    var imuMovementIntensity: Double? = nil
+    var imuActivityBursts: Int? = nil
+    var imuValidationState: String? = nil
     /// Phone accelerometer audit captured by the cabled Atria app. This can
     /// corroborate that the debug rig was still, but it is not wrist/strap IMU
     /// and must not validate sleep motion by itself.
