@@ -265,6 +265,7 @@ final class HealthKitExporter {
             auditHeartRateReferenceAvailability(sessions: sessions)
             auditAppleStepCountReadAvailability(reason: "up_to_date")
             auditSleepingWristTemperatureReadAvailability(reason: "up_to_date")
+            auditCuffBloodPressureReadAvailability(reason: "up_to_date")
             return
         }
 
@@ -345,6 +346,7 @@ final class HealthKitExporter {
             auditHeartRateReferenceAvailability(sessions: sessions)
             auditAppleStepCountReadAvailability(reason: "authorization_cached")
             auditSleepingWristTemperatureReadAvailability(reason: "authorization_cached")
+            auditCuffBloodPressureReadAvailability(reason: "authorization_cached")
             return
         }
 
@@ -398,6 +400,7 @@ final class HealthKitExporter {
                 self.auditHeartRateReferenceAvailability(sessions: sessions)
                 self.auditAppleStepCountReadAvailability(reason: "authorization_granted")
                 self.auditSleepingWristTemperatureReadAvailability(reason: "authorization_granted")
+                self.auditCuffBloodPressureReadAvailability(reason: "authorization_granted")
             }
         }
     }
@@ -408,6 +411,7 @@ final class HealthKitExporter {
         auditHeartRateReferenceAvailability(sessions: sessions)
         auditAppleStepCountReadAvailability(reason: "launch_arg")
         auditSleepingWristTemperatureReadAvailability(reason: "launch_arg")
+        auditCuffBloodPressureReadAvailability(reason: "launch_arg")
     }
 
     func resetAndRebuildAtriaHeartRateFromLaunchIfRequested(arguments: [String],
@@ -1331,6 +1335,44 @@ final class HealthKitExporter {
                   reason,
                   quantitySamples.count,
                   latest.map { String(format: "%.2f", $0) } ?? "none")
+        }
+        store.execute(query)
+    }
+
+    private func auditCuffBloodPressureReadAvailability(reason: String) {
+        auditBloodPressureComponentReadAvailability(type: bloodPressureSystolicType,
+                                                    component: "systolic",
+                                                    reason: reason)
+        auditBloodPressureComponentReadAvailability(type: bloodPressureDiastolicType,
+                                                    component: "diastolic",
+                                                    reason: reason)
+    }
+
+    private func auditBloodPressureComponentReadAvailability(type: HKQuantityType,
+                                                            component: String,
+                                                            reason: String) {
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -180, to: end) ?? end.addingTimeInterval(-180 * 24 * 60 * 60)
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        let query = HKSampleQuery(sampleType: type,
+                                  predicate: predicate,
+                                  limit: 1,
+                                  sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
+            if let error {
+                WHOOPDebugLog("WHOOPDBG healthkit_cuff_bp_read status=query_error reason=%@ component=%@ samples=0 source=healthkit_read write_bp=0 strap_bp=0 error=%@",
+                      reason,
+                      component,
+                      String(describing: error))
+                return
+            }
+            let quantitySamples = samples as? [HKQuantitySample] ?? []
+            let latest = quantitySamples.first?.quantity.doubleValue(for: .millimeterOfMercury())
+            WHOOPDebugLog("WHOOPDBG healthkit_cuff_bp_read status=%@ reason=%@ component=%@ samples=%d latest_mmhg=%@ source=healthkit_read write_bp=0 strap_bp=0 cuff_only=1",
+                  quantitySamples.isEmpty ? "empty" : "ok",
+                  reason,
+                  component,
+                  quantitySamples.count,
+                  latest.map { String(format: "%.0f", $0) } ?? "none")
         }
         store.execute(query)
     }

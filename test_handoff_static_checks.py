@@ -449,6 +449,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "var supportsECG: Bool { self == .whoopMG }",
             "var supportsBloodPressure: Bool { self == .whoopMG }",
             "var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]",
+            "private func auditCuffBloodPressureReadAvailability(reason: String)",
+            "auditBloodPressureComponentReadAvailability(type: bloodPressureSystolicType",
+            "auditBloodPressureComponentReadAvailability(type: bloodPressureDiastolicType",
+            "HKSampleQuery(sampleType: type",
+            "WHOOPDBG healthkit_cuff_bp_read status=%@",
+            "source=healthkit_read write_bp=0 strap_bp=0 cuff_only=1",
+            "auditCuffBloodPressureReadAvailability(reason: \"authorization_cached\")",
+            "auditCuffBloodPressureReadAvailability(reason: \"authorization_granted\")",
+            "auditCuffBloodPressureReadAvailability(reason: \"up_to_date\")",
         ]:
             assert_contains(self, ble + healthkit, needle)
 
