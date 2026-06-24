@@ -296,18 +296,6 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if context.officialWhoopCoexistenceRisk != .cleared {
-                AtriaDisconnectedOverviewCoexistenceCard(context: context)
-            }
-
-            AtriaOverviewActionStrip(title: "Quick actions",
-                                     primaryTitle: "Vitals",
-                                     primarySystemImage: "heart.text.square",
-                                     primaryAction: onOpenVitals,
-                                     secondaryTitle: "Data",
-                                     secondarySystemImage: "waveform.badge.magnifyingglass",
-                                     secondaryAction: onOpenCollection)
-
             // Single adaptive grid (renders the tiles once, still responsive)
             // instead of ViewThatFits, which renders both candidate layouts to
             // measure them — doubling the per-card cost during scroll.

@@ -102,10 +102,6 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
             }
 
             Spacer(minLength: 0)
-
-            AtriaStatusChip(text: status.rawValue,
-                            systemImage: systemImage,
-                            tint: tint)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -553,6 +549,71 @@ private struct AtriaHeroStatusTile: View, Equatable {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .atriaInsetCard(cornerRadius: 18, tint: tint.opacity(0.65))
+    }
+}
+
+/// Modal card surfaced only when WHOOP interference is suspected, instead of a
+/// permanent inline card. Explains the iOS limitation and the exact fix.
+struct AtriaWhoopCoexistenceModal: View {
+    let context: AtriaConnectionGuideContext
+    let onAcknowledge: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 38, weight: .semibold))
+                                .foregroundStyle(.orange)
+                            Text(context.coexistenceTitle)
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                            Text(context.coexistenceDetail)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Pick one")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            AtriaConnectionStepTile(step: AtriaConnectionGuideStep(
+                                title: "Delete the WHOOP app",
+                                detail: "Press and hold the WHOOP icon → Remove App → Delete App. (recommended)",
+                                systemImage: "trash",
+                                tint: .red))
+                            AtriaConnectionStepTile(step: AtriaConnectionGuideStep(
+                                title: "Or fully disable it",
+                                detail: "Log out of WHOOP, then turn off its Bluetooth and Background App Refresh in iPhone Settings.",
+                                systemImage: "powersleep",
+                                tint: .orange))
+                        }
+                        .padding(18)
+                        .atriaCard(cornerRadius: 24, emphasis: .soft)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaBar(edge: .bottom) {
+                Button("I’ll handle it") { onAcknowledge() }
+                    .buttonStyle(.glassProminent)
+                    .tint(.orange)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+            }
+        }
     }
 }
 

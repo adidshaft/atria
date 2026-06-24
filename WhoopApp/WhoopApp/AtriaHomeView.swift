@@ -63,6 +63,8 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
     @State private var showSettings = false
+    @State private var showCoexistenceModal = false
+    @State private var coexistenceSnoozedUntil: Date?
     @State private var connectionGuideSnoozedUntil: Date?
     @State private var connectionGuidePresentationToken = UUID()
     @State private var connectionGuidePresentationTask: Task<Void, Never>?
@@ -184,6 +186,20 @@ struct AtriaHomeView: View {
                                   _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
                                                                               force: true)
                               })
+        }
+        .sheet(isPresented: $showCoexistenceModal) {
+            AtriaWhoopCoexistenceModal(context: connectionGuideContext) {
+                coexistenceSnoozedUntil = Date().addingTimeInterval(60 * 60)
+                showCoexistenceModal = false
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onReceive(ble.$officialWhoopCoexistenceRisk.removeDuplicates()) { risk in
+            let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
+            if risk == .suspected, !snoozed, !showCoexistenceModal {
+                showCoexistenceModal = true
+            }
         }
         .onAppear {
             guard !hasUnlockedPrimaryContent else { return }
@@ -446,11 +462,30 @@ struct AtriaHomeView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Single connection-status indicator for the whole screen, colored by
+        // state and tappable to scan when not connected.
         ToolbarItem(placement: .topBarLeading) {
-            Text(statusHeadline)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            // A non-button styled chip so iOS 26 doesn't collapse it to an
+            // icon-only glass circle. Single connection-status indicator,
+            // colored by state, tappable to scan when not connected.
+            HStack(spacing: 5) {
+                Image(systemName: statusSymbol)
+                    .imageScale(.small)
+                Text(statusShortLabel)
+            }
+            .font(.caption.weight(.bold))
+            .foregroundStyle(statusTint)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(statusTint.opacity(0.16), in: .capsule)
+            .fixedSize()
+            .contentShape(.capsule)
+            .onTapGesture {
+                if model.statusStore.state.status != .connected {
+                    ble.startScan(reason: "home_status_chip")
+                }
+            }
+            .accessibilityLabel("Connection \(statusShortLabel)")
         }
 
         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -463,8 +498,6 @@ struct AtriaHomeView: View {
                 }
                 .accessibilityLabel("Connection help")
             }
-
-            connectionToolbarButton
 
             NavigationLink {
                 HistoryView(store: store)
@@ -482,37 +515,31 @@ struct AtriaHomeView: View {
         }
     }
 
-    @ViewBuilder
-    private var connectionToolbarButton: some View {
+    private var statusShortLabel: String {
         switch model.statusStore.state.status {
-        case .connected:
-            Image(systemName: "bolt.heart.fill")
-                .accessibilityLabel("Strap connected")
-        case .connecting, .scanning:
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .accessibilityLabel("Connecting to strap")
-        case .poweredOff, .disconnected:
-            Button {
-                ble.startScan(reason: "home_manual")
-            } label: {
-                Image(systemName: model.statusStore.state.status == .poweredOff ? "bolt.slash.circle" : "bolt.horizontal.circle")
-            }
-            .accessibilityLabel(model.statusStore.state.status == .poweredOff ? "Bluetooth unavailable" : "Scan for strap")
+        case .connected: return "Live"
+        case .connecting: return "Connecting"
+        case .scanning: return "Searching"
+        case .poweredOff: return "Bluetooth off"
+        case .disconnected: return "Disconnected"
         }
     }
 
-    private var statusHeadline: String {
+    private var statusSymbol: String {
         switch model.statusStore.state.status {
-        case .connected:
-            return "Live connection active"
-        case .connecting:
-            return "Connecting to strap"
-        case .scanning:
-            return "Searching nearby"
-        case .poweredOff:
-            return "Bluetooth paused"
-        case .disconnected:
-            return "Ready to reconnect"
+        case .connected: return "bolt.heart.fill"
+        case .connecting, .scanning: return "dot.radiowaves.left.and.right"
+        case .poweredOff: return "bolt.slash.fill"
+        case .disconnected: return "bolt.horizontal.circle"
+        }
+    }
+
+    private var statusTint: Color {
+        switch model.statusStore.state.status {
+        case .connected: return .green
+        case .connecting, .scanning: return .orange
+        case .poweredOff: return .red
+        case .disconnected: return .blue
         }
     }
 
