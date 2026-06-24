@@ -465,6 +465,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Requires a cuff-calibrated device.",
             "Blood oxygen research",
             "Sleep-only probe; no Health export.",
+            "Skin temperature research",
+            "Baseline-only probe; no absolute degrees C or Health export.",
             "Atria shows only hardware-backed readings.",
         ]:
             assert_contains(self, settings, needle)
