@@ -22,10 +22,17 @@ in exactly ONE of four tiers, and the tier is part of the feature:
   *personal-baseline deviation* is still honest (e.g. "+0.3 vs your 14-night
   baseline"). Skin temperature lives here IF the byte is even found.
 - **RESEARCH-GATED** — decodable but unproven; ship behind `AtriaDeveloperMode`
-  with a "research / unvalidated" label until it tracks a free reference.
-- **DO-NOT-SHIP** — would require hardware the strap lacks or a reference you
-  don't have. SpO₂, blood pressure, and ECG/AFib are here. Probing is allowed;
-  shipping a number is not.
+  with a "research / unvalidated" label until it tracks a free reference. IMU and
+  **SpO₂** live here: the 4.0 sensors physically exist, so it's a discovery problem,
+  not an impossibility.
+- **DO-NOT-SHIP** — the strap hardware fundamentally can't do it. **Blood pressure
+  and ECG/AFib** are here on WHOOP 4.0 (no cuff, no electrodes). Probing/gating on a
+  newer model is allowed; shipping a number from 4.0 is not.
+
+Per-metric hardware verdicts are in the capability table at the end of §10. The
+short version of the user's question — "if 4.0 can do it, build it; if it
+fundamentally can't, fine": SpO₂ and skin temp CAN (sensors exist → probe); BP and
+ECG fundamentally CANNOT on 4.0 (correctly excluded, gated to a future MG model).
 
 Rule of thumb: **if you'd have to estimate it from HR/HRV, it's fake — don't.**
 Everything fails closed: no confident input → show "learning", never a guess.
@@ -70,6 +77,37 @@ var heightCm: Double = 0            // optional, 0 == unknown
   fields in `AtriaSettingsView` Profile section. Keep it minimal per the UI rules.
 - Gate calorie/VO₂ confidence on these being set; otherwise show "Add weight to
   estimate calories" once, not repeatedly.
+
+## 2b. Detect & show the connected WHOOP model — **SHIP (and it gates §6–10)**
+
+The model decides which sensors physically exist, so detect it before probing for
+SpO₂/temp/ECG. It is also a real, easy UX win on its own ("WHOOP 4.0" in Settings).
+
+- **Source:** the standard **Device Information service `0x180A`**, which the code
+  already discovers and already reads Manufacturer (`0x2A29`). Also read:
+  - Model Number `0x2A24`
+  - Hardware Revision `0x2A27`
+  - Firmware Revision `0x2A26`
+  - Software Revision `0x2A28` (optional)
+  - **Do NOT store/transmit Serial `0x2A25`** — it is PII; if read at all, keep it
+    diagnostic-only and never persist.
+- **Implementation:** add `@Published var modelNumber/hardwareRevision/
+  firmwareRevision: String` next to `manufacturer`; read them in the same
+  `didUpdateValueFor` path that handles `0x2A29`; publish into `CoreLiveState` and
+  show in `AtriaSettingsView` (About/Device row), separate from the user's
+  `deviceName`.
+- **The exact strings are unknown until read on a real strap.** So step 1 is
+  literally: read + log the raw `modelNumber`/`hardwareRevision` values, THEN build
+  the friendly map from what 4.0 actually reports. Map known values →
+  `"WHOOP 4.0" / "WHOOP 5.0" / "WHOOP MG"`; **unknown → display the raw string**,
+  never a guess. Cross-check against the advertised peripheral name and which
+  proprietary service UUID generation responds.
+- **Feature gating (the point):** derive `WhoopModel` and expose
+  `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+), `supportsECG` (MG only),
+  `supportsBloodPressure` (MG + cuff). Unknown model → conservative: HR/RR/accel
+  only, no SpO₂/temp/ECG probes. §6–10 must check these flags before probing.
+- Verify on the cabled iPhone (`devicectl … capture screenshot`) once it is
+  reconnected; the raw strings can't be confirmed in the simulator.
 
 ## 3. Steps — **SHIP (phone) + RESEARCH (strap)**  ← the important one
 
@@ -165,33 +203,56 @@ over BLE. So this is a **discovery task first**:
 - HealthKit: only if shipped — `appleSleepingWristTemperature` is the right type
   and is itself a baseline-deviation metric, which matches.
 
-## 8. SpO₂ / blood oxygen — **DO-NOT-SHIP (probe only)**
+## 8. SpO₂ / blood oxygen — **RESEARCH-GATED (the hardware EXISTS on 4.0)**
 
-- WHOOP computes SpO₂ only during sleep, on-device; there is no evidence it streams
-  a live SpO₂ value over BLE, and you have **no pulse oximeter to validate against**.
-- Allowed: a one-time **breath-hold probe** (SpO₂ physiologically dips ~30–60 s into
-  a breath-hold) to check whether any byte responds. Log it; do not surface a number.
-- **Never estimate SpO₂ from HR or HRV** — that is fabricated physiology. If a byte
-  is ever proven, it would still be RESEARCH-GATED + disclaimed, never a health
-  readout.
+Hardware verdict: **WHOOP 4.0 CAN do this.** 4.0 added a red+infrared pulse
+oximeter specifically for blood oxygen; it is real on the band. So this is a
+*discovery* problem, not an impossibility — upgraded from do-not-ship.
+- WHOOP computes SpO₂ **only during sleep, on-device**, so it is unlikely to appear
+  as a live characteristic. Look for it in the **historical / metadata frames**
+  (`0x2f` / `0x31`) the protocol tools already read, not in the live `0x28` stream.
+- **Probe:** with frame capture on across a full night, search for a byte that sits
+  in the 90–100 range and only populates during the sleep window. A daytime
+  **breath-hold** (SpO₂ dips ~30–60 s in) is a self-induced reference to confirm a
+  candidate byte responds in the right direction.
+- **You have no pulse oximeter to validate absolute accuracy**, so even when found,
+  ship it RESEARCH-GATED (developer mode) + disclaimed "research, not a medical
+  reading," and only for sleep. **Never estimate SpO₂ from HR/HRV** — that is fake.
+- HealthKit: `oxygenSaturation` exists, but only write once a byte is proven AND
+  the value tracks the breath-hold direction; otherwise read-only/none.
 
-## 9. Blood pressure — **DO-NOT-SHIP**
+## 9. Blood pressure — **DO-NOT-SHIP on 4.0 (hardware can't, and that's fine)**
 
-- BP needs a cuff or validated pulse-transit-time across two sites. The strap has
-  neither, and you have no reference cuff. There is no honest path from WHOOP 4.0.
-- The only legitimate route is **importing** a reading the user took on a real,
-  validated cuff (e.g. via HealthKit `bloodPressureSystolic/Diastolic`) — but the
-  user has no external device, so leave a read-only HealthKit import stub, unused,
-  and document that estimation from HR/HRV is forbidden.
+Hardware verdict: **WHOOP 4.0 CANNOT do this honestly.** 4.0 has only PPG — no
+cuff, no two-site PTT. WHOOP's own "Blood Pressure Insights" is a **WHOOP 5.0 / MG**
+beta that *requires three cuff calibration readings* as a reference. You have no
+cuff, so even the 5.0 method is unavailable.
+- Leave only a read-only HealthKit `bloodPressureSystolic/Diastolic` **import** stub
+  (used if the user ever logs a real cuff reading elsewhere). Estimating BP from
+  HR/HRV is forbidden. Gate any attempt on detecting a 5.0/MG model (§2b) AND a
+  user-supplied cuff calibration — neither is present today.
 
-## 10. ECG / arrhythmia / AFib — **DO-NOT-SHIP (medical)**
+## 10. ECG / arrhythmia / AFib — **DO-NOT-SHIP on 4.0 (hardware can't, and that's fine)**
 
-- WHOOP 4.0 has no ECG electrodes; optical HR irregularity is not an ECG and must
-  never be labeled AFib. The README already states Atria is not medical software.
-- Optional, heavily-gated **research** signal only: an "irregular RR" *hint* from
-  RR-interval dispersion (Poincaré SD1/SD2, elevated pNN50 outliers) shown in
-  developer mode, captioned "research signal, not a diagnosis, not AFib." Default
-  off. If in doubt, omit entirely.
+Hardware verdict: **WHOOP 4.0 CANNOT do this.** ECG needs skin electrodes; 4.0 has
+none. ECG is a **WHOOP MG (medical-grade, 5.0 era)** feature only. Optical HR
+irregularity is not an ECG and must never be labeled AFib.
+- Gate any ECG code path on detecting a WHOOP MG model (§2b); on 4.0 it is simply
+  absent. Optional, heavily-gated **research** signal only: an "irregular RR" *hint*
+  from RR dispersion (Poincaré SD1/SD2, pNN50 outliers) in developer mode, captioned
+  "research signal, not a diagnosis, not AFib." Default off; omit if unsure.
+
+### Hardware capability summary (WHOOP 4.0)
+| Metric | 4.0 sensor exists? | Verdict |
+|---|---|---|
+| HR / HRV / RR / resp. rate | ✅ PPG | shipped |
+| Skin temperature | ✅ thermistor | probe → baseline-only (§7) |
+| **SpO₂ / blood oxygen** | ✅ pulse oximeter | **probe → research-gated (§8)** |
+| Accelerometer / motion | ✅ 3-axis accel | research → unlocks steps/sleep (§6) |
+| Gyroscope | ❔ (likely accel-only) | confirm during IMU probe; don't assume |
+| Blood pressure | ❌ (5.0/MG + cuff) | do-not-ship (§9) |
+| ECG / AFib | ❌ (MG only) | do-not-ship (§10) |
+| GPS / steps-on-band | ❌ no GPS | use phone `CMPedometer` (§3) |
 
 ## 11. Automatic sleep staging — **after §6 (sleep/wake only)**
 
@@ -222,13 +283,15 @@ the template). Never write SpO₂/BP/ECG.
 
 ## 14. Recommended order (value ÷ risk)
 
-1. **Profile fields** (§2) — unblocks 4 & 5.
-2. **Phone steps** (§3a) — ship; already half-wired; highest user value.
-3. **Active calories** (§4) — ship as estimate.
-4. **VO₂ max** (§5) — small win on existing code.
-5. **IMU decode** (§6) — research; unlocks strap-steps (§3b) + sleep (§11).
-6. **Skin temp probe** (§7) — baseline-only IF found; else document negative.
-7. **SpO₂/BP/ECG** (§8–10) — probe + document; do-not-ship numbers.
+1. **Model detection** (§2b) — ship; easy; gates everything below.
+2. **Profile fields** (§2) — unblocks 4 & 5.
+3. **Phone steps** (§3a) — ship; already half-wired; highest user value.
+4. **Active calories** (§4) — ship as estimate.
+5. **VO₂ max** (§5) — small win on existing code.
+6. **IMU decode** (§6) — research; unlocks strap-steps (§3b) + sleep (§11).
+7. **Skin temp probe** (§7) — baseline-only IF found; else document negative.
+8. **SpO₂ probe** (§8) — research-gated if a sleep-window byte is proven.
+9. **BP / ECG** (§9–10) — do-not-ship on 4.0; gate to a future MG model.
 
 Each item: build for sim, then install on the cabled iPhone
 (`devicectl device capture screenshot` to verify), and keep status in exactly one

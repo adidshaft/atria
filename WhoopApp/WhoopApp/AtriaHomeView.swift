@@ -178,6 +178,8 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showSettings) {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
+                              strapModel: ble.status == .connected ? ble.whoopModelLabel : "",
+                              strapFirmware: ble.firmwareRevision,
                               onUpdateProfile: store.updateProfile,
                               hapticSettings: hapticSettings,
                               onUpdateHaptics: { hapticSettings = $0 },

@@ -6,6 +6,8 @@ import SwiftUI
 struct AtriaSettingsView: View {
     let profile: AthleteProfile
     let restingBaseline: Int?
+    let strapModel: String
+    let strapFirmware: String
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     let hapticSettings: AtriaHapticAlertSettings
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
@@ -26,6 +28,8 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
+         strapModel: String = "",
+         strapFirmware: String = "",
          onUpdateProfile: @escaping (@escaping (inout AthleteProfile) -> Void) -> Void,
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
@@ -33,6 +37,8 @@ struct AtriaSettingsView: View {
          onSyncMissedData: (() -> Void)? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
+        self.strapModel = strapModel
+        self.strapFirmware = strapFirmware
         self.onUpdateProfile = onUpdateProfile
         self.hapticSettings = hapticSettings
         self.onUpdateHaptics = onUpdateHaptics
@@ -48,6 +54,7 @@ struct AtriaSettingsView: View {
                 AtriaDashboardBackdrop().ignoresSafeArea()
                 Form {
                     profileSection
+                    deviceSection
                     alertsSection
                     dataSection
                     shortcutsSection
@@ -178,6 +185,26 @@ struct AtriaSettingsView: View {
                             detail: "Single / double / triple-tap actions (music, calls) are coming once tap input from the band is confirmed.")
         } header: {
             Text("Shortcuts")
+        }
+    }
+
+    // MARK: Device
+
+    private var deviceSection: some View {
+        Section {
+            LabeledContent("Strap") {
+                Text(strapModel.isEmpty ? "Not connected" : strapModel)
+                    .foregroundStyle(strapModel.isEmpty ? .secondary : .primary)
+            }
+            if !strapFirmware.isEmpty {
+                LabeledContent("Firmware") {
+                    Text(strapFirmware).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+        } header: {
+            Text("Device")
+        } footer: {
+            Text("Detected automatically from the connected strap.")
         }
     }
 
