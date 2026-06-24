@@ -47,6 +47,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in forbidden:
             assert_not_contains(self, text, needle)
 
+        assert_not_contains(self, text, "ViewThatFits")
+
         for needle in [
             "TabView(selection:",
             ".tabBarMinimizeBehavior(.onScrollDown)",

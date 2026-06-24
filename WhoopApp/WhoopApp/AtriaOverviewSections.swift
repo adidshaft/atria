@@ -316,9 +316,8 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Single adaptive grid (renders the tiles once, still responsive)
-            // instead of ViewThatFits, which renders both candidate layouts to
-            // measure them — doubling the per-card cost during scroll.
+            // Single adaptive grid renders the tiles once, avoiding duplicate
+            // layout measurement during scroll.
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
                 AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
                 AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/7")
@@ -1056,6 +1055,7 @@ private struct AtriaOverviewActionStrip: View {
     let secondaryTitle: String
     let secondarySystemImage: String
     let secondaryAction: () -> Void
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1063,12 +1063,12 @@ private struct AtriaOverviewActionStrip: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            ViewThatFits {
-                HStack(spacing: 8) {
+            if horizontalSizeClass == .compact {
+                VStack(spacing: 8) {
                     actionButtons
                 }
-
-                VStack(spacing: 8) {
+            } else {
+                HStack(spacing: 8) {
                     actionButtons
                 }
             }
