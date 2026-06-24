@@ -1214,7 +1214,7 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
                                 value: context.flowLabel,
                                 state: .local,
                                 tint: tint)
-                AtriaMetricTile(label: "Attempts",
+                AtriaMetricTile(label: "Try",
                                 value: "\(max(context.attempts, 1))",
                                 state: status == .connected ? .validated : .learning,
                                 tint: tint)
