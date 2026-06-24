@@ -213,6 +213,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_advanced_metrics_imu_decoder_is_research_gated(self):
         decoder = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaIMUDecoder.swift")
+        steps = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaStrapStepResearch.swift")
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
 
@@ -235,9 +236,20 @@ class HandoffStaticChecks(unittest.TestCase):
             "imuSampleRateHzSum += Double(decoded.samples.count) / delta",
             "imuInferredScale = decoded.scale",
             "imuInferredEndian = decoded.endian.rawValue",
+            "AtriaStrapStepResearch.estimate(samples: decoded.samples",
+            "strap_steps_research=%d phone_step_agreement=%@",
             "imuValidationState = imuGravityValidatedFrameCount > 0 ? \"gravity_validated_research\" : \"research_unvalidated\"",
         ]:
             assert_contains(self, ble, needle)
+
+        for needle in [
+            "enum AtriaStrapStepResearch",
+            "guard current >= 1.12",
+            "refractorySamples",
+            "static func agreement(strapSteps: Int, phoneSteps: Int?) -> Double?",
+            "state: \"research_unvalidated\"",
+        ]:
+            assert_contains(self, steps, needle)
 
         for needle in [
             "var imuSampleCount: Int? = nil",
@@ -249,6 +261,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var imuMovementIntensity: Double? = nil",
             "var imuActivityBursts: Int? = nil",
             "var imuValidationState: String? = nil",
+            "var strapStepResearchCount: Int? = nil",
+            "var strapStepResearchAgreement: Double? = nil",
+            "var strapStepResearchState: String? = nil",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -742,6 +757,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Research only; compare with phone motion before steps or sleep.",
+            "AtriaMetricTile(label: \"Strap steps\"",
+            "agreementText",
             "IMUAuditSummary(sessions: sessions)",
         ]:
             assert_contains(self, collection, needle)

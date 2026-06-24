@@ -485,6 +485,11 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 value: summary.gravityText,
                                 state: summary.validatedFrames > 0 ? .validated : .learning,
                                 tint: summary.validatedFrames > 0 ? .green : .orange)
+                AtriaMetricTile(label: "Strap steps",
+                                value: summary.strapStepText,
+                                state: summary.strapStepCount > 0 ? .learning : .learning,
+                                tint: .orange,
+                                footnote: summary.agreementText)
             }
 
             Text("Research only; compare with phone motion before steps or sleep.")
@@ -512,6 +517,8 @@ private struct IMUAuditSummary: Equatable {
     let sampleRateHz: Double?
     let scale: Double?
     let endian: String?
+    let strapStepCount: Int
+    let agreement: Double?
 
     init(sessions: [SavedSession]) {
         let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
@@ -522,6 +529,9 @@ private struct IMUAuditSummary: Equatable {
         sampleRateHz = rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
         scale = imuSessions.compactMap(\.imuScale).last
         endian = imuSessions.compactMap(\.imuEndian).last
+        strapStepCount = imuSessions.reduce(0) { $0 + ($1.strapStepResearchCount ?? 0) }
+        let agreements = imuSessions.compactMap(\.strapStepResearchAgreement)
+        agreement = agreements.isEmpty ? nil : agreements.reduce(0, +) / Double(agreements.count)
     }
 
     var frameText: String {
@@ -540,6 +550,14 @@ private struct IMUAuditSummary: Equatable {
     var gravityText: String {
         guard frameCount > 0 else { return "--" }
         return validatedFrames > 0 ? "Seen" : "Waiting"
+    }
+
+    var strapStepText: String {
+        strapStepCount > 0 ? "\(strapStepCount)" : "--"
+    }
+
+    var agreementText: String {
+        agreement.map { "\(Int(($0 * 100).rounded()))% phone" } ?? "phone pending"
     }
 }
 

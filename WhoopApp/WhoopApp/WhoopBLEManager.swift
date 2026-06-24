@@ -828,6 +828,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var imuLastFrameAt: Date?
     private var imuInferredScale: Double?
     private var imuInferredEndian: String?
+    private var strapStepResearchCount = 0
+    private var strapStepResearchPeakCount = 0
+    private var strapStepResearchState = "research_unvalidated"
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
@@ -7252,7 +7255,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             magnitudes.append(String(format: "%d:%.1f", offset, magnitude))
         }
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f sample_rate_hz=%@ samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d metric_promotions=0 i16=%@ magnitudes=%@ payload=%@",
+            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f sample_rate_hz=%@ samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d strap_steps_research=%d phone_step_agreement=%@ metric_promotions=0 i16=%@ magnitudes=%@ payload=%@",
                   decoded?.gravityValidated == true ? 1 : 0,
                   decoded?.validationState ?? "decode_failed",
                   payload.count,
@@ -7265,6 +7268,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   Self.formatDouble(decoded?.stillnessRatio),
                   Self.formatDouble(decoded?.movementIntensity),
                   decoded?.activityBursts ?? 0,
+                  strapStepResearchCount,
+                  Self.formatDouble(AtriaStrapStepResearch.agreement(strapSteps: strapStepResearchCount,
+                                                                     phoneSteps: phoneStepCount > 0 ? phoneStepCount : nil)),
                   i16Pairs.joined(separator: ","),
                   magnitudes.joined(separator: ","),
                   Self.hex(payload))
@@ -8351,6 +8357,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             imuMovementIntensity: imu.movementIntensity,
                             imuActivityBursts: decodedIMUSampleCount > 0 ? imuActivityBurstCount : nil,
                             imuValidationState: decodedIMUSampleCount > 0 ? imuValidationState : nil,
+                            strapStepResearchCount: strapStepResearchCount > 0 ? strapStepResearchCount : nil,
+                            strapStepResearchAgreement: AtriaStrapStepResearch.agreement(strapSteps: strapStepResearchCount,
+                                                                                         phoneSteps: phoneSteps.steps > 0 ? phoneSteps.steps : nil),
+                            strapStepResearchState: strapStepResearchCount > 0 ? strapStepResearchState : nil,
                             phoneMotionSource: phoneMotion.source,
                             phoneMotionValidated: phoneMotion.validated,
                             phoneMotionSamples: phoneMotion.samples > 0 ? phoneMotion.samples : nil,
@@ -8398,6 +8408,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         decodedIMUSampleCount += decoded.samples.count
         imuInferredScale = decoded.scale
         imuInferredEndian = decoded.endian.rawValue
+        let stepEstimate = AtriaStrapStepResearch.estimate(samples: decoded.samples,
+                                                           sampleRateHz: imuFeatureSummary().sampleRateHz)
+        strapStepResearchCount += stepEstimate.steps
+        strapStepResearchPeakCount += stepEstimate.peaks
+        strapStepResearchState = stepEstimate.state
         imuStillnessRatioSum += decoded.stillnessRatio
         imuMovementIntensitySum += decoded.movementIntensity
         imuActivityBurstCount += decoded.activityBursts
@@ -8426,6 +8441,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         imuLastFrameAt = nil
         imuInferredScale = nil
         imuInferredEndian = nil
+        strapStepResearchCount = 0
+        strapStepResearchPeakCount = 0
+        strapStepResearchState = "research_unvalidated"
         researchProbeFrameCount = 0
         researchProbeOxygenCandidateFrames = 0
         researchProbeTemperatureCandidateFrames = 0

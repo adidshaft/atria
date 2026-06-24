@@ -14,7 +14,7 @@ test_handoff_static_checks.py`, no `https://` clients).
   Onboarding and Settings expose compact controls for the same fields.
 - Phone steps: **shipped in code**. Atria queries `CMPedometer` from start of day,
   publishes `phoneStepsToday`, distance, and floors, and shows a single `Steps`
-  tile in Today. Strap-derived steps remain absent.
+  tile in Today. Strap-derived steps are research-only in developer surfaces.
 - Active calories: **estimate-gated**. Keytel HR→EE estimate is implemented and
   only produces `kcal` when sex + weight are set; otherwise the UI stays learning.
 - VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
@@ -37,8 +37,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   `imuMovementIntensity`, `imuActivityBursts`, `imuValidationState`) plus
   research layout evidence (`imuScale`, `imuEndian`, `imuSampleRateHz`) on
   sessions. The Data tab now has a developer-only IMU audit card summarizing
-  frames, sample rate, layout, and gravity status; raw IMU frames are not stored
-  and sleep/steps are not promoted yet.
+  frames, sample rate, layout, gravity status, and strap-step research counts with
+  phone-step agreement; raw IMU frames are not stored and sleep/steps are not
+  promoted yet.
 - Skin temp + SpO₂ discovery: **research-only probe scaffold shipped in code**.
   Metadata (`0x31`) and historical (`0x2f`) frames are scanned behind the existing
   4.0-class capability gates for aggregate-only candidate offsets: SpO₂-like bytes
