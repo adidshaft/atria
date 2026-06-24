@@ -12,6 +12,8 @@ final class HealthKitExporter {
         let workouts: Int
         let hrvSamples: Int
         let respiratoryRateSamples: Int
+        let activeEnergySamples: Int
+        let vo2MaxSamples: Int
         let sleeps: Int
     }
 
@@ -94,6 +96,8 @@ final class HealthKitExporter {
         var restingHRExported: Bool?
         var hrvExported: Bool
         var respiratoryRateExported: Bool?
+        var activeEnergyExported: Bool?
+        var vo2MaxExported: Bool?
         var workoutExported: Bool
         var end: TimeInterval
     }
@@ -135,6 +139,30 @@ final class HealthKitExporter {
         HKQuantityType.quantityType(forIdentifier: .respiratoryRate)!
     }
 
+    private var activeEnergyType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
+    }
+
+    private var stepCountType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .stepCount)!
+    }
+
+    private var vo2MaxType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .vo2Max)!
+    }
+
+    private var sleepingWristTemperatureType: HKQuantityType? {
+        HKQuantityType.quantityType(forIdentifier: .appleSleepingWristTemperature)
+    }
+
+    private var bloodPressureSystolicType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .bloodPressureSystolic)!
+    }
+
+    private var bloodPressureDiastolicType: HKQuantityType {
+        HKQuantityType.quantityType(forIdentifier: .bloodPressureDiastolic)!
+    }
+
     private var workoutType: HKWorkoutType {
         HKObjectType.workoutType()
     }
@@ -146,6 +174,8 @@ final class HealthKitExporter {
     func export(sessions: [SavedSession],
                 rest: Int,
                 maxHR: Int,
+                profile: AthleteProfile,
+                restingBaselineSamples: Int,
                 confirmedWorkouts: [UserConfirmedWorkout] = [],
                 confirmedSleeps: [UserConfirmedSleep] = []) {
         let diagnostics = HealthKitExporter.diagnostics(for: sessions,
@@ -193,6 +223,8 @@ final class HealthKitExporter {
                                  confirmedSleeps: confirmedSleeps,
                                  rest: rest,
                                  maxHR: maxHR,
+                                 profile: profile,
+                                 restingBaselineSamples: restingBaselineSamples,
                                  ledger: &ledger)
             saveExportLedger(ledger)
             WHOOPDebugLog("WHOOPDBG healthkit_export status=skipped_existing_atria_samples sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d atria_hr_samples=%d ledger_seeded=1 idempotent=1 action=incremental_exports_only",
@@ -217,8 +249,10 @@ final class HealthKitExporter {
                                          confirmedSleeps: confirmedSleeps,
                                          ledger: ledger,
                                          rest: rest,
-                                         maxHR: maxHR)
-        guard deltaPlanned.hrSamples > 0 || deltaPlanned.restingHRSamples > 0 || deltaPlanned.workouts > 0 || deltaPlanned.hrvSamples > 0 || deltaPlanned.respiratoryRateSamples > 0 || deltaPlanned.sleeps > 0 else {
+                                         maxHR: maxHR,
+                                         profile: profile,
+                                         restingBaselineSamples: restingBaselineSamples)
+        guard deltaPlanned.hrSamples > 0 || deltaPlanned.restingHRSamples > 0 || deltaPlanned.workouts > 0 || deltaPlanned.hrvSamples > 0 || deltaPlanned.respiratoryRateSamples > 0 || deltaPlanned.activeEnergySamples > 0 || deltaPlanned.vo2MaxSamples > 0 || deltaPlanned.sleeps > 0 else {
             WHOOPDebugLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=0 ledger_entries=%d idempotent=1",
                   sessions.count,
                   ledger.count)
@@ -248,8 +282,10 @@ final class HealthKitExporter {
                                             workouts: deltaPlanned.workouts,
                                             hrvSamples: deltaPlanned.hrvSamples,
                                             respiratoryRateSamples: deltaPlanned.respiratoryRateSamples,
+                                            activeEnergySamples: deltaPlanned.activeEnergySamples,
+                                            vo2MaxSamples: deltaPlanned.vo2MaxSamples,
                                             sleeps: sleepShareDenied ? 0 : deltaPlanned.sleeps)
-        guard writablePlanned.hrSamples > 0 || writablePlanned.restingHRSamples > 0 || writablePlanned.workouts > 0 || writablePlanned.hrvSamples > 0 || writablePlanned.respiratoryRateSamples > 0 || writablePlanned.sleeps > 0 else {
+        guard writablePlanned.hrSamples > 0 || writablePlanned.restingHRSamples > 0 || writablePlanned.workouts > 0 || writablePlanned.hrvSamples > 0 || writablePlanned.respiratoryRateSamples > 0 || writablePlanned.activeEnergySamples > 0 || writablePlanned.vo2MaxSamples > 0 || writablePlanned.sleeps > 0 else {
             WHOOPDebugLog("WHOOPDBG healthkit_export status=sleep_permission_required sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=%d ledger_entries=%d idempotent=1 action=grant_health_sleep_analysis",
                   sessions.count,
                   deltaPlanned.sleeps,
@@ -265,7 +301,10 @@ final class HealthKitExporter {
         }
 
         let writeTypes = requiredWriteTypes(for: writablePlanned)
-        var readTypes: Set<HKObjectType> = [heartRateType]
+        var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]
+        if let sleepingWristTemperatureType {
+            readTypes.insert(sleepingWristTemperatureType)
+        }
         if writablePlanned.sleeps > 0 {
             readTypes.insert(sleepType)
         }
@@ -296,6 +335,8 @@ final class HealthKitExporter {
                                     verificationSessions: sessions,
                                     rest: rest,
                                     maxHR: maxHR,
+                                    profile: profile,
+                                    restingBaselineSamples: restingBaselineSamples,
                                     ledger: ledger,
                                     reason: "incremental",
                                     hrOnly: false)
@@ -345,6 +386,8 @@ final class HealthKitExporter {
                                              verificationSessions: sessions,
                                              rest: rest,
                                              maxHR: maxHR,
+                                             profile: profile,
+                                             restingBaselineSamples: restingBaselineSamples,
                                              ledger: ledger,
                                              reason: "incremental",
                                              hrOnly: false)
@@ -380,6 +423,12 @@ final class HealthKitExporter {
         }
         if planned.respiratoryRateSamples > 0 {
             types.insert(respiratoryRateType)
+        }
+        if planned.activeEnergySamples > 0 {
+            types.insert(activeEnergyType)
+        }
+        if planned.vo2MaxSamples > 0 {
+            types.insert(vo2MaxType)
         }
         if planned.workouts > 0 {
             types.insert(workoutType)
@@ -427,6 +476,15 @@ final class HealthKitExporter {
         }
         if type == hrvType {
             return "hrv_sdnn"
+        }
+        if type == respiratoryRateType {
+            return "respiratory_rate"
+        }
+        if type == activeEnergyType {
+            return "active_energy"
+        }
+        if type == vo2MaxType {
+            return "vo2_max"
         }
         if type == workoutType {
             return "workout"
@@ -596,6 +654,8 @@ final class HealthKitExporter {
         var workouts = 0
         var hrvSamples = 0
         var respiratoryRateSamples = 0
+        let activeEnergySamples = 0
+        let vo2MaxSamples = 0
         var sleeps = 0
 
         for session in sessions where session.end > session.start {
@@ -621,6 +681,8 @@ final class HealthKitExporter {
                              workouts: workouts,
                              hrvSamples: hrvSamples,
                              respiratoryRateSamples: respiratoryRateSamples,
+                             activeEnergySamples: activeEnergySamples,
+                             vo2MaxSamples: vo2MaxSamples,
                              sleeps: sleeps)
     }
 
@@ -629,13 +691,18 @@ final class HealthKitExporter {
                                confirmedSleeps: [UserConfirmedSleep],
                                ledger: ExportLedger,
                                rest: Int,
-                               maxHR: Int) -> PlannedCounts {
+                               maxHR: Int,
+                               profile: AthleteProfile,
+                               restingBaselineSamples: Int) -> PlannedCounts {
         var hrSamples = 0
         var restingHRSamples = 0
         var workouts = 0
         var hrvSamples = 0
         var respiratoryRateSamples = 0
+        var activeEnergySamples = 0
+        var vo2MaxSamples = 0
         var sleeps = 0
+        var vo2MaxPlanned = false
 
         for session in sessions where session.end > session.start {
             let snapshot = ledger[session.id.uuidString]
@@ -655,6 +722,19 @@ final class HealthKitExporter {
                snapshot?.respiratoryRateExported != true {
                 respiratoryRateSamples += 1
             }
+            if session.workoutReadiness(rest: rest, maxHR: maxHR).ready,
+               profile.hasEnergyProfile,
+               snapshot?.activeEnergyExported != true,
+               activeEnergyKilocalories(for: session, rest: rest, profile: profile) != nil {
+                activeEnergySamples += 1
+            }
+            if !vo2MaxPlanned,
+               profile.maxHRSource == .measured,
+               restingBaselineSamples >= 7,
+               snapshot?.vo2MaxExported != true {
+                vo2MaxSamples += 1
+                vo2MaxPlanned = true
+            }
         }
         for workout in confirmedWorkouts where ledger[Self.confirmedWorkoutLedgerKey(workout.id)]?.workoutExported != true {
             workouts += 1
@@ -668,6 +748,8 @@ final class HealthKitExporter {
                              workouts: workouts,
                              hrvSamples: hrvSamples,
                              respiratoryRateSamples: respiratoryRateSamples,
+                             activeEnergySamples: activeEnergySamples,
+                             vo2MaxSamples: vo2MaxSamples,
                              sleeps: sleeps)
     }
 
@@ -714,6 +796,8 @@ final class HealthKitExporter {
                                                restingHRExported: existing?.restingHRExported ?? true,
                                                hrvExported: existing?.hrvExported ?? true,
                                                respiratoryRateExported: existing?.respiratoryRateExported ?? true,
+                                               activeEnergyExported: existing?.activeEnergyExported ?? true,
+                                               vo2MaxExported: existing?.vo2MaxExported ?? true,
                                                workoutExported: existing?.workoutExported ?? true,
                                                end: gap.session.end.timeIntervalSince1970)
         }
@@ -731,6 +815,8 @@ final class HealthKitExporter {
                                 verificationSessions: allSessions,
                                 rest: rest,
                                 maxHR: maxHR,
+                                profile: nil,
+                                restingBaselineSamples: 0,
                                 ledger: repairLedger,
                                 reason: "hr_backfill_repair",
                                 hrOnly: true)
@@ -783,6 +869,8 @@ final class HealthKitExporter {
                                       confirmedSleeps: [UserConfirmedSleep],
                                       rest: Int,
                                       maxHR: Int,
+                                      profile: AthleteProfile?,
+                                      restingBaselineSamples: Int,
                                       ledger: inout ExportLedger) {
         for session in sessions where session.end > session.start {
             let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
@@ -791,6 +879,14 @@ final class HealthKitExporter {
                 restingHRExported: session.restingStable > 0,
                 hrvExported: (session.referenceValidatedSDNN ?? 0) > 0,
                 respiratoryRateExported: (session.respiratoryRate ?? 0) > 0,
+                activeEnergyExported: profile.map {
+                    session.workoutReadiness(rest: rest, maxHR: maxHR).ready
+                    && $0.hasEnergyProfile
+                    && (activeEnergyKilocalories(for: session, rest: rest, profile: $0) ?? 0) > 0
+                } ?? false,
+                vo2MaxExported: profile.map {
+                    $0.maxHRSource == .measured && restingBaselineSamples >= 7 && rest > 0 && maxHR > rest
+                } ?? false,
                 workoutExported: readiness.ready,
                 end: session.end.timeIntervalSince1970
             )
@@ -801,6 +897,8 @@ final class HealthKitExporter {
                 restingHRExported: true,
                 hrvExported: true,
                 respiratoryRateExported: true,
+                activeEnergyExported: true,
+                vo2MaxExported: true,
                 workoutExported: true,
                 end: workout.end.timeIntervalSince1970
             )
@@ -811,6 +909,8 @@ final class HealthKitExporter {
                 restingHRExported: true,
                 hrvExported: true,
                 respiratoryRateExported: true,
+                activeEnergyExported: true,
+                vo2MaxExported: true,
                 workoutExported: true,
                 end: sleep.end.timeIntervalSince1970
             )
@@ -825,6 +925,8 @@ final class HealthKitExporter {
                 restingHRExported: existing?.restingHRExported ?? false,
                 hrvExported: existing?.hrvExported ?? false,
                 respiratoryRateExported: existing?.respiratoryRateExported ?? false,
+                activeEnergyExported: existing?.activeEnergyExported ?? false,
+                vo2MaxExported: existing?.vo2MaxExported ?? false,
                 workoutExported: existing?.workoutExported ?? false,
                 end: session.end.timeIntervalSince1970
             )
@@ -837,6 +939,8 @@ final class HealthKitExporter {
                                          verificationSessions: [SavedSession],
                                          rest: Int,
                                          maxHR: Int,
+                                         profile: AthleteProfile?,
+                                         restingBaselineSamples: Int,
                                          ledger: ExportLedger,
                                          reason: String,
                                          hrOnly: Bool) {
@@ -849,6 +953,8 @@ final class HealthKitExporter {
             return healthSamples(for: session,
                                  rest: rest,
                                  maxHR: maxHR,
+                                 profile: profile,
+                                 restingBaselineSamples: restingBaselineSamples,
                                  snapshot: snapshot)
         }
         var workoutPlans: [WorkoutExportPlan] = []
@@ -918,6 +1024,8 @@ final class HealthKitExporter {
                                           confirmedSleeps: confirmedSleeps,
                                           rest: rest,
                                           maxHR: maxHR,
+                                          profile: profile,
+                                          restingBaselineSamples: restingBaselineSamples,
                                           ledger: &updatedLedger)
             }
             self.saveExportLedger(updatedLedger)
@@ -1415,6 +1523,8 @@ final class HealthKitExporter {
                                                 restingHRExported: existing?.restingHRExported ?? false,
                                                 hrvExported: existing?.hrvExported ?? false,
                                                 respiratoryRateExported: existing?.respiratoryRateExported ?? false,
+                                                activeEnergyExported: existing?.activeEnergyExported ?? false,
+                                                vo2MaxExported: existing?.vo2MaxExported ?? false,
                                                 workoutExported: existing?.workoutExported ?? false,
                                                 end: session.end.timeIntervalSince1970)
         }
@@ -1426,6 +1536,8 @@ final class HealthKitExporter {
                                 verificationSessions: sessions,
                                 rest: rest,
                                 maxHR: maxHR,
+                                profile: nil,
+                                restingBaselineSamples: 0,
                                 ledger: rebuildLedger,
                                 reason: "hr_reset_rebuild",
                                 hrOnly: true)
@@ -1655,6 +1767,8 @@ final class HealthKitExporter {
     private func healthSamples(for session: SavedSession,
                                rest: Int,
                                maxHR: Int,
+                               profile: AthleteProfile?,
+                               restingBaselineSamples: Int,
                                snapshot: ExportSnapshot?) -> [HKSample] {
         guard session.end > session.start else { return [] }
 
@@ -1697,7 +1811,51 @@ final class HealthKitExporter {
                                             metadata: metadata))
         }
 
+        if snapshot?.activeEnergyExported != true,
+           session.workoutReadiness(rest: rest, maxHR: maxHR).ready,
+           let profile,
+           let kcal = activeEnergyKilocalories(for: session, rest: rest, profile: profile),
+           kcal > 0 {
+            let quantity = HKQuantity(unit: .kilocalorie(), doubleValue: kcal)
+            samples.append(HKQuantitySample(type: activeEnergyType,
+                                            quantity: quantity,
+                                            start: session.start,
+                                            end: session.end,
+                                            metadata: metadata.merging([
+                                                "atria_metric_confidence": "estimate",
+                                                "atria_metric_source": "keytel_2005_hr_energy"
+                                            ]) { current, _ in current }))
+        }
+
+        if snapshot?.vo2MaxExported != true,
+           let profile,
+           profile.maxHRSource == .measured,
+           restingBaselineSamples >= 7,
+           rest > 0,
+           maxHR > rest {
+            let estimate = min(max(15.3 * Double(maxHR) / Double(rest), 20), 80)
+            let quantity = HKQuantity(unit: HKUnit.literUnit(with: .milli).unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .minute())),
+                                      doubleValue: estimate)
+            samples.append(HKQuantitySample(type: vo2MaxType,
+                                            quantity: quantity,
+                                            start: session.end.addingTimeInterval(-1),
+                                            end: session.end,
+                                            metadata: metadata.merging([
+                                                "atria_metric_confidence": "rough_estimate",
+                                                "atria_metric_source": "uth_sorensen_resting_hr"
+                                            ]) { current, _ in current }))
+        }
+
         return samples
+    }
+
+    private func activeEnergyKilocalories(for session: SavedSession,
+                                          rest: Int,
+                                          profile: AthleteProfile) -> Double? {
+        let samples = session.points.map { point in
+            HRSample(t: session.start.addingTimeInterval(max(0, point.t)), bpm: point.bpm)
+        }
+        return Metrics.activeCalories(samples, rest: rest, profile: profile)
     }
 
     private func workoutExportPlan(for session: SavedSession,

@@ -7,6 +7,39 @@ judged against that reality. Do not fabricate physiology. Atria stays local-firs
 (no cloud, no account); keep the static suite green (`python3
 test_handoff_static_checks.py`, no `https://` clients).
 
+## 2026-06-25 implementation status
+
+- Profile prerequisites: **shipped in code**. `AthleteProfile` now stores
+  `biologicalSex`, `weightKg`, and `heightCm` with `decodeIfPresent` migration.
+  Onboarding and Settings expose compact controls for the same fields.
+- Phone steps: **shipped in code**. Atria queries `CMPedometer` from start of day,
+  publishes `phoneStepsToday`, distance, and floors, and shows a single `Steps`
+  tile in Today. Strap-derived steps remain absent.
+- Active calories: **estimate-gated**. Keytel HR→EE estimate is implemented and
+  only produces `kcal` when sex + weight are set; otherwise the UI stays learning.
+- VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
+  formula directly and requires measured HRmax plus 7 resting baselines before
+  leaving learning copy.
+- WHOOP model/capability gates: **scaffolded**. Proprietary WHOOP service marks
+  a strap as 4.0-class for SpO₂/temp probes, but the visible model label remains
+  generic until a metadata byte is proven. ECG/BP gates remain false unless MG is
+  detected.
+- HealthKit additions: **scaffolded and gated**. Export authorization now includes
+  read-only Apple steps, sleeping wrist temperature, and cuff BP types; it never
+  writes BP/ECG/SpO₂. Active energy writes only for ready workout sessions with a
+  complete sex+weight profile, and VO₂ max writes only with measured max HR plus
+  7 resting baselines. Both are ledgered/idempotent like existing exports.
+- UI controls: **partially verified on physical iPhone**. Top-left status now maps
+  to green `Live/Connected`, yellow `Connecting...`, and red `Not Connected`.
+  Top-right buttons are grouped closer as native glass controls. Theme preference
+  is persisted through Settings and applied via `preferredColorScheme`; physical
+  screenshot forcing for Settings was blocked because `devicectl` launch arguments
+  were not delivered in this environment.
+- Verification so far: `python3 test_handoff_static_checks.py` green (33), generic
+  iOS build green, physical install/launch green, Today screenshots captured at
+  `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
+  and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.
+
 ## OVERNIGHT OPERATING PRINCIPLES (this run is unattended — hold these above all)
 
 You will run for hours without a human in the loop. Four non-negotiables, in

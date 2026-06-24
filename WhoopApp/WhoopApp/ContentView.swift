@@ -1088,6 +1088,31 @@ struct ProfileOnboardingView: View {
                         draft.measuredMaxHR = min(220, draft.measuredMaxHR + 1)
                     }
                 }
+
+                Picker("Sex", selection: $draft.biologicalSex) {
+                    ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
+                        Text(sex.label).tag(sex)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                HStack(spacing: 12) {
+                    onboardingStepperCard(title: "Weight",
+                                          value: draft.weightKg > 0 ? "\(Int(draft.weightKg.rounded()))" : "--",
+                                          detail: "kg") {
+                        draft.weightKg = draft.weightKg <= 0 ? 70 : max(30, draft.weightKg - 1)
+                    } increment: {
+                        draft.weightKg = draft.weightKg <= 0 ? 70 : min(250, draft.weightKg + 1)
+                    }
+
+                    onboardingStepperCard(title: "Height",
+                                          value: draft.heightCm > 0 ? "\(Int(draft.heightCm.rounded()))" : "--",
+                                          detail: "cm optional") {
+                        draft.heightCm = draft.heightCm <= 0 ? 170 : max(120, draft.heightCm - 1)
+                    } increment: {
+                        draft.heightCm = draft.heightCm <= 0 ? 170 : min(230, draft.heightCm + 1)
+                    }
+                }
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
@@ -1110,7 +1135,7 @@ struct ProfileOnboardingView: View {
                 HStack(spacing: 10) {
                     onboardingMetricPill(label: "Source", value: draft.maxHRSource.label, tint: .cyan)
                     onboardingMetricPill(label: "Age", value: "\(draft.age)", tint: .green)
-                    onboardingMetricPill(label: "Measured", value: "\(draft.measuredMaxHR)", tint: .orange)
+                    onboardingMetricPill(label: "Weight", value: draft.weightKg > 0 ? "\(Int(draft.weightKg.rounded())) kg" : "Add", tint: .orange)
                 }
             }
             .padding(18)

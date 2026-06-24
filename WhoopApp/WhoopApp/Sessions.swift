@@ -6195,19 +6195,17 @@ final class SessionStore: ObservableObject {
         }
 
         let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
-        let ageAdjusted = rawEstimate - max(0, Double(profile.age - 30)) * 0.08
-        let boundedEstimate = min(max(ageAdjusted, 20), 80)
-        let hrvSamples = baseline.hrvSampleCount
+        let boundedEstimate = min(max(rawEstimate, 20), 80)
         let confidence: String
-        if restingSamples >= 7 && hrvSamples >= 7 {
-            confidence = "personal baseline"
+        if restingSamples >= 7 && profile.maxHRSource == .measured {
+            confidence = "rough estimate"
         } else {
-            confidence = "estimate"
+            confidence = "learning"
         }
         let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
-        let narrative = hrvSamples >= 7
-            ? "Derived locally from your active HRmax, resting baseline, age, and HRV history."
-            : "Derived locally from your active HRmax, resting baseline, and age; HRV history will improve confidence."
+        let narrative = restingSamples >= 7 && profile.maxHRSource == .measured
+            ? "Rough estimate from measured max HR and resting baseline."
+            : "Needs measured HRmax and 7 resting nights."
         return VO2MaxEstimateSummary(value: boundedEstimate,
                                      confidence: confidence,
                                      detail: detail,
@@ -8100,6 +8098,8 @@ final class SessionStore: ObservableObject {
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,
                                  maxHR: profile.maxHR,
+                                 profile: profile,
+                                 restingBaselineSamples: baseline.restingSampleCount,
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
     }
@@ -8111,6 +8111,8 @@ final class SessionStore: ObservableObject {
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,
                                  maxHR: profile.maxHR,
+                                 profile: profile,
+                                 restingBaselineSamples: baseline.restingSampleCount,
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
     }

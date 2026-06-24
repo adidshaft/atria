@@ -53,6 +53,7 @@ struct AtriaOverviewTabContent: View {
             if statusStore.state.status != .connected {
                 if hasUnlockedSecondarySections {
                     AtriaDisconnectedOverviewHost(statusStore: statusStore,
+                                                 liveStore: liveStore,
                                                  heroStore: heroStore,
                                                  homeStatsStore: homeStatsStore,
                                                  snapshotStore: snapshotStore,
@@ -145,6 +146,7 @@ struct AtriaOverviewTabContent: View {
 
 private struct AtriaDisconnectedOverviewHost: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
@@ -182,7 +184,8 @@ private struct AtriaDisconnectedOverviewHost: View {
                 // Returning user: their saved rings are the content. Reconnect
                 // status is already the toolbar chip + the slim banner above, so
                 // no second "Waiting for your strap" panel here.
-                AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                AtriaOverviewReadinessSectionHost(liveStore: liveStore,
+                                                 heroStore: heroStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "Last saved readiness")
@@ -414,7 +417,8 @@ struct AtriaOverviewLeadingSection: View {
     var body: some View {
         VStack(spacing: 16) {
             if segment == .today {
-                AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                AtriaOverviewReadinessSectionHost(liveStore: liveStore,
+                                                 heroStore: heroStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "")
@@ -439,6 +443,7 @@ struct AtriaOverviewLeadingSection: View {
 }
 
 struct AtriaOverviewReadinessSectionHost: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
@@ -446,6 +451,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
+                                     live: liveStore.state,
                                      snapshot: snapshotStore.state,
                                      trendValues: Self.restingTrendValues(from: store),
                                      subtitle: subtitle)
@@ -472,6 +478,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
+    let live: AtriaHomeModel.CoreLiveState
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let subtitle: String
@@ -510,6 +517,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                 value: metricDisplayValue(hero.restingHeartRateText),
                                 state: .personalBaseline,
                                 tint: .red)
+                AtriaMetricTile(label: "Steps",
+                                value: live.phoneStepsText,
+                                state: live.phoneStepsToday > 0 ? .validated : .learning,
+                                tint: .green)
+                    .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
+                AtriaMetricTile(label: "kcal",
+                                value: live.liveActiveCaloriesText,
+                                state: live.liveActiveCalories == nil ? .learning : .local,
+                                tint: .orange)
+                    .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
             }
 
             restingTrend

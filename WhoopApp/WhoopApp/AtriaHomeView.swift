@@ -50,6 +50,7 @@ struct AtriaHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
     @State private var model: AtriaHomeModel
     @State private var selectedTab: HomeTab = .overview
     @State private var showRRImporter = false
@@ -62,7 +63,7 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedPrimaryContent = false
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
-    @State private var showSettings = false
+    @State private var showSettings = ProcessInfo.processInfo.arguments.contains("--atria-open-settings")
     @State private var showCoexistenceModal = false
     @State private var coexistenceSnoozedUntil: Date?
     @State private var connectionGuideSnoozedUntil: Date?
@@ -152,6 +153,7 @@ struct AtriaHomeView: View {
             .ignoresSafeArea()
         }
         .environment(\.atriaEntitlements, entitlements)
+        .preferredColorScheme(preferredColorScheme)
         .fileImporter(isPresented: $showRRImporter,
                       allowedContentTypes: [.commaSeparatedText, .plainText, .data],
                       allowsMultipleSelection: false,
@@ -215,6 +217,7 @@ struct AtriaHomeView: View {
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
             runCoexistenceSnoozeSelfTestIfRequested()
+            ble.refreshPhoneStepsToday(reason: "home_appear")
             updateMediaRefreshLoop()
             updateLiveActivity()
             updateHapticCoordinator()
@@ -254,7 +257,11 @@ struct AtriaHomeView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             updateMediaRefreshLoop()
-            guard phase == .active else { return }
+            guard phase == .active else {
+                ble.pausePhoneStepUpdates(reason: "scene_inactive")
+                return
+            }
+            ble.refreshPhoneStepsToday(reason: "scene_active")
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
             updateHapticCoordinator()
@@ -397,7 +404,10 @@ struct AtriaHomeView: View {
             model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
         case "settings":
             selectedTab = .overview
-            showSettings = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                showSettings = true
+            }
         default:
             break
         }
@@ -454,6 +464,14 @@ struct AtriaHomeView: View {
 
     private var isDark: Bool {
         colorScheme == .dark
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearanceMode {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
     }
 
     private func shouldShowStandBy(isLandscape: Bool) -> Bool {
@@ -523,40 +541,42 @@ struct AtriaHomeView: View {
             .accessibilityLabel("Connection \(statusShortLabel)")
         }
 
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if model.statusStore.state.status != .connected {
-                Button {
-                    connectionGuideSnoozedUntil = nil
-                    showConnectionGuide = true
-                } label: {
-                    Image(systemName: "questionmark.circle")
+        ToolbarItem(placement: .topBarTrailing) {
+            HStack(spacing: 7) {
+                if model.statusStore.state.status != .connected {
+                    Button {
+                        connectionGuideSnoozedUntil = nil
+                        showConnectionGuide = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                    .accessibilityLabel("Connection help")
                 }
-                .accessibilityLabel("Connection help")
-            }
 
-            NavigationLink {
-                HistoryView(store: store)
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-            }
-            .accessibilityLabel("History")
+                NavigationLink {
+                    HistoryView(store: store)
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .accessibilityLabel("History")
 
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Settings")
             }
-            .accessibilityLabel("Settings")
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
         }
     }
 
     private var statusShortLabel: String {
         switch model.statusStore.state.status {
-        case .connected: return "Live"
-        case .connecting: return "Connecting"
-        case .scanning: return "Searching"
-        case .poweredOff: return "Bluetooth off"
-        case .disconnected: return "Disconnected"
+        case .connected: return "Live/Connected"
+        case .connecting, .scanning: return "Connecting..."
+        case .poweredOff, .disconnected: return "Not Connected"
         }
     }
 
@@ -572,18 +592,16 @@ struct AtriaHomeView: View {
     private var statusTint: Color {
         switch model.statusStore.state.status {
         case .connected: return .green
-        case .connecting, .scanning: return .orange
-        case .poweredOff: return .red
-        case .disconnected: return .blue
+        case .connecting, .scanning: return .yellow
+        case .poweredOff, .disconnected: return .red
         }
     }
 
     private var statusChipForeground: Color {
         switch model.statusStore.state.status {
         case .connected: return Color(red: 0.77, green: 1.00, blue: 0.86)
-        case .connecting, .scanning: return Color(red: 1.00, green: 0.87, blue: 0.62)
-        case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
-        case .disconnected: return Color(red: 0.42, green: 0.82, blue: 1.00)
+        case .connecting, .scanning: return Color(red: 1.00, green: 0.91, blue: 0.54)
+        case .poweredOff, .disconnected: return Color(red: 1.00, green: 0.72, blue: 0.72)
         }
     }
 
@@ -1187,9 +1205,15 @@ final class AtriaHomeModel {
         var rrContinuityState: String
         var sessionSampleCount: Int
         var liveTRIMP: Double
+        var liveActiveCalories: Double?
+        var phoneStepsToday: Int
+        var phoneDistanceTodayMeters: Double?
+        var phoneFloorsToday: Int?
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
+        var liveActiveCaloriesText: String { liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "--" }
+        var phoneStepsText: String { phoneStepsToday > 0 ? "\(phoneStepsToday)" : "--" }
 
         /// SF Symbol matching the level, with the bolt overlay while charging.
         var batterySymbol: String {
@@ -1516,6 +1540,7 @@ final class AtriaHomeModel {
         let rest: Int
         let maxHR: Int
         let trimp: Double
+        let activeCalories: Double?
     }
 
     private struct PulseWindowSummary: Equatable {
@@ -1529,7 +1554,8 @@ final class AtriaHomeModel {
         self.savedAggregate = Self.makeSavedAggregate(store: store)
         let initialLiveSessionDerived = Self.makeLiveSessionDerived(samples: ble.session,
                                                                     rest: Self.currentRestingHeartRate(ble: ble, store: store),
-                                                                    maxHR: store.profile.maxHR)
+                                                                    maxHR: store.profile.maxHR,
+                                                                    profile: store.profile)
         let initialStatus = StatusState(status: ble.status,
                                         officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble, liveSessionDerived: initialLiveSessionDerived)
@@ -1625,7 +1651,10 @@ final class AtriaHomeModel {
 
         let throttledCoreLiveChanges = Publishers.MergeMany([
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$phoneFloorsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -1909,15 +1938,18 @@ final class AtriaHomeModel {
         liveSessionDerived = Self.nextLiveSessionDerived(previous: liveSessionDerived,
                                                          samples: ble.session,
                                                          rest: Self.currentRestingHeartRate(ble: ble, store: store),
-                                                         maxHR: store.profile.maxHR)
+                                                         maxHR: store.profile.maxHR,
+                                                         profile: store.profile)
     }
 
     private func refreshLiveSessionDerivedIfNeeded() {
         let rest = Self.currentRestingHeartRate(ble: ble, store: store)
         let maxHR = store.profile.maxHR
+        let profile = store.profile
         let samples = ble.session
         let needsRefresh = liveSessionDerived.rest != rest
             || liveSessionDerived.maxHR != maxHR
+            || (liveSessionDerived.activeCalories != nil) != profile.hasEnergyProfile
             || liveSessionDerived.sampleCount != samples.count
             || liveSessionDerived.lastTimestamp != samples.last?.t
 
@@ -1925,7 +1957,8 @@ final class AtriaHomeModel {
         liveSessionDerived = Self.nextLiveSessionDerived(previous: liveSessionDerived,
                                                          samples: samples,
                                                          rest: rest,
-                                                         maxHR: maxHR)
+                                                         maxHR: maxHR,
+                                                         profile: profile)
     }
 
     private static func currentRestingHeartRate(ble: WhoopBLEManager, store: SessionStore) -> Int {
@@ -1940,7 +1973,11 @@ final class AtriaHomeModel {
                              batteryIsCharging: ble.batteryIsCharging,
                              rrContinuityState: ble.rrContinuityState,
                              sessionSampleCount: liveSessionDerived.sampleCount,
-                             liveTRIMP: liveSessionDerived.trimp)
+                             liveTRIMP: liveSessionDerived.trimp,
+                             liveActiveCalories: liveSessionDerived.activeCalories,
+                             phoneStepsToday: ble.phoneStepsToday,
+                             phoneDistanceTodayMeters: ble.phoneDistanceTodayMeters,
+                             phoneFloorsToday: ble.phoneFloorsToday)
     }
 
     private static func makePulseLiveState(ble: WhoopBLEManager) -> PulseLiveState {
@@ -2446,25 +2483,29 @@ final class AtriaHomeModel {
 
     private static func makeLiveSessionDerived(samples: [HRSample],
                                                rest: Int,
-                                               maxHR: Int) -> LiveSessionDerived {
+                                               maxHR: Int,
+                                               profile: AthleteProfile) -> LiveSessionDerived {
         LiveSessionDerived(sampleCount: samples.count,
                            lastTimestamp: samples.last?.t,
                            rest: rest,
                            maxHR: maxHR,
-                           trimp: liveSessionTRIMP(samples, rest: rest, max: maxHR))
+                           trimp: liveSessionTRIMP(samples, rest: rest, max: maxHR),
+                           activeCalories: Metrics.activeCalories(samples, rest: rest, profile: profile))
     }
 
     private static func nextLiveSessionDerived(previous: LiveSessionDerived,
                                                samples: [HRSample],
                                                rest: Int,
-                                               maxHR: Int) -> LiveSessionDerived {
+                                               maxHR: Int,
+                                               profile: AthleteProfile) -> LiveSessionDerived {
         guard previous.rest == rest,
               previous.maxHR == maxHR,
+              (previous.activeCalories != nil) == profile.hasEnergyProfile,
               samples.count >= previous.sampleCount,
               previous.sampleCount > 0,
               previous.sampleCount <= samples.count,
               previous.lastTimestamp == samples[previous.sampleCount - 1].t else {
-            return makeLiveSessionDerived(samples: samples, rest: rest, maxHR: maxHR)
+            return makeLiveSessionDerived(samples: samples, rest: rest, maxHR: maxHR, profile: profile)
         }
 
         guard samples.count > previous.sampleCount else {
@@ -2472,7 +2513,8 @@ final class AtriaHomeModel {
                                       lastTimestamp: samples.last?.t,
                                       rest: rest,
                                       maxHR: maxHR,
-                                      trimp: previous.trimp)
+                                      trimp: previous.trimp,
+                                      activeCalories: previous.activeCalories)
         }
 
         guard maxHR > rest else {
@@ -2480,22 +2522,28 @@ final class AtriaHomeModel {
                                       lastTimestamp: samples.last?.t,
                                       rest: rest,
                                       maxHR: maxHR,
-                                      trimp: 0)
+                                      trimp: 0,
+                                      activeCalories: nil)
         }
 
         let span = Double(maxHR - rest)
         var total = previous.trimp
+        var activeCalories = previous.activeCalories ?? 0
         for index in previous.sampleCount..<samples.count {
             let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
             guard dtMin > 0, dtMin < 5 else { continue }
             let hrr = Swift.min(Swift.max((Double(samples[index].bpm) - Double(rest)) / span, 0), 1)
             total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
+            if profile.hasEnergyProfile {
+                activeCalories += Metrics.activeCalories([samples[index - 1], samples[index]], rest: rest, profile: profile) ?? 0
+            }
         }
         return LiveSessionDerived(sampleCount: samples.count,
                                   lastTimestamp: samples.last?.t,
                                   rest: rest,
                                   maxHR: maxHR,
-                                  trimp: total)
+                                  trimp: total,
+                                  activeCalories: profile.hasEnergyProfile ? activeCalories : nil)
     }
 
     private static func liveSessionTRIMP(_ samples: [HRSample], rest: Int, max: Int) -> Double {
