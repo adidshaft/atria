@@ -287,6 +287,7 @@ enum AtriaMetricState: Equatable {
     case validated
     case noContact
     case local
+    case estimate
     case live
 
     var tint: Color {
@@ -301,6 +302,8 @@ enum AtriaMetricState: Equatable {
             return .red
         case .local:
             return .purple
+        case .estimate:
+            return .orange
         }
     }
 
@@ -316,6 +319,8 @@ enum AtriaMetricState: Equatable {
             return "heart.slash.fill"
         case .local:
             return "iphone"
+        case .estimate:
+            return "function"
         case .live:
             return "waveform.path.ecg"
         }
@@ -333,6 +338,8 @@ enum AtriaMetricState: Equatable {
             return "No contact"
         case .local:
             return "Local"
+        case .estimate:
+            return "Estimate"
         case .live:
             return "Live"
         }
