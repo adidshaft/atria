@@ -28,19 +28,11 @@ private struct AtriaConnectedHeroPanel: View {
     let heroStore: AtriaHomeModel.HeroStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaHeroHeadlineHost(statusStore: statusStore,
-                                  heroStore: heroStore)
-            AtriaHeroStatusCardLiveHost(statusStore: statusStore,
-                                        liveStore: liveStore,
-                                        pulseStore: pulseStore)
-            AtriaHeroMetricRowHost(statusStore: statusStore,
-                                   heroStore: heroStore)
-            AtriaHeroNextActionHost(statusStore: statusStore,
-                                    heroStore: heroStore)
-        }
-        .padding(16)
-        .atriaCard(cornerRadius: 30, emphasis: .soft)
+        // Live pulse only. Recovery / Strain / HRV scores live once, in the
+        // "Today at a glance" card below — the hero no longer repeats them.
+        AtriaHeroStatusCardLiveHost(statusStore: statusStore,
+                                    liveStore: liveStore,
+                                    pulseStore: pulseStore)
     }
 }
 

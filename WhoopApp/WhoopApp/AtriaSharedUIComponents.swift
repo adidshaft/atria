@@ -31,9 +31,11 @@ struct AtriaPanelSectionHeader: View, Equatable {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
                 .font(.title3.weight(.semibold))
-            Text(subtitle)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

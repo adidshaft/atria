@@ -407,7 +407,7 @@ struct AtriaOverviewLeadingSection: View {
                 AtriaOverviewReadinessSectionHost(heroStore: heroStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
-                                                 subtitle: "Your readiness right now")
+                                                 subtitle: "")
 
                 AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
                                                  homeStatsStore: homeStatsStore,
