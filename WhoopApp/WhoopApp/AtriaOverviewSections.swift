@@ -416,33 +416,81 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let snapshot: AtriaHomeModel.Snapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            AtriaPanelSectionHeader(title: "Readiness", subtitle: "What is ready right now")
+        VStack(alignment: .leading, spacing: 16) {
+            AtriaPanelSectionHeader(title: "Today at a glance", subtitle: "Your readiness right now")
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                AtriaQuickTile(title: "Recovery",
-                               value: hero.recoveryValue,
-                               detail: hero.recoveryDetail,
-                               system: "gauge.with.dots.needle.bottom.50percent",
-                               tint: .green)
-                AtriaQuickTile(title: "Strain",
-                               value: hero.strainValue,
-                               detail: hero.strainDetail,
-                               system: "flame.fill",
-                               tint: .orange)
-                AtriaQuickTile(title: "HRV",
-                               value: hero.hrvValue,
-                               detail: hero.hrvDetail,
-                               system: "waveform.path.ecg",
-                               tint: .pink)
-                AtriaQuickTile(title: "Sleep",
-                               value: snapshot.sleepValue,
-                               detail: snapshot.sleepDetail,
-                               system: "bed.double.fill",
-                               tint: .cyan)
+            HStack(alignment: .center, spacing: 16) {
+                recoveryRing
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                          spacing: 10) {
+                    glanceStat("Strain", hero.strainValue, "flame.fill", .orange)
+                    glanceStat("HRV", hero.hrvValue, "waveform.path.ecg", .pink)
+                    glanceStat("Sleep", snapshot.sleepValue, "bed.double.fill", .cyan)
+                    glanceStat("Resting", hero.restingHeartRateText, "heart.fill", .red)
+                }
             }
         }
-        .padding(.horizontal, 2)
+        .padding(16)
+        .atriaCard(cornerRadius: 26, emphasis: .strong)
+    }
+
+    private var recoveryRing: some View {
+        let percent = hero.recoveryEstimate.percent
+        let fraction = percent.map { min(max(Double($0) / 100, 0), 1) } ?? 0
+        return ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 9)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(recoveryColor(percent),
+                        style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 1) {
+                Text(hero.recoveryValue)
+                    .font(.system(size: 23, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                Text("Recovery")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+        }
+        .frame(width: 104, height: 104)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Recovery \(hero.recoveryValue)")
+    }
+
+    private func recoveryColor(_ percent: Int?) -> Color {
+        guard let percent else { return .secondary }
+        if percent >= 67 { return .green }
+        if percent >= 34 { return .yellow }
+        return .red
+    }
+
+    private func glanceStat(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .atriaInsetCard(cornerRadius: 14, tint: tint)
     }
 }
 
