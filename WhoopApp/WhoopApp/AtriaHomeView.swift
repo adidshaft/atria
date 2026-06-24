@@ -179,7 +179,11 @@ struct AtriaHomeView: View {
                               onUpdateProfile: store.updateProfile,
                               hapticSettings: hapticSettings,
                               onUpdateHaptics: { hapticSettings = $0 },
-                              onExportHealth: { store.exportToHealthKit() })
+                              onExportHealth: { store.exportToHealthKit() },
+                              onSyncMissedData: {
+                                  _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
+                                                                              force: true)
+                              })
         }
         .onAppear {
             guard !hasUnlockedPrimaryContent else { return }

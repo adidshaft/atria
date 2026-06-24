@@ -10,11 +10,13 @@ struct AtriaSettingsView: View {
     let hapticSettings: AtriaHapticAlertSettings
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
     let onExportHealth: (() -> Void)?
+    let onSyncMissedData: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var exportTapped = false
+    @State private var syncTapped = false
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -27,13 +29,15 @@ struct AtriaSettingsView: View {
          onUpdateProfile: @escaping (@escaping (inout AthleteProfile) -> Void) -> Void,
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
-         onExportHealth: (() -> Void)? = nil) {
+         onExportHealth: (() -> Void)? = nil,
+         onSyncMissedData: (() -> Void)? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
         self.onUpdateProfile = onUpdateProfile
         self.hapticSettings = hapticSettings
         self.onUpdateHaptics = onUpdateHaptics
         self.onExportHealth = onExportHealth
+        self.onSyncMissedData = onSyncMissedData
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
     }
@@ -139,6 +143,26 @@ struct AtriaSettingsView: View {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
                                 title: "Apple Health export",
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
+            }
+
+            if let onSyncMissedData {
+                Button {
+                    onSyncMissedData()
+                    syncTapped = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(6))
+                        syncTapped = false
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(syncTapped ? "Syncing from strap…" : "Sync missed data from strap",
+                              systemImage: syncTapped ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
+                        Text("Pulls data your strap stored while disconnected or while the app was closed. Briefly pauses live tracking.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(syncTapped)
             }
         } header: {
             Text("Your data")
