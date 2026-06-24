@@ -64,8 +64,10 @@ test_handoff_static_checks.py`, no `https://` clients).
   `metric_promotions=0`, store no raw payloads, and never write to HealthKit.
 - BP/ECG fail-closed UX: **shipped in Settings**. A compact Sensors section says
   ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
-  and blood oxygen remains research-only with no Health export. HealthKit keeps cuff
-  BP read types only; no BP/ECG/AFib samples are written or shown as strap metrics.
+  blood oxygen remains research-only with no Health export, and skin temperature is
+  baseline-only research with no absolute degrees C or Health export. HealthKit
+  keeps cuff BP read types only; no BP/ECG/AFib samples are written or shown as
+  strap metrics.
 - UI controls: **verified on physical iPhone**. Top-left status is now a
   native SwiftUI Liquid Glass button and maps to green `Live/Connected`, yellow
   `Connecting...`, and red `Not Connected`. Top-right buttons are grouped closer
@@ -82,7 +84,8 @@ test_handoff_static_checks.py`, no `https://` clients).
   estimate/research badge screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-calories-estimate-badge-20260625T0458Z.png`,
   `logs/live-device/screenshots/advanced-metrics-vo2-estimate-badge-20260625T0500Z.png`,
-  and `logs/live-device/screenshots/advanced-metrics-research-badges-20260625T0502Z.png`.
+  `logs/live-device/screenshots/advanced-metrics-research-badges-20260625T0502Z.png`,
+  and `logs/live-device/screenshots/advanced-metrics-skin-temp-settings-20260625T0505Z.png`.
 
 ## OVERNIGHT OPERATING PRINCIPLES (this run is unattended — hold these above all)
 
