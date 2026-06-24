@@ -43,8 +43,10 @@ struct AtriaMetricRing: View, Equatable {
                         .rotationEffect(.degrees(-90))
                         .shadow(color: tint.opacity(0.45), radius: 3)
                 } else {
+                    // Learning: neutral grey dashes across every metric, so colour
+                    // (the filled gradient) only ever means "real data is in".
                     Circle()
-                        .stroke(tint.opacity(0.30),
+                        .stroke(Color.secondary.opacity(0.35),
                                 style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, dash: [3, 7]))
                 }
 
