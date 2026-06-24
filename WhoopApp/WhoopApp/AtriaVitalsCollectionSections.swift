@@ -478,16 +478,16 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 AtriaMetricTile(label: "Frames",
                                 value: summary.frameText,
-                                state: summary.frameCount > 0 ? .local : .learning,
+                                state: summary.frameCount > 0 ? .research : .learning,
                                 tint: .indigo)
                 AtriaMetricTile(label: "Rate",
                                 value: summary.sampleRateText,
                                 unit: summary.sampleRateHz == nil ? nil : "Hz",
-                                state: summary.sampleRateHz == nil ? .learning : .local,
+                                state: summary.sampleRateHz == nil ? .learning : .research,
                                 tint: .blue)
                 AtriaMetricTile(label: "Layout",
                                 value: summary.layoutText,
-                                state: summary.layoutText == "--" ? .learning : .local,
+                                state: summary.layoutText == "--" ? .learning : .research,
                                 tint: .purple)
                 AtriaMetricTile(label: "Gravity",
                                 value: summary.gravityText,
@@ -495,17 +495,17 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 tint: summary.validatedFrames > 0 ? .green : .orange)
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
-                                state: summary.strapStepCount > 0 ? .learning : .learning,
+                                state: summary.strapStepCount > 0 ? .research : .learning,
                                 tint: .orange,
                                 footnote: summary.agreementText)
                 AtriaMetricTile(label: "Sleep/wake",
                                 value: summary.sleepWakeText,
-                                state: summary.sleepWakeText == "--" ? .learning : .learning,
+                                state: summary.sleepWakeText == "--" ? .learning : .research,
                                 tint: .cyan,
                                 footnote: summary.sleepWakeReason)
                 AtriaMetricTile(label: "Probes",
                                 value: summary.probeText,
-                                state: summary.probeFrameCount > 0 ? .learning : .learning,
+                                state: summary.probeFrameCount > 0 ? .research : .learning,
                                 tint: .teal,
                                 footnote: summary.probeDetail)
             }
@@ -649,16 +649,16 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 AtriaMetricTile(label: "Markers",
                                 value: "\(markers.count)",
-                                state: markers.isEmpty ? .learning : .local,
+                                state: markers.isEmpty ? .learning : .research,
                                 tint: .teal)
                 AtriaMetricTile(label: "Probe match",
                                 value: correlationSummary.matchText,
-                                state: correlationSummary.matchedMarkers > 0 ? .local : .learning,
+                                state: correlationSummary.matchedMarkers > 0 ? .research : .learning,
                                 tint: .green,
                                 footnote: correlationSummary.candidateText)
                 AtriaMetricTile(label: "Latest",
                                 value: latestMarkerText,
-                                state: markers.isEmpty ? .learning : .local,
+                                state: markers.isEmpty ? .learning : .research,
                                 tint: .cyan,
                                 footnote: latestMarkerDetail)
             }
