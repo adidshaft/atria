@@ -101,6 +101,10 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "@AppStorage(\"atriaAppearanceMode\") private var appearanceMode = \"system\"",
+            "@State private var showSettings = false",
+            "arguments.contains(\"--atria-open-settings\")",
+            "requestedScreen = \"settings\"",
+            "didApplyDebugUIScreenLaunchArgument = true",
             ".preferredColorScheme(preferredColorScheme)",
             "case \"light\": return .light",
             "case \"dark\": return .dark",
