@@ -347,10 +347,18 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "researchManeuverCard",
             "AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers",
+            "sessions: store.sessions",
             "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
+            "private struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
             "ForEach(ResearchManeuverMarker.Kind.allCases)",
             ".buttonStyle(.glass)",
+            "AtriaMetricTile(label: \"Probe match\"",
+            "static let correlationWindow: TimeInterval = 15 * 60",
+            "guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }",
+            "marker.timestamp >= lower && marker.timestamp <= upper",
+            "oxygenCandidateFrames",
+            "temperatureCandidateFrames",
             "Research only; timestamps stay on device for probe correlation.",
         ]:
             assert_contains(self, collection, needle)

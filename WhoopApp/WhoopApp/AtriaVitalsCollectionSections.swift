@@ -147,6 +147,7 @@ struct AtriaCollectionTabContent: View {
 
     private var researchManeuverCard: some View {
         AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers,
+                                        sessions: store.sessions,
                                         onMark: { store.markResearchManeuver($0) })
     }
 
@@ -604,11 +605,12 @@ private struct IMUAuditSummary: Equatable {
 
 private struct AtriaResearchManeuverMarkerCard: View, Equatable {
     let markers: [ResearchManeuverMarker]
+    let sessions: [SavedSession]
     let onMark: (ResearchManeuverMarker.Kind) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaResearchManeuverMarkerCard, rhs: AtriaResearchManeuverMarkerCard) -> Bool {
-        lhs.markers == rhs.markers
+        lhs.markers == rhs.markers && lhs.correlationSummary == rhs.correlationSummary
     }
 
     var body: some View {
@@ -649,6 +651,11 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
                                 value: "\(markers.count)",
                                 state: markers.isEmpty ? .learning : .local,
                                 tint: .teal)
+                AtriaMetricTile(label: "Probe match",
+                                value: correlationSummary.matchText,
+                                state: correlationSummary.matchedMarkers > 0 ? .local : .learning,
+                                tint: .green,
+                                footnote: correlationSummary.candidateText)
                 AtriaMetricTile(label: "Latest",
                                 value: latestMarkerText,
                                 state: markers.isEmpty ? .learning : .local,
@@ -676,8 +683,57 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
         return RelativeDateTimeFormatter().localizedString(for: marker.timestamp, relativeTo: Date())
     }
 
+    private var correlationSummary: ResearchManeuverProbeCorrelationSummary {
+        ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessions)
+    }
+
     private static let buttonColumns = [GridItem(.flexible()), GridItem(.flexible())]
     private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
+}
+
+private struct ResearchManeuverProbeCorrelationSummary: Equatable {
+    let markerCount: Int
+    let matchedMarkers: Int
+    let probeFrames: Int
+    let oxygenCandidateFrames: Int
+    let temperatureCandidateFrames: Int
+    private static let correlationWindow: TimeInterval = 15 * 60
+
+    init(markers: [ResearchManeuverMarker], sessions: [SavedSession]) {
+        markerCount = markers.count
+        var matchedIDs = Set<String>()
+        var probeTotal = 0
+        var oxygenTotal = 0
+        var temperatureTotal = 0
+
+        for marker in markers {
+            let matchingSessions = sessions.filter { session in
+                guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }
+                let lower = session.start.addingTimeInterval(-Self.correlationWindow)
+                let upper = session.end.addingTimeInterval(Self.correlationWindow)
+                return marker.timestamp >= lower && marker.timestamp <= upper
+            }
+
+            guard !matchingSessions.isEmpty else { continue }
+            matchedIDs.insert(marker.id)
+            probeTotal += matchingSessions.reduce(0) { $0 + ($1.sensorResearchProbeFrames ?? 0) }
+            oxygenTotal += matchingSessions.reduce(0) { $0 + ($1.spo2ResearchCandidateFrames ?? 0) }
+            temperatureTotal += matchingSessions.reduce(0) { $0 + ($1.skinTempResearchCandidateFrames ?? 0) }
+        }
+
+        matchedMarkers = matchedIDs.count
+        probeFrames = probeTotal
+        oxygenCandidateFrames = oxygenTotal
+        temperatureCandidateFrames = temperatureTotal
+    }
+
+    var matchText: String {
+        markerCount == 0 ? "--" : "\(matchedMarkers)/\(markerCount)"
+    }
+
+    var candidateText: String {
+        probeFrames > 0 ? "O2 \(oxygenCandidateFrames) · temp \(temperatureCandidateFrames)" : "waiting"
+    }
 }
 
 private struct AtriaCollectionControlsCardHost: View {
