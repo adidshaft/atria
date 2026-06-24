@@ -283,6 +283,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let batteryLevel       = CBUUID(string: "2A19")
         static let deviceInfoService  = CBUUID(string: "180A")
         static let manufacturerName   = CBUUID(string: "2A29")
+        static let modelNumber        = CBUUID(string: "2A24")
+        static let firmwareRevision   = CBUUID(string: "2A26")
+        static let hardwareRevision   = CBUUID(string: "2A27")
 
         // WHOOP proprietary service + characteristics
         static let whoopService = CBUUID(string: "61080001-8d6d-82b8-614a-1c8cb0f8dcc6")
@@ -336,6 +339,25 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     /// charging when the level rises between readings, and clear it when it falls.
     @Published var batteryIsCharging: Bool = false
     private(set) var manufacturer: String = "—"
+    // Device Information (0x180A) identity, read on connect. Raw strings as the
+    // strap reports them; `whoopModelLabel` maps known values to a friendly name
+    // and falls back to the raw model string (never a guess).
+    @Published private(set) var modelNumber: String = ""
+    @Published private(set) var firmwareRevision: String = ""
+    @Published private(set) var hardwareRevision: String = ""
+
+    /// Best-effort friendly model name. The exact strings WHOOP 4.0 reports are
+    /// confirmed on a real strap; until a value is in the known map we surface the
+    /// raw model string so the UI is always honest.
+    var whoopModelLabel: String {
+        let haystack = "\(modelNumber) \(hardwareRevision)".lowercased()
+        if haystack.contains("mg") { return "WHOOP MG" }
+        if haystack.contains("5") && haystack.contains("4") == false { return "WHOOP 5.0" }
+        if haystack.contains("4") { return "WHOOP 4.0" }
+        if haystack.contains("3") { return "WHOOP 3.0" }
+        let model = modelNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.isEmpty ? "WHOOP strap" : model
+    }
     private(set) var frames: [WhoopFrame] = []        // decoded proprietary frames (append-only ring buffer)
     private(set) var lastHeartRates: [Int] = []       // small rolling window for a sparkline
     @Published private(set) var liveHeartWindow = LiveHeartWindow.empty
@@ -895,7 +917,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         case UUIDs.batteryService:
             return [UUIDs.batteryLevel]
         case UUIDs.deviceInfoService:
-            return [UUIDs.manufacturerName]
+            return [UUIDs.manufacturerName, UUIDs.modelNumber,
+                    UUIDs.firmwareRevision, UUIDs.hardwareRevision]
         case UUIDs.whoopService:
             return [UUIDs.whoopTX] + UUIDs.allNotify
         default:
@@ -8595,7 +8618,8 @@ extension WhoopBLEManager: CBPeripheralDelegate {
                 if ch.uuid == UUIDs.heartRateMeasure {
                     foundHeartRateCharacteristic = ch
                 }
-            case UUIDs.manufacturerName:
+            case UUIDs.manufacturerName, UUIDs.modelNumber,
+                 UUIDs.firmwareRevision, UUIDs.hardwareRevision:
                 peripheral.readValue(for: ch)
             case UUIDs.whoopTX:
                 if standardHROnlyMode, !historyOnlyProbeMode {
@@ -8706,6 +8730,21 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         if uuid == UUIDs.manufacturerName {
             Task { @MainActor in
                 assignIfChanged(\.manufacturer, String(data: data, encoding: .utf8) ?? "—")
+            }
+            return
+        }
+        if uuid == UUIDs.modelNumber || uuid == UUIDs.firmwareRevision || uuid == UUIDs.hardwareRevision {
+            let text = (String(data: data, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            Task { @MainActor in
+                switch uuid {
+                case UUIDs.modelNumber: assignIfChanged(\.modelNumber, text)
+                case UUIDs.firmwareRevision: assignIfChanged(\.firmwareRevision, text)
+                case UUIDs.hardwareRevision: assignIfChanged(\.hardwareRevision, text)
+                default: break
+                }
+                WHOOPDebugLog("WHOOPDBG deviceinfo model=%@ hw=%@ fw=%@",
+                              modelNumber, hardwareRevision, firmwareRevision)
             }
             return
         }
