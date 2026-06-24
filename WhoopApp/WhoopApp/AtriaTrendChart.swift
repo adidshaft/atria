@@ -11,10 +11,16 @@ struct AtriaTrendChartCard: View {
     let baselineRestingHR: Int?
 
     @State private var metric: AtriaTrendMetric = .restingHR
+    @State private var range: AtriaTrendRange = .month
     @Environment(\.colorScheme) private var colorScheme
 
+    private var rangedPoints: [AtriaTrendPoint] {
+        let cutoff = Date().addingTimeInterval(-Double(range.days) * 86_400)
+        return points.filter { $0.date >= cutoff }
+    }
+
     private var series: [AtriaTrendPoint.Sample] {
-        points.compactMap { point in
+        rangedPoints.compactMap { point in
             guard let value = point.value(for: metric) else { return nil }
             return AtriaTrendPoint.Sample(date: point.date, value: value)
         }
@@ -27,12 +33,17 @@ struct AtriaTrendChartCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                AtriaPanelSectionHeader(title: "Trends", subtitle: "Your last \(max(points.count, 0)) sessions")
+                AtriaPanelSectionHeader(title: "Trends", subtitle: "Last \(range.label) · \(series.count) sessions")
                 Spacer(minLength: 0)
-                if let latest = series.last {
-                    Text(metric.format(latest.value))
-                        .font(.title3.weight(.bold).monospacedDigit())
-                        .foregroundStyle(metric.tint)
+                Menu {
+                    Picker("Range", selection: $range) {
+                        ForEach(AtriaTrendRange.allCases) { item in
+                            Text(item.menuLabel).tag(item)
+                        }
+                    }
+                } label: {
+                    Label(range.label, systemImage: "calendar")
+                        .font(.caption.weight(.semibold))
                 }
             }
 
@@ -146,9 +157,10 @@ struct AtriaOverviewTrendChartHost: View {
 
     private var trendPoints: [AtriaTrendPoint] {
         let rest: Int = store.baseline.restingInt ?? 60
-        let meaningful: [SavedSession] = store.sessions.filter { $0.points.count >= 8 }
+        let cutoff = Date().addingTimeInterval(-92 * 86_400)
+        let meaningful: [SavedSession] = store.sessions.filter { $0.points.count >= 8 && $0.start >= cutoff }
         let ordered: [SavedSession] = meaningful.sorted { $0.start < $1.start }
-        let recent: [SavedSession] = Array(ordered.suffix(30))
+        let recent: [SavedSession] = Array(ordered.suffix(200))
         var result: [AtriaTrendPoint] = []
         result.reserveCapacity(recent.count)
         for session in recent {
@@ -165,6 +177,32 @@ struct AtriaOverviewTrendChartHost: View {
         }
         return result
     }
+}
+
+enum AtriaTrendRange: String, CaseIterable, Identifiable {
+    case week
+    case month
+    case quarter
+
+    var id: String { rawValue }
+
+    var days: Int {
+        switch self {
+        case .week: return 7
+        case .month: return 30
+        case .quarter: return 90
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .week: return "7 days"
+        case .month: return "30 days"
+        case .quarter: return "90 days"
+        }
+    }
+
+    var menuLabel: String { label }
 }
 
 enum AtriaTrendMetric: String, CaseIterable, Identifiable {
