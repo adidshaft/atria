@@ -178,8 +178,10 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showSettings) {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
+                              strapName: ble.resolvedDeviceName,
                               strapModel: ble.status == .connected ? ble.whoopModelLabel : "",
                               strapFirmware: ble.firmwareRevision,
+                              onRenameStrap: { ble.setCustomDeviceName($0) },
                               onUpdateProfile: store.updateProfile,
                               hapticSettings: hapticSettings,
                               onUpdateHaptics: { hapticSettings = $0 },
@@ -1933,7 +1935,7 @@ final class AtriaHomeModel {
     private static func makeCoreLiveState(ble: WhoopBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
         return CoreLiveState(status: ble.status,
-                             deviceName: ble.deviceName,
+                             deviceName: ble.resolvedDeviceName,
                              batteryLevel: ble.batteryLevel,
                              batteryIsCharging: ble.batteryIsCharging,
                              rrContinuityState: ble.rrContinuityState,
