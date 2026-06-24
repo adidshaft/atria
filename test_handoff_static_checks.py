@@ -782,6 +782,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_vo2max_fails_closed_until_confident(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
         healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        vitals = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
 
         match = re.search(r"func vo2MaxEstimateSummary\(rest: Int, maxHR: Int\) -> VO2MaxEstimateSummary \{(?P<body>.*?)\n    \}", sessions, re.S)
         self.assertIsNotNone(match)
@@ -804,6 +805,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"atria_metric_source\": \"uth_sorensen_resting_hr\"",
         ]:
             assert_contains(self, healthkit, needle)
+
+        for needle in [
+            "AtriaMetricTile(label: \"VO2max\"",
+            "state: vo2MaxEstimate.value == nil ? .learning : .estimate",
+            "footnote: vo2MaxEstimate.confidence",
+        ]:
+            assert_contains(self, vitals, needle)
+        assert_not_contains(self, vitals, "AtriaInlineQuickStat(label: \"VO2max\"")
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")

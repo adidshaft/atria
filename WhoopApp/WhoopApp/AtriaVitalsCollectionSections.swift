@@ -1184,7 +1184,11 @@ private struct AtriaProfileCard: View, Equatable {
                 AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
                 AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
                 AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
-                AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
+                AtriaMetricTile(label: "VO2max",
+                                value: vo2MaxEstimate.valueText,
+                                state: vo2MaxEstimate.value == nil ? .learning : .estimate,
+                                tint: .orange,
+                                footnote: vo2MaxEstimate.confidence)
             }
 
             Text(vo2MaxEstimate.narrative)
