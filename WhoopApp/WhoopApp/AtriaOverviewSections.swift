@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// Top-level segments for the Today tab so the home screen is selectable views
+/// instead of one long scroll.
+enum AtriaTodaySegment: String, CaseIterable, Identifiable {
+    case today
+    case trends
+    case data
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .today: return "Today"
+        case .trends: return "Trends"
+        case .data: return "Data"
+        }
+    }
+}
+
 struct AtriaOverviewTabContent: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
     let liveStore: AtriaHomeModel.CoreLiveStore
@@ -18,6 +36,17 @@ struct AtriaOverviewTabContent: View {
     let onShowConnectionGuide: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+
+    @State private var segment: AtriaTodaySegment = .today
+
+    private var segmentPicker: some View {
+        Picker("Section", selection: $segment) {
+            ForEach(AtriaTodaySegment.allCases) { item in
+                Text(item.label).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
 
     var body: some View {
         Group {
@@ -39,6 +68,7 @@ struct AtriaOverviewTabContent: View {
                                              homeStatsStore: homeStatsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
+                                             segment: .today,
                                              hasUnlockedSecondarySections: false,
                                              aiCoachSettings: aiCoachSettings,
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
@@ -51,40 +81,47 @@ struct AtriaOverviewTabContent: View {
                                       subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
                 }
             } else if horizontalSizeClass == .regular {
-                HStack(alignment: .top, spacing: 18) {
-                    LazyVStack(spacing: 18) {
-                        AtriaOverviewLeadingHost(liveStore: liveStore,
-                                                 heroStore: heroStore,
-                                                 homeStatsStore: homeStatsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 store: store,
-                                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                                 aiCoachSettings: aiCoachSettings,
-                                                 aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                                 onAICoachSettingsChange: onAICoachSettingsChange,
-                                                 onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                                 onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
-                                                 onOpenVitals: onOpenVitals,
-                                                 onOpenCollection: onOpenCollection)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
+                VStack(spacing: 18) {
+                    segmentPicker
+                    HStack(alignment: .top, spacing: 18) {
+                        LazyVStack(spacing: 18) {
+                            AtriaOverviewLeadingHost(liveStore: liveStore,
+                                                     heroStore: heroStore,
+                                                     homeStatsStore: homeStatsStore,
+                                                     snapshotStore: snapshotStore,
+                                                     store: store,
+                                                     segment: segment,
+                                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                                     aiCoachSettings: aiCoachSettings,
+                                                     aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                                     onAICoachSettingsChange: onAICoachSettingsChange,
+                                                     onSaveAICoachAPIKey: onSaveAICoachAPIKey,
+                                                     onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
+                                                     onOpenVitals: onOpenVitals,
+                                                     onOpenCollection: onOpenCollection)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .top)
 
-                    LazyVStack(spacing: 18) {
-                        AtriaOverviewTrailingHost(liveStore: liveStore,
-                                                  homeStatsStore: homeStatsStore,
-                                                  snapshotStore: snapshotStore,
-                                                  hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                                  onOpenCollection: onOpenCollection)
+                        LazyVStack(spacing: 18) {
+                            AtriaOverviewTrailingHost(liveStore: liveStore,
+                                                      homeStatsStore: homeStatsStore,
+                                                      snapshotStore: snapshotStore,
+                                                      segment: segment,
+                                                      hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                                      onOpenCollection: onOpenCollection)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .top)
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
                 }
             } else {
                 LazyVStack(spacing: 18) {
+                    segmentPicker
                     AtriaOverviewLeadingHost(liveStore: liveStore,
                                              heroStore: heroStore,
                                              homeStatsStore: homeStatsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
+                                             segment: segment,
                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                              aiCoachSettings: aiCoachSettings,
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
@@ -96,6 +133,7 @@ struct AtriaOverviewTabContent: View {
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
                                               snapshotStore: snapshotStore,
+                                              segment: segment,
                                               hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                               onOpenCollection: onOpenCollection)
                 }
@@ -311,6 +349,7 @@ private struct AtriaOverviewLeadingHost: View {
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
+    let segment: AtriaTodaySegment
     let hasUnlockedSecondarySections: Bool
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
@@ -326,6 +365,7 @@ private struct AtriaOverviewLeadingHost: View {
                                    homeStatsStore: homeStatsStore,
                                    snapshotStore: snapshotStore,
                                    store: store,
+                                   segment: segment,
                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                    aiCoachSettings: aiCoachSettings,
                                    aiCoachHasAPIKey: aiCoachHasAPIKey,
@@ -341,6 +381,7 @@ private struct AtriaOverviewTrailingHost: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
+    let segment: AtriaTodaySegment
     let hasUnlockedSecondarySections: Bool
     let onOpenCollection: () -> Void
 
@@ -348,6 +389,7 @@ private struct AtriaOverviewTrailingHost: View {
         AtriaOverviewTrailingSection(liveStore: liveStore,
                                      homeStatsStore: homeStatsStore,
                                      snapshotStore: snapshotStore,
+                                     segment: segment,
                                      hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                      onOpenCollection: onOpenCollection)
     }
@@ -359,6 +401,7 @@ struct AtriaOverviewLeadingSection: View {
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
+    let segment: AtriaTodaySegment
     let hasUnlockedSecondarySections: Bool
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
@@ -370,31 +413,33 @@ struct AtriaOverviewLeadingSection: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            AtriaOverviewReadinessSectionHost(heroStore: heroStore,
-                                             snapshotStore: snapshotStore)
+            if segment == .today {
+                AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                                                 snapshotStore: snapshotStore)
 
-            AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
-                                             homeStatsStore: homeStatsStore,
-                                             snapshotStore: snapshotStore,
-                                             onOpenVitals: onOpenVitals,
-                                             onOpenCollection: onOpenCollection)
+                AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
+                                                 homeStatsStore: homeStatsStore,
+                                                 snapshotStore: snapshotStore,
+                                                 onOpenVitals: onOpenVitals,
+                                                 onOpenCollection: onOpenCollection)
 
-            AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
-                                             settings: aiCoachSettings,
-                                             hasAPIKey: aiCoachHasAPIKey,
-                                             onSettingsChange: onAICoachSettingsChange,
-                                             onSaveAPIKey: onSaveAICoachAPIKey,
-                                             onDeleteAPIKey: onDeleteAICoachAPIKey)
+                AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
+                                                 settings: aiCoachSettings,
+                                                 hasAPIKey: aiCoachHasAPIKey,
+                                                 onSettingsChange: onAICoachSettingsChange,
+                                                 onSaveAPIKey: onSaveAICoachAPIKey,
+                                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+            }
 
-            if hasUnlockedSecondarySections {
-                AtriaOverviewBehaviorJournalSection(store: store)
-
+            if segment == .trends && hasUnlockedSecondarySections {
                 if snapshotStore.diagnosticsReady {
                     AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
                 } else {
                     AtriaLoadingPanel(title: "Preparing trends",
                                       subtitle: "Saved trends stay off the launch path and load after the first screen is stable.")
                 }
+
+                AtriaOverviewBehaviorJournalSection(store: store)
             }
         }
     }
@@ -833,26 +878,30 @@ struct AtriaOverviewTrailingSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
+    let segment: AtriaTodaySegment
     let hasUnlockedSecondarySections: Bool
     let onOpenCollection: () -> Void
 
     var body: some View {
         Group {
-            if hasUnlockedSecondarySections && snapshotStore.diagnosticsReady {
-                VStack(spacing: 16) {
-                    AtriaOverviewLiveStrapSectionHost(liveStore: liveStore,
-                                                      homeStatsStore: homeStatsStore)
+            // Live strap belongs with Today; saved collection + backup live under Data.
+            if segment == .today {
+                AtriaOverviewLiveStrapSectionHost(liveStore: liveStore,
+                                                  homeStatsStore: homeStatsStore)
+            } else if segment == .data {
+                if hasUnlockedSecondarySections && snapshotStore.diagnosticsReady {
+                    VStack(spacing: 16) {
+                        AtriaOverviewCollectionSectionHost(homeStatsStore: homeStatsStore,
+                                                           snapshotStore: snapshotStore,
+                                                           onOpenCollection: onOpenCollection)
 
-                    AtriaOverviewCollectionSectionHost(homeStatsStore: homeStatsStore,
-                                                       snapshotStore: snapshotStore,
-                                                       onOpenCollection: onOpenCollection)
-
-                    AtriaOverviewBackupSectionHost(homeStatsStore: homeStatsStore,
-                                                   snapshotStore: snapshotStore)
+                        AtriaOverviewBackupSectionHost(homeStatsStore: homeStatsStore,
+                                                       snapshotStore: snapshotStore)
+                    }
+                } else {
+                    AtriaLoadingPanel(title: "Preparing saved insights",
+                                      subtitle: "Backup state and saved data are settling in the background.")
                 }
-            } else {
-                AtriaLoadingPanel(title: "Preparing saved insights",
-                                  subtitle: "Trends, backup state, and saved data are settling in the background.")
             }
         }
     }
