@@ -490,6 +490,11 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 state: summary.strapStepCount > 0 ? .learning : .learning,
                                 tint: .orange,
                                 footnote: summary.agreementText)
+                AtriaMetricTile(label: "Sleep/wake",
+                                value: summary.sleepWakeText,
+                                state: summary.sleepWakeText == "--" ? .learning : .learning,
+                                tint: .cyan,
+                                footnote: summary.sleepWakeReason)
             }
 
             Text("Research only; compare with phone motion before steps or sleep.")
@@ -519,6 +524,8 @@ private struct IMUAuditSummary: Equatable {
     let endian: String?
     let strapStepCount: Int
     let agreement: Double?
+    let sleepWakeState: String?
+    let sleepWakeReason: String?
 
     init(sessions: [SavedSession]) {
         let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
@@ -532,6 +539,8 @@ private struct IMUAuditSummary: Equatable {
         strapStepCount = imuSessions.reduce(0) { $0 + ($1.strapStepResearchCount ?? 0) }
         let agreements = imuSessions.compactMap(\.strapStepResearchAgreement)
         agreement = agreements.isEmpty ? nil : agreements.reduce(0, +) / Double(agreements.count)
+        sleepWakeState = imuSessions.compactMap(\.sleepWakeResearchState).first
+        sleepWakeReason = imuSessions.compactMap(\.sleepWakeResearchReason).first
     }
 
     var frameText: String {
@@ -558,6 +567,11 @@ private struct IMUAuditSummary: Equatable {
 
     var agreementText: String {
         agreement.map { "\(Int(($0 * 100).rounded()))% phone" } ?? "phone pending"
+    }
+
+    var sleepWakeText: String {
+        guard let sleepWakeState else { return "--" }
+        return sleepWakeState == "sleep_research" ? "Sleep" : "Wake"
     }
 }
 
