@@ -45,8 +45,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   Metadata (`0x31`) and historical (`0x2f`) frames are scanned behind the existing
   4.0-class capability gates for aggregate-only candidate offsets: SpO₂-like bytes
   in the 90-100 range and temperature-like little-endian words in the 2500-4200
-  range. Logs stay `research_unvalidated`, record `metric_promotions=0`, store no
-  raw payloads through the probe, and do not write oxygen/temperature to HealthKit.
+  range. Logs and saved sessions keep aggregate candidate frame counts only, record
+  `metric_promotions=0`, store no raw payloads through the probe, and do not write
+  oxygen/temperature to HealthKit. The developer IMU audit card shows probe counts.
 - BP/ECG fail-closed UX: **shipped in Settings**. A compact Sensors section says
   ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
   and blood oxygen remains research-only with no Health export. HealthKit keeps cuff

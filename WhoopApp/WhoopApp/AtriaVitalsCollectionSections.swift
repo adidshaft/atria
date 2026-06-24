@@ -495,6 +495,11 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 state: summary.sleepWakeText == "--" ? .learning : .learning,
                                 tint: .cyan,
                                 footnote: summary.sleepWakeReason)
+                AtriaMetricTile(label: "Probes",
+                                value: summary.probeText,
+                                state: summary.probeFrameCount > 0 ? .learning : .learning,
+                                tint: .teal,
+                                footnote: summary.probeDetail)
             }
 
             Text("Research only; compare with phone motion before steps or sleep.")
@@ -526,9 +531,13 @@ private struct IMUAuditSummary: Equatable {
     let agreement: Double?
     let sleepWakeState: String?
     let sleepWakeReason: String?
+    let probeFrameCount: Int
+    let spo2CandidateFrames: Int
+    let skinTempCandidateFrames: Int
 
     init(sessions: [SavedSession]) {
         let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
+        let probeSessions = sessions.filter { ($0.sensorResearchProbeFrames ?? 0) > 0 }
         frameCount = imuSessions.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
         sampleCount = imuSessions.reduce(0) { $0 + ($1.imuSampleCount ?? 0) }
         validatedFrames = imuSessions.filter { $0.imuValidationState == "gravity_validated_research" }.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
@@ -541,6 +550,9 @@ private struct IMUAuditSummary: Equatable {
         agreement = agreements.isEmpty ? nil : agreements.reduce(0, +) / Double(agreements.count)
         sleepWakeState = imuSessions.compactMap(\.sleepWakeResearchState).first
         sleepWakeReason = imuSessions.compactMap(\.sleepWakeResearchReason).first
+        probeFrameCount = probeSessions.reduce(0) { $0 + ($1.sensorResearchProbeFrames ?? 0) }
+        spo2CandidateFrames = probeSessions.reduce(0) { $0 + ($1.spo2ResearchCandidateFrames ?? 0) }
+        skinTempCandidateFrames = probeSessions.reduce(0) { $0 + ($1.skinTempResearchCandidateFrames ?? 0) }
     }
 
     var frameText: String {
@@ -572,6 +584,14 @@ private struct IMUAuditSummary: Equatable {
     var sleepWakeText: String {
         guard let sleepWakeState else { return "--" }
         return sleepWakeState == "sleep_research" ? "Sleep" : "Wake"
+    }
+
+    var probeText: String {
+        probeFrameCount > 0 ? "\(probeFrameCount)" : "--"
+    }
+
+    var probeDetail: String {
+        probeFrameCount > 0 ? "O2 \(spo2CandidateFrames) · temp \(skinTempCandidateFrames)" : "none yet"
     }
 }
 

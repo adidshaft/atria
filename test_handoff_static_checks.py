@@ -278,6 +278,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var sleepWakeResearchState: String? = nil",
             "var sleepWakeResearchConfidence: String? = nil",
             "var sleepWakeResearchReason: String? = nil",
+            "var sensorResearchProbeFrames: Int? = nil",
+            "var spo2ResearchCandidateFrames: Int? = nil",
+            "var skinTempResearchCandidateFrames: Int? = nil",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -307,6 +310,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard supportsSpO2Probe || supportsSkinTempProbe else { return }",
             "AtriaResearchProbe.analyze(payload: payload, source: source)",
             "applyModelMetadataIfExplicit(summary)",
+            "sensorResearchProbeFrames: researchProbeFrameCount > 0 ? researchProbeFrameCount : nil",
+            "spo2ResearchCandidateFrames: researchProbeOxygenCandidateFrames > 0 ? researchProbeOxygenCandidateFrames : nil",
+            "skinTempResearchCandidateFrames: researchProbeTemperatureCandidateFrames > 0 ? researchProbeTemperatureCandidateFrames : nil",
             "WHOOPDBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
             "WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated",
             "model_generation=%@ model_evidence=%@",
@@ -773,7 +779,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research only; compare with phone motion before steps or sleep.",
             "AtriaMetricTile(label: \"Strap steps\"",
             "AtriaMetricTile(label: \"Sleep/wake\"",
+            "AtriaMetricTile(label: \"Probes\"",
             "agreementText",
+            "probeDetail",
             "IMUAuditSummary(sessions: sessions)",
         ]:
             assert_contains(self, collection, needle)
