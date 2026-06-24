@@ -815,6 +815,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var lastHistoricalArchivePath = ""
     private var protocolPacketCount = 0
     private var protocolIMUFrameCount = 0
+    private var decodedIMUSampleCount = 0
+    private var imuGravityValidatedFrameCount = 0
+    private var imuStillnessRatioSum = 0.0
+    private var imuMovementIntensitySum = 0.0
+    private var imuActivityBurstCount = 0
+    private var imuValidationState = "unavailable"
     private var protocolDiagnosticFrameCount = 0
     private var protocolEventFrameCount = 0
     private var protocolUnknownFrameCount = 0
@@ -2119,6 +2125,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func resetProtocolDiagnosticsForDebugLaunch(arguments: [String]) {
         protocolPacketCount = 0
         protocolIMUFrameCount = 0
+        resetIMUFeatureStats()
         protocolDiagnosticFrameCount = 0
         protocolEventFrameCount = 0
         protocolUnknownFrameCount = 0
@@ -7215,6 +7222,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func logIMUCandidate(payload: [UInt8]) {
         let body = Array(payload.dropFirst())
+        let decoded = AtriaIMUDecoder.decode(payload: payload)
+        if let decoded {
+            recordIMUFeatures(decoded)
+        }
         var i16Pairs: [String] = []
         var magnitudes: [String] = []
         for offset in stride(from: 0, through: max(0, body.count - 2), by: 2) {
@@ -7231,8 +7242,20 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             magnitudes.append(String(format: "%d:%.1f", offset, magnitude))
         }
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG imu_candidate validated=0 len=%d i16=%@ magnitudes=%@ payload=%@",
-                  payload.count, i16Pairs.joined(separator: ","), magnitudes.joined(separator: ","),
+            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d i16=%@ magnitudes=%@ payload=%@",
+                  decoded?.gravityValidated == true ? 1 : 0,
+                  decoded?.validationState ?? "decode_failed",
+                  payload.count,
+                  decoded?.offset ?? -1,
+                  decoded?.endian.rawValue ?? "none",
+                  decoded?.scale ?? 0,
+                  decoded?.samples.count ?? 0,
+                  Self.formatDouble(decoded?.meanMagnitudeG),
+                  Self.formatDouble(decoded?.stillnessRatio),
+                  Self.formatDouble(decoded?.movementIntensity),
+                  decoded?.activityBursts ?? 0,
+                  i16Pairs.joined(separator: ","),
+                  magnitudes.joined(separator: ","),
                   Self.hex(payload))
         }
     }
@@ -8257,6 +8280,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             motionShortMin: motionShortStats.min,
                             motionShortMax: motionShortStats.max,
                             motionShortOverOneCount: motionShortStats.count > 0 ? motionShortStats.overOne : nil,
+                            imuSampleCount: decodedIMUSampleCount > 0 ? decodedIMUSampleCount : nil,
+                            imuStillnessRatio: imuFeatureSummary().stillnessRatio,
+                            imuMovementIntensity: imuFeatureSummary().movementIntensity,
+                            imuActivityBursts: decodedIMUSampleCount > 0 ? imuActivityBurstCount : nil,
+                            imuValidationState: decodedIMUSampleCount > 0 ? imuValidationState : nil,
                             phoneMotionSource: phoneMotion.source,
                             phoneMotionValidated: phoneMotion.validated,
                             phoneMotionSamples: phoneMotion.samples > 0 ? phoneMotion.samples : nil,
@@ -8287,7 +8315,34 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         sleepMotionHintKindCounts.removeAll(keepingCapacity: true)
         sleepMotionShortValues.removeAll(keepingCapacity: true)
         sleepMotionSource = "unavailable"
+        resetIMUFeatureStats()
         resetPhoneMotionAuditStats()
+    }
+
+    private func recordIMUFeatures(_ decoded: AtriaIMUDecoder.DecodeResult) {
+        decodedIMUSampleCount += decoded.samples.count
+        imuStillnessRatioSum += decoded.stillnessRatio
+        imuMovementIntensitySum += decoded.movementIntensity
+        imuActivityBurstCount += decoded.activityBursts
+        if decoded.gravityValidated {
+            imuGravityValidatedFrameCount += 1
+        }
+        imuValidationState = imuGravityValidatedFrameCount > 0 ? "gravity_validated_research" : "research_unvalidated"
+    }
+
+    private func imuFeatureSummary() -> (stillnessRatio: Double?, movementIntensity: Double?) {
+        guard protocolIMUFrameCount > 0, decodedIMUSampleCount > 0 else { return (nil, nil) }
+        let frames = Double(max(protocolIMUFrameCount, 1))
+        return (imuStillnessRatioSum / frames, imuMovementIntensitySum / frames)
+    }
+
+    private func resetIMUFeatureStats() {
+        decodedIMUSampleCount = 0
+        imuGravityValidatedFrameCount = 0
+        imuStillnessRatioSum = 0
+        imuMovementIntensitySum = 0
+        imuActivityBurstCount = 0
+        imuValidationState = "unavailable"
     }
 
     private func startPhoneMotionAudit() {

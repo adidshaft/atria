@@ -29,13 +29,19 @@ test_handoff_static_checks.py`, no `https://` clients).
   writes BP/ECG/SpO₂. Active energy writes only for ready workout sessions with a
   complete sex+weight profile, and VO₂ max writes only with measured max HR plus
   7 resting baselines. Both are ledgered/idempotent like existing exports.
+- IMU decode: **research-gated scaffold shipped in code**. `AtriaIMUDecoder`
+  now evaluates 0x33 payloads across endian/scale/offset candidates, uses gravity
+  as the first validation gate, and has synthetic rest/shake self-tests. BLE logs
+  decoded candidates and persists only epoch features (`imuStillnessRatio`,
+  `imuMovementIntensity`, `imuActivityBursts`, `imuValidationState`) on sessions;
+  raw IMU frames are not stored and sleep/steps are not promoted yet.
 - UI controls: **partially verified on physical iPhone**. Top-left status now maps
   to green `Live/Connected`, yellow `Connecting...`, and red `Not Connected`.
   Top-right buttons are grouped closer as native glass controls. Theme preference
   is persisted through Settings and applied via `preferredColorScheme`; physical
   screenshot forcing for Settings was blocked because `devicectl` launch arguments
   were not delivered in this environment.
-- Verification so far: `python3 test_handoff_static_checks.py` green (33), generic
+- Verification so far: `python3 test_handoff_static_checks.py` green (34), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.
