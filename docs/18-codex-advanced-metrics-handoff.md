@@ -35,13 +35,19 @@ test_handoff_static_checks.py`, no `https://` clients).
   decoded candidates and persists only epoch features (`imuStillnessRatio`,
   `imuMovementIntensity`, `imuActivityBursts`, `imuValidationState`) on sessions;
   raw IMU frames are not stored and sleep/steps are not promoted yet.
+- Skin temp + SpO₂ discovery: **research-only probe scaffold shipped in code**.
+  Metadata (`0x31`) and historical (`0x2f`) frames are scanned behind the existing
+  4.0-class capability gates for aggregate-only candidate offsets: SpO₂-like bytes
+  in the 90-100 range and temperature-like little-endian words in the 2500-4200
+  range. Logs stay `research_unvalidated`, record `metric_promotions=0`, store no
+  raw payloads through the probe, and do not write oxygen/temperature to HealthKit.
 - UI controls: **partially verified on physical iPhone**. Top-left status now maps
   to green `Live/Connected`, yellow `Connecting...`, and red `Not Connected`.
   Top-right buttons are grouped closer as native glass controls. Theme preference
   is persisted through Settings and applied via `preferredColorScheme`; physical
   screenshot forcing for Settings was blocked because `devicectl` launch arguments
   were not delivered in this environment.
-- Verification so far: `python3 test_handoff_static_checks.py` green (34), generic
+- Verification so far: `python3 test_handoff_static_checks.py` green (35), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.

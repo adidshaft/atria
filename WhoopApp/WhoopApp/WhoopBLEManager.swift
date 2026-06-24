@@ -821,6 +821,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var imuMovementIntensitySum = 0.0
     private var imuActivityBurstCount = 0
     private var imuValidationState = "unavailable"
+    private var researchProbeFrameCount = 0
+    private var researchProbeOxygenCandidateFrames = 0
+    private var researchProbeTemperatureCandidateFrames = 0
     private var protocolDiagnosticFrameCount = 0
     private var protocolEventFrameCount = 0
     private var protocolUnknownFrameCount = 0
@@ -7260,6 +7263,29 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func recordResearchProbeCandidate(payload: [UInt8], source: AtriaResearchProbe.Source) {
+        guard supportsSpO2Probe || supportsSkinTempProbe else { return }
+        let summary = AtriaResearchProbe.analyze(payload: payload, source: source)
+        researchProbeFrameCount += 1
+        if supportsSpO2Probe, !summary.oxygenByteCandidates.isEmpty {
+            researchProbeOxygenCandidateFrames += 1
+        }
+        if supportsSkinTempProbe, !summary.temperatureWordCandidates.isEmpty {
+            researchProbeTemperatureCandidateFrames += 1
+        }
+        guard summary.hasAnyCandidate || researchProbeFrameCount == 1 || researchProbeFrameCount.isMultiple(of: 50) else { return }
+        WHOOPDebugLog("WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
+              summary.source.rawValue,
+              summary.payloadLength,
+              researchProbeFrameCount,
+              supportsSpO2Probe ? 1 : 0,
+              researchProbeOxygenCandidateFrames,
+              supportsSpO2Probe ? summary.oxygenOffsetSummary : "disabled",
+              supportsSkinTempProbe ? 1 : 0,
+              researchProbeTemperatureCandidateFrames,
+              supportsSkinTempProbe ? summary.temperatureOffsetSummary : "disabled")
+    }
+
     private func maybeSendRecentHistorySweep(realtimeUnix: UInt32) {
         guard historyRecentSweepEnabled, !historyRecentSweepSent, realtimeUnix > 0 else { return }
         historyRecentSweepSent = true
@@ -7291,6 +7317,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             WHOOPDebugLog("WHOOPDBG historyMeta malformed payload=%@", Self.hex(payload))
             return
         }
+        recordResearchProbeCandidate(payload: payload, source: .metadata)
         let seq = payload[1]
         let cmd = payload[2]
         let body = Array(payload.dropFirst(3))
@@ -7393,6 +7420,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func handleHistoricalData(_ payload: [UInt8]) {
+        recordResearchProbeCandidate(payload: payload, source: .historical)
         let clock = historyClockRef
         let historyClockSyncEnabled = historyClockSyncEnabled
         historicalArchiveQueue.async { [weak self] in
@@ -8343,6 +8371,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         imuMovementIntensitySum = 0
         imuActivityBurstCount = 0
         imuValidationState = "unavailable"
+        researchProbeFrameCount = 0
+        researchProbeOxygenCandidateFrames = 0
+        researchProbeTemperatureCandidateFrames = 0
     }
 
     private func startPhoneMotionAudit() {
