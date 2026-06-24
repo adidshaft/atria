@@ -178,7 +178,8 @@ struct AtriaHomeView: View {
                               restingBaseline: store.baseline.restingInt,
                               onUpdateProfile: store.updateProfile,
                               hapticSettings: hapticSettings,
-                              onUpdateHaptics: { hapticSettings = $0 })
+                              onUpdateHaptics: { hapticSettings = $0 },
+                              onExportHealth: { store.exportToHealthKit() })
         }
         .onAppear {
             guard !hasUnlockedPrimaryContent else { return }

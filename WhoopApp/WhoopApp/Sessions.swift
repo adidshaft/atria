@@ -8104,6 +8104,17 @@ final class SessionStore: ObservableObject {
                                  confirmedSleeps: confirmedSleeps)
     }
 
+    /// User-triggered Apple Health export (from Settings). The export is
+    /// idempotent and incremental, so repeated taps only write new samples.
+    func exportToHealthKit() {
+        let rest = baseline.restingInt ?? 60
+        healthKitExporter.export(sessions: sessions,
+                                 rest: rest,
+                                 maxHR: profile.maxHR,
+                                 confirmedWorkouts: confirmedWorkouts,
+                                 confirmedSleeps: confirmedSleeps)
+    }
+
     func resetAndRebuildHealthKitHeartRateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         let rest = baseline.restingInt ?? 60
         healthKitExporter.resetAndRebuildAtriaHeartRateFromLaunchIfRequested(arguments: arguments,

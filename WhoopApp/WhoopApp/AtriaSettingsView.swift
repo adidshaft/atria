@@ -14,6 +14,7 @@ struct AtriaSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
+    @State private var exportTapped = false
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -124,9 +125,16 @@ struct AtriaSettingsView: View {
             if let onExportHealth {
                 Button {
                     onExportHealth()
+                    exportTapped = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(4))
+                        exportTapped = false
+                    }
                 } label: {
-                    Label("Export to Apple Health", systemImage: "square.and.arrow.up")
+                    Label(exportTapped ? "Syncing to Apple Health…" : "Export to Apple Health",
+                          systemImage: exportTapped ? "checkmark.circle.fill" : "square.and.arrow.up")
                 }
+                .disabled(exportTapped)
             } else {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
                                 title: "Apple Health export",
