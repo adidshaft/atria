@@ -269,16 +269,20 @@ private struct AtriaCapsuleChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        // Static chrome — no .interactive(): these chips are decorative and
-        // appear on every card header, so live touch-refraction would resample
-        // the moving backdrop on every scrolled frame and cause jank.
+        // Decorative chrome that appears on every card header — use a cheap
+        // translucent fill, NOT .glassEffect. Liquid Glass is GPU-expensive and
+        // belongs on floating navigation/controls (the system tab bar and live
+        // accessory already use it); a dozen live glass passes inside a scroll
+        // is the main cause of scroll jank, including in the Simulator.
         Capsule(style: .continuous)
-            .glassEffect(.regular.tint(glassTint), in: .capsule)
+            .fill(fillColor)
             .overlay(stroke)
     }
 
-    private var glassTint: Color {
-        colorScheme == .dark ? effectiveTint.opacity(0.025) : tint.opacity(0.12)
+    private var fillColor: Color {
+        colorScheme == .dark
+            ? effectiveTint.opacity(0.16)
+            : tint.opacity(0.14)
     }
 
     private var stroke: some View {
@@ -298,8 +302,9 @@ private struct AtriaIconChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        // Cheap translucent fill instead of a per-icon glass pass (see capsule note).
         Circle()
-            .glassEffect(.regular.tint(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.16)), in: .circle)
+            .fill(colorScheme == .dark ? Color.white.opacity(0.07) : Color.white.opacity(0.55))
             .overlay(stroke)
     }
 

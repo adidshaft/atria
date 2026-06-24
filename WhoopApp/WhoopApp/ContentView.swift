@@ -673,17 +673,20 @@ struct AtriaDashboardBackdrop: View {
                        startPoint: .topLeading,
                        endPoint: .bottomTrailing)
         .overlay(alignment: .topTrailing) {
+            // Radial gradient glow instead of a blurred circle: same soft look,
+            // but no .blur() pass (blur is very expensive, especially in the
+            // Simulator, and was a source of UI lag).
             Circle()
-                .fill(topGlowColor)
-                .frame(width: 240, height: 240)
-                .blur(radius: 28)
+                .fill(RadialGradient(colors: [topGlowColor, .clear],
+                                     center: .center, startRadius: 0, endRadius: 150))
+                .frame(width: 300, height: 300)
                 .offset(x: 70, y: -70)
         }
         .overlay(alignment: .bottomLeading) {
             Circle()
-                .fill(bottomGlowColor)
-                .frame(width: 220, height: 220)
-                .blur(radius: 36)
+                .fill(RadialGradient(colors: [bottomGlowColor, .clear],
+                                     center: .center, startRadius: 0, endRadius: 140))
+                .frame(width: 280, height: 280)
                 .offset(x: -80, y: 90)
         }
     }
