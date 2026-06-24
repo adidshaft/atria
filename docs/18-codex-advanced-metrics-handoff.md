@@ -35,7 +35,10 @@ test_handoff_static_checks.py`, no `https://` clients).
   none of those read-only types are written. It never writes BP/ECG/SpO₂. Active
   energy writes only for ready workout sessions with a complete sex+weight
   profile, and VO₂ max writes only with measured max HR plus 7 resting baselines.
-  Both are ledgered/idempotent like existing exports.
+  Both are ledgered/idempotent like existing exports. Static checks now pin those
+  estimate export gates in both planning and sample-writing paths: active energy
+  requires workout readiness plus a complete energy profile, and VO₂ requires
+  measured HRmax, at least 7 resting baselines, and valid rest/max HR.
 - IMU decode: **research-gated scaffold shipped in code**. `AtriaIMUDecoder`
   now evaluates 0x33 payloads across endian/scale/offset candidates, uses gravity
   as the first validation gate, and has synthetic rest/shake self-tests. BLE logs
