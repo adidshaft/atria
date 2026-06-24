@@ -409,8 +409,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, settings, "LabeledContent(\"Model\")")
         assert_contains(self, settings, "Text(strapModel.isEmpty ? \"WHOOP strap\" : strapModel)")
 
-        assert_not_contains(self, healthkit, ".oxygenSaturation")
-        assert_not_contains(self, healthkit, "HKQuantitySample(type: oxygen")
+        text = all_swift_source()
+        assert_not_contains(self, text, ".oxygenSaturation")
+        assert_not_contains(self, text, "HKQuantitySample(type: oxygen")
 
     def test_self_induced_probe_markers_are_local_research_only(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
@@ -746,6 +747,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_healthkit_sleeping_wrist_temperature_is_read_only(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        app_text = all_swift_source()
 
         for needle in [
             "private var sleepingWristTemperatureType: HKQuantityType?",
@@ -767,7 +769,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "HKQuantitySample(type: bodyTemperature",
             ".bodyTemperature",
         ]:
-            assert_not_contains(self, text, forbidden)
+            assert_not_contains(self, app_text, forbidden)
 
     def test_active_calories_are_persisted_as_estimates(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
