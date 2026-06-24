@@ -230,12 +230,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaIMUDecoder.decode(payload: payload)",
             "recordIMUFeatures(decoded)",
             "WHOOPDBG imu_candidate validated=%d validation_state=%@",
+            "sample_rate_hz=%@",
+            "metric_promotions=0 i16=%@",
+            "imuSampleRateHzSum += Double(decoded.samples.count) / delta",
+            "imuInferredScale = decoded.scale",
+            "imuInferredEndian = decoded.endian.rawValue",
             "imuValidationState = imuGravityValidatedFrameCount > 0 ? \"gravity_validated_research\" : \"research_unvalidated\"",
         ]:
             assert_contains(self, ble, needle)
 
         for needle in [
             "var imuSampleCount: Int? = nil",
+            "var imuFrameCount: Int? = nil",
+            "var imuSampleRateHz: Double? = nil",
+            "var imuScale: Double? = nil",
+            "var imuEndian: String? = nil",
             "var imuStillnessRatio: Double? = nil",
             "var imuMovementIntensity: Double? = nil",
             "var imuActivityBursts: Int? = nil",
