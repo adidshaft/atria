@@ -40,7 +40,8 @@ struct AtriaVitalsTabContent: View {
     }
 
     private var pulseCard: some View {
-        AtriaVitalsPulseCardHost(pulseStore: pulseStore,
+        AtriaVitalsPulseCardHost(liveStore: liveStore,
+                                 pulseStore: pulseStore,
                                  homeStatsStore: homeStatsStore,
                                  pulseSparklineStore: pulseSparklineStore)
     }
@@ -155,12 +156,14 @@ struct AtriaCollectionTabContent: View {
 }
 
 private struct AtriaVitalsPulseCardHost: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     var body: some View {
-        AtriaPulseCard(live: pulseStore.state,
+        AtriaPulseCard(isConnected: liveStore.state.status == .connected,
+                       live: pulseStore.state,
                        sparklineStore: pulseSparklineStore,
                        restingHeartRateText: homeStatsStore.state.restingHeartRateText)
             .equatable()
@@ -681,13 +684,19 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
 }
 
 private struct AtriaPulseCard: View, Equatable {
+    let isConnected: Bool
     let live: AtriaHomeModel.PulseLiveState
     let sparklineStore: AtriaHomeModel.PulseSparklineStore
     let restingHeartRateText: String
 
     static func == (lhs: AtriaPulseCard, rhs: AtriaPulseCard) -> Bool {
-        lhs.live == rhs.live
+        lhs.isConnected == rhs.isConnected
+            && lhs.live == rhs.live
             && lhs.restingHeartRateText == rhs.restingHeartRateText
+    }
+
+    private var hasLiveContact: Bool {
+        isConnected && live.hasContact
     }
 
     var body: some View {
@@ -697,15 +706,15 @@ private struct AtriaPulseCard: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                AtriaStateBadge(state: live.hasContact ? .live : .noContact)
+                AtriaStateBadge(state: hasLiveContact ? .live : .noContact)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 AtriaMetricTile(label: "Now",
                                 value: live.heartRateText,
                                 unit: "bpm",
-                                state: live.hasContact ? .live : .noContact,
-                                tint: live.hasContact ? .red : .orange,
+                                state: hasLiveContact ? .live : .noContact,
+                                tint: hasLiveContact ? .red : .orange,
                                 sparklineValues: sparklineStore.state.values)
                 pulseStatTiles
             }
@@ -718,11 +727,11 @@ private struct AtriaPulseCard: View, Equatable {
     private var pulseStatTiles: some View {
         AtriaMetricTile(label: "Average",
                         value: live.averageHeartRateText,
-                        state: live.hasContact ? .live : .learning,
+                        state: hasLiveContact ? .live : .learning,
                         tint: .pink)
         AtriaMetricTile(label: "Peak",
                         value: live.peakHeartRateText,
-                        state: live.hasContact ? .live : .learning,
+                        state: hasLiveContact ? .live : .learning,
                         tint: .red)
         AtriaMetricTile(label: "Resting",
                         value: restingHeartRateText,
@@ -772,6 +781,10 @@ private struct AtriaHRVCard: View, Equatable {
         hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning
     }
 
+    private var isConnected: Bool {
+        live.status == .connected
+    }
+
     @ViewBuilder
     private var hrvStatTiles: some View {
         AtriaMetricTile(label: "RMSSD",
@@ -780,7 +793,7 @@ private struct AtriaHRVCard: View, Equatable {
                         tint: .pink)
         AtriaMetricTile(label: "Window",
                         value: hero.rrPackageText,
-                        state: live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .learning : .live,
+                        state: isConnected && !live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .live : .learning,
                         tint: continuityTint)
         AtriaMetricTile(label: "Stress",
                         value: hero.stressValue,

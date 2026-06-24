@@ -94,9 +94,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Profile")
         } footer: {
-            Text(draft.maxHRSource == .ageEstimate
-                 ? "Estimated from your age. Choose Measured if you know your real max from a hard effort or lab test."
-                 : "Using the max you measured — the most accurate option. Strain and effort are scored to this.")
+            Text(draft.maxHRSource == .ageEstimate ? "Age estimate; measured is better." : "Measured max drives strain.")
         }
     }
 
@@ -112,7 +110,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Alerts")
         } footer: {
-            Text("Phone-side haptic and notification alerts. Atria never writes to the strap to deliver these.")
+            Text("Phone-side alerts only.")
         }
     }
 
@@ -167,7 +165,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Your data")
         } footer: {
-            Text("Atria gives you full ownership of your strap data — export it, back it up, and keep it forever, free.")
+            Text("Local ownership, free export.")
         }
     }
 
@@ -199,7 +197,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("About")
         } footer: {
-            Text("Atria is independent and unaffiliated with WHOOP. Not medical software — for personal fitness and research only.")
+            Text("Independent; not medical software.")
         }
     }
 
