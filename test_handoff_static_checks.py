@@ -751,6 +751,17 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
 
+        shared = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSharedUIComponents.swift")
+        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
+        for needle in [
+            "case estimate",
+            "return \"Estimate\"",
+            "return \"function\"",
+        ]:
+            assert_contains(self, shared, needle)
+        assert_contains(self, overview, "state: live.liveActiveCalories == nil ? .learning : .estimate")
+        assert_not_contains(self, overview, "state: live.liveActiveCalories == nil ? .learning : .local")
+
         for needle in [
             "let activeCalories = Metrics.activeCalories(session",
             "let caloriesConfidence: String? = session.count > 1 ? (profile.hasEnergyProfile ? \"estimate\" : \"needs_profile\") : nil",

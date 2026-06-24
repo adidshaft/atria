@@ -524,7 +524,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
                 AtriaMetricTile(label: "kcal",
                                 value: live.liveActiveCaloriesText,
-                                state: live.liveActiveCalories == nil ? .learning : .local,
+                                state: live.liveActiveCalories == nil ? .learning : .estimate,
                                 tint: .orange)
                     .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
             }
