@@ -368,12 +368,12 @@ private struct AtriaHeroMetricRow: View, Equatable {
     }
 
     var body: some View {
-        ViewThatFits {
-            HStack(spacing: isCompact ? 10 : 12) {
+        if isCompact {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: isCompact ? 10 : 12) {
                 metricTiles
             }
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: isCompact ? 10 : 12) {
+        } else {
+            HStack(spacing: 12) {
                 metricTiles
             }
         }
@@ -603,6 +603,7 @@ private struct AtriaConnectionGuideSheet: View {
     let continueSetup: () -> Void
     let retry: () -> Void
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var guideTitle: String {
         context.isFirstHandoff ? "Connect your strap once" : "Reconnecting is automatic"
@@ -794,24 +795,24 @@ private struct AtriaConnectionGuideSheet: View {
             .background(AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency).ignoresSafeArea())
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 10) {
-                    ViewThatFits {
-                        HStack(spacing: 10) {
-                            Button(primaryButtonTitle, action: continueSetup)
-                                .buttonStyle(.glassProminent)
-        .tint(.blue)
-                                .frame(maxWidth: .infinity)
-                            Button("Retry scan now", action: retry)
-                                .buttonStyle(.glass)
-        .tint(.gray)
-                        }
-
+                    if horizontalSizeClass == .compact {
                         VStack(spacing: 10) {
                             Button(primaryButtonTitle, action: continueSetup)
                                 .buttonStyle(.glassProminent)
-        .tint(.blue)
+                                .tint(.blue)
                             Button("Retry scan now", action: retry)
                                 .buttonStyle(.glass)
-        .tint(.gray)
+                                .tint(.gray)
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            Button(primaryButtonTitle, action: continueSetup)
+                                .buttonStyle(.glassProminent)
+                                .tint(.blue)
+                                .frame(maxWidth: .infinity)
+                            Button("Retry scan now", action: retry)
+                                .buttonStyle(.glass)
+                                .tint(.gray)
                         }
                     }
 
@@ -856,21 +857,31 @@ private struct AtriaConnectionProgressStrip: View, Equatable {
     let attempts: Int
     let statusTint: Color
     let flowLabel: String
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    static func == (lhs: AtriaConnectionProgressStrip, rhs: AtriaConnectionProgressStrip) -> Bool {
+        lhs.status == rhs.status
+            && lhs.attempts == rhs.attempts
+            && lhs.statusTint == rhs.statusTint
+            && lhs.flowLabel == rhs.flowLabel
+    }
 
     var body: some View {
-        ViewThatFits {
-            HStack(spacing: 12) {
-                AtriaInlineQuickStat(label: "Flow", value: flowLabel)
-                AtriaInlineQuickStat(label: "State", value: status.rawValue)
-                AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
-                AtriaInlineQuickStat(label: "Mode", value: "Auto")
-            }
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                AtriaInlineQuickStat(label: "Flow", value: flowLabel)
-                AtriaInlineQuickStat(label: "State", value: status.rawValue)
-                AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
-                AtriaInlineQuickStat(label: "Mode", value: "Auto")
+        Group {
+            if horizontalSizeClass == .compact {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    AtriaInlineQuickStat(label: "Flow", value: flowLabel)
+                    AtriaInlineQuickStat(label: "State", value: status.rawValue)
+                    AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
+                    AtriaInlineQuickStat(label: "Mode", value: "Auto")
+                }
+            } else {
+                HStack(spacing: 12) {
+                    AtriaInlineQuickStat(label: "Flow", value: flowLabel)
+                    AtriaInlineQuickStat(label: "State", value: status.rawValue)
+                    AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
+                    AtriaInlineQuickStat(label: "Mode", value: "Auto")
+                }
             }
         }
         .padding(2)
