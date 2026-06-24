@@ -23,15 +23,35 @@ debug launch args are in `docs/15` and `docs/16`; useful QA args already exist:
    "personal baseline" must become a visual state (muted/dashed ring, small
    `seal`/`waveform` glyph, color), with the word available only via tap/accessibility.
 
-## Already done (don't redo — verify on device)
-- Connected hero is now just the live-pulse card; the duplicate Recovery/Strain/
-  HRV row + verbose headline + inline "Today" chip were removed (`HEAD`).
-- Single toolbar connection chip (color-by-state, "Live"/"Disconnected"); removed
-  the bolt button + strip chip.
-- Removed the "Quick actions" card (duplicated the tab bar).
-- WHOOP coexistence is a modal (suspected-only).
-- Glance shows on disconnected too (saved data) + resting-HR sparkline (Codex).
-- `AtriaPanelSectionHeader` now hides empty subtitles.
+## Already done (don't redo — verified on the cabled device)
+**Today tab is complete** — verified connected (65–69 bpm live) + disconnected:
+- Connected hero is just the live-HR card; duplicate score row + verbose headline
+  + inline "Today" chip removed.
+- **New `AtriaMetricRing`** (gradient + glow + scale-safe center text). The glance
+  now leads with **Recovery + Strain rings**, then HRV/Sleep/RHR tiles + the
+  resting-trend sparkline. Learning state = neutral grey dashes everywhere (colour
+  = real data only); near-zero values show a clean empty track (no cap dot).
+- Disconnected Today no longer stacks a second "Waiting for your strap" panel on
+  the reconnect banner. Returning users (any saved sessions) see saved rings +
+  trends first; the one-time setup panel shows only with no saved data. Gate is
+  saved-data presence, not `hasEverConnected` (resets each launch).
+- Removed the cryptic, clipped "Flow / Reconnect" + "Try / 109" tiles and the
+  redundant "Strap connection: Connected" checklist item.
+- Single toolbar connection chip; removed bolt button + strip chip.
+- Removed "Quick actions" card; WHOOP coexistence is a suspected-only modal.
+- `AtriaPanelSectionHeader` hides empty subtitles.
+
+**Device screenshot tooling:** `xcrun devicectl device capture screenshot
+--device <id> --destination foo.png` captures the cabled iPhone directly — use it
+to verify connected states. Note: relaunching the app drops BLE; wait ~45–50s
+after launch for the strap to reconnect before capturing.
+
+## Remaining (apply same patterns to the other tabs)
+- **Vitals**: tiles already match the glance; audit the live accessory bar
+  ("Live connected") which repeats the toolbar pill, and any paragraph copy.
+- **Data**: most text-dense tab — reuse `AtriaMetricTile`/`AtriaMetricRing`, lead
+  with Export/Sync glass buttons, demote diagnostics behind a disclosure.
+- **Settings**: clean Form already; just tighten footers.
 
 ## Concrete issues found in the connected screenshot (fix these)
 Reference: `logs/live-device/screenshots/unlocked-retry-20260624T165213Z.png`.
