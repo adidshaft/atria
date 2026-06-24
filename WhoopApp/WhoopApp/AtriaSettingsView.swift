@@ -318,6 +318,10 @@ struct AtriaSettingsView: View {
                             tint: .cyan,
                             title: "Blood oxygen research",
                             detail: "Sleep-only probe; no Health export.")
+            settingsInfoRow(icon: "thermometer.variable",
+                            tint: .teal,
+                            title: "Skin temperature research",
+                            detail: "Baseline-only probe; no absolute degrees C or Health export.")
         } header: {
             Text("Sensors")
         } footer: {
