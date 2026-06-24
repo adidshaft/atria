@@ -176,7 +176,7 @@ var heightCm: Double = 0            // optional, 0 == unknown
 - Gate calorie/VO₂ confidence on these being set; otherwise show "Add weight to
   estimate calories" once, not repeatedly.
 
-## 2b. Strap naming, rename, & model detection — **PARTLY SHIPPED; gather real metadata tokens**
+## 2b. Strap naming, rename, & model detection — **SHIPPED UI/GATES; keep gathering real metadata tokens**
 
 ### What is already done (verified on a real WHOOP 4.0)
 - Reads Device Information `0x180A`: Model `0x2A24`, Firmware `0x2A26`, Hardware
@@ -199,7 +199,7 @@ identifier-like tokens, and maps only explicit WHOOP generation strings to a mod
 `WHOOP 4`, `WHOOP 5`, or `WHOOP MG`. Unknown metadata stays generic and does not
 downgrade the existing proprietary-service 4.0-class probe capability.
 
-### What to finish — prove the observed metadata token map on-device
+### Remaining research — prove the observed metadata token map on-device
 Since Device Info is empty, the model/firmware/serial live in the WHOOP **metadata
 frame `0x31`** (and possibly the clock/data-range responses), which the protocol
 tools already classify. To get a real "WHOOP 4.0/5.0/MG":
@@ -209,7 +209,8 @@ tools already classify. To get a real "WHOOP 4.0/5.0/MG":
 2. Cross-check against firmware patterns and which proprietary service generation
    responds. Build the map from observed bytes; **unknown → keep "WHOOP strap"**,
    never guess. Keep Serial out of storage (PII).
-3. Surface as a read-only "Model" line under the editable Name (UI already there).
+3. Keep the read-only Settings "Model" line stable across reconnect/disconnect
+   (UI shipped); update labels only from explicit metadata evidence.
 
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
