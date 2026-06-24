@@ -372,6 +372,7 @@ class HandoffStaticChecks(unittest.TestCase):
         probe = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaResearchProbe.swift")
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        harness = source(ROOT / "live_device_debug.sh")
 
         for needle in [
             "enum AtriaResearchProbe",
@@ -417,6 +418,17 @@ class HandoffStaticChecks(unittest.TestCase):
         text = all_swift_source()
         assert_not_contains(self, text, ".oxygenSaturation")
         assert_not_contains(self, text, "HKQuantitySample(type: oxygen")
+
+        for needle in [
+            "\"sensor_research_probe_rows\": 0",
+            "\"model_gate_assume_4_class_rows\": 0",
+            "\"model_gate_metadata_explicit_rows\": 0",
+            "WHOOPDBG sensor_research_probe ",
+            "WHOOPDBG model_gate ",
+            "tokens.get(\"spo2_candidate_frames\", \"\")",
+            "tokens.get(\"model_evidence\", \"\")",
+        ]:
+            assert_contains(self, harness, needle)
 
     def test_self_induced_probe_markers_are_local_research_only(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
