@@ -654,6 +654,32 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, healthkit, needle)
 
+    def test_vo2max_fails_closed_until_confident(self):
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        match = re.search(r"func vo2MaxEstimateSummary\(rest: Int, maxHR: Int\) -> VO2MaxEstimateSummary \{(?P<body>.*?)\n    \}", sessions, re.S)
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        for needle in [
+            "guard rest > 0, maxHR > rest else",
+            "guard restingSamples >= 7 else",
+            "guard profile.maxHRSource == .measured else",
+            "VO2MaxEstimateSummary(value: nil",
+            "let rawEstimate = 15.3 * Double(maxHR) / Double(rest)",
+            "let confidence = \"rough estimate\"",
+        ]:
+            assert_contains(self, body, needle)
+        self.assertGreater(body.find("let rawEstimate = 15.3"), body.find("guard profile.maxHRSource == .measured else"))
+
+        for needle in [
+            "profile.maxHRSource == .measured",
+            "restingBaselineSamples >= 7",
+            "\"atria_metric_confidence\": \"rough_estimate\"",
+            "\"atria_metric_source\": \"uth_sorensen_resting_hr\"",
+        ]:
+            assert_contains(self, healthkit, needle)
+
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")
         widget = source(ROOT / "WhoopApp" / "WhoopApp" / "WidgetSnapshot.swift")

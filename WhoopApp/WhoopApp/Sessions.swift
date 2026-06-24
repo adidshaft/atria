@@ -6293,29 +6293,33 @@ final class SessionStore: ObservableObject {
 
     func vo2MaxEstimateSummary(rest: Int, maxHR: Int) -> VO2MaxEstimateSummary {
         let restingSamples = baseline.restingSampleCount
-        guard rest > 0, maxHR > rest, restingSamples >= 3 else {
+        guard rest > 0, maxHR > rest else {
             return VO2MaxEstimateSummary(value: nil,
                                          confidence: "learning",
-                                         detail: "\(restingSamples)/3 RHR",
-                                         narrative: "Atria needs a few local resting baselines before estimating VO2max.")
+                                         detail: "Need RHR",
+                                         narrative: "Atria needs resting HR and HRmax before estimating VO2max.")
+        }
+        guard restingSamples >= 7 else {
+            return VO2MaxEstimateSummary(value: nil,
+                                         confidence: "learning",
+                                         detail: "\(restingSamples)/7 RHR",
+                                         narrative: "Atria needs 7 resting nights before estimating VO2max.")
+        }
+        guard profile.maxHRSource == .measured else {
+            return VO2MaxEstimateSummary(value: nil,
+                                         confidence: "learning",
+                                         detail: "Need HRmax",
+                                         narrative: "Atria needs a measured HRmax before estimating VO2max.")
         }
 
         let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
         let boundedEstimate = min(max(rawEstimate, 20), 80)
-        let confidence: String
-        if restingSamples >= 7 && profile.maxHRSource == .measured {
-            confidence = "rough estimate"
-        } else {
-            confidence = "learning"
-        }
+        let confidence = "rough estimate"
         let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
-        let narrative = restingSamples >= 7 && profile.maxHRSource == .measured
-            ? "Rough estimate from measured max HR and resting baseline."
-            : "Needs measured HRmax and 7 resting nights."
         return VO2MaxEstimateSummary(value: boundedEstimate,
                                      confidence: confidence,
                                      detail: detail,
-                                     narrative: narrative)
+                                     narrative: "Rough estimate from measured max HR and resting baseline.")
     }
 
     func trendSummaryFast(rest: Int,
