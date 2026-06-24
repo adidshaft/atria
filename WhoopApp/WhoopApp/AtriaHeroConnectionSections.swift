@@ -97,7 +97,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Connection \(status.rawValue). \(hero.guidance.headline)")
     }
@@ -275,41 +275,33 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "waveform.path.ecg")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.green)
-                .frame(width: 32, height: 32)
-                .background(AtriaIconTileBackground(cornerRadius: 10, tint: .green))
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "heart.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.red)
+                .frame(width: 38, height: 38)
+                .background(AtriaIconTileBackground(cornerRadius: 12, tint: .red))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Color.white.opacity(0.08), lineWidth: 1)
                 }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Live pulse")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(displayDeviceName)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-
             Spacer(minLength: 0)
 
-            VStack(alignment: .trailing, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(heartRateText)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.system(size: 42, weight: .bold, design: .rounded))
                     .monospacedDigit()
                 Text("bpm")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .atriaInsetCard(cornerRadius: 17, tint: .green)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .atriaInsetCard(tint: .red)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Live heart rate \(heartRateText) beats per minute from \(displayDeviceName)")
     }
 }
 
@@ -439,7 +431,7 @@ private struct AtriaHeroNextActionRow: View, Equatable {
             .padding(.horizontal, 11)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .atriaInsetCard(cornerRadius: 15, tint: .cyan)
+            .atriaInsetCard(tint: .cyan)
     }
 }
 
@@ -502,7 +494,7 @@ private struct AtriaHeroMetricTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(compact ? 10 : 12)
-        .atriaInsetCard(cornerRadius: compact ? 16 : 18, tint: tint)
+        .atriaInsetCard(tint: tint)
     }
 }
 
@@ -540,7 +532,7 @@ private struct AtriaHeroStatusTile: View, Equatable {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .atriaInsetCard(cornerRadius: 18, tint: tint.opacity(0.65))
+        .atriaInsetCard(tint: tint.opacity(0.65))
     }
 }
 
@@ -588,7 +580,7 @@ struct AtriaWhoopCoexistenceModal: View {
                                 tint: .orange))
                         }
                         .padding(18)
-                        .atriaCard(cornerRadius: 24, emphasis: .soft)
+                        .atriaCard(emphasis: .soft)
                     }
                     .padding(20)
                     .frame(maxWidth: 760, alignment: .leading)
@@ -886,9 +878,9 @@ private struct AtriaConnectionProgressStrip: View, Equatable {
             }
         }
         .padding(2)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.card, style: .continuous)
                 .stroke(statusTint.opacity(0.14), lineWidth: 1)
         }
     }
@@ -916,7 +908,7 @@ private struct AtriaConnectionStepTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -979,7 +971,7 @@ private struct AtriaConnectionStatusCard: View, Equatable {
             Spacer(minLength: 0)
         }
         .padding(18)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1017,6 +1009,6 @@ private struct AtriaConnectionChecklistCard: View, Equatable {
             }
         }
         .padding(18)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }

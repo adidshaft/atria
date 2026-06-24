@@ -126,8 +126,7 @@ struct AtriaHomeView: View {
             }
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: model.coreLiveStore.state.status == .connected) {
-                AtriaLiveTabAccessory(liveStore: model.coreLiveStore,
-                                      mediaController: mediaController)
+                AtriaLiveTabAccessory(liveStore: model.coreLiveStore)
             }
 
             AtriaHomeObservers(statusStore: model.statusStore,
@@ -981,23 +980,17 @@ private struct AtriaMissedDataBanner: View, Equatable {
             .accessibilityLabel("Dismiss missed data banner")
         }
         .padding(14)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .contain)
     }
 }
 
 private struct AtriaLiveTabAccessory: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
-    @ObservedObject var mediaController: AtriaMediaController
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
-    @Environment(\.atriaEntitlements) private var entitlements
 
     private var isInline: Bool {
         placement == .inline
-    }
-
-    private var showsPremiumControls: Bool {
-        entitlements.isEnabled(.liveActivity) || entitlements.isEnabled(.mediaControls)
     }
 
     var body: some View {
@@ -1006,20 +999,21 @@ private struct AtriaLiveTabAccessory: View {
                 .font(isInline ? .caption.weight(.bold) : .subheadline.weight(.bold))
                 .foregroundStyle(.red)
 
-            Text(liveStore.state.sessionSampleCount > 0 ? "Live" : "Connected")
+            Text(liveStore.state.sessionSampleCount > 0 ? "\(liveStore.state.sessionSampleCount)" : "Live")
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
+                .monospacedDigit()
 
-            if liveStore.state.liveTRIMP > 0 {
-                Text(String(format: "strain %.1f", Metrics.strain(fromTRIMP: liveStore.state.liveTRIMP)))
-                    .font(isInline ? .caption2.monospacedDigit() : .caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+            Text(liveStore.state.sessionSampleCount > 0 ? "samples" : "connected")
+                .font(isInline ? .caption2.weight(.semibold) : .caption.weight(.semibold))
+                .foregroundStyle(.secondary)
 
             if !isInline {
                 Spacer(minLength: 0)
-                if showsPremiumControls {
-                    mediaControls
-                }
+                Label(liveStore.state.rrContinuityText, systemImage: "waveform.path.ecg")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
                 Label(liveStore.state.batteryText, systemImage: "battery.100")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -1028,47 +1022,7 @@ private struct AtriaLiveTabAccessory: View {
         .padding(.horizontal, isInline ? 8 : 12)
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live strap connected")
-    }
-
-    private var mediaControls: some View {
-        HStack(spacing: 4) {
-            Text(mediaController.state.hasNowPlayingInfo ? mediaController.state.title : "Media")
-                .font(.caption2.weight(.semibold))
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 88, alignment: .trailing)
-                .accessibilityHidden(true)
-
-            mediaButton(systemImage: "backward.fill",
-                        label: "Previous track",
-                        action: mediaController.previousTrack)
-            mediaButton(systemImage: mediaController.state.isPlaying ? "pause.fill" : "play.fill",
-                        label: mediaController.state.isPlaying ? "Pause media" : "Play media",
-                        action: mediaController.playPause)
-            mediaButton(systemImage: "stop.fill",
-                        label: "Stop media",
-                        action: mediaController.stop)
-            mediaButton(systemImage: "forward.fill",
-                        label: "Next track",
-                        action: mediaController.nextTrack)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(mediaController.state.accessibilitySummary)
-    }
-
-    private func mediaButton(systemImage: String,
-                             label: String,
-                             action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .frame(width: 24, height: 24)
-                .contentShape(.circle)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .accessibilityLabel(label)
+        .accessibilityLabel("Live strap connected. \(liveStore.state.sessionSampleCount) samples. Battery \(liveStore.state.batteryText).")
     }
 }
 

@@ -480,29 +480,44 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                           spacing: 10) {
-                    glanceStat("Strain", hero.strainValue, "flame.fill", .orange)
-                    glanceStat("HRV", hero.hrvValue, "waveform.path.ecg", .pink)
-                    glanceStat("Sleep", snapshot.sleepValue, "bed.double.fill", .cyan)
-                    glanceStat("Resting", hero.restingHeartRateText, "heart.fill", .red)
+                    AtriaMetricTile(label: "Strain",
+                                    value: hero.strainValue,
+                                    state: hero.strainDetail.localizedCaseInsensitiveContains("local") ? .local : .learning,
+                                    tint: .orange)
+                    AtriaMetricTile(label: "HRV",
+                                    value: hero.hrvValue,
+                                    state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
+                                    tint: .pink)
+                    AtriaMetricTile(label: "Sleep",
+                                    value: snapshot.sleepValue,
+                                    state: snapshot.sleepValue.localizedCaseInsensitiveContains("learning") ? .learning : .local,
+                                    tint: .cyan)
+                    AtriaMetricTile(label: "Resting",
+                                    value: hero.restingHeartRateText,
+                                    state: .personalBaseline,
+                                    tint: .red)
                 }
             }
 
             restingTrend
         }
         .padding(16)
-        .atriaCard(cornerRadius: 26, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var recoveryRing: some View {
         let percent = hero.recoveryEstimate.percent
         let fraction = percent.map { min(max(Double($0) / 100, 0), 1) } ?? 0
+        let stroke = StrokeStyle(lineWidth: 9,
+                                 lineCap: .round,
+                                 dash: percent == nil ? [5, 7] : [])
         return ZStack {
             Circle()
                 .stroke(Color.secondary.opacity(0.16), lineWidth: 9)
             Circle()
                 .trim(from: 0, to: fraction)
                 .stroke(recoveryColor(percent),
-                        style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                        style: stroke)
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 1) {
                 Text(hero.recoveryValue)
@@ -513,6 +528,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 Text("Recovery")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                AtriaStateBadge(state: percent == nil ? .learning : .validated)
+                    .scaleEffect(0.72)
             }
             .padding(8)
         }
@@ -540,8 +557,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .accessibilityLabel("Resting heart rate trend")
             }
             .padding(12)
-            .atriaInsetCard(cornerRadius: 16, tint: .red)
+            .atriaInsetCard(tint: .red)
         }
+    }
+
+    private var hrvLearningState: AtriaMetricState {
+        hero.hrvDetail.localizedCaseInsensitiveContains("personal") ? .personalBaseline : .learning
     }
 
     private func recoveryColor(_ percent: Int?) -> Color {
@@ -551,28 +572,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return .red
     }
 
-    private func glanceStat(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tint)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .atriaInsetCard(cornerRadius: 14, tint: tint)
-    }
 }
 
 struct AtriaOverviewLaunchChecklistHost: View {
@@ -644,14 +643,11 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Getting set up",
-                                        subtitle: "\(completeCount) of \(checklistItems.count) ready")
+                AtriaPanelSectionHeader(title: "Getting set up", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: completeCount == checklistItems.count ? "ready" : "learning",
-                                systemImage: completeCount == checklistItems.count ? "checkmark.circle.fill" : "hourglass",
-                                tint: completeCount == checklistItems.count ? .green : .orange)
+                readinessDots
             }
 
             VStack(spacing: 8) {
@@ -661,7 +657,22 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private var readinessDots: some View {
+        HStack(spacing: 5) {
+            ForEach(checklistItems.indices, id: \.self) { index in
+                Circle()
+                    .fill(index < completeCount ? Color.green : Color.secondary.opacity(0.22))
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .atriaInsetCard(tint: completeCount == checklistItems.count ? .green : .orange)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(completeCount) of \(checklistItems.count) setup steps ready")
     }
 }
 
@@ -718,7 +729,7 @@ private struct AtriaLaunchChecklistRow: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 18, tint: item.tint)
+        .atriaInsetCard(tint: item.tint)
     }
 }
 
@@ -761,7 +772,7 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
                              onDeleteAPIKey: onDeleteAPIKey)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
@@ -813,7 +824,7 @@ struct AtriaOverviewTrendSection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -885,7 +896,7 @@ struct AtriaOverviewBehaviorJournalSection: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -968,7 +979,7 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Live strap", subtitle: "Current connection and battery")
+                AtriaPanelSectionHeader(title: "Live strap", subtitle: "Battery and signal")
 
                 Spacer(minLength: 0)
 
@@ -988,7 +999,7 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1047,7 +1058,7 @@ struct AtriaOverviewCollectionSection: View, Equatable {
             .accessibilityLabel("Open Data")
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var backupDetail: String {
@@ -1087,7 +1098,7 @@ private struct AtriaOverviewActionStrip: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(tint: .white)
     }
 
     @ViewBuilder
@@ -1146,7 +1157,7 @@ struct AtriaOverviewBackupSection: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
