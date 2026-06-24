@@ -118,6 +118,9 @@ struct AtriaSettingsView: View {
             settingsInfoRow(icon: "lock.shield.fill", tint: .green,
                             title: "Stays on this device",
                             detail: "No account, no cloud, no subscription. Your data never leaves your phone.")
+            settingsInfoRow(icon: "hand.raised.fill", tint: .orange,
+                            title: "Keep Atria running",
+                            detail: "Background tracking continues when you switch apps. If you swipe Atria closed, iOS pauses tracking until you reopen it — your strap fills in the gap on reconnect.")
             if let onExportHealth {
                 Button {
                     onExportHealth()

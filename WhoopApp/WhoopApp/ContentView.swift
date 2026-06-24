@@ -999,6 +999,12 @@ struct ProfileOnboardingView: View {
             .padding(18)
             .atriaCard(cornerRadius: 22, emphasis: .soft)
 
+            Label("Switching to other apps is fine — Atria keeps tracking in the background. Just don’t swipe it closed in the app switcher, or iOS pauses tracking until you reopen it.",
+                  systemImage: "hand.raised.fill")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+
             Label("No strap handy right now? Skip ahead — Atria keeps looking in the background and connects when it’s near.",
                   systemImage: "info.circle")
                 .font(.footnote)
