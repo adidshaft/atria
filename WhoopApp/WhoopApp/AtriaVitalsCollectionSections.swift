@@ -581,7 +581,7 @@ private struct AtriaCollectionCoexistenceWarning: View, Equatable {
             }
         }
         .padding(12)
-        .atriaRaisedCard(cornerRadius: 18, emphasis: .soft)
+        .atriaRaisedCard(emphasis: .soft)
     }
 }
 
@@ -630,7 +630,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                 }
             }
             .padding(6)
-            .atriaRaisedCard(cornerRadius: 18, emphasis: .soft)
+            .atriaRaisedCard(emphasis: .soft)
         }
         .padding(14)
         .atriaRaisedCard(emphasis: .soft)
@@ -650,28 +650,20 @@ private struct AtriaPulseCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Heart rate", subtitle: "Live BPM from the current session")
+                AtriaPanelSectionHeader(title: "Heart rate", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: live.contactText,
-                                systemImage: live.hasContact ? "heart.fill" : "heart.slash",
-                                tint: live.hasContact ? .red : .orange)
+                AtriaStateBadge(state: live.hasContact ? .live : .noContact)
             }
-
-            HStack(alignment: .firstTextBaseline) {
-                Text(live.heartRateText)
-                    .font(.system(size: 54, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("bpm")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-
-            AtriaPulseSparklineHost(sparklineStore: sparklineStore)
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                AtriaMetricTile(label: "Now",
+                                value: live.heartRateText,
+                                unit: "bpm",
+                                state: live.hasContact ? .live : .noContact,
+                                tint: live.hasContact ? .red : .orange,
+                                sparklineValues: sparklineStore.state.values)
                 pulseStatTiles
             }
         }
@@ -681,12 +673,21 @@ private struct AtriaPulseCard: View, Equatable {
 
     @ViewBuilder
     private var pulseStatTiles: some View {
-        AtriaInlineQuickStat(label: "Average", value: live.averageHeartRateText)
-        AtriaInlineQuickStat(label: "Peak", value: live.peakHeartRateText)
-        AtriaInlineQuickStat(label: "Resting", value: restingHeartRateText)
+        AtriaMetricTile(label: "Average",
+                        value: live.averageHeartRateText,
+                        state: live.hasContact ? .live : .learning,
+                        tint: .pink)
+        AtriaMetricTile(label: "Peak",
+                        value: live.peakHeartRateText,
+                        state: live.hasContact ? .live : .learning,
+                        tint: .red)
+        AtriaMetricTile(label: "Resting",
+                        value: restingHeartRateText,
+                        state: .personalBaseline,
+                        tint: .blue)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
 private struct AtriaPulseSparklineHost: View {
@@ -709,42 +710,42 @@ private struct AtriaHRVCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "HRV", subtitle: "Live RR window and confidence")
+                AtriaPanelSectionHeader(title: "HRV", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: live.rrContinuityText,
-                                systemImage: "waveform.path.ecg",
-                                tint: continuityTint)
+                AtriaStateBadge(state: hrvState)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 hrvStatTiles
             }
-
-            Text(hero.hrvNarrative)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(hero.stressNarrative)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
     }
 
-    @ViewBuilder
-    private var hrvStatTiles: some View {
-        AtriaInlineQuickStat(label: "RMSSD", value: hero.hrvValue)
-        AtriaInlineQuickStat(label: "Window", value: hero.rrPackageText)
-        AtriaInlineQuickStat(label: "Confidence", value: hero.hrvDetail)
-        AtriaInlineQuickStat(label: "Stress", value: hero.stressValue, detail: hero.stressDetail)
+    private var hrvState: AtriaMetricState {
+        hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    @ViewBuilder
+    private var hrvStatTiles: some View {
+        AtriaMetricTile(label: "RMSSD",
+                        value: hero.hrvValue,
+                        state: hrvState,
+                        tint: .pink)
+        AtriaMetricTile(label: "Window",
+                        value: hero.rrPackageText,
+                        state: live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .learning : .live,
+                        tint: continuityTint)
+        AtriaMetricTile(label: "Stress",
+                        value: hero.stressValue,
+                        state: .local,
+                        tint: .purple)
+    }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
@@ -752,16 +753,11 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            AtriaPanelSectionHeader(title: "Coach", subtitle: "Recovery and strain for today")
+            AtriaPanelSectionHeader(title: "Coach", subtitle: "")
 
             GlassEffectContainer(spacing: 12) {
                 metricContent
             }
-
-            Text(hero.headline)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .atriaRaisedCard(emphasis: .soft)
@@ -776,17 +772,22 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     @ViewBuilder
     private var recoveryStrainTiles: some View {
-        AtriaRecoveryMeter(estimate: hero.recoveryEstimate)
-        AtriaStrainMeter(strain: hero.strain,
-                         detail: hero.strainNarrative,
-                         confidence: hero.strainConfidence)
+        AtriaMetricTile(label: "Recovery",
+                        value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
+                        unit: hero.recoveryEstimate.percent == nil ? nil : "%",
+                        state: hero.recoveryEstimate.percent == nil ? .learning : .validated,
+                        tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange)
+        AtriaMetricTile(label: "Strain",
+                        value: String(format: "%.1f", hero.strain),
+                        state: .local,
+                        tint: Metrics.strainColor(hero.strain))
         AtriaTrainingLoadTile(ratio: hero.loadRatioText,
                               target: hero.loadTargetText,
                               confidence: hero.loadConfidence,
                               narrative: hero.loadNarrative)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
 private struct AtriaTrainingLoadTile: View, Equatable {
@@ -800,32 +801,11 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Load ratio", systemImage: "chart.line.uptrend.xyaxis")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.blue)
-
-            Text(ratio)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-
-            AtriaInlineQuickStat(label: "Target", value: target)
-
-            Text(confidence)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(confidenceTint)
-
-            Text(narrative)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: .blue)
+        AtriaMetricTile(label: "Load",
+                        value: ratio,
+                        state: confidence == "local" ? .local : .learning,
+                        tint: confidenceTint,
+                        footnote: target)
     }
 }
 
@@ -866,7 +846,7 @@ private struct AtriaProfileCard: View, Equatable {
                 }
             }
             .padding(8)
-            .atriaRaisedCard(cornerRadius: 22, emphasis: .soft)
+            .atriaRaisedCard(emphasis: .soft)
 
             ViewThatFits {
                 HStack(spacing: 12) {
@@ -959,7 +939,7 @@ private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
         .padding(14)
-        .atriaInsetCard(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(tint: .white)
     }
 }
 
@@ -994,6 +974,6 @@ private struct AtriaCollectionToggleCard: View {
                 .tint(tint)
         }
         .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: tint)
+        .atriaInsetCard(tint: tint)
     }
 }
