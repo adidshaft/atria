@@ -694,6 +694,31 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, text, "HKQuantitySample(type: stepCountType")
 
+    def test_healthkit_sleeping_wrist_temperature_is_read_only(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "private var sleepingWristTemperatureType: HKQuantityType?",
+            ".appleSleepingWristTemperature",
+            "readTypes.insert(sleepingWristTemperatureType)",
+            "private func auditSleepingWristTemperatureReadAvailability(reason: String)",
+            "HKSampleQuery(sampleType: sleepingWristTemperatureType",
+            "HKSampleSortIdentifierEndDate",
+            "WHOOPDBG healthkit_sleeping_wrist_temp_read status=%@",
+            "source=healthkit_read write_temperature=0 baseline_only=1",
+            "auditSleepingWristTemperatureReadAvailability(reason: \"authorization_cached\")",
+            "auditSleepingWristTemperatureReadAvailability(reason: \"authorization_granted\")",
+            "auditSleepingWristTemperatureReadAvailability(reason: \"up_to_date\")",
+        ]:
+            assert_contains(self, text, needle)
+
+        for forbidden in [
+            "HKQuantitySample(type: sleepingWristTemperatureType",
+            "HKQuantitySample(type: bodyTemperature",
+            ".bodyTemperature",
+        ]:
+            assert_not_contains(self, text, forbidden)
+
     def test_active_calories_are_persisted_as_estimates(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")

@@ -264,6 +264,7 @@ final class HealthKitExporter {
                                           reason: "up_to_date")
             auditHeartRateReferenceAvailability(sessions: sessions)
             auditAppleStepCountReadAvailability(reason: "up_to_date")
+            auditSleepingWristTemperatureReadAvailability(reason: "up_to_date")
             return
         }
 
@@ -343,6 +344,7 @@ final class HealthKitExporter {
                                     hrOnly: false)
             auditHeartRateReferenceAvailability(sessions: sessions)
             auditAppleStepCountReadAvailability(reason: "authorization_cached")
+            auditSleepingWristTemperatureReadAvailability(reason: "authorization_cached")
             return
         }
 
@@ -395,6 +397,7 @@ final class HealthKitExporter {
                                              hrOnly: false)
                 self.auditHeartRateReferenceAvailability(sessions: sessions)
                 self.auditAppleStepCountReadAvailability(reason: "authorization_granted")
+                self.auditSleepingWristTemperatureReadAvailability(reason: "authorization_granted")
             }
         }
     }
@@ -404,6 +407,7 @@ final class HealthKitExporter {
         WHOOPDebugLog("WHOOPDBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
         auditHeartRateReferenceAvailability(sessions: sessions)
         auditAppleStepCountReadAvailability(reason: "launch_arg")
+        auditSleepingWristTemperatureReadAvailability(reason: "launch_arg")
     }
 
     func resetAndRebuildAtriaHeartRateFromLaunchIfRequested(arguments: [String],
@@ -1297,6 +1301,36 @@ final class HealthKitExporter {
                   steps > 0 ? "ok" : "empty",
                   reason,
                   steps)
+        }
+        store.execute(query)
+    }
+
+    private func auditSleepingWristTemperatureReadAvailability(reason: String) {
+        guard let sleepingWristTemperatureType else {
+            WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=unavailable reason=%@ samples=0 source=healthkit_read write_temperature=0",
+                  reason)
+            return
+        }
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end.addingTimeInterval(-30 * 24 * 60 * 60)
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        let query = HKSampleQuery(sampleType: sleepingWristTemperatureType,
+                                  predicate: predicate,
+                                  limit: 1,
+                                  sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
+            if let error {
+                WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=query_error reason=%@ samples=0 source=healthkit_read write_temperature=0 error=%@",
+                      reason,
+                      String(describing: error))
+                return
+            }
+            let quantitySamples = samples as? [HKQuantitySample] ?? []
+            let latest = quantitySamples.first?.quantity.doubleValue(for: .degreeCelsius())
+            WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=%@ reason=%@ samples=%d latest_celsius=%@ source=healthkit_read write_temperature=0 baseline_only=1",
+                  quantitySamples.isEmpty ? "empty" : "ok",
+                  reason,
+                  quantitySamples.count,
+                  latest.map { String(format: "%.2f", $0) } ?? "none")
         }
         store.execute(query)
     }
