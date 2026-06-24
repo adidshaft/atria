@@ -79,16 +79,20 @@ test_handoff_static_checks.py`, no `https://` clients).
   as native circular glass controls, with static coverage pinning the compact
   toolbar spacing. Theme preference is persisted through Settings with a bordered
   native Liquid Glass system/light/dark switcher and applied via
-  `preferredColorScheme`; the debug launch route now defers Settings presentation
-  until after the home view appears so physical screenshots can verify it. The
-  static suite now guards the no-lag rule by forbidding `ViewThatFits`,
+  `preferredColorScheme`; the debug launch route now opens Settings immediately
+  and retries after the first layout pass so physical screenshots can verify it.
+  The static suite now guards the no-lag rule by forbidding `ViewThatFits`,
   `.shadow(`, `.blur(`, and material fallbacks in app Swift.
 - Verification so far: `python3 test_handoff_static_checks.py` green (43), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`;
-  Settings appearance screenshot captured at
+  current-head toolbar screenshot captured at
+  `logs/live-device/screenshots/advanced-metrics-current-main-settings-20260625T0518Z.png`;
+  Settings appearance screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-settings-appearance-deferred-20260625T0456Z.png`;
+  fixed Settings route screenshot captured at
+  `logs/live-device/screenshots/advanced-metrics-settings-route-fixed-20260625T0520Z.png`;
   estimate/research badge screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-calories-estimate-badge-20260625T0458Z.png`,
   `logs/live-device/screenshots/advanced-metrics-vo2-estimate-badge-20260625T0500Z.png`,

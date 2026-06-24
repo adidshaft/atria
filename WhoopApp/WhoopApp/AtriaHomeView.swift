@@ -411,6 +411,7 @@ struct AtriaHomeView: View {
             model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
         case "settings":
             selectedTab = .overview
+            showSettings = true
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(250))
                 showSettings = true

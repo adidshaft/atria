@@ -116,6 +116,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "arguments.contains(\"--atria-open-settings\")",
             "requestedScreen = \"settings\"",
             "didApplyDebugUIScreenLaunchArgument = true",
+            "case \"settings\":\n            selectedTab = .overview\n            showSettings = true",
             ".preferredColorScheme(preferredColorScheme)",
             "case \"light\": return .light",
             "case \"dark\": return .dark",
