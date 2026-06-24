@@ -36,6 +36,11 @@ class HandoffStaticChecks(unittest.TestCase):
         forbidden = [
             "#available",
             "ultraThinMaterial",
+            "thinMaterial",
+            "regularMaterial",
+            "thickMaterial",
+            ".shadow(",
+            ".blur(",
             "LegacyContentView",
             "DashboardSection",
             "AtriaGlassToolbar",
