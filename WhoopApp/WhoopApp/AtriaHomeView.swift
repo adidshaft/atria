@@ -125,7 +125,7 @@ struct AtriaHomeView: View {
                 }
             }
             .tabBarMinimizeBehavior(.onScrollDown)
-            .tabViewBottomAccessory(isEnabled: model.coreLiveStore.state.status == .connected) {
+            .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessory(liveStore: model.coreLiveStore)
             }
 
@@ -284,6 +284,11 @@ struct AtriaHomeView: View {
 
     private var contentWidth: CGFloat {
         horizontalSizeClass == .regular ? 1120 : 720
+    }
+
+    private var shouldShowLiveAccessory: Bool {
+        model.statusStore.state.status == .connected
+            && model.coreLiveStore.state.status == .connected
     }
 
     private var liveSideEffectUpdates: AnyPublisher<Void, Never> {
@@ -1003,26 +1008,34 @@ private struct AtriaLiveTabAccessory: View {
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                 .monospacedDigit()
 
-            Text(liveStore.state.sessionSampleCount > 0 ? "samples" : "connected")
+            Text(sampleLabel)
                 .font(isInline ? .caption2.weight(.semibold) : .caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             if !isInline {
                 Spacer(minLength: 0)
-                Label(liveStore.state.rrContinuityText, systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
                 Label(liveStore.state.batteryText, systemImage: "battery.100")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
         }
         .padding(.horizontal, isInline ? 8 : 12)
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live strap connected. \(liveStore.state.sessionSampleCount) samples. Battery \(liveStore.state.batteryText).")
+        .accessibilityLabel("Live strap connected. \(liveStore.state.sessionSampleCount) \(sampleLabel). Battery \(liveStore.state.batteryText). \(liveStore.state.rrContinuityText).")
+    }
+
+    private var sampleLabel: String {
+        switch liveStore.state.sessionSampleCount {
+        case 0:
+            return "connected"
+        case 1:
+            return "sample"
+        default:
+            return "samples"
+        }
     }
 }
 
