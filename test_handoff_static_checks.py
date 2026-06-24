@@ -252,17 +252,26 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaResearchProbe",
             "case metadata = \"0x31\"",
             "case historical = \"0x2f\"",
+            "enum ModelGeneration",
+            "case whoopMG",
+            "redactIdentifierLikeTokens",
             "(90...100).contains(value)",
             "(2_500...4_200).contains(value)",
             "oxygenOffsetSummary",
             "temperatureOffsetSummary",
+            "modelGeneration(in: payload)",
         ]:
             assert_contains(self, probe, needle)
 
         for needle in [
+            "case whoop4",
+            "case .whoop4: return \"WHOOP 4.0\"",
             "guard supportsSpO2Probe || supportsSkinTempProbe else { return }",
             "AtriaResearchProbe.analyze(payload: payload, source: source)",
+            "applyModelMetadataIfExplicit(summary)",
+            "WHOOPDBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
             "WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated",
+            "model_generation=%@ model_evidence=%@",
             "metric_promotions=0 healthkit_write=0 raw_storage=0",
             "recordResearchProbeCandidate(payload: payload, source: .metadata)",
             "recordResearchProbeCandidate(payload: payload, source: .historical)",

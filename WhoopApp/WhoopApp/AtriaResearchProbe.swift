@@ -6,6 +6,14 @@ enum AtriaResearchProbe {
         case historical = "0x2f"
     }
 
+    enum ModelGeneration: String, Equatable {
+        case unknown
+        case whoop3
+        case whoop4
+        case whoop5
+        case whoopMG
+    }
+
     struct Candidate: Equatable {
         let offset: Int
         let value: Int
@@ -16,9 +24,11 @@ enum AtriaResearchProbe {
         let payloadLength: Int
         let oxygenByteCandidates: [Candidate]
         let temperatureWordCandidates: [Candidate]
+        let modelGeneration: ModelGeneration
+        let modelEvidence: String
 
         var hasAnyCandidate: Bool {
-            !oxygenByteCandidates.isEmpty || !temperatureWordCandidates.isEmpty
+            !oxygenByteCandidates.isEmpty || !temperatureWordCandidates.isEmpty || modelGeneration != .unknown
         }
 
         var oxygenOffsetSummary: String {
@@ -41,10 +51,13 @@ enum AtriaResearchProbe {
     static func analyze(payload: [UInt8], source: Source) -> Summary {
         let oxygen = oxygenCandidates(in: payload)
         let temperature = temperatureCandidates(in: payload)
+        let model = modelGeneration(in: payload)
         return Summary(source: source,
                        payloadLength: payload.count,
                        oxygenByteCandidates: oxygen,
-                       temperatureWordCandidates: temperature)
+                       temperatureWordCandidates: temperature,
+                       modelGeneration: model.generation,
+                       modelEvidence: model.evidence)
     }
 
     private static func oxygenCandidates(in payload: [UInt8]) -> [Candidate] {
@@ -64,5 +77,67 @@ enum AtriaResearchProbe {
             candidates.append(Candidate(offset: offset, value: value))
         }
         return candidates
+    }
+
+    private static func modelGeneration(in payload: [UInt8]) -> (generation: ModelGeneration, evidence: String) {
+        let runs = printableRuns(in: payload)
+        let redactedRuns = runs.map(redactIdentifierLikeTokens)
+        for run in redactedRuns {
+            let normalized = run
+                .uppercased()
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: ".", with: " ")
+            if normalized.contains("WHOOP MG") || normalized.contains("WHOOPMG") || normalized.contains(" MG") {
+                return (.whoopMG, run)
+            }
+            if normalized.contains("WHOOP 5") || normalized.contains("WHOOP5") {
+                return (.whoop5, run)
+            }
+            if normalized.contains("WHOOP 4") || normalized.contains("WHOOP4") {
+                return (.whoop4, run)
+            }
+            if normalized.contains("WHOOP 3") || normalized.contains("WHOOP3") {
+                return (.whoop3, run)
+            }
+        }
+        return (.unknown, redactedRuns.prefix(4).joined(separator: "|"))
+    }
+
+    private static func printableRuns(in bytes: [UInt8], minimumLength: Int = 4) -> [String] {
+        var runs: [String] = []
+        var current: [UInt8] = []
+        func flush() {
+            defer { current.removeAll(keepingCapacity: true) }
+            guard current.count >= minimumLength,
+                  let string = String(bytes: current, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !string.isEmpty else { return }
+            runs.append(string)
+        }
+        for byte in bytes {
+            if byte == 0x0a || byte == 0x0d || (byte >= 0x20 && byte <= 0x7e) {
+                current.append(byte)
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return runs
+    }
+
+    private static func redactIdentifierLikeTokens(_ value: String) -> String {
+        value
+            .split(separator: " ")
+            .map { token -> String in
+                let scalar = token.unicodeScalars
+                let letters = scalar.filter { CharacterSet.letters.contains($0) }.count
+                let digits = scalar.filter { CharacterSet.decimalDigits.contains($0) }.count
+                if token.count >= 8, digits >= 3, letters >= 3 {
+                    return "[redacted]"
+                }
+                return String(token)
+            }
+            .joined(separator: " ")
     }
 }

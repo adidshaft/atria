@@ -20,10 +20,11 @@ test_handoff_static_checks.py`, no `https://` clients).
 - VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
   formula directly and requires measured HRmax plus 7 resting baselines before
   leaving learning copy.
-- WHOOP model/capability gates: **scaffolded**. Proprietary WHOOP service marks
-  a strap as 4.0-class for SpO₂/temp probes, but the visible model label remains
-  generic until a metadata byte is proven. ECG/BP gates remain false unless MG is
-  detected.
+- WHOOP model/capability gates: **metadata-aware scaffold shipped**. Proprietary
+  WHOOP service marks a strap as 4.0-class for SpO₂/temp probes. Metadata (`0x31`)
+  is now scanned for explicit, redacted generation tokens and only then promotes
+  the visible label to WHOOP 4.0/5.0/MG; unknown metadata keeps the honest generic
+  label. ECG/BP gates remain false unless MG is explicitly detected.
 - HealthKit additions: **scaffolded and gated**. Export authorization now includes
   read-only Apple steps, sleeping wrist temperature, and cuff BP types; it never
   writes BP/ECG/SpO₂. Active energy writes only for ready workout sessions with a
@@ -154,7 +155,7 @@ var heightCm: Double = 0            // optional, 0 == unknown
 - Gate calorie/VO₂ confidence on these being set; otherwise show "Add weight to
   estimate calories" once, not repeatedly.
 
-## 2b. Strap naming, rename, & model detection — **PARTLY SHIPPED; finish the model decode**
+## 2b. Strap naming, rename, & model detection — **PARTLY SHIPPED; gather real metadata tokens**
 
 ### What is already done (verified on a real WHOOP 4.0)
 - Reads Device Information `0x180A`: Model `0x2A24`, Firmware `0x2A26`, Hardware
@@ -171,12 +172,19 @@ var heightCm: Double = 0            // optional, 0 == unknown
   device name shows. The peripheral name (e.g. "Adidshaft's WHOOP", seeded by the
   WHOOP account) is the recognizable identifier and is shown by default.
 
-### What to finish — decode the generation from the proprietary metadata frame
+### What is now scaffolded — conservative proprietary metadata classification
+`AtriaResearchProbe` scans metadata frame `0x31` printable runs, redacts
+identifier-like tokens, and maps only explicit WHOOP generation strings to a model:
+`WHOOP 4`, `WHOOP 5`, or `WHOOP MG`. Unknown metadata stays generic and does not
+downgrade the existing proprietary-service 4.0-class probe capability.
+
+### What to finish — prove the observed metadata token map on-device
 Since Device Info is empty, the model/firmware/serial live in the WHOOP **metadata
 frame `0x31`** (and possibly the clock/data-range responses), which the protocol
 tools already classify. To get a real "WHOOP 4.0/5.0/MG":
-1. With frame capture on, dump `0x31` metadata payloads on connect; look for a
-   version/model field (often a fixed-offset byte or an ASCII substring).
+1. With frame capture on, inspect the redacted `model_generation` /
+   `model_evidence` fields from `WHOOPDBG sensor_research_probe` and
+   `WHOOPDBG model_gate status=metadata_explicit`.
 2. Cross-check against firmware patterns and which proprietary service generation
    responds. Build the map from observed bytes; **unknown → keep "WHOOP strap"**,
    never guess. Keep Serial out of storage (PII).
