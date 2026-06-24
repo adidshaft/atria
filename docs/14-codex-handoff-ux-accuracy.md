@@ -56,16 +56,39 @@ because a **state-restored** connection (the overnight case) has neither
 no churn. Logs: `foreground_keepalive armed=1`, then `status=silent
 action=reassert_notify` → `action=fresh_scan_reconnect`.
 
-### Still needs a worn overnight re-test (owner/Codex)
-Wear the strap, keep the app foreground with auto-lock off overnight, then in the
-morning pull `Documents/sessions.json` + the prefs plist and confirm:
-- a continuous overnight session (not just an evening one),
-- `whoop.sample.rawNotifications` climbed through the night,
-- `whoop.watchdog.hrContinuityCount` did NOT spike (teardown fix holding),
-- if any silent gap occurred, `foreground_keepalive` recovered it.
-Pull prefs with `plistlib`; watch `whoop.link.disconnects`,
-`whoop.watchdog.hrContinuityCount`, and the `reassert_keep_connection` /
-`foreground_keepalive` actions.
+### 0b. Background logging — device-verified (2026-06-25)
+
+Ran the three real-strap scenarios on the cabled iPhone with the strap reading
+accepted HR. All passed:
+
+| Scenario | Result |
+|---|---|
+| App **backgrounded** (Clock foregrounded ~135s) | `whoop.sample.acceptedSamples` **+152**, `whoop.link.disconnects` +0, `whoop.watchdog.hrContinuityCount` +0 |
+| App **terminated** (`devicectl process terminate`, no manual relaunch, ~150s) | iOS **state-restoration relaunched** Atria (new PID), accepted **+9513** — reconnected, resumed, and backfilled buffered data |
+| **Disconnect continuity** | `whoop.link.lastAutoSaveStatus = checkpointed_continuity` (samples preserved, session not fragmented) |
+
+So backgrounded + terminated collection both work, and `willRestoreState`
+rediscovers services / re-subscribes `2A37` on restore. The terminate→restore
+backfill is the "close the app, data comes back on reopen" behavior — via strap
+buffering, no cloud.
+
+**iOS caveat to document for users:** a *user force-quit* (swipe-up in the app
+switcher) is different from a system/memory kill — Apple does **not** relaunch a
+force-quit `bluetooth-central` app until the user opens it again. devicectl's
+terminate behaves like a system kill (restores); a true swipe-kill will not, and
+the gap is covered by strap backfill on next open. Nothing the app can do about
+the force-quit policy.
+
+Hardening added (`6453c5c`): the foreground keepalive now flushes the
+active-session journal ≤ once/min on its healthy observe tick, so a long
+foreground session is crash-safe even though the supervisor is paused foreground.
+
+### Still useful: a worn overnight re-test (owner/Codex)
+The above covers minutes-scale; an 8-hour worn run is still the gold standard.
+Wear the strap, auto-lock off, then pull `Documents/sessions.json` + the prefs
+plist and confirm a continuous overnight session, `rawNotifications` climbed all
+night, `hrContinuityCount` didn't spike, and any silent gap was recovered by
+`foreground_keepalive`.
 
 ## Hard constraint for this session
 
