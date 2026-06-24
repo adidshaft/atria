@@ -53,6 +53,7 @@ struct AtriaOverviewTabContent: View {
             if statusStore.state.status != .connected {
                 if hasUnlockedSecondarySections {
                     AtriaDisconnectedOverviewHost(statusStore: statusStore,
+                                                 heroStore: heroStore,
                                                  homeStatsStore: homeStatsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
@@ -144,6 +145,7 @@ struct AtriaOverviewTabContent: View {
 
 private struct AtriaDisconnectedOverviewHost: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
@@ -166,6 +168,11 @@ private struct AtriaDisconnectedOverviewHost: View {
                                            onOpenVitals: onOpenVitals,
                                            onOpenCollection: onOpenCollection)
                 .equatable()
+
+            AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                                             snapshotStore: snapshotStore,
+                                             store: store,
+                                             subtitle: "Last saved readiness")
 
             // Trends are local history — show them even while the strap is away.
             if hasTrendHistory {
@@ -398,7 +405,9 @@ struct AtriaOverviewLeadingSection: View {
         VStack(spacing: 16) {
             if segment == .today {
                 AtriaOverviewReadinessSectionHost(heroStore: heroStore,
-                                                 snapshotStore: snapshotStore)
+                                                 snapshotStore: snapshotStore,
+                                                 store: store,
+                                                 subtitle: "Your readiness right now")
 
                 AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
                                                  homeStatsStore: homeStatsStore,
@@ -431,21 +440,44 @@ struct AtriaOverviewLeadingSection: View {
 struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    @ObservedObject var store: SessionStore
+    let subtitle: String
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
-                                     snapshot: snapshotStore.state)
+                                     snapshot: snapshotStore.state,
+                                     trendValues: Self.restingTrendValues(from: store),
+                                     subtitle: subtitle)
             .equatable()
+    }
+
+    private static func restingTrendValues(from store: SessionStore) -> [Int] {
+        let calendar = Calendar.current
+        return store.sessions
+            .filter { $0.points.count >= 8 && $0.restingStable > 0 }
+            .sorted { $0.start < $1.start }
+            .reduce(into: [(day: Date, value: Int)]()) { days, session in
+                let day = calendar.startOfDay(for: session.start)
+                if let index = days.lastIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+                    days[index] = (day, min(days[index].value, session.restingStable))
+                } else {
+                    days.append((day, session.restingStable))
+                }
+            }
+            .suffix(14)
+            .map(\.value)
     }
 }
 
 struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let snapshot: AtriaHomeModel.Snapshot
+    let trendValues: [Int]
+    let subtitle: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            AtriaPanelSectionHeader(title: "Today at a glance", subtitle: "Your readiness right now")
+            AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
 
             HStack(alignment: .center, spacing: 16) {
                 recoveryRing
@@ -458,6 +490,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     glanceStat("Resting", hero.restingHeartRateText, "heart.fill", .red)
                 }
             }
+
+            restingTrend
         }
         .padding(16)
         .atriaCard(cornerRadius: 26, emphasis: .strong)
@@ -489,6 +523,29 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .frame(width: 104, height: 104)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Recovery \(hero.recoveryValue)")
+    }
+
+    @ViewBuilder
+    private var restingTrend: some View {
+        if trendValues.count > 1 {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Resting trend", systemImage: "waveform.path.ecg.rectangle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                    Spacer(minLength: 0)
+                    Text("14 sessions")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Sparkline(values: trendValues)
+                    .frame(height: 58)
+                    .accessibilityLabel("Resting heart rate trend")
+            }
+            .padding(12)
+            .atriaInsetCard(cornerRadius: 16, tint: .red)
+        }
     }
 
     private func recoveryColor(_ percent: Int?) -> Color {
