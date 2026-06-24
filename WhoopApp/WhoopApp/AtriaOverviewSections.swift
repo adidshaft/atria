@@ -308,18 +308,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                                      secondarySystemImage: "waveform.badge.magnifyingglass",
                                      secondaryAction: onOpenCollection)
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
-                    AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/7")
-                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
-                    AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/7")
-                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-                }
+            // Single adaptive grid (renders the tiles once, still responsive)
+            // instead of ViewThatFits, which renders both candidate layouts to
+            // measure them — doubling the per-card cost during scroll.
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
+                AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
+                AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/7")
+                AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
@@ -839,14 +834,8 @@ struct AtriaOverviewBehaviorJournalSection: View {
                 }
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    correlationTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    correlationTiles
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
+                correlationTiles
             }
 
             Text("Correlations are computed only on this device and stay in learning mode until a tag has at least three matching days.")
@@ -951,18 +940,10 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
                 .font(.subheadline.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
-                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
-                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
-                    AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
-                    AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
+                AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
+                AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }
         }
         .padding(16)
@@ -1276,14 +1257,8 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
                 }
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    savedStateTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    savedStateTiles
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
+                savedStateTiles
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
