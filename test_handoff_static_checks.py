@@ -281,6 +281,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "var sensorResearchProbeFrames: Int? = nil",
             "var spo2ResearchCandidateFrames: Int? = nil",
             "var skinTempResearchCandidateFrames: Int? = nil",
+            "var activeCalories: Double? = nil",
+            "var caloriesConfidence: String? = nil",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -623,6 +625,34 @@ class HandoffStaticChecks(unittest.TestCase):
             "HKUnit.count().unitDivided(by: .minute())",
         ]:
             assert_contains(self, text, needle)
+
+    def test_active_calories_are_persisted_as_estimates(self):
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "var activeCalories: Double? = nil",
+            "var caloriesConfidence: String? = nil",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "let activeCalories = Metrics.activeCalories(session",
+            "let caloriesConfidence: String? = session.count > 1 ? (profile.hasEnergyProfile ? \"estimate\" : \"needs_profile\") : nil",
+            "activeCalories: activeCalories",
+            "caloriesConfidence: caloriesConfidence",
+        ]:
+            assert_contains(self, ble, needle)
+
+        for needle in [
+            "if session.caloriesConfidence == \"estimate\"",
+            "let activeCalories = session.activeCalories",
+            "return activeCalories",
+            "\"atria_metric_confidence\": \"estimate\"",
+            "\"atria_metric_source\": \"keytel_2005_hr_energy\"",
+        ]:
+            assert_contains(self, healthkit, needle)
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")

@@ -16,7 +16,8 @@ test_handoff_static_checks.py`, no `https://` clients).
   publishes `phoneStepsToday`, distance, and floors, and shows a single `Steps`
   tile in Today. Strap-derived steps are research-only in developer surfaces.
 - Active calories: **estimate-gated**. Keytel HR→EE estimate is implemented and
-  only produces `kcal` when sex + weight are set; otherwise the UI stays learning.
+  persisted on saved sessions as `activeCalories`/`caloriesConfidence`. It only
+  produces `kcal` when sex + weight are set; otherwise the UI stays learning.
 - VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
   formula directly and requires measured HRmax plus 7 resting baselines before
   leaving learning copy.
