@@ -28,7 +28,7 @@ struct AtriaMetricRing: View, Equatable {
                 Circle()
                     .stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
 
-                if fraction != nil {
+                if fraction != nil && clamped >= 0.01 {
                     Circle()
                         .trim(from: 0, to: clamped)
                         .stroke(
