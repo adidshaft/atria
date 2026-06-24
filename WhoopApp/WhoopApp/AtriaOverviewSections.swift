@@ -487,13 +487,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                 value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
                                 fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
                                 tint: recoveryColor(hero.recoveryEstimate.percent),
-                                size: 118)
+                                size: 104)
                     .frame(maxWidth: .infinity)
                 AtriaMetricRing(label: "Strain",
                                 value: metricDisplayValue(hero.strainValue),
                                 fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
                                 tint: .orange,
-                                size: 94)
+                                size: 84)
                     .frame(maxWidth: .infinity)
             }
 

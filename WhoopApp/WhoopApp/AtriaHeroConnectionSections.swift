@@ -286,7 +286,7 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(heartRateText)
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
                     .monospacedDigit()
                 Text("bpm")
                     .font(.caption.weight(.semibold))
