@@ -91,6 +91,7 @@ struct AtriaCollectionTabContent: View {
                         if developerModeEnabled {
                             rrReferenceCard
                             hrReferenceCard
+                            imuAuditCard
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -107,6 +108,7 @@ struct AtriaCollectionTabContent: View {
                     if developerModeEnabled {
                         rrReferenceCard
                         hrReferenceCard
+                        imuAuditCard
                     }
                     collectionControlsCard
                     collectionStatusCard
@@ -135,6 +137,10 @@ struct AtriaCollectionTabContent: View {
                                            showHRImporter: $showHRImporter,
                                            hrShareURL: $hrShareURL,
                                            hrImportStatus: hrImportStatus)
+    }
+
+    private var imuAuditCard: some View {
+        AtriaCollectionIMUAuditCard(sessions: store.sessions)
     }
 
     private var collectionControlsCard: some View {
@@ -443,6 +449,97 @@ private struct AtriaCollectionHRReferenceCardHost: View {
             .buttonStyle(.glassProminent)
         .tint(.green)
         }
+    }
+}
+
+private struct AtriaCollectionIMUAuditCard: View, Equatable {
+    let sessions: [SavedSession]
+
+    static func == (lhs: AtriaCollectionIMUAuditCard, rhs: AtriaCollectionIMUAuditCard) -> Bool {
+        lhs.summary == rhs.summary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "IMU audit", subtitle: "")
+                Spacer(minLength: 0)
+                AtriaStateBadge(state: summary.validatedFrames > 0 ? .validated : .learning)
+            }
+
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                AtriaMetricTile(label: "Frames",
+                                value: summary.frameText,
+                                state: summary.frameCount > 0 ? .local : .learning,
+                                tint: .indigo)
+                AtriaMetricTile(label: "Rate",
+                                value: summary.sampleRateText,
+                                unit: summary.sampleRateHz == nil ? nil : "Hz",
+                                state: summary.sampleRateHz == nil ? .learning : .local,
+                                tint: .blue)
+                AtriaMetricTile(label: "Layout",
+                                value: summary.layoutText,
+                                state: summary.layoutText == "--" ? .learning : .local,
+                                tint: .purple)
+                AtriaMetricTile(label: "Gravity",
+                                value: summary.gravityText,
+                                state: summary.validatedFrames > 0 ? .validated : .learning,
+                                tint: summary.validatedFrames > 0 ? .green : .orange)
+            }
+
+            Text("Research only; compare with phone motion before steps or sleep.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .atriaRaisedCard(emphasis: .soft)
+    }
+
+    private var summary: IMUAuditSummary {
+        IMUAuditSummary(sessions: sessions)
+    }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
+}
+
+private struct IMUAuditSummary: Equatable {
+    let frameCount: Int
+    let sampleCount: Int
+    let validatedFrames: Int
+    let sampleRateHz: Double?
+    let scale: Double?
+    let endian: String?
+
+    init(sessions: [SavedSession]) {
+        let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
+        frameCount = imuSessions.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
+        sampleCount = imuSessions.reduce(0) { $0 + ($1.imuSampleCount ?? 0) }
+        validatedFrames = imuSessions.filter { $0.imuValidationState == "gravity_validated_research" }.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
+        let rates = imuSessions.compactMap(\.imuSampleRateHz)
+        sampleRateHz = rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
+        scale = imuSessions.compactMap(\.imuScale).last
+        endian = imuSessions.compactMap(\.imuEndian).last
+    }
+
+    var frameText: String {
+        frameCount > 0 ? "\(frameCount)" : "--"
+    }
+
+    var sampleRateText: String {
+        sampleRateHz.map { String(format: "%.1f", $0) } ?? "--"
+    }
+
+    var layoutText: String {
+        guard let scale, let endian, !endian.isEmpty else { return "--" }
+        return "\(endian.prefix(1))/\(Int(scale.rounded()))"
+    }
+
+    var gravityText: String {
+        guard frameCount > 0 else { return "--" }
+        return validatedFrames > 0 ? "Seen" : "Waiting"
     }
 }
 
