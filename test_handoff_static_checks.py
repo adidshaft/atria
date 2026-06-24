@@ -60,6 +60,29 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
 
+    def test_top_left_status_is_native_liquid_glass_button(self):
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+
+        for needle in [
+            "ToolbarItem(placement: .topBarLeading)",
+            "ble.startScan(reason: \"home_status_button\")",
+            ".buttonStyle(.plain)",
+            ".glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)",
+            "case .connected: return \"Live/Connected\"",
+            "case .connecting, .scanning: return \"Connecting...\"",
+            "case .poweredOff, .disconnected: return \"Not Connected\"",
+            "case .connected: return .green",
+            "case .connecting, .scanning: return .yellow",
+            "case .poweredOff, .disconnected: return .red",
+        ]:
+            assert_contains(self, home, needle)
+
+        for forbidden in [
+            "AtriaLiquidStatusPillBackground",
+            "home_status_chip",
+        ]:
+            assert_not_contains(self, home, forbidden)
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)

@@ -518,26 +518,27 @@ struct AtriaHomeView: View {
         // Single connection-status indicator for the whole screen, colored by
         // state and tappable to scan when not connected.
         ToolbarItem(placement: .topBarLeading) {
-            // A non-button styled chip so iOS 26 doesn't collapse it to an
-            // icon-only glass circle. Single connection-status indicator,
-            // colored by state, tappable to scan when not connected.
-            HStack(spacing: 5) {
-                Image(systemName: statusSymbol)
-                    .imageScale(.small)
-                Text(statusShortLabel)
-            }
-            .font(.caption.weight(.bold))
-            .foregroundStyle(statusChipForeground)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(AtriaLiquidStatusPillBackground(tint: statusTint))
-            .fixedSize()
-            .contentShape(.capsule)
-            .onTapGesture {
+            Button {
                 if model.statusStore.state.status != .connected {
-                    ble.startScan(reason: "home_status_chip")
+                    ble.startScan(reason: "home_status_button")
                 }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: statusSymbol)
+                        .imageScale(.small)
+                    Text(statusShortLabel)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+                .font(.caption.weight(.bold))
+                .foregroundStyle(statusChipForeground)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .frame(minWidth: 112, minHeight: 34)
+                .fixedSize(horizontal: true, vertical: false)
             }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)
             .accessibilityLabel("Connection \(statusShortLabel)")
         }
 
@@ -930,68 +931,6 @@ struct AtriaHomeView: View {
                       elapsedMS,
                       status.logToken,
                       selectedTab.rawValue)
-    }
-}
-
-private struct AtriaLiquidStatusPillBackground: View {
-    let tint: Color
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Capsule(style: .continuous)
-            .fill(baseFill)
-            .overlay {
-                Capsule(style: .continuous)
-                    .fill(liquidWash)
-                    .blendMode(colorScheme == .dark ? .screen : .plusLighter)
-                    .opacity(colorScheme == .dark ? 0.62 : 0.38)
-            }
-            .overlay(alignment: .topLeading) {
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(colors: [
-                            Color.white.opacity(colorScheme == .dark ? 0.26 : 0.58),
-                            .clear
-                        ], startPoint: .topLeading, endPoint: .center)
-                    )
-                    .padding(1)
-                    .opacity(0.7)
-            }
-            .overlay {
-                Capsule(style: .continuous)
-                    .strokeBorder(borderGradient, lineWidth: 1)
-            }
-            .shadow(color: tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
-                    radius: 10,
-                    x: 0,
-                    y: 4)
-            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.42 : 0.10),
-                    radius: 8,
-                    x: 0,
-                    y: 2)
-    }
-
-    private var baseFill: AnyShapeStyle {
-        colorScheme == .dark
-            ? AnyShapeStyle(Color(red: 0.035, green: 0.045, blue: 0.058).opacity(0.94))
-            : AnyShapeStyle(Color.white.opacity(0.78))
-    }
-
-    private var liquidWash: LinearGradient {
-        LinearGradient(colors: [
-            tint.opacity(colorScheme == .dark ? 0.34 : 0.28),
-            tint.opacity(colorScheme == .dark ? 0.12 : 0.14),
-            Color.white.opacity(colorScheme == .dark ? 0.08 : 0.24)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    private var borderGradient: LinearGradient {
-        LinearGradient(colors: [
-            tint.opacity(0.95),
-            tint.opacity(colorScheme == .dark ? 0.42 : 0.30),
-            Color.white.opacity(colorScheme == .dark ? 0.12 : 0.70)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
 
