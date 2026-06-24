@@ -76,8 +76,9 @@ test_handoff_static_checks.py`, no `https://` clients).
 - UI controls: **verified on physical iPhone**. Top-left status is now a
   native SwiftUI Liquid Glass button and maps to green `Live/Connected`, yellow
   `Connecting...`, and red `Not Connected`. Top-right buttons are grouped closer
-  as native glass controls. Theme preference is persisted through Settings with a
-  bordered native Liquid Glass system/light/dark switcher and applied via
+  as native circular glass controls, with static coverage pinning the compact
+  toolbar spacing. Theme preference is persisted through Settings with a bordered
+  native Liquid Glass system/light/dark switcher and applied via
   `preferredColorScheme`; the debug launch route now defers Settings presentation
   until after the home view appears so physical screenshots can verify it. The
   static suite now guards the no-lag rule by forbidding `ViewThatFits`,

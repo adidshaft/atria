@@ -81,6 +81,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .connected: return .green",
             "case .connecting, .scanning: return .yellow",
             "case .poweredOff, .disconnected: return .red",
+            "HStack(spacing: 7)",
+            ".buttonBorderShape(.circle)",
         ]:
             assert_contains(self, home, needle)
 
@@ -99,9 +101,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "appearanceButton(\"System\", mode: \"system\", icon: \"circle.lefthalf.filled\")",
             "appearanceButton(\"Light\", mode: \"light\", icon: \"sun.max.fill\")",
             "appearanceButton(\"Dark\", mode: \"dark\", icon: \"moon.fill\")",
+            "HStack(spacing: 8)",
             ".glassEffect(.regular.tint(Color(red: 0.541, green: 0.22, blue: 0.961).opacity(0.12)), in: .rect(cornerRadius: 5))",
             ".stroke(Color(red: 0.541, green: 0.22, blue: 0.961), lineWidth: 1)",
             ".buttonStyle(.glass)",
+            ".buttonBorderShape(.capsule)",
             "private func isAppearanceModeSelected(_ mode: String) -> Bool",
         ]:
             assert_contains(self, settings, needle)
