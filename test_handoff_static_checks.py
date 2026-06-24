@@ -803,6 +803,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "if session.caloriesConfidence == \"estimate\"",
             "let activeCalories = session.activeCalories",
             "return activeCalories",
+            "if session.workoutReadiness(rest: rest, maxHR: maxHR).ready,\n               profile.hasEnergyProfile,\n               snapshot?.activeEnergyExported != true",
+            "if snapshot?.activeEnergyExported != true,\n           session.workoutReadiness(rest: rest, maxHR: maxHR).ready,\n           let profile",
             "\"atria_metric_confidence\": \"estimate\"",
             "\"atria_metric_source\": \"keytel_2005_hr_energy\"",
         ]:
@@ -830,6 +832,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "profile.maxHRSource == .measured",
             "restingBaselineSamples >= 7",
+            "if !vo2MaxPlanned,\n               profile.maxHRSource == .measured,\n               restingBaselineSamples >= 7,\n               snapshot?.vo2MaxExported != true",
+            "if snapshot?.vo2MaxExported != true,\n           let profile,\n           profile.maxHRSource == .measured,\n           restingBaselineSamples >= 7,\n           rest > 0,\n           maxHR > rest",
             "\"atria_metric_confidence\": \"rough_estimate\"",
             "\"atria_metric_source\": \"uth_sorensen_resting_hr\"",
         ]:
