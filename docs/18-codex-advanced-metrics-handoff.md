@@ -51,7 +51,8 @@ test_handoff_static_checks.py`, no `https://` clients).
 - Self-induced probe markers: **research-only marker log shipped in code**.
   Developer mode now exposes timestamp buttons for breath hold, heat, cold, and
   walk-test maneuvers so aggregate SpO₂/temp/IMU probe counts can be correlated
-  locally later. Markers are stored only in UserDefaults, log
+  locally. The same card now shows marker/session probe-window matches using only
+  saved aggregate candidate counts. Markers are stored only in UserDefaults, log
   `metric_promotions=0`, store no raw payloads, and never write to HealthKit.
 - BP/ECG fail-closed UX: **shipped in Settings**. A compact Sensors section says
   ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
@@ -63,7 +64,7 @@ test_handoff_static_checks.py`, no `https://` clients).
   is persisted through Settings and applied via `preferredColorScheme`; physical
   screenshot forcing for Settings was blocked because `devicectl` launch arguments
   were not delivered in this environment.
-- Verification so far: `python3 test_handoff_static_checks.py` green (35), generic
+- Verification so far: `python3 test_handoff_static_checks.py` green (37), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.
