@@ -346,9 +346,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     @Published private(set) var firmwareRevision: String = ""
     @Published private(set) var hardwareRevision: String = ""
 
-    /// Best-effort friendly model name. The exact strings WHOOP 4.0 reports are
-    /// confirmed on a real strap; until a value is in the known map we surface the
-    /// raw model string so the UI is always honest.
+    /// Best-effort friendly model name. WHOOP straps do not populate the standard
+    /// Device Information model string, so this usually falls back; the generation
+    /// decode lives in the proprietary metadata frame (see docs/18).
     var whoopModelLabel: String {
         let haystack = "\(modelNumber) \(hardwareRevision)".lowercased()
         if haystack.contains("mg") { return "WHOOP MG" }
@@ -357,6 +357,33 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if haystack.contains("3") { return "WHOOP 3.0" }
         let model = modelNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         return model.isEmpty ? "WHOOP strap" : model
+    }
+
+    // User-set strap name, persisted locally. Takes precedence over the BLE
+    // peripheral name (which WHOOP seeds from the owner's account, e.g.
+    // "Adidshaft's WHOOP"). Empty == use the peripheral name.
+    @Published var customDeviceName: String =
+        UserDefaults.standard.string(forKey: "atriaCustomDeviceName") ?? ""
+
+    /// The name to show everywhere: custom name if set, else the strap's own BLE
+    /// name, else a generic fallback. Never collapses a real name to "WHOOP strap".
+    var resolvedDeviceName: String {
+        let custom = customDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return custom }
+        let ble = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !ble.isEmpty && ble != "—" { return ble }
+        return "WHOOP strap"
+    }
+
+    func setCustomDeviceName(_ name: String) {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        guard trimmed != customDeviceName else { return }
+        customDeviceName = trimmed
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "atriaCustomDeviceName")
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: "atriaCustomDeviceName")
+        }
     }
     private(set) var frames: [WhoopFrame] = []        // decoded proprietary frames (append-only ring buffer)
     private(set) var lastHeartRates: [Int] = []       // small rolling window for a sparkline

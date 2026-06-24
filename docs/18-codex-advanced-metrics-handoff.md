@@ -7,6 +7,37 @@ judged against that reality. Do not fabricate physiology. Atria stays local-firs
 (no cloud, no account); keep the static suite green (`python3
 test_handoff_static_checks.py`, no `https://` clients).
 
+## OVERNIGHT OPERATING PRINCIPLES (this run is unattended — hold these above all)
+
+You will run for hours without a human in the loop. Four non-negotiables, in
+priority order. When any change risks one of these, stop and pick the safe option.
+
+1. **No external reference.** There is exactly ONE WHOOP 4.0 strap + the iPhone.
+   Never assume a lab device, a second wearable, a cuff, or cloud truth. Your only
+   references are the iPhone's own sensors (`CMPedometer`, `CMMotionManager`) and
+   physics (gravity = 1 g). If a metric can't be validated against those, it ships
+   research-gated, baseline-only, or not at all (§0). Never fabricate from HR/HRV.
+2. **No lag.** The UI must stay scroll-smooth like the native WHOOP app. Hard
+   rules: NO `.shadow`/`.blur`/Material on scrolling content; NO `ViewThatFits` in
+   list cells (it renders every candidate); every list cell `Equatable` and
+   `.equatable()`; heavy work off the main actor; throttle BLE→UI republishing.
+   After any UI change, scroll Today/Vitals/Data on the cabled phone and confirm no
+   jank. Adding a metric must not regress frame rate.
+3. **UX + UI quality.** Match the existing language: rings + `AtriaMetricTile` for
+   numbers, calm grouped cards (`atriaCard`/`atriaInsetCard`), glass only on
+   interactive controls, status ONLY in the top pill, battery/charging only in the
+   bottom bar. Fewer words, more visual cues. Text must never clip
+   (`lineLimit` + `minimumScaleFactor` everywhere). Every new metric is one tile or
+   ring with a ≤6-word caption, a state badge (learning/estimate/validated), and an
+   info popover for any longer explanation — never inline paragraphs.
+4. **Honesty / fail-closed.** No confident input → show "learning" or an estimate
+   label, never a guess. Keep `python3 test_handoff_static_checks.py` green and the
+   no-`https://` local-first guard intact. Commit small, build for sim then install
+   on the cabled iPhone and verify with `devicectl … capture screenshot`.
+
+Definition of done for EVERY item below: builds, static-green, installs on device,
+visually verified, smooth scroll, honest label, and added to this doc's status.
+
 ## 0. The validation doctrine (read first — it decides everything)
 
 Without a lab reference you cannot prove absolute accuracy. So every metric ships
@@ -78,36 +109,41 @@ var heightCm: Double = 0            // optional, 0 == unknown
 - Gate calorie/VO₂ confidence on these being set; otherwise show "Add weight to
   estimate calories" once, not repeatedly.
 
-## 2b. Detect & show the connected WHOOP model — **SHIP (and it gates §6–10)**
+## 2b. Strap naming, rename, & model detection — **PARTLY SHIPPED; finish the model decode**
 
-The model decides which sensors physically exist, so detect it before probing for
-SpO₂/temp/ECG. It is also a real, easy UX win on its own ("WHOOP 4.0" in Settings).
+### What is already done (verified on a real WHOOP 4.0)
+- Reads Device Information `0x180A`: Model `0x2A24`, Firmware `0x2A26`, Hardware
+  `0x2A27` (Manufacturer `0x2A29` was already read). Published as
+  `modelNumber/firmwareRevision/hardwareRevision` on `WhoopBLEManager`.
+- **CONFIRMED FINDING: WHOOP 4.0 returns these characteristics EMPTY.** Standard
+  Device Information does NOT carry the generation. So `whoopModelLabel` correctly
+  falls back to "WHOOP strap". **Do not chase Device Information further — it's a
+  dead end on this hardware.**
+- **Rename shipped:** `customDeviceName` (persisted in UserDefaults,
+  `setCustomDeviceName`) + `resolvedDeviceName` (custom → BLE peripheral name →
+  "WHOOP strap", never collapses a real name). Settings → Device has an editable
+  Name field; `makeCoreLiveState` now feeds `resolvedDeviceName` everywhere the
+  device name shows. The peripheral name (e.g. "Adidshaft's WHOOP", seeded by the
+  WHOOP account) is the recognizable identifier and is shown by default.
 
-- **Source:** the standard **Device Information service `0x180A`**, which the code
-  already discovers and already reads Manufacturer (`0x2A29`). Also read:
-  - Model Number `0x2A24`
-  - Hardware Revision `0x2A27`
-  - Firmware Revision `0x2A26`
-  - Software Revision `0x2A28` (optional)
-  - **Do NOT store/transmit Serial `0x2A25`** — it is PII; if read at all, keep it
-    diagnostic-only and never persist.
-- **Implementation:** add `@Published var modelNumber/hardwareRevision/
-  firmwareRevision: String` next to `manufacturer`; read them in the same
-  `didUpdateValueFor` path that handles `0x2A29`; publish into `CoreLiveState` and
-  show in `AtriaSettingsView` (About/Device row), separate from the user's
-  `deviceName`.
-- **The exact strings are unknown until read on a real strap.** So step 1 is
-  literally: read + log the raw `modelNumber`/`hardwareRevision` values, THEN build
-  the friendly map from what 4.0 actually reports. Map known values →
-  `"WHOOP 4.0" / "WHOOP 5.0" / "WHOOP MG"`; **unknown → display the raw string**,
-  never a guess. Cross-check against the advertised peripheral name and which
-  proprietary service UUID generation responds.
-- **Feature gating (the point):** derive `WhoopModel` and expose
-  `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+), `supportsECG` (MG only),
-  `supportsBloodPressure` (MG + cuff). Unknown model → conservative: HR/RR/accel
-  only, no SpO₂/temp/ECG probes. §6–10 must check these flags before probing.
-- Verify on the cabled iPhone (`devicectl … capture screenshot`) once it is
-  reconnected; the raw strings can't be confirmed in the simulator.
+### What to finish — decode the generation from the proprietary metadata frame
+Since Device Info is empty, the model/firmware/serial live in the WHOOP **metadata
+frame `0x31`** (and possibly the clock/data-range responses), which the protocol
+tools already classify. To get a real "WHOOP 4.0/5.0/MG":
+1. With frame capture on, dump `0x31` metadata payloads on connect; look for a
+   version/model field (often a fixed-offset byte or an ASCII substring).
+2. Cross-check against firmware patterns and which proprietary service generation
+   responds. Build the map from observed bytes; **unknown → keep "WHOOP strap"**,
+   never guess. Keep Serial out of storage (PII).
+3. Surface as a read-only "Model" line under the editable Name (UI already there).
+
+### Feature gating (the reason model matters)
+Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
+`supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →
+conservative: HR/RR/accel only, no SpO₂/temp/ECG probes. §6–10 must check these
+flags first. Until the `0x31` decode lands, treat a strap that speaks the
+`61080001…` service as "assume 4.0-class capabilities for probing, label honestly
+as WHOOP strap in UI."
 
 ## 3. Steps — **SHIP (phone) + RESEARCH (strap)**  ← the important one
 

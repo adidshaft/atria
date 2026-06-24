@@ -6,8 +6,10 @@ import SwiftUI
 struct AtriaSettingsView: View {
     let profile: AthleteProfile
     let restingBaseline: Int?
+    let strapName: String
     let strapModel: String
     let strapFirmware: String
+    let onRenameStrap: (String) -> Void
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     let hapticSettings: AtriaHapticAlertSettings
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
@@ -17,6 +19,7 @@ struct AtriaSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
+    @State private var nameDraft: String
     @State private var exportTapped = false
     @State private var syncTapped = false
 
@@ -28,8 +31,10 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
+         strapName: String = "",
          strapModel: String = "",
          strapFirmware: String = "",
+         onRenameStrap: @escaping (String) -> Void = { _ in },
          onUpdateProfile: @escaping (@escaping (inout AthleteProfile) -> Void) -> Void,
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
@@ -37,8 +42,10 @@ struct AtriaSettingsView: View {
          onSyncMissedData: (() -> Void)? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
+        self.strapName = strapName
         self.strapModel = strapModel
         self.strapFirmware = strapFirmware
+        self.onRenameStrap = onRenameStrap
         self.onUpdateProfile = onUpdateProfile
         self.hapticSettings = hapticSettings
         self.onUpdateHaptics = onUpdateHaptics
@@ -46,6 +53,7 @@ struct AtriaSettingsView: View {
         self.onSyncMissedData = onSyncMissedData
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
+        _nameDraft = State(initialValue: strapName)
     }
 
     var body: some View {
@@ -192,9 +200,18 @@ struct AtriaSettingsView: View {
 
     private var deviceSection: some View {
         Section {
-            LabeledContent("Strap") {
-                Text(strapModel.isEmpty ? "Not connected" : strapModel)
-                    .foregroundStyle(strapModel.isEmpty ? .secondary : .primary)
+            HStack {
+                Text("Name")
+                Spacer(minLength: 12)
+                TextField("Strap name", text: $nameDraft)
+                    .multilineTextAlignment(.trailing)
+                    .submitLabel(.done)
+                    .onSubmit { onRenameStrap(nameDraft) }
+                    .foregroundStyle(.primary)
+            }
+            LabeledContent("Model") {
+                Text(strapModel.isEmpty ? "WHOOP strap" : strapModel)
+                    .foregroundStyle(.secondary)
             }
             if !strapFirmware.isEmpty {
                 LabeledContent("Firmware") {
@@ -204,7 +221,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Device")
         } footer: {
-            Text("Detected automatically from the connected strap.")
+            Text("Rename your strap; the name is saved on this phone. Model is detected automatically when available.")
         }
     }
 
