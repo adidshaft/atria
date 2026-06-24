@@ -92,6 +92,7 @@ struct AtriaCollectionTabContent: View {
                             rrReferenceCard
                             hrReferenceCard
                             imuAuditCard
+                            researchManeuverCard
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -109,6 +110,7 @@ struct AtriaCollectionTabContent: View {
                         rrReferenceCard
                         hrReferenceCard
                         imuAuditCard
+                        researchManeuverCard
                     }
                     collectionControlsCard
                     collectionStatusCard
@@ -141,6 +143,11 @@ struct AtriaCollectionTabContent: View {
 
     private var imuAuditCard: some View {
         AtriaCollectionIMUAuditCard(sessions: store.sessions)
+    }
+
+    private var researchManeuverCard: some View {
+        AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers,
+                                        onMark: { store.markResearchManeuver($0) })
     }
 
     private var collectionControlsCard: some View {
@@ -593,6 +600,84 @@ private struct IMUAuditSummary: Equatable {
     var probeDetail: String {
         probeFrameCount > 0 ? "O2 \(spo2CandidateFrames) · temp \(skinTempCandidateFrames)" : "none yet"
     }
+}
+
+private struct AtriaResearchManeuverMarkerCard: View, Equatable {
+    let markers: [ResearchManeuverMarker]
+    let onMark: (ResearchManeuverMarker.Kind) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaResearchManeuverMarkerCard, rhs: AtriaResearchManeuverMarkerCard) -> Bool {
+        lhs.markers == rhs.markers
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Probe markers", subtitle: "")
+                Spacer(minLength: 0)
+                AtriaStatusChip(text: "\(markers.count)",
+                                systemImage: "scope",
+                                tint: markers.isEmpty ? .gray : .teal)
+            }
+
+            GlassEffectContainer(spacing: 10) {
+                LazyVGrid(columns: Self.buttonColumns, spacing: 10) {
+                    ForEach(ResearchManeuverMarker.Kind.allCases) { kind in
+                        Button {
+                            if reduceMotion {
+                                onMark(kind)
+                            } else {
+                                withAnimation(.snappy(duration: 0.18)) {
+                                    onMark(kind)
+                                }
+                            }
+                        } label: {
+                            Label(kind.shortLabel, systemImage: kind.systemImage)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.78)
+                                .frame(maxWidth: .infinity, minHeight: 38)
+                        }
+                        .buttonStyle(.glass)
+                    }
+                }
+            }
+
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                AtriaMetricTile(label: "Markers",
+                                value: "\(markers.count)",
+                                state: markers.isEmpty ? .learning : .local,
+                                tint: .teal)
+                AtriaMetricTile(label: "Latest",
+                                value: latestMarkerText,
+                                state: markers.isEmpty ? .learning : .local,
+                                tint: .cyan,
+                                footnote: latestMarkerDetail)
+            }
+
+            Text("Research only; timestamps stay on device for probe correlation.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .atriaRaisedCard(emphasis: .soft)
+    }
+
+    private var latestMarkerText: String {
+        markers.first?.kind.shortLabel ?? "--"
+    }
+
+    private var latestMarkerDetail: String? {
+        guard let marker = markers.first else { return nil }
+        return RelativeDateTimeFormatter().localizedString(for: marker.timestamp, relativeTo: Date())
+    }
+
+    private static let buttonColumns = [GridItem(.flexible()), GridItem(.flexible())]
+    private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
 }
 
 private struct AtriaCollectionControlsCardHost: View {

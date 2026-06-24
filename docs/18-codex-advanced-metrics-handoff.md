@@ -48,6 +48,11 @@ test_handoff_static_checks.py`, no `https://` clients).
   range. Logs and saved sessions keep aggregate candidate frame counts only, record
   `metric_promotions=0`, store no raw payloads through the probe, and do not write
   oxygen/temperature to HealthKit. The developer IMU audit card shows probe counts.
+- Self-induced probe markers: **research-only marker log shipped in code**.
+  Developer mode now exposes timestamp buttons for breath hold, heat, cold, and
+  walk-test maneuvers so aggregate SpO₂/temp/IMU probe counts can be correlated
+  locally later. Markers are stored only in UserDefaults, log
+  `metric_promotions=0`, store no raw payloads, and never write to HealthKit.
 - BP/ECG fail-closed UX: **shipped in Settings**. A compact Sensors section says
   ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
   and blood oxygen remains research-only with no Health export. HealthKit keeps cuff
