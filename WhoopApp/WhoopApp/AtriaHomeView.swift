@@ -181,7 +181,7 @@ struct AtriaHomeView: View {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
                               strapName: ble.resolvedDeviceName,
-                              strapModel: ble.status == .connected ? ble.whoopModelLabel : "",
+                              strapModel: ble.whoopModelLabel,
                               strapFirmware: ble.firmwareRevision,
                               onRenameStrap: { ble.setCustomDeviceName($0) },
                               onUpdateProfile: store.updateProfile,

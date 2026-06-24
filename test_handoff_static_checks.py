@@ -357,6 +357,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "case whoop4",
             "case .whoop4: return \"WHOOP 4.0\"",
+            "case .whoop4Class: return \"WHOOP strap\"",
             "guard supportsSpO2Probe || supportsSkinTempProbe else { return }",
             "AtriaResearchProbe.analyze(payload: payload, source: source)",
             "applyModelMetadataIfExplicit(summary)",
@@ -371,6 +372,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "recordResearchProbeCandidate(payload: payload, source: .historical)",
         ]:
             assert_contains(self, ble, needle)
+
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
+        assert_contains(self, home, "strapModel: ble.whoopModelLabel")
+        assert_not_contains(self, home, "strapModel: ble.status == .connected ? ble.whoopModelLabel : \"\"")
+        assert_contains(self, settings, "LabeledContent(\"Model\")")
+        assert_contains(self, settings, "Text(strapModel.isEmpty ? \"WHOOP strap\" : strapModel)")
 
         assert_not_contains(self, healthkit, ".oxygenSaturation")
         assert_not_contains(self, healthkit, "HKQuantitySample(type: oxygen")
