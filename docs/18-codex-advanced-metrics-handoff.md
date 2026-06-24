@@ -18,9 +18,11 @@ test_handoff_static_checks.py`, no `https://` clients).
 - Active calories: **estimate-gated**. Keytel HR→EE estimate is implemented and
   persisted on saved sessions as `activeCalories`/`caloriesConfidence`. It only
   produces `kcal` when sex + weight are set; otherwise the UI stays learning.
+  Today now shows a visible `Estimate` badge rather than a generic local badge.
 - VO₂ max: **rough estimate-gated**. Existing summary now uses the Uth-Sørensen
   formula directly and returns only learning copy until measured HRmax plus 7
-  resting baselines are present.
+  resting baselines are present. Vitals shows the result as an `Estimate` tile
+  with the rough-estimate confidence footnote.
 - WHOOP model/capability gates: **metadata-aware scaffold shipped**. Proprietary
   WHOOP service marks a strap as 4.0-class for SpO₂/temp probes. Metadata (`0x31`)
   is now scanned for explicit, redacted generation tokens and only then promotes
@@ -44,7 +46,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   frames, sample rate, layout, gravity status, and strap-step research counts with
   phone-step agreement. A research-only sleep/wake classifier stores sleep/wake
   labels from IMU stillness + HR context for the same audit surface; raw IMU frames
-  are not stored and sleep/steps are not promoted yet.
+  are not stored and sleep/steps are not promoted yet. Developer-only research
+  metrics now use an explicit `Research` badge instead of looking like shipped
+  local metrics.
 - Skin temp + SpO₂ discovery: **research-only probe scaffold shipped in code**.
   Metadata (`0x31`) and historical (`0x2f`) frames are scanned behind the existing
   4.0-class capability gates for aggregate-only candidate offsets: SpO₂-like bytes
@@ -74,7 +78,11 @@ test_handoff_static_checks.py`, no `https://` clients).
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`;
   Settings appearance screenshot captured at
-  `logs/live-device/screenshots/advanced-metrics-settings-appearance-deferred-20260625T0456Z.png`.
+  `logs/live-device/screenshots/advanced-metrics-settings-appearance-deferred-20260625T0456Z.png`;
+  estimate/research badge screenshots captured at
+  `logs/live-device/screenshots/advanced-metrics-calories-estimate-badge-20260625T0458Z.png`,
+  `logs/live-device/screenshots/advanced-metrics-vo2-estimate-badge-20260625T0500Z.png`,
+  and `logs/live-device/screenshots/advanced-metrics-research-badges-20260625T0502Z.png`.
 
 ## OVERNIGHT OPERATING PRINCIPLES (this run is unattended — hold these above all)
 
