@@ -206,31 +206,38 @@ private struct AtriaCollectionCaptureCardHost: View {
     @ObservedObject var collectionLiveStore: AtriaHomeModel.CollectionLiveStore
     let ble: WhoopBLEManager
     @Binding var captureShareURL: URL?
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Saved readings", subtitle: "Keep a local backup and export when you need it")
+                AtriaPanelSectionHeader(title: "Saved readings", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: collectionLiveStore.state.recordingState,
-                                systemImage: collectionLiveStore.state.isRecording ? "record.circle.fill" : "pause.circle",
-                                tint: collectionLiveStore.state.isRecording ? .red : .blue)
+                AtriaStateBadge(state: collectionLiveStore.state.isRecording ? .live : .local)
+            }
+
+            GlassEffectContainer(spacing: 10) {
+                captureActions
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 captureStats
             }
 
-            Text(collectionLiveStore.state.captureSummary)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            GlassEffectContainer(spacing: 10) {
-                captureActions
+            DisclosureGroup(isExpanded: $showDetails) {
+                Text(collectionLiveStore.state.captureSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            } label: {
+                Label("Details", systemImage: "info.circle")
+                    .font(.caption.weight(.semibold))
             }
+            .tint(.secondary)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
@@ -238,12 +245,21 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureStats: some View {
-        AtriaInlineQuickStat(label: "Readings", value: "\(collectionLiveStore.state.capturedRows)")
-        AtriaInlineQuickStat(label: "Backup", value: collectionLiveStore.state.recordingState)
-        AtriaInlineQuickStat(label: "Export", value: collectionLiveStore.state.captureFileLabel)
+        AtriaMetricTile(label: "Readings",
+                        value: "\(collectionLiveStore.state.capturedRows)",
+                        state: collectionLiveStore.state.isRecording ? .live : .local,
+                        tint: .blue)
+        AtriaMetricTile(label: "Backup",
+                        value: collectionLiveStore.state.recordingState,
+                        state: collectionLiveStore.state.isRecording ? .live : .local,
+                        tint: collectionLiveStore.state.isRecording ? .red : .blue)
+        AtriaMetricTile(label: "Export",
+                        value: collectionLiveStore.state.captureFileLabel,
+                        state: .local,
+                        tint: .green)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 
     @ViewBuilder
     private var captureActions: some View {
@@ -288,17 +304,26 @@ private struct AtriaCollectionRRReferenceCardHost: View {
     @Binding var showRRImporter: Bool
     @Binding var rrShareURL: URL?
     let rrImportStatus: String
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "RR reference", subtitle: "Validate local HRV with an external file")
+                AtriaPanelSectionHeader(title: "RR reference", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: homeStatsStore.state.rrPackageText,
-                                systemImage: "waveform.path.ecg",
-                                tint: .pink)
+                AtriaStateBadge(state: homeStatsStore.state.rrPackageText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
+            }
+
+            ViewThatFits {
+                HStack(spacing: 10) {
+                    rrActionButtons
+                }
+
+                VStack(spacing: 10) {
+                    rrActionButtons
+                }
             }
 
             AtriaCollectionReferenceSummaryCard(
@@ -310,20 +335,23 @@ private struct AtriaCollectionRRReferenceCardHost: View {
                 trailingDetail: "local file flow"
             )
 
-            if !rrImportStatus.isEmpty {
-                Text(rrImportStatus)
+            if !rrImportStatus.isEmpty || !homeStatsStore.state.hrvDetail.isEmpty {
+                DisclosureGroup(isExpanded: $showDetails) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if !rrImportStatus.isEmpty {
+                            Text(rrImportStatus)
+                        }
+                        Text(homeStatsStore.state.hrvDetail)
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            ViewThatFits {
-                HStack(spacing: 10) {
-                    rrActionButtons
+                    .lineLimit(2)
+                    .padding(.top, 6)
+                } label: {
+                    Label("Details", systemImage: "info.circle")
+                        .font(.caption.weight(.semibold))
                 }
-
-                VStack(spacing: 10) {
-                    rrActionButtons
-                }
+                .tint(.secondary)
             }
         }
         .padding(18)
@@ -360,17 +388,26 @@ private struct AtriaCollectionHRReferenceCardHost: View {
     @Binding var showHRImporter: Bool
     @Binding var hrShareURL: URL?
     let hrImportStatus: String
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "HR reference", subtitle: "Validate workout intensity against an external HR source")
+                AtriaPanelSectionHeader(title: "HR reference", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: snapshotStore.state.referenceText,
-                                systemImage: "figure.run",
-                                tint: .orange)
+                AtriaStateBadge(state: snapshotStore.state.referenceText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
+            }
+
+            ViewThatFits {
+                HStack(spacing: 10) {
+                    hrActionButtons
+                }
+
+                VStack(spacing: 10) {
+                    hrActionButtons
+                }
             }
 
             AtriaCollectionReferenceSummaryCard(
@@ -383,19 +420,17 @@ private struct AtriaCollectionHRReferenceCardHost: View {
             )
 
             if !hrImportStatus.isEmpty {
-                Text(hrImportStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            ViewThatFits {
-                HStack(spacing: 10) {
-                    hrActionButtons
+                DisclosureGroup(isExpanded: $showDetails) {
+                    Text(hrImportStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .padding(.top, 6)
+                } label: {
+                    Label("Details", systemImage: "info.circle")
+                        .font(.caption.weight(.semibold))
                 }
-
-                VStack(spacing: 10) {
-                    hrActionButtons
-                }
+                .tint(.secondary)
             }
         }
         .padding(18)
@@ -438,13 +473,11 @@ private struct AtriaCollectionControlsCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Data settings", subtitle: "Choose how Atria saves readings while you wear the strap")
+                AtriaPanelSectionHeader(title: "Data settings", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: collectionLiveStore.state.modeLabel,
-                                systemImage: "slider.horizontal.3",
-                                tint: .blue)
+                AtriaStateBadge(state: collectionLiveStore.state.longWearModeEnabled ? .live : .local)
             }
 
             VStack(spacing: 12) {
@@ -514,13 +547,11 @@ private struct AtriaCollectionStatusCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Data status", subtitle: "Current local backup and export state")
+                AtriaPanelSectionHeader(title: "Data status", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: collectionLiveStore.state.coexistenceStatusText,
-                                systemImage: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? "exclamationmark.triangle.fill" : "record.circle",
-                                tint: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? .red : .blue)
+                AtriaStateBadge(state: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? .noContact : .local)
             }
 
             if collectionLiveStore.state.officialWhoopCoexistenceRisk != .cleared {
@@ -537,26 +568,38 @@ private struct AtriaCollectionStatusCardHost: View {
 
     @ViewBuilder
     private var statusTiles: some View {
-        AtriaInlineQuickStat(label: "Logging", value: snapshotStore.state.loggingText)
-        AtriaInlineQuickStat(label: "Backup", value: homeStatsStore.state.backupValue)
-        AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
-        AtriaInlineQuickStat(label: "Saving mode", value: collectionLiveStore.state.modeLabel)
+        AtriaMetricTile(label: "Logging",
+                        value: snapshotStore.state.loggingText,
+                        state: snapshotStore.state.loggingText.localizedCaseInsensitiveContains("sample") ? .live : .learning,
+                        tint: .green)
+        AtriaMetricTile(label: "Backup",
+                        value: homeStatsStore.state.backupValue,
+                        state: .local,
+                        tint: .blue)
+        AtriaMetricTile(label: "Battery",
+                        value: coreLiveStore.state.batteryText,
+                        state: coreLiveStore.state.batteryLevel >= 0 ? .live : .learning,
+                        tint: .green)
+        AtriaMetricTile(label: "Mode",
+                        value: collectionLiveStore.state.modeLabel,
+                        state: collectionLiveStore.state.longWearModeEnabled ? .live : .local,
+                        tint: .purple)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
 private struct AtriaCollectionCoexistenceWarning: View, Equatable {
     let risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
 
     private var title: String {
-        risk == .suspected ? "WHOOP may be interrupting data" : "Check official WHOOP before long collection"
+        risk == .suspected ? "WHOOP conflict" : "WHOOP check"
     }
 
     private var detail: String {
         risk == .suspected
-            ? "Atria cannot kill another iOS app. Uninstall or fully disable the official WHOOP app/widget, then reconnect before relying on overnight or workout readings."
-            : "If the official WHOOP app is installed, it may reclaim the strap. Remove or disable it if readings drop or sessions fragment."
+            ? "Remove WHOOP, then reconnect."
+            : "Remove WHOOP if drops return."
     }
 
     private var tint: Color {
@@ -925,21 +968,17 @@ private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
     let detail: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.headline.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: .white)
+        AtriaMetricTile(label: title,
+                        value: value,
+                        state: value.localizedCaseInsensitiveContains("ready") ? .validated : .learning,
+                        tint: .blue,
+                        footnote: compactDetail)
+    }
+
+    private var compactDetail: String {
+        let words = detail.split(separator: " ")
+        guard words.count > 4 else { return detail }
+        return words.prefix(4).joined(separator: " ")
     }
 }
 
@@ -964,6 +1003,8 @@ private struct AtriaCollectionToggleCard: View {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

@@ -244,13 +244,13 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     private var detail: String {
         switch status {
         case .connecting:
-            return "Almost there — Atria is linking up with your strap. The first connection takes a moment."
+            return "Linking with strap."
         case .scanning:
-            return "Atria is searching for your strap in the background. The rest of your dashboard stays ready while it looks."
+            return "Searching nearby."
         case .poweredOff:
-            return "Turn Bluetooth back on and Atria will start looking for your strap again automatically."
+            return "Turn Bluetooth on."
         case .disconnected:
-            return "Atria is waiting for your strap. Keep it nearby, and make sure it isn't still connected in the WHOOP app."
+            return "Keep strap nearby."
         case .connected:
             return "Saved insights prepare after the live connection settles."
         }
@@ -258,30 +258,30 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
 
     private var setupDetail: String {
         if context.officialWhoopCoexistenceRisk == .suspected {
-            return "Atria cannot kill another iOS app. Remove or disable the official WHOOP app/widget, then reconnect here."
+            return "Remove WHOOP first."
         }
         switch status {
         case .connecting:
-            return "Keep your phone unlocked and nearby while Atria finishes connecting."
+            return "Keep phone nearby."
         case .scanning:
-            return "Atria is already searching automatically. Tap Scan now only if you just freed the strap from WHOOP."
+            return "Scanning automatically."
         case .poweredOff:
-            return "Turn Bluetooth on first. Atria then starts looking for your strap on its own."
+            return "Bluetooth required."
         case .disconnected:
-            return "If the strap is still connected in the WHOOP app, disconnect it there first, then leave Atria open."
+            return "Free strap from WHOOP."
         case .connected:
-            return "From now on, Atria reconnects to your strap automatically."
+            return "Reconnects automatically."
         }
     }
 
     private var setupItems: [String] {
         var items = [
-            "If the official WHOOP app is installed, uninstall it or disable its widget/background access before relying on Atria.",
-            "Atria cannot terminate WHOOP from inside iOS; it can only detect risky connection behavior and warn clearly.",
-            "Keep this phone unlocked and the strap nearby until Atria completes the first setup."
+            "Remove WHOOP app",
+            "Keep strap nearby",
+            "Let Atria scan"
         ]
         if context.officialWhoopCoexistenceRisk == .suspected {
-            items[2] = "After removing WHOOP, reopen Atria and let the automatic scan reconnect the strap."
+            items[2] = "Reconnect in Atria"
         }
         return items
     }
@@ -292,10 +292,6 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                 AtriaPanelSectionHeader(title: "Overview", subtitle: title)
 
                 Spacer(minLength: 0)
-
-                AtriaStatusChip(text: status.rawValue,
-                                systemImage: systemImage,
-                                tint: tint)
             }
 
             Text(detail)
@@ -329,7 +325,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
             }
         }
         .padding(18)
-        .atriaCard(cornerRadius: 30, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1179,7 +1175,7 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(context.isFirstHandoff ? "Automatic setup" : "Automatic reconnect")
                         .font(.subheadline.weight(.semibold))
-                    Text(context.progressLabel)
+                    Text(context.flowLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1192,10 +1188,15 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 8) {
-                AtriaInlineQuickStat(label: "Flow", value: context.flowLabel)
-                AtriaInlineQuickStat(label: "State", value: status.rawValue)
-                AtriaInlineQuickStat(label: "Attempts", value: "\(max(context.attempts, 1))")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                AtriaMetricTile(label: "Flow",
+                                value: context.flowLabel,
+                                state: .local,
+                                tint: tint)
+                AtriaMetricTile(label: "Attempts",
+                                value: "\(max(context.attempts, 1))",
+                                state: status == .connected ? .validated : .learning,
+                                tint: tint)
             }
 
             Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
@@ -1204,7 +1205,7 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1234,7 +1235,7 @@ private struct AtriaDisconnectedOverviewCoexistenceCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1245,10 +1246,9 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 8, height: 8)
+            HStack(spacing: 10) {
+                Image(systemName: "list.number")
+                    .foregroundStyle(tint)
                 Text(title)
                     .font(.headline.weight(.semibold))
             }
@@ -1268,13 +1268,15 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
                     Text(item)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -1295,10 +1297,11 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Saved data stays ready")
                         .font(.subheadline.weight(.semibold))
-                    Text("Saved metrics and backup remain available while the strap reconnects.")
+                    Text("Local backup ready")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Saved metrics and backup remain available while the strap reconnects.")
                 }
             }
 
@@ -1308,14 +1311,22 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
     private var savedStateTiles: some View {
-        AtriaInlineQuickStat(label: "Baseline", value: snapshot.referenceText)
-        AtriaInlineQuickStat(label: "Backup", value: stats.backupValue)
-        AtriaInlineQuickStat(label: "Saved HRV", value: "\(stats.baselineSamples)/7")
-        AtriaInlineQuickStat(label: "Next", value: stats.nextAction)
+        AtriaMetricTile(label: "Baseline",
+                        value: snapshot.referenceText,
+                        state: .personalBaseline,
+                        tint: .blue)
+        AtriaMetricTile(label: "Backup",
+                        value: stats.backupValue,
+                        state: .local,
+                        tint: tint)
+        AtriaMetricTile(label: "Saved HRV",
+                        value: "\(stats.baselineSamples)/7",
+                        state: stats.baselineSamples >= 7 ? .validated : .learning,
+                        tint: .pink)
     }
 }
