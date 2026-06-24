@@ -735,9 +735,14 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let developerModeEnabled: Bool",
             "if developerModeEnabled {\n                            rrReferenceCard",
+            "if developerModeEnabled {\n                            rrReferenceCard\n                            hrReferenceCard\n                            imuAuditCard",
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
             "title: \"Standard HR radio\"",
             "subtitle: \"Advanced compatibility mode for heart-rate-only collection.\"",
+            "private struct AtriaCollectionIMUAuditCard: View, Equatable",
+            "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
+            "Research only; compare with phone motion before steps or sleep.",
+            "IMUAuditSummary(sessions: sessions)",
         ]:
             assert_contains(self, collection, needle)
 
