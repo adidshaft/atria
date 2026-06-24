@@ -44,6 +44,10 @@ struct SavedSession: Codable, Identifiable {
     /// Raw frames are not stored. These fields stay unvalidated until gravity and
     /// phone-motion comparisons prove the layout on-device.
     var imuSampleCount: Int? = nil
+    var imuFrameCount: Int? = nil
+    var imuSampleRateHz: Double? = nil
+    var imuScale: Double? = nil
+    var imuEndian: String? = nil
     var imuStillnessRatio: Double? = nil
     var imuMovementIntensity: Double? = nil
     var imuActivityBursts: Int? = nil

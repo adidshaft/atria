@@ -823,6 +823,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var imuMovementIntensitySum = 0.0
     private var imuActivityBurstCount = 0
     private var imuValidationState = "unavailable"
+    private var imuSampleRateHzSum = 0.0
+    private var imuSampleRateHzCount = 0
+    private var imuLastFrameAt: Date?
+    private var imuInferredScale: Double?
+    private var imuInferredEndian: String?
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
@@ -7247,13 +7252,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             magnitudes.append(String(format: "%d:%.1f", offset, magnitude))
         }
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d i16=%@ magnitudes=%@ payload=%@",
+            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f sample_rate_hz=%@ samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d metric_promotions=0 i16=%@ magnitudes=%@ payload=%@",
                   decoded?.gravityValidated == true ? 1 : 0,
                   decoded?.validationState ?? "decode_failed",
                   payload.count,
                   decoded?.offset ?? -1,
                   decoded?.endian.rawValue ?? "none",
                   decoded?.scale ?? 0,
+                  Self.formatDouble(imuFeatureSummary().sampleRateHz),
                   decoded?.samples.count ?? 0,
                   Self.formatDouble(decoded?.meanMagnitudeG),
                   Self.formatDouble(decoded?.stillnessRatio),
@@ -8319,6 +8325,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let motionShortStats = sleepMotionShortSummary()
         let phoneMotion = phoneMotionAuditSummary()
         let phoneSteps = phoneStepEvidenceSummary()
+        let imu = imuFeatureSummary()
         let respiratoryRate = hrvSnapshot?.isReady == true ? hrvSnapshot?.respiratoryRate : nil
         return SavedSession(id: liveSessionID, start: start, end: last.t,
                             label: label.trimmingCharacters(in: .whitespaces), points: points,
@@ -8336,8 +8343,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                             motionShortMax: motionShortStats.max,
                             motionShortOverOneCount: motionShortStats.count > 0 ? motionShortStats.overOne : nil,
                             imuSampleCount: decodedIMUSampleCount > 0 ? decodedIMUSampleCount : nil,
-                            imuStillnessRatio: imuFeatureSummary().stillnessRatio,
-                            imuMovementIntensity: imuFeatureSummary().movementIntensity,
+                            imuFrameCount: protocolIMUFrameCount > 0 ? protocolIMUFrameCount : nil,
+                            imuSampleRateHz: imu.sampleRateHz,
+                            imuScale: imuInferredScale,
+                            imuEndian: imuInferredEndian,
+                            imuStillnessRatio: imu.stillnessRatio,
+                            imuMovementIntensity: imu.movementIntensity,
                             imuActivityBursts: decodedIMUSampleCount > 0 ? imuActivityBurstCount : nil,
                             imuValidationState: decodedIMUSampleCount > 0 ? imuValidationState : nil,
                             phoneMotionSource: phoneMotion.source,
@@ -8375,7 +8386,18 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func recordIMUFeatures(_ decoded: AtriaIMUDecoder.DecodeResult) {
+        let now = Date()
+        if let previous = imuLastFrameAt {
+            let delta = now.timeIntervalSince(previous)
+            if delta > 0.02, delta < 10 {
+                imuSampleRateHzSum += Double(decoded.samples.count) / delta
+                imuSampleRateHzCount += 1
+            }
+        }
+        imuLastFrameAt = now
         decodedIMUSampleCount += decoded.samples.count
+        imuInferredScale = decoded.scale
+        imuInferredEndian = decoded.endian.rawValue
         imuStillnessRatioSum += decoded.stillnessRatio
         imuMovementIntensitySum += decoded.movementIntensity
         imuActivityBurstCount += decoded.activityBursts
@@ -8385,10 +8407,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         imuValidationState = imuGravityValidatedFrameCount > 0 ? "gravity_validated_research" : "research_unvalidated"
     }
 
-    private func imuFeatureSummary() -> (stillnessRatio: Double?, movementIntensity: Double?) {
-        guard protocolIMUFrameCount > 0, decodedIMUSampleCount > 0 else { return (nil, nil) }
+    private func imuFeatureSummary() -> (stillnessRatio: Double?, movementIntensity: Double?, sampleRateHz: Double?) {
+        guard protocolIMUFrameCount > 0, decodedIMUSampleCount > 0 else { return (nil, nil, nil) }
         let frames = Double(max(protocolIMUFrameCount, 1))
-        return (imuStillnessRatioSum / frames, imuMovementIntensitySum / frames)
+        let sampleRate = imuSampleRateHzCount > 0 ? imuSampleRateHzSum / Double(imuSampleRateHzCount) : nil
+        return (imuStillnessRatioSum / frames, imuMovementIntensitySum / frames, sampleRate)
     }
 
     private func resetIMUFeatureStats() {
@@ -8398,6 +8421,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         imuMovementIntensitySum = 0
         imuActivityBurstCount = 0
         imuValidationState = "unavailable"
+        imuSampleRateHzSum = 0
+        imuSampleRateHzCount = 0
+        imuLastFrameAt = nil
+        imuInferredScale = nil
+        imuInferredEndian = nil
         researchProbeFrameCount = 0
         researchProbeOxygenCandidateFrames = 0
         researchProbeTemperatureCandidateFrames = 0
