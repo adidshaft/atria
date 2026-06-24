@@ -11,17 +11,30 @@ struct ContentView: View {
         AtriaHomeContainer(ble: ble, store: store)
             .equatable()
             .onAppear {
+                let debugOnboardingStep = Self.debugOnboardingStepArgument()
                 let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
                     && ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
-                showOnboarding = !store.profile.hasCompletedOnboarding && !debugCompletesOnboarding
+                showOnboarding = debugOnboardingStep != nil || (!store.profile.hasCompletedOnboarding && !debugCompletesOnboarding)
             }
             .sheet(isPresented: $showOnboarding) {
-                ProfileOnboardingView(profile: store.profile) { profile in
+                ProfileOnboardingView(profile: store.profile,
+                                      debugInitialStep: Self.debugOnboardingStepArgument()) { profile in
                     store.completeOnboarding(with: profile)
                     showOnboarding = false
                 }
                 .interactiveDismissDisabled()
             }
+    }
+
+    private static func debugOnboardingStepArgument(arguments: [String] = ProcessInfo.processInfo.arguments) -> String? {
+#if DEBUG
+        guard let index = arguments.firstIndex(of: "--atria-ui-onboarding-step") else { return nil }
+        let valueIndex = arguments.index(after: index)
+        guard arguments.indices.contains(valueIndex) else { return "welcome" }
+        return arguments[valueIndex]
+#else
+        return nil
+#endif
     }
 }
 
@@ -732,10 +745,24 @@ struct ProfileOnboardingView: View {
 
         var isFirst: Bool { self == .welcome }
         var isLast: Bool { self == .profile }
+
+        init?(debugName: String?) {
+            guard let debugName else { return nil }
+            switch debugName.lowercased() {
+            case "welcome": self = .welcome
+            case "coexistence", "whoop": self = .coexistence
+            case "connect", "strap": self = .connect
+            case "profile": self = .profile
+            default: return nil
+            }
+        }
     }
 
-    init(profile: AthleteProfile, onComplete: @escaping (AthleteProfile) -> Void) {
+    init(profile: AthleteProfile,
+         debugInitialStep: String? = nil,
+         onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
+        _step = State(initialValue: OnboardingStep(debugName: debugInitialStep) ?? .welcome)
         self.onComplete = onComplete
     }
 
@@ -853,25 +880,26 @@ struct ProfileOnboardingView: View {
                 Text("Your strap, your data — free and entirely on your phone.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 12) {
                 onboardingFeatureRow(icon: "lock.shield.fill",
                                      tint: .green,
-                                     title: "Stays on your device",
-                                     detail: "No WHOOP account, no cloud, no subscription. Your data never leaves your phone.")
+                                     title: "Local data",
+                                     detail: "No account, cloud, or subscription.")
                 onboardingFeatureRow(icon: "waveform.path.ecg",
                                      tint: .pink,
-                                     title: "Live from your own strap",
-                                     detail: "Heart rate, strain, sleep and recovery, read straight from your strap over Bluetooth.")
+                                     title: "Strap first",
+                                     detail: "Heart rate drives every score.")
                 onboardingFeatureRow(icon: "checkmark.seal.fill",
                                      tint: .blue,
-                                     title: "Honest by design",
-                                     detail: "Atria shows how confident each number is, and never makes up metrics it can't measure.")
+                                     title: "Confidence shown",
+                                     detail: "Unready metrics stay marked.")
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -894,9 +922,10 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.orange)
                 Text("Make room for Atria")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("The WHOOP app is on this phone. It keeps grabbing your strap in the background, which makes Atria’s readings drop and jump.")
+                Text("WHOOP can reclaim the strap and fragment readings.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -906,21 +935,22 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.secondary)
                 onboardingNumberedStep(1,
                                        title: "Delete the WHOOP app (recommended)",
-                                       detail: "Press and hold the WHOOP icon on your Home Screen → Remove App → Delete App.")
+                                       detail: "Remove App, then Delete App.")
                 onboardingNumberedStep(2,
                                        title: "Or fully disable it",
-                                       detail: "Open WHOOP, log out, then in iPhone Settings turn off WHOOP’s Bluetooth and Background App Refresh.")
+                                       detail: "Log out, then disable Bluetooth.")
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
 
             VStack(alignment: .leading, spacing: 12) {
                 Label("Why this matters", systemImage: "info.circle")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("iOS only lets one app read the strap at a time. Atria can’t close WHOOP for you, so WHOOP has to step aside for steady readings.")
+                Text("iOS gives one app strap ownership.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button {
@@ -934,7 +964,7 @@ struct ProfileOnboardingView: View {
                 .tint(.orange)
 
                 if didRecheckWhoop && whoopMayBeInstalled {
-                    Label("WHOOP still detected. Make sure it’s fully deleted, then recheck.",
+                    Label("WHOOP still detected.",
                           systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -942,7 +972,7 @@ struct ProfileOnboardingView: View {
                 }
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -954,9 +984,10 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.green)
                 Text(didRecheckWhoop ? "Nicely done" : "You’re clear")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("No conflicting WHOOP app detected. Atria has your strap to itself, so readings stay steady.")
+                Text("No competing WHOOP app detected.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -964,14 +995,14 @@ struct ProfileOnboardingView: View {
                 onboardingFeatureRow(icon: "antenna.radiowaves.left.and.right",
                                      tint: .green,
                                      title: "One reader at a time",
-                                     detail: "iOS only lets one app hold the strap. With WHOOP out of the way, Atria keeps a stable connection.")
+                                     detail: "Atria owns the strap.")
                 onboardingFeatureRow(icon: "bell.badge",
                                      tint: .blue,
                                      title: "We’ll warn you",
-                                     detail: "If WHOOP shows up later and your readings start dropping, Atria will flag it for you.")
+                                     detail: "Interference becomes visible.")
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -985,33 +1016,36 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.blue)
                 Text("Connect your strap")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
-                Text("Atria reads your strap directly over Bluetooth. You only need to set this up once.")
+                Text("Atria reads your strap over Bluetooth.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 14) {
                 onboardingNumberedStep(1,
                                        title: "Put the strap on",
-                                       detail: "Wear it snug, or tap it once to wake it so it starts advertising over Bluetooth.")
+                                       detail: "Wear it snug.")
                 onboardingNumberedStep(2,
                                        title: "Keep your phone nearby",
-                                       detail: "Stay unlocked for the first connection. Atria finds the strap and connects on its own.")
+                                       detail: "Atria connects on its own.")
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
 
-            Label("Switching to other apps is fine — Atria keeps tracking in the background. Just don’t swipe it closed in the app switcher, or iOS pauses tracking until you reopen it.",
+            Label("Switch apps freely; don’t force quit.",
                   systemImage: "hand.raised.fill")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.orange)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Label("No strap handy right now? Skip ahead — Atria keeps looking in the background and connects when it’s near.",
+            Label("No strap nearby? Continue anyway.",
                   systemImage: "info.circle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1023,9 +1057,10 @@ struct ProfileOnboardingView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Set your max heart rate")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text("This is the one number Atria needs from you. It scores strain and effort to your body. You can change it anytime in Vitals.")
+                Text("Atria uses this for strain and effort.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1055,7 +1090,7 @@ struct ProfileOnboardingView: View {
                 }
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
 
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {
@@ -1066,11 +1101,10 @@ struct ProfileOnboardingView: View {
                         .font(.title3.weight(.bold).monospacedDigit())
                 }
 
-                Text(draft.maxHRSource == .ageEstimate
-                     ? "Estimated from your age. Pick “Measured” if you know your real max from a hard effort or a lab test."
-                     : "Using the max you measured. This is the most accurate option if you have a real number.")
+                Text(draft.maxHRSource == .ageEstimate ? "Age estimate; measured is better." : "Measured max selected.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
@@ -1080,7 +1114,7 @@ struct ProfileOnboardingView: View {
                 }
             }
             .padding(18)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -1099,6 +1133,7 @@ struct ProfileOnboardingView: View {
                 Text(detail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -1120,6 +1155,7 @@ struct ProfileOnboardingView: View {
                 Text(detail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -1147,7 +1183,7 @@ struct ProfileOnboardingView: View {
             }
         }
         .padding(8)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func onboardingStepperCard(title: String,
@@ -1258,7 +1294,7 @@ private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, 16)
             .padding(.horizontal, 20)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                     .fill(
                         LinearGradient(colors: colorScheme == .dark
                             ? [
@@ -1273,11 +1309,11 @@ private struct ProfileOnboardingPrimaryButtonStyle: ButtonStyle {
                                        endPoint: .bottomTrailing)
                     )
                     .overlay {
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                             .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.28), lineWidth: 1)
                     }
             )
-            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.99 : 1)
     }
 }
@@ -1288,7 +1324,7 @@ private struct ProfileOnboardingStepperButtonStyle: ButtonStyle {
             .font(.headline.weight(.semibold))
             .foregroundStyle(Color.primary.opacity(configuration.isPressed ? 0.88 : 1))
             .padding(.vertical, 10)
-            .atriaCard(cornerRadius: 22, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }
