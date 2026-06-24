@@ -1027,43 +1027,36 @@ private struct AtriaLiveTabAccessory: View {
     }
 
     var body: some View {
-        HStack(spacing: isInline ? 8 : 12) {
+        // Live bar: a heart (the strap is recording) + strap battery, with a
+        // charging bolt when it's on the charger. No connection words here —
+        // connection state lives only in the top status pill.
+        HStack(spacing: isInline ? 8 : 10) {
             Image(systemName: "heart.fill")
                 .font(isInline ? .caption.weight(.bold) : .subheadline.weight(.bold))
                 .foregroundStyle(.red)
 
-            Text(liveStore.state.sessionSampleCount > 0 ? "\(liveStore.state.sessionSampleCount)" : "Live")
+            Image(systemName: liveStore.state.batterySymbol)
+                .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(liveStore.state.batteryIsCharging ? Color.green : .secondary)
+
+            Text(liveStore.state.batteryText)
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                 .monospacedDigit()
 
-            Text(sampleLabel)
-                .font(isInline ? .caption2.weight(.semibold) : .caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
             if !isInline {
+                if liveStore.state.batteryIsCharging {
+                    Text("Charging")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                }
                 Spacer(minLength: 0)
-                Label(liveStore.state.batteryText, systemImage: "battery.100")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
             }
         }
         .padding(.horizontal, isInline ? 8 : 12)
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live strap connected. \(liveStore.state.sessionSampleCount) \(sampleLabel). Battery \(liveStore.state.batteryText). \(liveStore.state.rrContinuityText).")
-    }
-
-    private var sampleLabel: String {
-        switch liveStore.state.sessionSampleCount {
-        case 0:
-            return "connected"
-        case 1:
-            return "sample"
-        default:
-            return "samples"
-        }
+        .accessibilityLabel("Strap battery \(liveStore.state.batteryText)\(liveStore.state.batteryIsCharging ? ", charging" : "").")
     }
 }
 
@@ -1186,12 +1179,26 @@ final class AtriaHomeModel {
         var status: WhoopBLEManager.Status
         var deviceName: String
         var batteryLevel: Int
+        var batteryIsCharging: Bool
         var rrContinuityState: String
         var sessionSampleCount: Int
         var liveTRIMP: Double
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
+
+        /// SF Symbol matching the level, with the bolt overlay while charging.
+        var batterySymbol: String {
+            guard batteryLevel >= 0 else { return "battery.0percent" }
+            if batteryIsCharging { return "battery.100percent.bolt" }
+            switch batteryLevel {
+            case ..<13: return "battery.0percent"
+            case ..<38: return "battery.25percent"
+            case ..<63: return "battery.50percent"
+            case ..<88: return "battery.75percent"
+            default: return "battery.100percent"
+            }
+        }
     }
 
     struct PulseLiveState: Equatable {
@@ -1926,6 +1933,7 @@ final class AtriaHomeModel {
         return CoreLiveState(status: ble.status,
                              deviceName: ble.deviceName,
                              batteryLevel: ble.batteryLevel,
+                             batteryIsCharging: ble.batteryIsCharging,
                              rrContinuityState: ble.rrContinuityState,
                              sessionSampleCount: liveSessionDerived.sampleCount,
                              liveTRIMP: liveSessionDerived.trimp)

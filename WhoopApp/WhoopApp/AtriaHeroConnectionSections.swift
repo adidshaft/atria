@@ -75,23 +75,19 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
     }
 
     var body: some View {
+        // Calm reassurance only — connection state is shown by the top status
+        // pill, never repeated here.
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: systemImage)
+            Image(systemName: "internaldrive.fill")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(tint)
+                .foregroundStyle(.secondary)
                 .frame(width: 28)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(hero.guidance.headline)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text(visibleSavedDataNote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(visibleSavedDataNote)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             Spacer(minLength: 0)
         }
@@ -99,7 +95,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
         .padding(.vertical, 12)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Connection \(status.rawValue). \(hero.guidance.headline). \(auditSavedDataNote)")
+        .accessibilityLabel(auditSavedDataNote)
     }
 }
 

@@ -419,18 +419,9 @@ struct AtriaOverviewLeadingSection: View {
                                                  store: store,
                                                  subtitle: "")
 
-                AtriaOverviewLaunchChecklistHost(liveStore: liveStore,
-                                                 homeStatsStore: homeStatsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 onOpenVitals: onOpenVitals,
-                                                 onOpenCollection: onOpenCollection)
-
-                AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
-                                                 settings: aiCoachSettings,
-                                                 hasAPIKey: aiCoachHasAPIKey,
-                                                 onSettingsChange: onAICoachSettingsChange,
-                                                 onSaveAPIKey: onSaveAICoachAPIKey,
-                                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+                // Simple one-line "what to do today" guidance. No AI coach, no
+                // setup checklist, no strain-target maths — kept direct.
+                AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
             }
 
             if segment == .trends && hasUnlockedSecondarySections {
@@ -726,60 +717,37 @@ private struct AtriaLaunchChecklistRow: View {
 
 struct AtriaOverviewGuidanceSectionHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-    let settings: AtriaAICoachSettings
-    let hasAPIKey: Bool
-    let onSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAPIKey: (String) -> Void
-    let onDeleteAPIKey: () -> Void
 
     var body: some View {
-        AtriaOverviewGuidanceSection(hero: heroStore.state,
-                                     settings: settings,
-                                     hasAPIKey: hasAPIKey,
-                                     onSettingsChange: onSettingsChange,
-                                     onSaveAPIKey: onSaveAPIKey,
-                                     onDeleteAPIKey: onDeleteAPIKey)
+        AtriaOverviewGuidanceSection(hero: heroStore.state)
             .equatable()
     }
 }
 
 struct AtriaOverviewGuidanceSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
-    let settings: AtriaAICoachSettings
-    let hasAPIKey: Bool
-    let onSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAPIKey: (String) -> Void
-    let onDeleteAPIKey: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Guidance", subtitle: "Daily target from today's signal")
-            AtriaGuidanceCard(guidance: hero.guidance, strain: hero.strain)
-            AtriaAICoachCard(context: coachContext,
-                             settings: settings,
-                             hasAPIKey: hasAPIKey,
-                             onSettingsChange: onSettingsChange,
-                             onSaveAPIKey: onSaveAPIKey,
-                             onDeleteAPIKey: onDeleteAPIKey)
+        // One direct line: a colour dot + what today's signal suggests.
+        HStack(spacing: 12) {
+            Circle()
+                .fill(hero.guidance.color)
+                .frame(width: 11, height: 11)
+            Text(hero.guidance.headline)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .atriaCard(emphasis: .soft)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Guidance. \(hero.guidance.headline)")
     }
 
     static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
         lhs.hero == rhs.hero
-            && lhs.settings == rhs.settings
-            && lhs.hasAPIKey == rhs.hasAPIKey
-    }
-
-    private var coachContext: AtriaCoachContext {
-        AtriaCoachContext(guidance: hero.guidance,
-                          strain: hero.strain,
-                          recoveryText: hero.recoveryEstimate.percent.map { "\($0)%" } ?? hero.recoveryEstimate.confidence.rawValue,
-                          hrvText: hero.hrvValue,
-                          stressText: hero.stressValue,
-                          baselineSamples: hero.baselineSamples,
-                          sessionsCount: hero.sessionsCount)
     }
 }
 
