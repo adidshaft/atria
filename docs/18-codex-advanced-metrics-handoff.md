@@ -38,7 +38,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   Both are ledgered/idempotent like existing exports. Static checks now pin those
   estimate export gates in both planning and sample-writing paths: active energy
   requires workout readiness plus a complete energy profile, and VO₂ requires
-  measured HRmax, at least 7 resting baselines, and valid rest/max HR.
+  measured HRmax, at least 7 resting baselines, and valid rest/max HR. App-wide
+  static guards also forbid accidental HealthKit SpO₂ or temperature writes outside
+  the exporter.
 - IMU decode: **research-gated scaffold shipped in code**. `AtriaIMUDecoder`
   now evaluates 0x33 payloads across endian/scale/offset candidates, uses gravity
   as the first validation gate, and has synthetic rest/shake self-tests. BLE logs
