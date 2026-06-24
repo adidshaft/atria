@@ -83,6 +83,31 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, home, forbidden)
 
+    def test_settings_appearance_switcher_is_bordered_native_glass(self):
+        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
+        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+
+        for needle in [
+            "@AppStorage(\"atriaAppearanceMode\") private var appearanceMode = \"system\"",
+            "appearanceButton(\"System\", mode: \"system\", icon: \"circle.lefthalf.filled\")",
+            "appearanceButton(\"Light\", mode: \"light\", icon: \"sun.max.fill\")",
+            "appearanceButton(\"Dark\", mode: \"dark\", icon: \"moon.fill\")",
+            ".glassEffect(.regular.tint(Color(red: 0.541, green: 0.22, blue: 0.961).opacity(0.12)), in: .rect(cornerRadius: 5))",
+            ".stroke(Color(red: 0.541, green: 0.22, blue: 0.961), lineWidth: 1)",
+            ".buttonStyle(.glass)",
+            "private func isAppearanceModeSelected(_ mode: String) -> Bool",
+        ]:
+            assert_contains(self, settings, needle)
+
+        for needle in [
+            "@AppStorage(\"atriaAppearanceMode\") private var appearanceMode = \"system\"",
+            ".preferredColorScheme(preferredColorScheme)",
+            "case \"light\": return .light",
+            "case \"dark\": return .dark",
+            "default: return nil",
+        ]:
+            assert_contains(self, home, needle)
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)

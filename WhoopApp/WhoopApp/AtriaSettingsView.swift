@@ -90,13 +90,31 @@ struct AtriaSettingsView: View {
 
     private var appearanceSection: some View {
         Section {
-            HStack(spacing: 8) {
-                appearanceButton("System", mode: "system", icon: "circle.lefthalf.filled")
-                appearanceButton("Light", mode: "light", icon: "sun.max.fill")
-                appearanceButton("Dark", mode: "dark", icon: "moon.fill")
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    appearanceButton("System", mode: "system", icon: "circle.lefthalf.filled")
+                    appearanceButton("Light", mode: "light", icon: "sun.max.fill")
+                    appearanceButton("Dark", mode: "dark", icon: "moon.fill")
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: appearanceMode == "dark" ? "moon.stars.fill" : (appearanceMode == "light" ? "sun.max.fill" : "circle.lefthalf.filled"))
+                        .imageScale(.small)
+                    Text(appearanceMode == "system" ? "Using system appearance" : "Using \(appearanceMode) appearance")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            .padding(14)
+            .glassEffect(.regular.tint(Color(red: 0.541, green: 0.22, blue: 0.961).opacity(0.12)), in: .rect(cornerRadius: 5))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color(red: 0.541, green: 0.22, blue: 0.961), lineWidth: 1)
+            }
         } header: {
             Text("Appearance")
         } footer: {
@@ -117,8 +135,12 @@ struct AtriaSettingsView: View {
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
-        .tint(appearanceMode == mode ? .purple : .secondary)
-        .accessibilityAddTraits(appearanceMode == mode ? .isSelected : [])
+        .tint(isAppearanceModeSelected(mode) ? .purple : .secondary)
+        .accessibilityAddTraits(isAppearanceModeSelected(mode) ? .isSelected : [])
+    }
+
+    private func isAppearanceModeSelected(_ mode: String) -> Bool {
+        appearanceMode == mode
     }
 
     // MARK: Profile
