@@ -58,6 +58,9 @@ struct SavedSession: Codable, Identifiable {
     var sleepWakeResearchState: String? = nil
     var sleepWakeResearchConfidence: String? = nil
     var sleepWakeResearchReason: String? = nil
+    var sensorResearchProbeFrames: Int? = nil
+    var spo2ResearchCandidateFrames: Int? = nil
+    var skinTempResearchCandidateFrames: Int? = nil
     /// Phone accelerometer audit captured by the cabled Atria app. This can
     /// corroborate that the debug rig was still, but it is not wrist/strap IMU
     /// and must not validate sleep motion by itself.
