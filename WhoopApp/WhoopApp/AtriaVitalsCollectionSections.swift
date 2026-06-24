@@ -266,14 +266,8 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureActions: some View {
-        ViewThatFits {
-            HStack(spacing: 10) {
-                captureActionButtons
-            }
-
-            VStack(spacing: 10) {
-                captureActionButtons
-            }
+        VStack(spacing: 10) {
+            captureActionButtons
         }
     }
 
@@ -319,14 +313,8 @@ private struct AtriaCollectionRRReferenceCardHost: View {
                 AtriaStateBadge(state: homeStatsStore.state.rrPackageText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
             }
 
-            ViewThatFits {
-                HStack(spacing: 10) {
-                    rrActionButtons
-                }
-
-                VStack(spacing: 10) {
-                    rrActionButtons
-                }
+            VStack(spacing: 10) {
+                rrActionButtons
             }
 
             AtriaCollectionReferenceSummaryCard(
@@ -403,14 +391,8 @@ private struct AtriaCollectionHRReferenceCardHost: View {
                 AtriaStateBadge(state: snapshotStore.state.referenceText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
             }
 
-            ViewThatFits {
-                HStack(spacing: 10) {
-                    hrActionButtons
-                }
-
-                VStack(spacing: 10) {
-                    hrActionButtons
-                }
+            VStack(spacing: 10) {
+                hrActionButtons
             }
 
             AtriaCollectionReferenceSummaryCard(
@@ -904,14 +886,8 @@ private struct AtriaProfileCard: View, Equatable {
             .padding(8)
             .atriaRaisedCard(emphasis: .soft)
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    profileStepperTiles
-                }
-
-                VStack(spacing: 12) {
-                    profileStepperTiles
-                }
+            VStack(spacing: 12) {
+                profileStepperTiles
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {

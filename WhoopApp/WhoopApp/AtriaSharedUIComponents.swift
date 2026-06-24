@@ -386,7 +386,7 @@ struct AtriaMetricTile: View, Equatable {
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(displayValue)
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 29, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.62)
@@ -408,8 +408,8 @@ struct AtriaMetricTile: View, Equatable {
                     .minimumScaleFactor(0.72)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: sparklineValues == nil ? 112 : 144, alignment: .leading)
-        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: sparklineValues == nil ? 100 : 130, alignment: .leading)
+        .padding(13)
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label) \(value)")
