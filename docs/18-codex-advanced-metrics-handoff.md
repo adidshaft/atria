@@ -27,10 +27,11 @@ test_handoff_static_checks.py`, no `https://` clients).
   the visible label to WHOOP 4.0/5.0/MG; unknown metadata keeps the honest generic
   label. ECG/BP gates remain false unless MG is explicitly detected.
 - HealthKit additions: **scaffolded and gated**. Export authorization now includes
-  read-only Apple steps, sleeping wrist temperature, and cuff BP types; it never
-  writes BP/ECG/SpO₂. Active energy writes only for ready workout sessions with a
-  complete sex+weight profile, and VO₂ max writes only with measured max HR plus
-  7 resting baselines. Both are ledgered/idempotent like existing exports.
+  read-only Apple steps, sleeping wrist temperature, and cuff BP types; Apple
+  steps are audited via a read-only `HKStatisticsQuery` and never written. It
+  never writes BP/ECG/SpO₂. Active energy writes only for ready workout sessions
+  with a complete sex+weight profile, and VO₂ max writes only with measured max HR
+  plus 7 resting baselines. Both are ledgered/idempotent like existing exports.
 - IMU decode: **research-gated scaffold shipped in code**. `AtriaIMUDecoder`
   now evaluates 0x33 payloads across endian/scale/offset candidates, uses gravity
   as the first validation gate, and has synthetic rest/shake self-tests. BLE logs
@@ -65,7 +66,7 @@ test_handoff_static_checks.py`, no `https://` clients).
   is persisted through Settings and applied via `preferredColorScheme`; physical
   screenshot forcing for Settings was blocked because `devicectl` launch arguments
   were not delivered in this environment.
-- Verification so far: `python3 test_handoff_static_checks.py` green (37), generic
+- Verification so far: `python3 test_handoff_static_checks.py` green (39), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
   and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.

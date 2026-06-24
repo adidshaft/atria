@@ -263,6 +263,7 @@ final class HealthKitExporter {
                                           maxHR: maxHR,
                                           reason: "up_to_date")
             auditHeartRateReferenceAvailability(sessions: sessions)
+            auditAppleStepCountReadAvailability(reason: "up_to_date")
             return
         }
 
@@ -341,6 +342,7 @@ final class HealthKitExporter {
                                     reason: "incremental",
                                     hrOnly: false)
             auditHeartRateReferenceAvailability(sessions: sessions)
+            auditAppleStepCountReadAvailability(reason: "authorization_cached")
             return
         }
 
@@ -392,6 +394,7 @@ final class HealthKitExporter {
                                              reason: "incremental",
                                              hrOnly: false)
                 self.auditHeartRateReferenceAvailability(sessions: sessions)
+                self.auditAppleStepCountReadAvailability(reason: "authorization_granted")
             }
         }
     }
@@ -400,6 +403,7 @@ final class HealthKitExporter {
         guard arguments.contains("--whoop-healthkit-reference-audit") else { return }
         WHOOPDebugLog("WHOOPDBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
         auditHeartRateReferenceAvailability(sessions: sessions)
+        auditAppleStepCountReadAvailability(reason: "launch_arg")
     }
 
     func resetAndRebuildAtriaHeartRateFromLaunchIfRequested(arguments: [String],
@@ -1271,6 +1275,28 @@ final class HealthKitExporter {
                   broad,
                   categorySamples.count,
                   dataAppears ? 1 : 0)
+        }
+        store.execute(query)
+    }
+
+    private func auditAppleStepCountReadAvailability(reason: String) {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date(), options: .strictStartDate)
+        let query = HKStatisticsQuery(quantityType: stepCountType,
+                                      quantitySamplePredicate: predicate,
+                                      options: .cumulativeSum) { _, statistics, error in
+            if let error {
+                WHOOPDebugLog("WHOOPDBG healthkit_step_read status=query_error reason=%@ apple_steps_today=0 source=healthkit_read write_steps=0 error=%@",
+                      reason,
+                      String(describing: error))
+                return
+            }
+            let steps = Int((statistics?.sumQuantity()?.doubleValue(for: .count()) ?? 0).rounded())
+            WHOOPDebugLog("WHOOPDBG healthkit_step_read status=%@ reason=%@ apple_steps_today=%d source=healthkit_read write_steps=0",
+                  steps > 0 ? "ok" : "empty",
+                  reason,
+                  steps)
         }
         store.execute(query)
     }

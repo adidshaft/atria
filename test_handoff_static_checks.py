@@ -626,6 +626,26 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
+    def test_healthkit_step_count_is_read_only(self):
+        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "private var stepCountType",
+            ".stepCount",
+            "var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]",
+            "private func auditAppleStepCountReadAvailability(reason: String)",
+            "HKStatisticsQuery(quantityType: stepCountType",
+            "options: .cumulativeSum",
+            "WHOOPDBG healthkit_step_read status=%@",
+            "source=healthkit_read write_steps=0",
+            "auditAppleStepCountReadAvailability(reason: \"authorization_cached\")",
+            "auditAppleStepCountReadAvailability(reason: \"authorization_granted\")",
+            "auditAppleStepCountReadAvailability(reason: \"up_to_date\")",
+        ]:
+            assert_contains(self, text, needle)
+
+        assert_not_contains(self, text, "HKQuantitySample(type: stepCountType")
+
     def test_active_calories_are_persisted_as_estimates(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
