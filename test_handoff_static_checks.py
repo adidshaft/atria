@@ -290,6 +290,38 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, healthkit, ".oxygenSaturation")
         assert_not_contains(self, healthkit, "HKQuantitySample(type: oxygen")
 
+    def test_bp_ecg_are_fail_closed_on_whoop4(self):
+        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
+        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+
+        for needle in [
+            "private var sensorAvailabilitySection: some View",
+            "ECG unavailable",
+            "WHOOP 4.0 has no electrodes.",
+            "Blood pressure unavailable",
+            "Requires a cuff-calibrated device.",
+            "Blood oxygen research",
+            "Sleep-only probe; no Health export.",
+            "Atria shows only hardware-backed readings.",
+        ]:
+            assert_contains(self, settings, needle)
+
+        for needle in [
+            "var supportsECG: Bool { self == .whoopMG }",
+            "var supportsBloodPressure: Bool { self == .whoopMG }",
+            "var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]",
+        ]:
+            assert_contains(self, ble + healthkit, needle)
+
+        for forbidden in [
+            "HKQuantitySample(type: bloodPressureSystolicType",
+            "HKQuantitySample(type: bloodPressureDiastolicType",
+            "AFib",
+            "atrial fibrillation",
+        ]:
+            assert_not_contains(self, all_swift_source(), forbidden)
+
     def test_production_capture_defaults_land_on_balanced_profile(self):
         text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
 

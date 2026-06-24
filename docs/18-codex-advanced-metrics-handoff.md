@@ -43,6 +43,10 @@ test_handoff_static_checks.py`, no `https://` clients).
   in the 90-100 range and temperature-like little-endian words in the 2500-4200
   range. Logs stay `research_unvalidated`, record `metric_promotions=0`, store no
   raw payloads through the probe, and do not write oxygen/temperature to HealthKit.
+- BP/ECG fail-closed UX: **shipped in Settings**. A compact Sensors section says
+  ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
+  and blood oxygen remains research-only with no Health export. HealthKit keeps cuff
+  BP read types only; no BP/ECG/AFib samples are written or shown as strap metrics.
 - UI controls: **partially verified on physical iPhone**. Top-left status now maps
   to green `Live/Connected`, yellow `Connecting...`, and red `Not Connected`.
   Top-right buttons are grouped closer as native glass controls. Theme preference

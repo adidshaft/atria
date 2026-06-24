@@ -65,6 +65,7 @@ struct AtriaSettingsView: View {
                     profileSection
                     appearanceSection
                     deviceSection
+                    sensorAvailabilitySection
                     alertsSection
                     dataSection
                     shortcutsSection
@@ -280,6 +281,27 @@ struct AtriaSettingsView: View {
     }
 
     // MARK: About
+
+    private var sensorAvailabilitySection: some View {
+        Section {
+            settingsInfoRow(icon: "waveform.path.ecg",
+                            tint: .secondary,
+                            title: "ECG unavailable",
+                            detail: "WHOOP 4.0 has no electrodes.")
+            settingsInfoRow(icon: "gauge.with.dots.needle.50percent",
+                            tint: .secondary,
+                            title: "Blood pressure unavailable",
+                            detail: "Requires a cuff-calibrated device.")
+            settingsInfoRow(icon: "drop.degreesign",
+                            tint: .cyan,
+                            title: "Blood oxygen research",
+                            detail: "Sleep-only probe; no Health export.")
+        } header: {
+            Text("Sensors")
+        } footer: {
+            Text("Atria shows only hardware-backed readings.")
+        }
+    }
 
     private var aboutSection: some View {
         Section {
