@@ -742,6 +742,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     /// work is paused or background-throttled.
     private var foregroundKeepaliveTask: Task<Void, Never>?
     private var foregroundKeepaliveReassertAt: Date?
+    private var foregroundKeepaliveLastJournalFlushAt: Date?
     private var debugActiveJournalFlushTask: Task<Void, Never>?
     private var debugManualCheckpointTask: Task<Void, Never>?
     private var debugNoDataWatchdogTask: Task<Void, Never>?
@@ -1305,6 +1306,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func startForegroundKeepaliveWatchdog(reason: String) {
         foregroundKeepaliveTask?.cancel()
         foregroundKeepaliveReassertAt = nil
+        foregroundKeepaliveLastJournalFlushAt = nil
         let silenceTimeout: TimeInterval = 75
         let initialSilenceTimeout: TimeInterval = 8
         let initialReconnectWindow: TimeInterval = 20
@@ -1342,6 +1344,15 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     foregroundKeepaliveReassertAt = nil
                     defaults.set("observing", forKey: KeepaliveDefaults.lastStatus)
                     defaults.set("observe", forKey: KeepaliveDefaults.lastAction)
+                    // Keep the live session crash-safe even during a long
+                    // foreground stretch (the supervisor that normally checkpoints
+                    // is paused while foreground). Flush the active-session journal
+                    // at most once a minute; persistActiveSessionJournalIfNeeded
+                    // no-ops when nothing has changed, so this is cheap.
+                    if foregroundKeepaliveLastJournalFlushAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true {
+                        foregroundKeepaliveLastJournalFlushAt = now
+                        flushActiveSessionJournal(reason: "foreground_keepalive_crash_safety")
+                    }
                     continue
                 }
                 // First escalation: re-assert the 2A37 subscription and keep the
