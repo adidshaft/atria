@@ -29,11 +29,11 @@ test_handoff_static_checks.py`, no `https://` clients).
 - HealthKit additions: **scaffolded and gated**. Export authorization now includes
   read-only Apple steps, sleeping wrist temperature, and cuff BP types; Apple
   steps are audited via a read-only `HKStatisticsQuery`, sleeping wrist
-  temperature is audited via a read-only `HKSampleQuery`, and neither is written.
-  It never writes BP/ECG/SpO₂. Active energy writes only for ready workout
-  sessions with a complete sex+weight profile, and VO₂ max writes only with
-  measured max HR plus 7 resting baselines. Both are ledgered/idempotent like
-  existing exports.
+  temperature and cuff BP are audited via read-only `HKSampleQuery` calls, and
+  none of those read-only types are written. It never writes BP/ECG/SpO₂. Active
+  energy writes only for ready workout sessions with a complete sex+weight
+  profile, and VO₂ max writes only with measured max HR plus 7 resting baselines.
+  Both are ledgered/idempotent like existing exports.
 - IMU decode: **research-gated scaffold shipped in code**. `AtriaIMUDecoder`
   now evaluates 0x33 payloads across endian/scale/offset candidates, uses gravity
   as the first validation gate, and has synthetic rest/shake self-tests. BLE logs
@@ -62,17 +62,19 @@ test_handoff_static_checks.py`, no `https://` clients).
   ECG is unavailable on WHOOP 4.0, blood pressure requires cuff-calibrated hardware,
   and blood oxygen remains research-only with no Health export. HealthKit keeps cuff
   BP read types only; no BP/ECG/AFib samples are written or shown as strap metrics.
-- UI controls: **partially verified on physical iPhone**. Top-left status is now a
+- UI controls: **verified on physical iPhone**. Top-left status is now a
   native SwiftUI Liquid Glass button and maps to green `Live/Connected`, yellow
   `Connecting...`, and red `Not Connected`. Top-right buttons are grouped closer
   as native glass controls. Theme preference is persisted through Settings with a
   bordered native Liquid Glass system/light/dark switcher and applied via
-  `preferredColorScheme`; physical screenshot forcing for Settings was blocked
-  because `devicectl` launch arguments were not delivered in this environment.
-- Verification so far: `python3 test_handoff_static_checks.py` green (42), generic
+  `preferredColorScheme`; the debug launch route now defers Settings presentation
+  until after the home view appears so physical screenshots can verify it.
+- Verification so far: `python3 test_handoff_static_checks.py` green (43), generic
   iOS build green, physical install/launch green, Today screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-today-fixed-20260624T222046Z.png`
-  and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`.
+  and `logs/live-device/screenshots/advanced-metrics-healthkit-today-20260624T222808Z.png`;
+  Settings appearance screenshot captured at
+  `logs/live-device/screenshots/advanced-metrics-settings-appearance-deferred-20260625T0456Z.png`.
 
 ## OVERNIGHT OPERATING PRINCIPLES (this run is unattended — hold these above all)
 

@@ -63,8 +63,9 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedPrimaryContent = false
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
-    @State private var showSettings = ProcessInfo.processInfo.arguments.contains("--atria-open-settings")
+    @State private var showSettings = false
     @State private var showCoexistenceModal = false
+    @State private var didApplyDebugUIScreenLaunchArgument = false
     @State private var coexistenceSnoozedUntil: Date?
     @State private var connectionGuideSnoozedUntil: Date?
     @State private var connectionGuidePresentationToken = UUID()
@@ -386,12 +387,18 @@ struct AtriaHomeView: View {
 
     private func applyDebugUIScreenLaunchArgumentIfNeeded(arguments: [String] = ProcessInfo.processInfo.arguments) {
 #if DEBUG
-        guard let screenIndex = arguments.firstIndex(of: "--atria-ui-screen"),
-              arguments.indices.contains(arguments.index(after: screenIndex)) else {
+        guard !didApplyDebugUIScreenLaunchArgument else { return }
+        let requestedScreen: String
+        if arguments.contains("--atria-open-settings") {
+            requestedScreen = "settings"
+        } else if let screenIndex = arguments.firstIndex(of: "--atria-ui-screen"),
+                  arguments.indices.contains(arguments.index(after: screenIndex)) {
+            requestedScreen = arguments[arguments.index(after: screenIndex)].lowercased()
+        } else {
             return
         }
 
-        let requestedScreen = arguments[arguments.index(after: screenIndex)].lowercased()
+        didApplyDebugUIScreenLaunchArgument = true
         hasUnlockedPrimaryContent = true
         hasUnlockedSecondarySections = true
         switch requestedScreen {
