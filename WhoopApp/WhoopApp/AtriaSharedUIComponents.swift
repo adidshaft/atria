@@ -361,6 +361,15 @@ struct AtriaMetricTile: View, Equatable {
     var footnote: String? = nil
     var sparklineValues: [Int]? = nil
 
+    private var displayValue: String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.localizedCaseInsensitiveContains("learning")
+            || trimmed.localizedCaseInsensitiveContains("prepar") {
+            return "--"
+        }
+        return trimmed.isEmpty ? "--" : value
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
@@ -376,7 +385,7 @@ struct AtriaMetricTile: View, Equatable {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(value)
+                Text(displayValue)
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -402,6 +411,8 @@ struct AtriaMetricTile: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: sparklineValues == nil ? 112 : 144, alignment: .leading)
         .padding(14)
         .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label) \(value)")
     }
 }
 

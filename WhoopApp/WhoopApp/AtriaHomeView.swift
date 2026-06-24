@@ -198,6 +198,7 @@ struct AtriaHomeView: View {
             presentCoexistenceModalIfNeeded(for: risk)
         }
         .onAppear {
+            applyDebugUIScreenLaunchArgumentIfNeeded()
             presentCoexistenceModalIfNeeded(for: ble.officialWhoopCoexistenceRisk)
             guard !hasUnlockedPrimaryContent else { return }
             UIDevice.current.isBatteryMonitoringEnabled = true
@@ -370,6 +371,33 @@ struct AtriaHomeView: View {
                 selectedTab = .collection
             }
         }
+    }
+
+    private func applyDebugUIScreenLaunchArgumentIfNeeded(arguments: [String] = ProcessInfo.processInfo.arguments) {
+#if DEBUG
+        guard let screenIndex = arguments.firstIndex(of: "--atria-ui-screen"),
+              arguments.indices.contains(arguments.index(after: screenIndex)) else {
+            return
+        }
+
+        let requestedScreen = arguments[arguments.index(after: screenIndex)].lowercased()
+        hasUnlockedPrimaryContent = true
+        hasUnlockedSecondarySections = true
+        switch requestedScreen {
+        case "today", "overview":
+            selectedTab = .overview
+        case "vitals":
+            selectedTab = .vitals
+        case "data", "collection":
+            selectedTab = .collection
+            model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
+        case "settings":
+            selectedTab = .overview
+            showSettings = true
+        default:
+            break
+        }
+#endif
     }
 
     private func performMotionAwareUpdate(_ update: () -> Void) {
