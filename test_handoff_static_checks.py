@@ -325,6 +325,43 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, healthkit, ".oxygenSaturation")
         assert_not_contains(self, healthkit, "HKQuantitySample(type: oxygen")
 
+    def test_self_induced_probe_markers_are_local_research_only(self):
+        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+
+        for needle in [
+            "struct ResearchManeuverMarker: Codable, Identifiable, Equatable",
+            "case breathHold",
+            "case heatExposure",
+            "case coldExposure",
+            "case walkTest",
+            "static let key = \"atria.researchManeuverMarkers.v1\"",
+            "var researchManeuverMarkers: [ResearchManeuverMarker]",
+            "func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind",
+            "WHOOPDBG research_maneuver_marker status=marked",
+            "local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "researchManeuverCard",
+            "AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers",
+            "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
+            "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
+            "ForEach(ResearchManeuverMarker.Kind.allCases)",
+            ".buttonStyle(.glass)",
+            "Research only; timestamps stay on device for probe correlation.",
+        ]:
+            assert_contains(self, collection, needle)
+
+        for forbidden in [
+            "markResearchManeuver",
+            "ResearchManeuverMarker",
+            "researchManeuverMarkers",
+        ]:
+            assert_not_contains(self, healthkit, forbidden)
+
     def test_bp_ecg_are_fail_closed_on_whoop4(self):
         settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
         healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")

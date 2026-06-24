@@ -483,6 +483,49 @@ struct BehaviorCorrelationSummary: Equatable {
     }
 }
 
+struct ResearchManeuverMarker: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable, CaseIterable, Identifiable {
+        case breathHold
+        case heatExposure
+        case coldExposure
+        case walkTest
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .breathHold: return "Breath hold"
+            case .heatExposure: return "Heat"
+            case .coldExposure: return "Cold"
+            case .walkTest: return "Walk test"
+            }
+        }
+
+        var shortLabel: String {
+            switch self {
+            case .breathHold: return "Breath"
+            case .heatExposure: return "Heat"
+            case .coldExposure: return "Cold"
+            case .walkTest: return "Walk"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .breathHold: return "lungs.fill"
+            case .heatExposure: return "thermometer.sun.fill"
+            case .coldExposure: return "snowflake"
+            case .walkTest: return "figure.walk.motion"
+            }
+        }
+    }
+
+    let id: String
+    let kind: Kind
+    let timestamp: Date
+    let createdAt: Date
+}
+
 struct GateEWorkoutTrainingStatus: Equatable {
     let present: Bool
     let confirmedID: String
@@ -1999,6 +2042,7 @@ final class SessionStore: ObservableObject {
     private var cachedConfirmedWorkouts: [UserConfirmedWorkout]
     private var cachedConfirmedSleeps: [UserConfirmedSleep]
     private var cachedBehaviorJournalEntries: [BehaviorJournalEntry]
+    private var cachedResearchManeuverMarkers: [ResearchManeuverMarker]
     private var cachedSessionBackupStatus: SessionBackupStatus
     private var cachedCanonicalSessions: [SavedSession]
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
@@ -2016,6 +2060,11 @@ final class SessionStore: ObservableObject {
 
     private enum BehaviorJournalDefaults {
         static let key = "atria.behaviorJournal.v1"
+    }
+
+    private enum ResearchManeuverDefaults {
+        static let key = "atria.researchManeuverMarkers.v1"
+        static let maxMarkers = 240
     }
 
     private enum ExternalReferenceDefaults {
@@ -2044,6 +2093,7 @@ final class SessionStore: ObservableObject {
         self.cachedConfirmedWorkouts = Self.readConfirmedWorkouts()
         self.cachedConfirmedSleeps = Self.readConfirmedSleeps()
         self.cachedBehaviorJournalEntries = Self.readBehaviorJournalEntries()
+        self.cachedResearchManeuverMarkers = Self.readResearchManeuverMarkers()
         self.cachedSessionBackupStatus = .missing
         self.cachedLatestReferenceValidatedHRV = nil
         self.cachedCanonicalSessions = []
@@ -2072,6 +2122,10 @@ final class SessionStore: ObservableObject {
 
     var behaviorJournalEntries: [BehaviorJournalEntry] {
         cachedBehaviorJournalEntries
+    }
+
+    var researchManeuverMarkers: [ResearchManeuverMarker] {
+        cachedResearchManeuverMarkers
     }
 
     private func refreshSessionDerivedCaches() {
@@ -4755,6 +4809,33 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: BehaviorJournalDefaults.key)
         cachedBehaviorJournalEntries = sorted
+    }
+
+    func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind, at timestamp: Date = Date()) {
+        let marker = ResearchManeuverMarker(id: "research-\(kind.rawValue)-\(Int(timestamp.timeIntervalSince1970 * 1000))",
+                                            kind: kind,
+                                            timestamp: timestamp,
+                                            createdAt: Date())
+        saveResearchManeuverMarkers(([marker] + cachedResearchManeuverMarkers).prefix(ResearchManeuverDefaults.maxMarkers).map { $0 })
+        dashboardRevision += 1
+        WHOOPDebugLog("WHOOPDBG research_maneuver_marker status=marked kind=%@ timestamp=%@ local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
+              kind.rawValue,
+              isoString(timestamp))
+    }
+
+    private static func readResearchManeuverMarkers() -> [ResearchManeuverMarker] {
+        guard let data = UserDefaults.standard.data(forKey: ResearchManeuverDefaults.key),
+              let decoded = try? JSONDecoder().decode([ResearchManeuverMarker].self, from: data) else {
+            return []
+        }
+        return decoded.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func saveResearchManeuverMarkers(_ markers: [ResearchManeuverMarker]) {
+        let sorted = markers.sorted(by: { $0.timestamp > $1.timestamp })
+        guard let data = try? JSONEncoder().encode(sorted) else { return }
+        UserDefaults.standard.set(data, forKey: ResearchManeuverDefaults.key)
+        cachedResearchManeuverMarkers = sorted
     }
 
     private func behaviorJournalID(for day: Date) -> String {
