@@ -219,14 +219,8 @@ private struct AtriaCollectionCaptureCardHost: View {
                                 tint: collectionLiveStore.state.isRecording ? .red : .blue)
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    captureStats
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    captureStats
-                }
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                captureStats
             }
 
             Text(collectionLiveStore.state.captureSummary)
@@ -248,6 +242,8 @@ private struct AtriaCollectionCaptureCardHost: View {
         AtriaInlineQuickStat(label: "Backup", value: collectionLiveStore.state.recordingState)
         AtriaInlineQuickStat(label: "Export", value: collectionLiveStore.state.captureFileLabel)
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 
     @ViewBuilder
     private var captureActions: some View {
@@ -531,14 +527,8 @@ private struct AtriaCollectionStatusCardHost: View {
                 AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialWhoopCoexistenceRisk)
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    statusTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    statusTiles
-                }
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                statusTiles
             }
         }
         .padding(18)
@@ -552,6 +542,8 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaInlineQuickStat(label: "Battery", value: coreLiveStore.state.batteryText)
         AtriaInlineQuickStat(label: "Saving mode", value: collectionLiveStore.state.modeLabel)
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 }
 
 private struct AtriaCollectionCoexistenceWarning: View, Equatable {
@@ -679,14 +671,8 @@ private struct AtriaPulseCard: View, Equatable {
 
             AtriaPulseSparklineHost(sparklineStore: sparklineStore)
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    pulseStatTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    pulseStatTiles
-                }
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                pulseStatTiles
             }
         }
         .padding(18)
@@ -699,6 +685,8 @@ private struct AtriaPulseCard: View, Equatable {
         AtriaInlineQuickStat(label: "Peak", value: live.peakHeartRateText)
         AtriaInlineQuickStat(label: "Resting", value: restingHeartRateText)
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 }
 
 private struct AtriaPulseSparklineHost: View {
@@ -730,14 +718,8 @@ private struct AtriaHRVCard: View, Equatable {
                                 tint: continuityTint)
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    hrvStatTiles
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    hrvStatTiles
-                }
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                hrvStatTiles
             }
 
             Text(hero.hrvNarrative)
@@ -761,6 +743,8 @@ private struct AtriaHRVCard: View, Equatable {
         AtriaInlineQuickStat(label: "Confidence", value: hero.hrvDetail)
         AtriaInlineQuickStat(label: "Stress", value: hero.stressValue, detail: hero.stressDetail)
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 }
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
@@ -785,14 +769,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     @ViewBuilder
     private var metricContent: some View {
-        ViewThatFits {
-            HStack(spacing: 12) {
-                recoveryStrainTiles
-            }
-
-            VStack(spacing: 12) {
-                recoveryStrainTiles
-            }
+        LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            recoveryStrainTiles
         }
     }
 
@@ -807,6 +785,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               confidence: hero.loadConfidence,
                               narrative: hero.loadNarrative)
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
 }
 
 private struct AtriaTrainingLoadTile: View, Equatable {
@@ -898,20 +878,11 @@ private struct AtriaProfileCard: View, Equatable {
                 }
             }
 
-            ViewThatFits {
-                HStack(spacing: 12) {
-                    AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
-                    AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
-                    AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
-                    AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
-                    AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
-                    AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
-                    AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
-                }
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
+                AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
+                AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
+                AtriaInlineQuickStat(label: "VO2max", value: vo2MaxEstimate.valueText, detail: vo2MaxEstimate.confidence)
             }
 
             Text(vo2MaxEstimate.narrative)
@@ -942,6 +913,8 @@ private struct AtriaProfileCard: View, Equatable {
             onUpdateProfile { $0.measuredMaxHR = min(220, $0.measuredMaxHR + 1) }
         }
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 }
 
 private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
@@ -953,26 +926,17 @@ private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
     let trailingDetail: String
 
     var body: some View {
-        ViewThatFits {
-            HStack(spacing: 12) {
-                AtriaCollectionReferenceSummaryTile(title: leadingTitle,
-                                                    value: leadingValue,
-                                                    detail: leadingDetail)
-                AtriaCollectionReferenceSummaryTile(title: trailingTitle,
-                                                    value: trailingValue,
-                                                    detail: trailingDetail)
-            }
-
-            VStack(spacing: 12) {
-                AtriaCollectionReferenceSummaryTile(title: leadingTitle,
-                                                    value: leadingValue,
-                                                    detail: leadingDetail)
-                AtriaCollectionReferenceSummaryTile(title: trailingTitle,
-                                                    value: trailingValue,
-                                                    detail: trailingDetail)
-            }
+        LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            AtriaCollectionReferenceSummaryTile(title: leadingTitle,
+                                                value: leadingValue,
+                                                detail: leadingDetail)
+            AtriaCollectionReferenceSummaryTile(title: trailingTitle,
+                                                value: trailingValue,
+                                                detail: trailingDetail)
         }
     }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
 }
 
 private struct AtriaCollectionReferenceSummaryTile: View, Equatable {

@@ -85,6 +85,7 @@ struct AtriaHomeView: View {
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
+    @State private var missedDataBannerDismissedUntil: Date?
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
 
     init(ble: WhoopBLEManager, store: SessionStore) {
@@ -189,19 +190,16 @@ struct AtriaHomeView: View {
         }
         .sheet(isPresented: $showCoexistenceModal) {
             AtriaWhoopCoexistenceModal(context: connectionGuideContext) {
-                coexistenceSnoozedUntil = Date().addingTimeInterval(60 * 60)
-                showCoexistenceModal = false
+                acknowledgeCoexistenceModal(reason: "button")
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
         .onReceive(ble.$officialWhoopCoexistenceRisk.removeDuplicates()) { risk in
-            let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
-            if risk == .suspected, !snoozed, !showCoexistenceModal {
-                showCoexistenceModal = true
-            }
+            presentCoexistenceModalIfNeeded(for: risk)
         }
         .onAppear {
+            presentCoexistenceModalIfNeeded(for: ble.officialWhoopCoexistenceRisk)
             guard !hasUnlockedPrimaryContent else { return }
             UIDevice.current.isBatteryMonitoringEnabled = true
             batteryState = UIDevice.current.batteryState
@@ -212,6 +210,7 @@ struct AtriaHomeView: View {
             model.setPulseDetailMode(active: selectedTab == .vitals)
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
+            runCoexistenceSnoozeSelfTestIfRequested()
             updateMediaRefreshLoop()
             updateLiveActivity()
             updateHapticCoordinator()
@@ -474,10 +473,10 @@ struct AtriaHomeView: View {
                 Text(statusShortLabel)
             }
             .font(.caption.weight(.bold))
-            .foregroundStyle(statusTint)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(statusTint.opacity(0.16), in: .capsule)
+            .foregroundStyle(statusChipForeground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(AtriaLiquidStatusPillBackground(tint: statusTint))
             .fixedSize()
             .contentShape(.capsule)
             .onTapGesture {
@@ -543,43 +542,125 @@ struct AtriaHomeView: View {
         }
     }
 
+    private var statusChipForeground: Color {
+        switch model.statusStore.state.status {
+        case .connected: return Color(red: 0.77, green: 1.00, blue: 0.86)
+        case .connecting, .scanning: return Color(red: 1.00, green: 0.87, blue: 0.62)
+        case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
+        case .disconnected: return Color(red: 0.42, green: 0.82, blue: 1.00)
+        }
+    }
+
     private var overviewContent: some View {
-        AtriaOverviewTabContent(statusStore: model.statusStore,
-                                liveStore: model.coreLiveStore,
-                                heroStore: model.heroStore,
-                                homeStatsStore: model.homeStatsStore,
-                                snapshotStore: model.snapshotStore,
-                                store: store,
-                                hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                aiCoachSettings: aiCoachSettings,
-                                aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                horizontalSizeClass: horizontalSizeClass,
-                                connectionContext: connectionGuideContext,
-                                onAICoachSettingsChange: { settings in
-                                    aiCoachSettings = settings
-                                },
-                                onSaveAICoachAPIKey: { key in
-                                    AtriaCoachKeychain.saveAPIKey(key, provider: aiCoachSettings.cloudProvider)
-                                    refreshAICoachKeyState()
-                                },
-                                onDeleteAICoachAPIKey: {
-                                    AtriaCoachKeychain.deleteAPIKey(provider: aiCoachSettings.cloudProvider)
-                                    refreshAICoachKeyState()
-                                },
-                                onShowConnectionGuide: {
-                                    connectionGuideSnoozedUntil = nil
-                                    showConnectionGuide = true
-                                },
-                                onOpenVitals: {
-                                    performMotionAwareUpdate {
-                                        selectedTab = .vitals
-                                    }
-                                },
-                                onOpenCollection: {
-                                    performMotionAwareUpdate {
-                                        selectedTab = .collection
-                                    }
-                                })
+        VStack(spacing: 18) {
+            if shouldShowMissedDataBanner {
+                AtriaMissedDataBanner {
+                    missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)
+                } onSync: {
+                    missedDataBannerDismissedUntil = nil
+                    _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "home_missed_data_banner",
+                                                                 force: true)
+                }
+            }
+
+            AtriaOverviewTabContent(statusStore: model.statusStore,
+                                    liveStore: model.coreLiveStore,
+                                    heroStore: model.heroStore,
+                                    homeStatsStore: model.homeStatsStore,
+                                    snapshotStore: model.snapshotStore,
+                                    store: store,
+                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections,
+                                    aiCoachSettings: aiCoachSettings,
+                                    aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                    horizontalSizeClass: horizontalSizeClass,
+                                    connectionContext: connectionGuideContext,
+                                    onAICoachSettingsChange: { settings in
+                                        aiCoachSettings = settings
+                                    },
+                                    onSaveAICoachAPIKey: { key in
+                                        AtriaCoachKeychain.saveAPIKey(key, provider: aiCoachSettings.cloudProvider)
+                                        refreshAICoachKeyState()
+                                    },
+                                    onDeleteAICoachAPIKey: {
+                                        AtriaCoachKeychain.deleteAPIKey(provider: aiCoachSettings.cloudProvider)
+                                        refreshAICoachKeyState()
+                                    },
+                                    onShowConnectionGuide: {
+                                        connectionGuideSnoozedUntil = nil
+                                        showConnectionGuide = true
+                                    },
+                                    onOpenVitals: {
+                                        performMotionAwareUpdate {
+                                            selectedTab = .vitals
+                                        }
+                                    },
+                                    onOpenCollection: {
+                                        performMotionAwareUpdate {
+                                            selectedTab = .collection
+                                        }
+                                    })
+        }
+    }
+
+    private var shouldShowMissedDataBanner: Bool {
+        guard model.collectionLiveStore.state.rangeLossBackfillPending else { return false }
+        guard showsMissedDataBannerForCurrentStatus else { return false }
+        guard selectedTab == .overview else { return false }
+        if let missedDataBannerDismissedUntil, missedDataBannerDismissedUntil > Date() {
+            return false
+        }
+        return true
+    }
+
+    private var showsMissedDataBannerForCurrentStatus: Bool {
+        switch model.statusStore.state.status {
+        case .disconnected, .poweredOff:
+            return model.coreLiveStore.state.sessionSampleCount == 0
+        case .connected, .connecting, .scanning:
+            return false
+        }
+    }
+
+    private func presentCoexistenceModalIfNeeded(for risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk) {
+        guard risk == .suspected else { return }
+        Task { @MainActor in
+            await Task.yield()
+            let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
+            if !snoozed, !showCoexistenceModal {
+                showCoexistenceModal = true
+            }
+        }
+    }
+
+    private func acknowledgeCoexistenceModal(reason: String) {
+        coexistenceSnoozedUntil = Date().addingTimeInterval(60 * 60)
+        showCoexistenceModal = false
+        recordCoexistenceSnoozeVerification(status: "acknowledged", reason: reason)
+    }
+
+    private func runCoexistenceSnoozeSelfTestIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+#if DEBUG
+        guard arguments.contains("--whoop-verify-coexistence-snooze") else { return }
+        showCoexistenceModal = true
+        acknowledgeCoexistenceModal(reason: "debug_launch_arg")
+        presentCoexistenceModalIfNeeded(for: .suspected)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
+            let passed = snoozed && !showCoexistenceModal
+            recordCoexistenceSnoozeVerification(status: passed ? "pass" : "fail",
+                                                reason: "debug_launch_arg")
+        }
+#endif
+    }
+
+    private func recordCoexistenceSnoozeVerification(status: String, reason: String) {
+#if DEBUG
+        let defaults = UserDefaults.standard
+        defaults.set(status, forKey: "whoop.link.coexistenceSnoozeVerificationStatus")
+        defaults.set(reason, forKey: "whoop.link.coexistenceSnoozeVerificationReason")
+        defaults.set(Date().timeIntervalSince1970, forKey: "whoop.link.coexistenceSnoozeVerificationAt")
+#endif
     }
 
     private var vitalsContent: some View {
@@ -795,6 +876,113 @@ struct AtriaHomeView: View {
                       elapsedMS,
                       status.logToken,
                       selectedTab.rawValue)
+    }
+}
+
+private struct AtriaLiquidStatusPillBackground: View {
+    let tint: Color
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(baseFill)
+            .overlay {
+                Capsule(style: .continuous)
+                    .fill(liquidWash)
+                    .blendMode(colorScheme == .dark ? .screen : .plusLighter)
+                    .opacity(colorScheme == .dark ? 0.62 : 0.38)
+            }
+            .overlay(alignment: .topLeading) {
+                Capsule(style: .continuous)
+                    .fill(
+                        LinearGradient(colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.26 : 0.58),
+                            .clear
+                        ], startPoint: .topLeading, endPoint: .center)
+                    )
+                    .padding(1)
+                    .opacity(0.7)
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(borderGradient, lineWidth: 1)
+            }
+            .shadow(color: tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
+                    radius: 10,
+                    x: 0,
+                    y: 4)
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.42 : 0.10),
+                    radius: 8,
+                    x: 0,
+                    y: 2)
+    }
+
+    private var baseFill: AnyShapeStyle {
+        colorScheme == .dark
+            ? AnyShapeStyle(Color(red: 0.035, green: 0.045, blue: 0.058).opacity(0.94))
+            : AnyShapeStyle(Color.white.opacity(0.78))
+    }
+
+    private var liquidWash: LinearGradient {
+        LinearGradient(colors: [
+            tint.opacity(colorScheme == .dark ? 0.34 : 0.28),
+            tint.opacity(colorScheme == .dark ? 0.12 : 0.14),
+            Color.white.opacity(colorScheme == .dark ? 0.08 : 0.24)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var borderGradient: LinearGradient {
+        LinearGradient(colors: [
+            tint.opacity(0.95),
+            tint.opacity(colorScheme == .dark ? 0.42 : 0.30),
+            Color.white.opacity(colorScheme == .dark ? 0.12 : 0.70)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+private struct AtriaMissedDataBanner: View, Equatable {
+    let onDismiss: () -> Void
+    let onSync: () -> Void
+
+    static func == (lhs: AtriaMissedDataBanner, rhs: AtriaMissedDataBanner) -> Bool {
+        true
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.cyan)
+                .frame(width: 28, height: 28)
+                .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("New data on your strap")
+                    .font(.subheadline.weight(.semibold))
+                Text("Sync missed data when you are ready.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button("Sync", action: onSync)
+                .font(.caption.weight(.bold))
+                .buttonStyle(.glassProminent)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("Dismiss missed data banner")
+        }
+        .padding(14)
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1041,6 +1229,7 @@ final class AtriaHomeModel {
         var lastCaptureFile: String
         var standardHROnlyEnabled: Bool
         var longWearModeEnabled: Bool
+        var rangeLossBackfillPending: Bool
         var collectionProfile: WhoopBLEManager.CollectionProfile
         var officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
 
@@ -1508,6 +1697,7 @@ final class AtriaHomeModel {
             ble.$lastCaptureFile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$standardHROnlyEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$longWearModeEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$collectionProfile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialWhoopCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
@@ -1769,6 +1959,7 @@ final class AtriaHomeModel {
                                    lastCaptureFile: ble.lastCaptureFile,
                                    standardHROnlyEnabled: ble.standardHROnlyEnabled,
                                    longWearModeEnabled: ble.longWearModeEnabled,
+                                   rangeLossBackfillPending: ble.rangeLossBackfillPending,
                                    collectionProfile: ble.collectionProfile,
                                    officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
     }

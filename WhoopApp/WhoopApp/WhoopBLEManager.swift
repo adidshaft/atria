@@ -328,6 +328,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     @Published var status: Status = .disconnected
     @Published private(set) var officialWhoopCoexistenceRisk: OfficialWhoopCoexistenceRisk = OfficialWhoopCoexistenceRisk.load()
+    @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
@@ -1482,6 +1483,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
         startOfflineHistoricalSync(reason: reason, force: force)
+        if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+            defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+            defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
+            assignIfChanged(\.rangeLossBackfillPending, false)
+        }
         return true
     }
 
@@ -1573,6 +1579,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(true, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt)
         defaults.set(reason, forKey: OfflineSyncDefaults.rangeLossBackfillReason)
+        assignIfChanged(\.rangeLossBackfillPending, true)
         pendingOfflineHistoricalSyncReason = reason
         WHOOPDebugLog("WHOOPDBG offline_sync status=pending_range_loss_backfill reason=%@ action=sync_after_reconnect",
               reason)
@@ -1580,6 +1587,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func preserveLongWearRangeLossRecovery(reason: String) {
         guard longWearModeEnabled else { return }
+        guard !offlineHistoricalSyncInProgress else {
+            WHOOPDebugLog("WHOOPDBG offline_sync status=skip_range_loss_mark reason=%@ detail=sync_in_progress",
+                          reason)
+            return
+        }
         persistActiveSessionJournalIfNeeded(reason: "\(reason)_continuity_checkpoint", force: true)
         markRangeLossBackfillRequired(reason: "long_wear_range_loss")
         if status == .connected {
@@ -1605,6 +1617,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false) {
                 UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
+                assignIfChanged(\.rangeLossBackfillPending, false)
             }
         }
     }
@@ -2506,6 +2519,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         resetSampleDiagnosticsForDebugLaunch(arguments: arguments)
         resetProtocolDiagnosticsForDebugLaunch(arguments: arguments)
         resetRadioDiagnosticsForLaunch()
+        applyCoexistenceRiskForDebugLaunch(arguments: arguments)
+        applyOfflineSyncForDebugLaunch(arguments: arguments)
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.interval)
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.label)
@@ -8309,6 +8324,32 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         sessionMaxRawHRGap = 0
         sessionMaxAcceptedHRGap = 0
         lastRawHRNotificationAt = nil
+    }
+
+    private func applyCoexistenceRiskForDebugLaunch(arguments: [String]) {
+#if DEBUG
+        guard let riskIndex = arguments.firstIndex(of: "--whoop-force-coexistence-risk"),
+              arguments.indices.contains(arguments.index(after: riskIndex)) else { return }
+        let value = arguments[arguments.index(after: riskIndex)]
+        guard let risk = OfficialWhoopCoexistenceRisk(rawValue: value) else {
+            WHOOPDebugLog("WHOOPDBG official_whoop_coexistence_debug status=invalid value=%@", value)
+            return
+        }
+        persistOfficialWhoopCoexistenceRisk(risk, reason: "debug_launch_arg")
+        WHOOPDebugLog("WHOOPDBG official_whoop_coexistence_debug status=forced value=%@", value)
+#endif
+    }
+
+    private func applyOfflineSyncForDebugLaunch(arguments: [String]) {
+#if DEBUG
+        guard arguments.contains("--whoop-force-offline-sync") else { return }
+        let reason = value(after: "--whoop-force-offline-sync-reason",
+                           in: arguments) ?? "debug_launch_arg"
+        let started = requestOfflineHistoricalSyncIfNeeded(reason: reason, force: true)
+        WHOOPDebugLog("WHOOPDBG offline_sync_debug status=%@ reason=%@",
+                      started ? "started" : "not_started",
+                      reason)
+#endif
     }
 }
 
