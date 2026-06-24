@@ -280,6 +280,24 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, decoder, needle)
 
+        shared = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSharedUIComponents.swift")
+        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        for needle in [
+            "case research",
+            "return \"Research\"",
+            "return \"waveform.badge.magnifyingglass\"",
+        ]:
+            assert_contains(self, shared, needle)
+        for needle in [
+            "state: summary.frameCount > 0 ? .research : .learning",
+            "state: summary.sampleRateHz == nil ? .learning : .research",
+            "state: summary.layoutText == \"--\" ? .learning : .research",
+            "state: summary.strapStepCount > 0 ? .research : .learning",
+            "state: summary.sleepWakeText == \"--\" ? .learning : .research",
+            "state: summary.probeFrameCount > 0 ? .research : .learning",
+        ]:
+            assert_contains(self, collection, needle)
+
         for needle in [
             "AtriaIMUDecoder.decode(payload: payload)",
             "recordIMUFeatures(decoded)",
@@ -416,6 +434,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "ForEach(ResearchManeuverMarker.Kind.allCases)",
             ".buttonStyle(.glass)",
             "AtriaMetricTile(label: \"Probe match\"",
+            "state: markers.isEmpty ? .learning : .research",
+            "state: correlationSummary.matchedMarkers > 0 ? .research : .learning",
             "static let correlationWindow: TimeInterval = 15 * 60",
             "guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }",
             "marker.timestamp >= lower && marker.timestamp <= upper",
