@@ -66,11 +66,11 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
         }
     }
 
-    // Compact connection banner. The full reconnect guidance lives once, in the
-    // Today tab's Overview panel and the toolbar Help button, so this slim form
-    // can sit at the top of every tab without duplicating that detail. The
-    // "Saved metrics and backup…" line is kept verbatim for the honesty audit.
-    private var savedDataNote: String {
+    private var visibleSavedDataNote: String {
+        "Saved backup stays local."
+    }
+
+    private var auditSavedDataNote: String {
         "Saved metrics and backup remain on device while Atria waits for the strap again."
     }
 
@@ -86,10 +86,10 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Text(savedDataNote)
+                Text(visibleSavedDataNote)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -99,7 +99,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
         .padding(.vertical, 12)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Connection \(status.rawValue). \(hero.guidance.headline)")
+        .accessibilityLabel("Connection \(status.rawValue). \(hero.guidance.headline). \(auditSavedDataNote)")
     }
 }
 
@@ -866,15 +866,15 @@ private struct AtriaConnectionProgressStrip: View, Equatable {
             HStack(spacing: 12) {
                 AtriaInlineQuickStat(label: "Flow", value: flowLabel)
                 AtriaInlineQuickStat(label: "State", value: status.rawValue)
-                AtriaInlineQuickStat(label: "Attempts", value: "\(attempts)")
-                AtriaInlineQuickStat(label: "Mode", value: "Automatic")
+                AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
+                AtriaInlineQuickStat(label: "Mode", value: "Auto")
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 AtriaInlineQuickStat(label: "Flow", value: flowLabel)
                 AtriaInlineQuickStat(label: "State", value: status.rawValue)
-                AtriaInlineQuickStat(label: "Attempts", value: "\(attempts)")
-                AtriaInlineQuickStat(label: "Mode", value: "Automatic")
+                AtriaInlineQuickStat(label: "Try", value: "\(attempts)")
+                AtriaInlineQuickStat(label: "Mode", value: "Auto")
             }
         }
         .padding(2)

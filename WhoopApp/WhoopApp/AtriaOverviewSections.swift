@@ -481,19 +481,19 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                           spacing: 10) {
                     AtriaMetricTile(label: "Strain",
-                                    value: hero.strainValue,
+                                    value: metricDisplayValue(hero.strainValue),
                                     state: hero.strainDetail.localizedCaseInsensitiveContains("local") ? .local : .learning,
                                     tint: .orange)
                     AtriaMetricTile(label: "HRV",
-                                    value: hero.hrvValue,
+                                    value: metricDisplayValue(hero.hrvValue),
                                     state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
                                     tint: .pink)
                     AtriaMetricTile(label: "Sleep",
-                                    value: snapshot.sleepValue,
-                                    state: snapshot.sleepValue.localizedCaseInsensitiveContains("learning") ? .learning : .local,
+                                    value: metricDisplayValue(snapshot.sleepValue),
+                                    state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
                                     tint: .cyan)
-                    AtriaMetricTile(label: "Resting",
-                                    value: hero.restingHeartRateText,
+                    AtriaMetricTile(label: "RHR",
+                                    value: metricDisplayValue(hero.restingHeartRateText),
                                     state: .personalBaseline,
                                     tint: .red)
                 }
@@ -520,7 +520,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         style: stroke)
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 1) {
-                Text(hero.recoveryValue)
+                Text(percent == nil ? "--" : hero.recoveryValue)
                     .font(.system(size: 23, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
@@ -563,6 +563,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var hrvLearningState: AtriaMetricState {
         hero.hrvDetail.localizedCaseInsensitiveContains("personal") ? .personalBaseline : .learning
+    }
+
+    private func metricDisplayValue(_ value: String) -> String {
+        metricIsPending(value) ? "--" : value
+    }
+
+    private func metricIsPending(_ value: String) -> Bool {
+        value.localizedCaseInsensitiveContains("learning")
+            || value.localizedCaseInsensitiveContains("prepar")
+            || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func recoveryColor(_ percent: Int?) -> Color {
