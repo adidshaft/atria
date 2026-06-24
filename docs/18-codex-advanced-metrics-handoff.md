@@ -238,6 +238,16 @@ tools already classify. To get a real "WHOOP 4.0/5.0/MG":
 3. Keep the read-only Settings "Model" line stable across reconnect/disconnect
    (UI shipped); update labels only from explicit metadata evidence.
 
+Latest bounded check, 2026-06-25: a 45 s physical-device standard-HR run at
+`logs/live-device/advanced-metrics-metadata-probe-20260625T0524Z.log` rebuilt,
+installed, streamed `30` standard `2A37` RR values, and logged
+`model_gate_rows=1`, `model_gate_assume_4_class_rows=1`,
+`model_gate_metadata_explicit_rows=0`, and `sensor_research_probe_rows=0` on
+replay. That proves the conservative 4.0-class proprietary-service gate still
+works in low-radio mode, but it does **not** prove the metadata token map; no
+`0x31`/`0x2f` probe rows appeared in that short standard-HR-only window. The
+debug harness now reports these model/probe counts explicitly.
+
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
 `supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →

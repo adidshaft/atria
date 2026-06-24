@@ -1952,6 +1952,18 @@ rr_summary = {
         "historical_2f_candidate_rr_values": 0,
         "historical_2f_first_prefix": "",
         "historical_2f_last_prefix": "",
+        "sensor_research_probe_rows": 0,
+        "sensor_research_probe_spo2_candidate_frames": "",
+        "sensor_research_probe_skin_temp_candidate_frames": "",
+        "sensor_research_probe_last_model_generation": "",
+        "sensor_research_probe_last_model_evidence": "",
+        "model_gate_rows": 0,
+        "model_gate_assume_4_class_rows": 0,
+        "model_gate_metadata_explicit_rows": 0,
+        "model_gate_last_status": "",
+        "model_gate_last_model": "",
+        "model_gate_last_reason": "",
+        "model_gate_last_evidence": "",
         "sleep_motion_hint_count": 0,
         "sleep_motion_hint_kinds": "",
     }
@@ -2359,6 +2371,25 @@ def ingest_whoopdbg(line: str) -> None:
             flags["radio_low_traffic_complete"] = True
     if "WHOOPDBG radio_low_traffic status=ready" in line and "mode=standard_hr_only" in line:
         flags["radio_low_traffic_complete"] = True
+    if "WHOOPDBG model_gate " in line:
+        tokens = tokens_after("WHOOPDBG model_gate", line)
+        status = tokens.get("status", "")
+        rr_summary["model_gate_rows"] += 1
+        rr_summary["model_gate_last_status"] = status
+        rr_summary["model_gate_last_model"] = tokens.get("model", "")
+        rr_summary["model_gate_last_reason"] = tokens.get("reason", "")
+        rr_summary["model_gate_last_evidence"] = tokens.get("evidence", "")
+        if status == "assume_4_class":
+            rr_summary["model_gate_assume_4_class_rows"] += 1
+        if status == "metadata_explicit":
+            rr_summary["model_gate_metadata_explicit_rows"] += 1
+    if "WHOOPDBG sensor_research_probe " in line:
+        tokens = tokens_after("WHOOPDBG sensor_research_probe", line)
+        rr_summary["sensor_research_probe_rows"] += 1
+        rr_summary["sensor_research_probe_spo2_candidate_frames"] = tokens.get("spo2_candidate_frames", "")
+        rr_summary["sensor_research_probe_skin_temp_candidate_frames"] = tokens.get("skin_temp_candidate_frames", "")
+        rr_summary["sensor_research_probe_last_model_generation"] = tokens.get("model_generation", "")
+        rr_summary["sensor_research_probe_last_model_evidence"] = tokens.get("model_evidence", "")
     if "WHOOPDBG send mode=" in line and "cmd=03" in line:
         flags["realtime_start"] = True
     if "WHOOPDBG send mode=" in line and current_segment is None:
