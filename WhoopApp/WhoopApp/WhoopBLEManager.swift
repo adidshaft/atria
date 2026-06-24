@@ -332,20 +332,21 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     enum WhoopModel: String {
         case unknown
         case whoop3
+        case whoop4
         case whoop4Class
         case whoop5
         case whoopMG
 
         var supportsSpO2: Bool {
             switch self {
-            case .whoop4Class, .whoop5, .whoopMG: return true
+            case .whoop4, .whoop4Class, .whoop5, .whoopMG: return true
             case .unknown, .whoop3: return false
             }
         }
 
         var supportsSkinTemp: Bool {
             switch self {
-            case .whoop4Class, .whoop5, .whoopMG: return true
+            case .whoop4, .whoop4Class, .whoop5, .whoopMG: return true
             case .unknown, .whoop3: return false
             }
         }
@@ -382,6 +383,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         switch whoopModel {
         case .whoopMG: return "WHOOP MG"
         case .whoop5: return "WHOOP 5.0"
+        case .whoop4: return "WHOOP 4.0"
         case .whoop4Class: return "WHOOP strap"
         case .whoop3: return "WHOOP 3.0"
         case .unknown: break
@@ -7266,6 +7268,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func recordResearchProbeCandidate(payload: [UInt8], source: AtriaResearchProbe.Source) {
         guard supportsSpO2Probe || supportsSkinTempProbe else { return }
         let summary = AtriaResearchProbe.analyze(payload: payload, source: source)
+        applyModelMetadataIfExplicit(summary)
         researchProbeFrameCount += 1
         if supportsSpO2Probe, !summary.oxygenByteCandidates.isEmpty {
             researchProbeOxygenCandidateFrames += 1
@@ -7274,16 +7277,40 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             researchProbeTemperatureCandidateFrames += 1
         }
         guard summary.hasAnyCandidate || researchProbeFrameCount == 1 || researchProbeFrameCount.isMultiple(of: 50) else { return }
-        WHOOPDebugLog("WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
+        WHOOPDebugLog("WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d model_generation=%@ model_evidence=%@ spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
               summary.source.rawValue,
               summary.payloadLength,
               researchProbeFrameCount,
+              summary.modelGeneration.rawValue,
+              summary.modelEvidence.isEmpty ? "none" : summary.modelEvidence,
               supportsSpO2Probe ? 1 : 0,
               researchProbeOxygenCandidateFrames,
               supportsSpO2Probe ? summary.oxygenOffsetSummary : "disabled",
               supportsSkinTempProbe ? 1 : 0,
               researchProbeTemperatureCandidateFrames,
               supportsSkinTempProbe ? summary.temperatureOffsetSummary : "disabled")
+    }
+
+    private func applyModelMetadataIfExplicit(_ summary: AtriaResearchProbe.Summary) {
+        let mapped: WhoopModel?
+        switch summary.modelGeneration {
+        case .whoopMG:
+            mapped = .whoopMG
+        case .whoop5:
+            mapped = .whoop5
+        case .whoop4:
+            mapped = .whoop4
+        case .whoop3:
+            mapped = .whoop3
+        case .unknown:
+            mapped = nil
+        }
+        guard let mapped, mapped != whoopModel else { return }
+        whoopModel = mapped
+        WHOOPDebugLog("WHOOPDBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
+              mapped.rawValue,
+              summary.modelEvidence.isEmpty ? "none" : summary.modelEvidence,
+              summary.source.rawValue)
     }
 
     private func maybeSendRecentHistorySweep(realtimeUnix: UInt32) {
