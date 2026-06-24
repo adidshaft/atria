@@ -112,6 +112,22 @@ struct PersonalBaseline: Codable {
 // MARK: - Athlete profile / onboarding
 
 struct AthleteProfile: Codable, Equatable {
+    enum BiologicalSex: String, Codable, CaseIterable, Identifiable {
+        case male
+        case female
+        case unspecified
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .male: return "Male"
+            case .female: return "Female"
+            case .unspecified: return "Unspecified"
+            }
+        }
+    }
+
     enum HRMaxSource: String, Codable, CaseIterable, Identifiable {
         case ageEstimate
         case measured
@@ -128,12 +144,15 @@ struct AthleteProfile: Codable, Equatable {
     var age: Int
     var measuredMaxHR: Int
     var maxHRSource: HRMaxSource
+    var biologicalSex: BiologicalSex
+    var weightKg: Double
+    var heightCm: Double
     var updated: Date?
     var hasCompletedOnboarding: Bool
 
     private static let key = "athleteProfile"
     enum CodingKeys: String, CodingKey {
-        case age, measuredMaxHR, maxHRSource, updated, hasCompletedOnboarding
+        case age, measuredMaxHR, maxHRSource, biologicalSex, weightKg, heightCm, updated, hasCompletedOnboarding
     }
 
     static var defaultAge: Int { 30 }
@@ -142,10 +161,16 @@ struct AthleteProfile: Codable, Equatable {
     }
 
     init(age: Int, measuredMaxHR: Int, maxHRSource: HRMaxSource,
+         biologicalSex: BiologicalSex = .unspecified,
+         weightKg: Double = 0,
+         heightCm: Double = 0,
          updated: Date?, hasCompletedOnboarding: Bool) {
         self.age = age
         self.measuredMaxHR = measuredMaxHR
         self.maxHRSource = maxHRSource
+        self.biologicalSex = biologicalSex
+        self.weightKg = weightKg
+        self.heightCm = heightCm
         self.updated = updated
         self.hasCompletedOnboarding = hasCompletedOnboarding
     }
@@ -155,6 +180,9 @@ struct AthleteProfile: Codable, Equatable {
         age = try c.decodeIfPresent(Int.self, forKey: .age) ?? Self.defaultAge
         measuredMaxHR = try c.decodeIfPresent(Int.self, forKey: .measuredMaxHR) ?? Self.defaultMeasuredMaxHR
         maxHRSource = try c.decodeIfPresent(HRMaxSource.self, forKey: .maxHRSource) ?? .measured
+        biologicalSex = try c.decodeIfPresent(BiologicalSex.self, forKey: .biologicalSex) ?? .unspecified
+        weightKg = try c.decodeIfPresent(Double.self, forKey: .weightKg) ?? 0
+        heightCm = try c.decodeIfPresent(Double.self, forKey: .heightCm) ?? 0
         updated = try c.decodeIfPresent(Date.self, forKey: .updated)
         hasCompletedOnboarding = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
     }
@@ -177,6 +205,10 @@ struct AthleteProfile: Codable, Equatable {
         }
     }
 
+    var hasEnergyProfile: Bool {
+        biologicalSex != .unspecified && weightKg > 0
+    }
+
     static func load() -> AthleteProfile {
         guard let data = UserDefaults.standard.data(forKey: key),
               let p = try? JSONDecoder().decode(AthleteProfile.self, from: data)
@@ -184,6 +216,9 @@ struct AthleteProfile: Codable, Equatable {
             return AthleteProfile(age: defaultAge,
                                   measuredMaxHR: defaultMeasuredMaxHR,
                                   maxHRSource: .measured,
+                                  biologicalSex: .unspecified,
+                                  weightKg: 0,
+                                  heightCm: 0,
                                   updated: nil,
                                   hasCompletedOnboarding: false)
         }
@@ -200,6 +235,8 @@ struct AthleteProfile: Codable, Equatable {
     mutating func clamp() {
         age = min(max(age, 13), 100)
         measuredMaxHR = min(max(measuredMaxHR, 120), 220)
+        weightKg = weightKg > 0 ? min(max(weightKg, 30), 250) : 0
+        heightCm = heightCm > 0 ? min(max(heightCm, 120), 230) : 0
         updated = Date()
     }
 

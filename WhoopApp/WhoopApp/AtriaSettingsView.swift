@@ -22,6 +22,7 @@ struct AtriaSettingsView: View {
     @State private var nameDraft: String
     @State private var exportTapped = false
     @State private var syncTapped = false
+    @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -62,6 +63,7 @@ struct AtriaSettingsView: View {
                 AtriaDashboardBackdrop().ignoresSafeArea()
                 Form {
                     profileSection
+                    appearanceSection
                     deviceSection
                     alertsSection
                     dataSection
@@ -83,6 +85,41 @@ struct AtriaSettingsView: View {
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
     }
 
+    // MARK: Appearance
+
+    private var appearanceSection: some View {
+        Section {
+            HStack(spacing: 8) {
+                appearanceButton("System", mode: "system", icon: "circle.lefthalf.filled")
+                appearanceButton("Light", mode: "light", icon: "sun.max.fill")
+                appearanceButton("Dark", mode: "dark", icon: "moon.fill")
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Text("Native theme controls.")
+        }
+    }
+
+    private func appearanceButton(_ title: String, mode: String, icon: String) -> some View {
+        Button {
+            appearanceMode = mode
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .tint(appearanceMode == mode ? .purple : .secondary)
+        .accessibilityAddTraits(appearanceMode == mode ? .isSelected : [])
+    }
+
     // MARK: Profile
 
     private var profileSection: some View {
@@ -101,6 +138,23 @@ struct AtriaSettingsView: View {
             Stepper(value: $draft.measuredMaxHR, in: 120...220) {
                 LabeledContent("Measured max") { Text("\(draft.measuredMaxHR) bpm").monospacedDigit() }
             }
+            Picker("Sex", selection: $draft.biologicalSex) {
+                ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
+                    Text(sex.label).tag(sex)
+                }
+            }
+            Stepper(value: $draft.weightKg, in: 0...250, step: 1) {
+                LabeledContent("Weight") {
+                    Text(draft.weightKg > 0 ? "\(Int(draft.weightKg.rounded())) kg" : "Not set")
+                        .monospacedDigit()
+                }
+            }
+            Stepper(value: $draft.heightCm, in: 0...230, step: 1) {
+                LabeledContent("Height") {
+                    Text(draft.heightCm > 0 ? "\(Int(draft.heightCm.rounded())) cm" : "Optional")
+                        .monospacedDigit()
+                }
+            }
             if let restingBaseline {
                 LabeledContent("Resting baseline") {
                     Text("\(restingBaseline) bpm").monospacedDigit().foregroundStyle(.secondary)
@@ -109,7 +163,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Profile")
         } footer: {
-            Text(draft.maxHRSource == .ageEstimate ? "Age estimate; measured is better." : "Measured max drives strain.")
+            Text(draft.hasEnergyProfile ? "Weight enables calorie estimates." : "Add sex and weight for calories.")
         }
     }
 

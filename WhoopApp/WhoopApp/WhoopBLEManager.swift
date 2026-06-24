@@ -329,6 +329,31 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
+    enum WhoopModel: String {
+        case unknown
+        case whoop3
+        case whoop4Class
+        case whoop5
+        case whoopMG
+
+        var supportsSpO2: Bool {
+            switch self {
+            case .whoop4Class, .whoop5, .whoopMG: return true
+            case .unknown, .whoop3: return false
+            }
+        }
+
+        var supportsSkinTemp: Bool {
+            switch self {
+            case .whoop4Class, .whoop5, .whoopMG: return true
+            case .unknown, .whoop3: return false
+            }
+        }
+
+        var supportsECG: Bool { self == .whoopMG }
+        var supportsBloodPressure: Bool { self == .whoopMG }
+    }
+
     @Published var status: Status = .disconnected
     @Published private(set) var officialWhoopCoexistenceRisk: OfficialWhoopCoexistenceRisk = OfficialWhoopCoexistenceRisk.load()
     @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
@@ -338,6 +363,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     /// Best-effort: WHOOP exposes only a level (2A19), no charge flag. We infer
     /// charging when the level rises between readings, and clear it when it falls.
     @Published var batteryIsCharging: Bool = false
+    @Published private(set) var phoneStepsToday: Int = 0
+    @Published private(set) var phoneDistanceTodayMeters: Double?
+    @Published private(set) var phoneFloorsToday: Int?
     private(set) var manufacturer: String = "—"
     // Device Information (0x180A) identity, read on connect. Raw strings as the
     // strap reports them; `whoopModelLabel` maps known values to a friendly name
@@ -345,11 +373,19 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     @Published private(set) var modelNumber: String = ""
     @Published private(set) var firmwareRevision: String = ""
     @Published private(set) var hardwareRevision: String = ""
+    @Published private(set) var whoopModel: WhoopModel = .unknown
 
     /// Best-effort friendly model name. WHOOP straps do not populate the standard
     /// Device Information model string, so this usually falls back; the generation
     /// decode lives in the proprietary metadata frame (see docs/18).
     var whoopModelLabel: String {
+        switch whoopModel {
+        case .whoopMG: return "WHOOP MG"
+        case .whoop5: return "WHOOP 5.0"
+        case .whoop4Class: return "WHOOP strap"
+        case .whoop3: return "WHOOP 3.0"
+        case .unknown: break
+        }
         let haystack = "\(modelNumber) \(hardwareRevision)".lowercased()
         if haystack.contains("mg") { return "WHOOP MG" }
         if haystack.contains("5") && haystack.contains("4") == false { return "WHOOP 5.0" }
@@ -358,6 +394,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let model = modelNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         return model.isEmpty ? "WHOOP strap" : model
     }
+
+    var supportsSpO2Probe: Bool { whoopModel.supportsSpO2 }
+    var supportsSkinTempProbe: Bool { whoopModel.supportsSkinTemp }
+    var supportsECG: Bool { whoopModel.supportsECG }
+    var supportsBloodPressure: Bool { whoopModel.supportsBloodPressure }
 
     // User-set strap name, persisted locally. Takes precedence over the BLE
     // peripheral name (which WHOOP seeds from the owner's account, e.g.
@@ -1459,6 +1500,38 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     func setForegroundHighFrequencyDisplayMode(_ enabled: Bool) {
         guard foregroundHighFrequencyDisplayMode != enabled else { return }
         foregroundHighFrequencyDisplayMode = enabled
+    }
+
+    func refreshPhoneStepsToday(reason: String) {
+        guard CMPedometer.isStepCountingAvailable() else {
+            phoneStepsToday = 0
+            phoneDistanceTodayMeters = nil
+            phoneFloorsToday = nil
+            WHOOPDebugLog("WHOOPDBG phone_steps_today status=unavailable reason=%@ source=CMPedometer", reason)
+            return
+        }
+        let start = Calendar.current.startOfDay(for: Date())
+        let now = Date()
+        phonePedometer.queryPedometerData(from: start, to: now) { [weak self] data, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    WHOOPDebugLog("WHOOPDBG phone_steps_today status=error reason=%@ error=%@ source=CMPedometer", reason, String(describing: error))
+                    return
+                }
+                guard let data else { return }
+                self.recordPhoneStepsToday(data)
+                WHOOPDebugLog("WHOOPDBG phone_steps_today status=ready reason=%@ steps=%d distance_m=%@ source=CMPedometer validated=1",
+                              reason,
+                              self.phoneStepsToday,
+                              Self.formatDouble(self.phoneDistanceTodayMeters))
+            }
+        }
+        startPhoneStepEvidenceIfNeeded(start: start, reason: "today_\(reason)")
+    }
+
+    func pausePhoneStepUpdates(reason: String) {
+        stopPhoneStepEvidence(reason: reason)
     }
 
     func handleUnattendedMode(rest: Int, maxHR: Int, reason: String) {
@@ -8340,6 +8413,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         phoneStepDistanceMeters = data.distance?.doubleValue
         phoneStepFloorsAscended = data.floorsAscended?.intValue
         phoneStepFloorsDescended = data.floorsDescended?.intValue
+        recordPhoneStepsToday(data)
         if phoneStepCount - phoneStepLastLoggedCount >= 100 {
             phoneStepLastLoggedCount = phoneStepCount
             WHOOPDebugLog("WHOOPDBG phone_steps status=sampled source=phone_coremotion_pedometer steps=%d distance_m=%@ floors_up=%d floors_down=%d validated=0 action=activity_adjunct_only",
@@ -8348,6 +8422,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                           phoneStepFloorsAscended ?? 0,
                           phoneStepFloorsDescended ?? 0)
         }
+    }
+
+    private func recordPhoneStepsToday(_ data: CMPedometerData) {
+        phoneStepsToday = data.numberOfSteps.intValue
+        phoneDistanceTodayMeters = data.distance?.doubleValue
+        let up = data.floorsAscended?.intValue ?? 0
+        let down = data.floorsDescended?.intValue ?? 0
+        phoneFloorsToday = (up + down) > 0 ? up + down : nil
     }
 
     private func resetPhoneStepEvidenceStats(start: Date) {
@@ -8625,6 +8707,14 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         }
         for service in peripheral.services ?? [] {
             guard let characteristics = Self.discoveryCharacteristics(for: service.uuid) else { continue }
+            if service.uuid == Self.UUIDs.whoopService {
+                Task { @MainActor in
+                    if self.whoopModel == .unknown {
+                        self.whoopModel = .whoop4Class
+                        WHOOPDebugLog("WHOOPDBG model_gate status=assume_4_class reason=proprietary_service service=%@", service.uuid.uuidString)
+                    }
+                }
+            }
             peripheral.discoverCharacteristics(characteristics, for: service)
         }
     }
