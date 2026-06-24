@@ -72,7 +72,7 @@ struct AtriaQuickTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(tint: tint)
     }
 }
 
@@ -133,7 +133,7 @@ struct AtriaGuidanceCard: View, Equatable {
                 .foregroundStyle(.secondary)
             }
             .padding(12)
-            .atriaInsetCard(cornerRadius: 16, tint: tint)
+            .atriaInsetCard(tint: tint)
         }
     }
 
@@ -189,7 +189,7 @@ struct AtriaRecoveryMeter: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: .green)
+        .atriaInsetCard(tint: .green)
     }
 }
 
@@ -237,7 +237,7 @@ struct AtriaStrainMeter: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: .orange)
+        .atriaInsetCard(tint: .orange)
     }
 }
 
@@ -281,6 +281,130 @@ struct AtriaStatusChip: View, Equatable {
     }
 }
 
+enum AtriaMetricState: Equatable {
+    case learning
+    case personalBaseline
+    case validated
+    case noContact
+    case local
+    case live
+
+    var tint: Color {
+        switch self {
+        case .learning:
+            return .orange
+        case .personalBaseline:
+            return .blue
+        case .validated, .live:
+            return .green
+        case .noContact:
+            return .red
+        case .local:
+            return .purple
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .learning:
+            return "circle.dashed"
+        case .personalBaseline:
+            return "person.crop.circle.badge.checkmark"
+        case .validated:
+            return "checkmark.seal.fill"
+        case .noContact:
+            return "heart.slash.fill"
+        case .local:
+            return "iphone"
+        case .live:
+            return "waveform.path.ecg"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .learning:
+            return "Learning"
+        case .personalBaseline:
+            return "Personal baseline"
+        case .validated:
+            return "Validated"
+        case .noContact:
+            return "No contact"
+        case .local:
+            return "Local"
+        case .live:
+            return "Live"
+        }
+    }
+}
+
+struct AtriaStateBadge: View, Equatable {
+    let state: AtriaMetricState
+
+    var body: some View {
+        Image(systemName: state.systemImage)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(state.tint)
+            .frame(width: 28, height: 28)
+            .background(AtriaIconTileBackground(cornerRadius: 9, tint: state.tint))
+            .accessibilityLabel(state.accessibilityLabel)
+    }
+}
+
+struct AtriaMetricTile: View, Equatable {
+    let label: String
+    let value: String
+    var unit: String? = nil
+    var state: AtriaMetricState? = nil
+    var tint: Color = .blue
+    var footnote: String? = nil
+    var sparklineValues: [Int]? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Spacer(minLength: 0)
+                if let state {
+                    AtriaStateBadge(state: state)
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(value)
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                if let unit {
+                    Text(unit)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let sparklineValues {
+                Sparkline(values: sparklineValues)
+                    .frame(height: 34)
+            } else if let footnote {
+                Text(footnote)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: sparklineValues == nil ? 112 : 144, alignment: .leading)
+        .padding(14)
+        .atriaInsetCard(tint: tint)
+    }
+}
+
 struct AtriaSectionDivider: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -316,7 +440,7 @@ struct AtriaInlineQuickStat: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         .padding(10)
-        .atriaInsetCard(cornerRadius: 15, tint: .white)
+        .atriaInsetCard(tint: .white)
     }
 }
 
@@ -349,6 +473,6 @@ struct AtriaProfileStepperTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .atriaInsetCard(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(tint: .white)
     }
 }
