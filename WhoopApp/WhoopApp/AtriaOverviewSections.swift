@@ -158,25 +158,39 @@ private struct AtriaDisconnectedOverviewHost: View {
         store.sessions.filter { $0.points.count >= 8 }.count >= 2
     }
 
+    /// Returning users have saved sessions on device. Gate on real saved data —
+    /// not `hasEverConnected`, which resets each launch and would wrongly show
+    /// the first-setup panel to a returning user who reopens the app while away.
+    private var hasSavedData: Bool {
+        !store.sessions.isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 18) {
-            AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
-                                           stats: homeStatsStore.state,
-                                           snapshot: snapshotStore.state,
-                                           context: context,
-                                           onShowConnectionGuide: onShowConnectionGuide,
-                                           onOpenVitals: onOpenVitals,
-                                           onOpenCollection: onOpenCollection)
-                .equatable()
+            if !hasSavedData {
+                // Brand-new: the user has no saved data yet, so lead with the
+                // one-time setup guidance.
+                AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
+                                               stats: homeStatsStore.state,
+                                               snapshot: snapshotStore.state,
+                                               context: context,
+                                               onShowConnectionGuide: onShowConnectionGuide,
+                                               onOpenVitals: onOpenVitals,
+                                               onOpenCollection: onOpenCollection)
+                    .equatable()
+            } else {
+                // Returning user: their saved rings are the content. Reconnect
+                // status is already the toolbar chip + the slim banner above, so
+                // no second "Waiting for your strap" panel here.
+                AtriaOverviewReadinessSectionHost(heroStore: heroStore,
+                                                 snapshotStore: snapshotStore,
+                                                 store: store,
+                                                 subtitle: "Last saved readiness")
 
-            AtriaOverviewReadinessSectionHost(heroStore: heroStore,
-                                             snapshotStore: snapshotStore,
-                                             store: store,
-                                             subtitle: "Last saved readiness")
-
-            // Trends are local history — show them even while the strap is away.
-            if hasTrendHistory {
-                AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
+                // Trends are local history — show them even while the strap is away.
+                if hasTrendHistory {
+                    AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
+                }
             }
         }
     }
@@ -475,67 +489,42 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         VStack(alignment: .leading, spacing: 16) {
             AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
 
-            HStack(alignment: .center, spacing: 16) {
-                recoveryRing
+            // Recovery + Strain as rings (the at-a-glance signals); supporting
+            // metrics as compact tiles below.
+            HStack(alignment: .top, spacing: 12) {
+                AtriaMetricRing(label: "Recovery",
+                                value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
+                                fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
+                                tint: recoveryColor(hero.recoveryEstimate.percent),
+                                size: 118)
+                    .frame(maxWidth: .infinity)
+                AtriaMetricRing(label: "Strain",
+                                value: metricDisplayValue(hero.strainValue),
+                                fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
+                                tint: .orange,
+                                size: 94)
+                    .frame(maxWidth: .infinity)
+            }
 
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-                          spacing: 10) {
-                    AtriaMetricTile(label: "Strain",
-                                    value: metricDisplayValue(hero.strainValue),
-                                    state: hero.strainDetail.localizedCaseInsensitiveContains("local") ? .local : .learning,
-                                    tint: .orange)
-                    AtriaMetricTile(label: "HRV",
-                                    value: metricDisplayValue(hero.hrvValue),
-                                    state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
-                                    tint: .pink)
-                    AtriaMetricTile(label: "Sleep",
-                                    value: metricDisplayValue(snapshot.sleepValue),
-                                    state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
-                                    tint: .cyan)
-                    AtriaMetricTile(label: "RHR",
-                                    value: metricDisplayValue(hero.restingHeartRateText),
-                                    state: .personalBaseline,
-                                    tint: .red)
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                AtriaMetricTile(label: "HRV",
+                                value: metricDisplayValue(hero.hrvValue),
+                                state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
+                                tint: .pink)
+                AtriaMetricTile(label: "Sleep",
+                                value: metricDisplayValue(snapshot.sleepValue),
+                                state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
+                                tint: .cyan)
+                AtriaMetricTile(label: "RHR",
+                                value: metricDisplayValue(hero.restingHeartRateText),
+                                state: .personalBaseline,
+                                tint: .red)
             }
 
             restingTrend
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
-    }
-
-    private var recoveryRing: some View {
-        let percent = hero.recoveryEstimate.percent
-        let fraction = percent.map { min(max(Double($0) / 100, 0), 1) } ?? 0
-        let stroke = StrokeStyle(lineWidth: 9,
-                                 lineCap: .round,
-                                 dash: percent == nil ? [5, 7] : [])
-        return ZStack {
-            Circle()
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 9)
-            Circle()
-                .trim(from: 0, to: fraction)
-                .stroke(recoveryColor(percent),
-                        style: stroke)
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 1) {
-                Text(percent == nil ? "--" : hero.recoveryValue)
-                    .font(.system(size: 23, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                Text("Recovery")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                AtriaStateBadge(state: percent == nil ? .learning : .validated)
-                    .scaleEffect(0.72)
-            }
-            .padding(8)
-        }
-        .frame(width: 104, height: 104)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recovery \(hero.recoveryValue)")
     }
 
     @ViewBuilder
@@ -620,15 +609,7 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
 
     private var checklistItems: [AtriaLaunchChecklistItem] {
         [
-            AtriaLaunchChecklistItem(id: "connection",
-                                     title: "Strap connection",
-                                     value: live.status == .connected ? "Connected" : live.status.rawValue,
-                                     detail: live.status == .connected ? live.deviceName : "Open Vitals when the strap is nearby.",
-                                     systemImage: "bolt.heart.fill",
-                                     tint: live.status == .connected ? .green : .orange,
-                                     isComplete: live.status == .connected,
-                                     actionTitle: live.status == .connected ? nil : "Vitals",
-                                     action: live.status == .connected ? nil : onOpenVitals),
+            // Connection status lives in the toolbar chip; not repeated here.
             AtriaLaunchChecklistItem(id: "baseline",
                                      title: "HRV baseline",
                                      value: "\(stats.baselineSamples)/7",
@@ -1208,17 +1189,6 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                AtriaMetricTile(label: "Flow",
-                                value: context.flowLabel,
-                                state: .local,
-                                tint: tint)
-                AtriaMetricTile(label: "Try",
-                                value: "\(max(context.attempts, 1))",
-                                state: status == .connected ? .validated : .learning,
-                                tint: tint)
-            }
 
             Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
                 .buttonStyle(.glassProminent)
