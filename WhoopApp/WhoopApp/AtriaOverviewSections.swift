@@ -884,11 +884,11 @@ struct AtriaOverviewTrailingSection: View {
 
     var body: some View {
         Group {
-            // Live strap belongs with Today; saved collection + backup live under Data.
-            if segment == .today {
-                AtriaOverviewLiveStrapSectionHost(liveStore: liveStore,
-                                                  homeStatsStore: homeStatsStore)
-            } else if segment == .data {
+            // Today's trailing column is intentionally empty: live battery is in
+            // the bottom bar, connection status in the top pill, and the device
+            // name / signal detail were dev-facing. Saved collection + backup
+            // live under Data.
+            if segment == .data {
                 if hasUnlockedSecondarySections && snapshotStore.diagnosticsReady {
                     VStack(spacing: 16) {
                         AtriaOverviewCollectionSectionHost(homeStatsStore: homeStatsStore,
