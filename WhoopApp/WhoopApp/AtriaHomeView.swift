@@ -547,7 +547,10 @@ struct AtriaHomeView: View {
             .foregroundStyle(statusChipForeground)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(AtriaLiquidStatusPillBackground(tint: statusTint))
+            // Genuine native Liquid Glass (translucent, tinted by status), not a
+            // hand-drawn gradient. It's a single floating control, so it's the
+            // right place for real glass — performant and authentic.
+            .glassEffect(.regular.tint(statusTint.opacity(0.55)).interactive(), in: .capsule)
             .fixedSize()
             .contentShape(.capsule)
             .onTapGesture {
