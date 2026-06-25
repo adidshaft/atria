@@ -55,8 +55,8 @@ private struct AtriaCardBackground: View {
     @ViewBuilder
     private var tintWash: some View {
         if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.white.opacity(emphasis == .strong ? 0.018 : 0.010))
+            // ~1% white wash is invisible on the dark UI; drop the extra layer.
+            EmptyView()
         } else {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(
@@ -97,14 +97,7 @@ private struct AtriaRaisedCardBackground: View {
     @ViewBuilder
     private var tintWash: some View {
         if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        Color.white.opacity(emphasis == .strong ? 0.028 : 0.018),
-                        Color.cyan.opacity(emphasis == .strong ? 0.016 : 0.008),
-                        Color.clear
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
+            EmptyView()
         } else {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(
@@ -149,8 +142,9 @@ private struct AtriaInsetCardBackground: View {
     @ViewBuilder
     private var tintWash: some View {
         if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(accentTint.opacity(0.028))
+            // ~3% tint is invisible on the dark UI; skip the extra rounded-rect
+            // layer so scrolling cards have less overdraw.
+            EmptyView()
         } else {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(
@@ -193,8 +187,7 @@ struct AtriaIconTileBackground: View {
     @ViewBuilder
     private var tintWash: some View {
         if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(accentTint.opacity(0.035))
+            EmptyView()
         } else {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(tint.opacity(0.06))
