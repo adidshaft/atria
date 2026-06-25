@@ -946,7 +946,7 @@ struct AtriaOverviewBehaviorJournalSection: View {
                         .padding(.horizontal, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(AtriaSegmentButtonStyle(selected: todayEntry.tags.contains(tag)))
+                    .atriaGlassSelectable(selected: todayEntry.tags.contains(tag))
                 }
             }
 

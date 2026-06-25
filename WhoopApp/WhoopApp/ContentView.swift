@@ -261,7 +261,7 @@ private struct DailyEvidenceCard: View {
                         Label("Confirm Sleep", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                 }
             }
         }
@@ -310,7 +310,7 @@ private struct DailyEvidenceCard: View {
                         Label("Confirm Activity", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                 }
             }
         }
@@ -821,7 +821,8 @@ struct ProfileOnboardingView: View {
                             advance(to: OnboardingStep(rawValue: step.rawValue + 1) ?? .profile)
                         }
                     }
-                    .buttonStyle(ProfileOnboardingPrimaryButtonStyle())
+                    .buttonStyle(.glassProminent)
+                    .tint(.blue)
                     .frame(maxWidth: .infinity)
                 }
                 .padding(.horizontal, 20)
@@ -1204,7 +1205,7 @@ struct ProfileOnboardingView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
                 }
-                .buttonStyle(ProfileOnboardingSourceButtonStyle(selected: draft.maxHRSource == source))
+                .atriaGlassSelectable(selected: draft.maxHRSource == source)
             }
         }
         .padding(8)
@@ -1234,13 +1235,13 @@ struct ProfileOnboardingView: View {
                     Image(systemName: "minus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(ProfileOnboardingStepperButtonStyle())
+                .buttonStyle(.glass)
 
                 Button(action: increment) {
                     Image(systemName: "plus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(ProfileOnboardingStepperButtonStyle())
+                .buttonStyle(.glass)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1276,6 +1277,19 @@ struct ProfileOnboardingView: View {
                         .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), lineWidth: 1)
                 }
         )
+    }
+}
+
+extension View {
+    /// Native Liquid Glass for a selectable control: prominent glass when
+    /// selected, subtle glass otherwise. Keeps every button native.
+    @ViewBuilder
+    func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View {
+        if selected {
+            self.buttonStyle(.glassProminent).tint(tint)
+        } else {
+            self.buttonStyle(.glass)
+        }
     }
 }
 
