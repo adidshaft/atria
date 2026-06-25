@@ -64,6 +64,7 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
     @State private var showSettings = false
+    @State private var workoutSession: AtriaWorkoutSession?
     @State private var showCoexistenceModal = false
     @State private var didApplyDebugUIScreenLaunchArgument = false
     @State private var coexistenceSnoozedUntil: Date?
@@ -193,6 +194,14 @@ struct AtriaHomeView: View {
                                   _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
                                                                               force: true)
                               })
+        }
+        .fullScreenCover(item: $workoutSession) { session in
+            AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
+                                 heroStore: model.heroStore,
+                                 liveStore: model.coreLiveStore,
+                                 maxHR: store.profile.maxHR,
+                                 startDate: session.start,
+                                 onStop: { workoutSession = nil })
         }
         .sheet(isPresented: $showCoexistenceModal) {
             AtriaWhoopCoexistenceModal(context: connectionGuideContext) {
@@ -563,6 +572,15 @@ struct AtriaHomeView: View {
 
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: 7) {
+                if model.statusStore.state.status == .connected {
+                    Button {
+                        workoutSession = AtriaWorkoutSession(start: Date())
+                    } label: {
+                        Image(systemName: "figure.run")
+                    }
+                    .accessibilityLabel("Start workout")
+                }
+
                 if model.statusStore.state.status != .connected {
                     Button {
                         connectionGuideSnoozedUntil = nil
