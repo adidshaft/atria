@@ -256,7 +256,14 @@ with `historical_2f_frames=48`, `sensor_research_probe_rows=51`,
 `sensor_research_probe_skin_temp_candidate_frames=53`. Every probe row kept
 `metric_promotions=0 healthkit_write=0 raw_storage=0`, and
 `model_gate_metadata_explicit_rows=0`, so the visible label correctly remains
-generic until explicit model tokens are observed.
+generic until explicit model tokens are observed. The local analyzer
+`tools/analyze_sensor_research_probe.py` summarizes this same log as
+`probe_sources=0x2f:48,0x31:3`, `model_generations=unknown:51`,
+`spo2_top_offsets=40:92:5,56:92:5,45:93:2,61:93:2`, and
+`skin_temp_top_offsets=74:2976:48,76:3073:48,78:3074:48`, with
+`metric_promotions=0`, `healthkit_writes=0`, `raw_storage=0`, and
+`research_only=1`. These are recurring candidate offsets only, not validated
+SpO2/temp metrics.
 
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),

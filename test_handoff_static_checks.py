@@ -373,6 +373,7 @@ class HandoffStaticChecks(unittest.TestCase):
         ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
         healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
         harness = source(ROOT / "live_device_debug.sh")
+        analyzer = source(ROOT / "tools" / "analyze_sensor_research_probe.py")
 
         for needle in [
             "enum AtriaResearchProbe",
@@ -431,6 +432,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "tokens.get(\"model_evidence\", \"\")",
         ]:
             assert_contains(self, harness, needle)
+
+        for needle in [
+            "WHOOPDBG sensor_research_probe ",
+            "probe_sources",
+            "model_generations",
+            "spo2_top_offsets",
+            "skin_temp_top_offsets",
+            "metric_promotions",
+            "healthkit_writes",
+            "raw_storage",
+            "research_only",
+        ]:
+            assert_contains(self, analyzer, needle)
 
     def test_self_induced_probe_markers_are_local_research_only(self):
         sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
