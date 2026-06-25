@@ -448,19 +448,25 @@ struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var store: SessionStore
     let subtitle: String
 
+    @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
+
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
                                      live: liveStore.state,
                                      snapshot: snapshotStore.state,
                                      trendValues: Self.restingTrendValues(from: store),
-                                     subtitle: subtitle)
+                                     subtitle: subtitle,
+                                     hiddenMetrics: AtriaTodayMetric.hidden(from: hiddenCSV))
             .equatable()
     }
 
     private static func restingTrendValues(from store: SessionStore) -> [Int] {
         let calendar = Calendar.current
+        // Only the last ~45 days can affect a 14-point trend, so bound the work
+        // here — the full history was being re-sorted on every live tick.
+        let cutoff = Date().addingTimeInterval(-45 * 24 * 60 * 60)
         return store.sessions
-            .filter { $0.points.count >= 8 && $0.restingStable > 0 }
+            .filter { $0.start >= cutoff && $0.points.count >= 8 && $0.restingStable > 0 }
             .sorted { $0.start < $1.start }
             .reduce(into: [(day: Date, value: Int)]()) { days, session in
                 let day = calendar.startOfDay(for: session.start)
@@ -475,60 +481,143 @@ struct AtriaOverviewReadinessSectionHost: View {
     }
 }
 
+/// Metrics the user can show/hide on the Today glance (Settings → Today screen).
+enum AtriaTodayMetric: String, CaseIterable, Identifiable {
+    case recovery, strain, hrv, sleep, rhr, steps, calories, trend
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .recovery: return "Recovery"
+        case .strain: return "Strain"
+        case .hrv: return "HRV"
+        case .sleep: return "Sleep"
+        case .rhr: return "Resting HR"
+        case .steps: return "Steps"
+        case .calories: return "Calories"
+        case .trend: return "Resting trend"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .recovery: return "heart.circle.fill"
+        case .strain: return "bolt.circle.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .sleep: return "bed.double.fill"
+        case .rhr: return "heart.fill"
+        case .steps: return "figure.walk"
+        case .calories: return "flame.fill"
+        case .trend: return "chart.xyaxis.line"
+        }
+    }
+    /// Persisted as a comma-separated list of HIDDEN raw values, so the default
+    /// (empty) shows everything.
+    static let storageKey = "atriaTodayHiddenMetrics"
+    static func hidden(from csv: String) -> Set<String> {
+        Set(csv.split(separator: ",").map(String.init))
+    }
+}
+
 struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let live: AtriaHomeModel.CoreLiveState
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let subtitle: String
+    var hiddenMetrics: Set<String> = []
+
+    private func shows(_ metric: AtriaTodayMetric) -> Bool {
+        !hiddenMetrics.contains(metric.rawValue)
+    }
+
+    // Compare ONLY the values this card actually displays. The full `live` state
+    // ticks on every battery/sample update; without this the glance (2 rings + 5
+    // tiles + sparkline) rebuilt on every BLE tick. Now it rebuilds only when a
+    // shown number changes — the main connected-state scroll-lag fix.
+    static func == (lhs: AtriaOverviewReadinessSection, rhs: AtriaOverviewReadinessSection) -> Bool {
+        lhs.subtitle == rhs.subtitle
+            && lhs.trendValues == rhs.trendValues
+            && lhs.hero.recoveryEstimate.percent == rhs.hero.recoveryEstimate.percent
+            && lhs.hero.recoveryValue == rhs.hero.recoveryValue
+            && lhs.hero.strainValue == rhs.hero.strainValue
+            && lhs.hero.hrvValue == rhs.hero.hrvValue
+            && lhs.hero.hrvDetail == rhs.hero.hrvDetail
+            && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
+            && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
+            && lhs.live.phoneStepsText == rhs.live.phoneStepsText
+            && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
+            && lhs.hiddenMetrics == rhs.hiddenMetrics
+    }
+
+    private var showsAnyRing: Bool { shows(.recovery) || shows(.strain) }
+    private var showsAnyTile: Bool {
+        shows(.hrv) || shows(.sleep) || shows(.rhr) || shows(.steps) || shows(.calories)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
 
             // Recovery + Strain as rings (the at-a-glance signals); supporting
-            // metrics as compact tiles below.
-            HStack(alignment: .top, spacing: 12) {
-                AtriaMetricRing(label: "Recovery",
-                                value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
-                                fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
-                                tint: recoveryColor(hero.recoveryEstimate.percent),
-                                size: 104)
-                    .frame(maxWidth: .infinity)
-                AtriaMetricRing(label: "Strain",
-                                value: metricDisplayValue(hero.strainValue),
-                                fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
-                                tint: .orange,
-                                size: 84)
-                    .frame(maxWidth: .infinity)
+            // metrics as compact tiles below. All are user-toggleable.
+            if showsAnyRing {
+                HStack(alignment: .top, spacing: 12) {
+                    if shows(.recovery) {
+                        AtriaMetricRing(label: "Recovery",
+                                        value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
+                                        fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
+                                        tint: recoveryColor(hero.recoveryEstimate.percent),
+                                        size: 104)
+                            .frame(maxWidth: .infinity)
+                    }
+                    if shows(.strain) {
+                        AtriaMetricRing(label: "Strain",
+                                        value: metricDisplayValue(hero.strainValue),
+                                        fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
+                                        tint: .orange,
+                                        size: 84)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
-                AtriaMetricTile(label: "HRV",
-                                value: metricDisplayValue(hero.hrvValue),
-                                state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
-                                tint: .pink)
-                AtriaMetricTile(label: "Sleep",
-                                value: metricDisplayValue(snapshot.sleepValue),
-                                state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
-                                tint: .cyan)
-                AtriaMetricTile(label: "RHR",
-                                value: metricDisplayValue(hero.restingHeartRateText),
-                                state: .personalBaseline,
-                                tint: .red)
-                AtriaMetricTile(label: "Steps",
-                                value: live.phoneStepsText,
-                                state: live.phoneStepsToday > 0 ? .validated : .learning,
-                                tint: .green)
-                    .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
-                AtriaMetricTile(label: "kcal",
-                                value: live.liveActiveCaloriesText,
-                                state: live.liveActiveCalories == nil ? .learning : .estimate,
-                                tint: .orange)
-                    .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+            if showsAnyTile {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                    if shows(.hrv) {
+                        AtriaMetricTile(label: "HRV",
+                                        value: metricDisplayValue(hero.hrvValue),
+                                        state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
+                                        tint: .pink)
+                    }
+                    if shows(.sleep) {
+                        AtriaMetricTile(label: "Sleep",
+                                        value: metricDisplayValue(snapshot.sleepValue),
+                                        state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
+                                        tint: .cyan)
+                    }
+                    if shows(.rhr) {
+                        AtriaMetricTile(label: "RHR",
+                                        value: metricDisplayValue(hero.restingHeartRateText),
+                                        state: .personalBaseline,
+                                        tint: .red)
+                    }
+                    if shows(.steps) {
+                        AtriaMetricTile(label: "Steps",
+                                        value: live.phoneStepsText,
+                                        state: live.phoneStepsToday > 0 ? .validated : .learning,
+                                        tint: .green)
+                            .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
+                    }
+                    if shows(.calories) {
+                        AtriaMetricTile(label: "kcal",
+                                        value: live.liveActiveCaloriesText,
+                                        state: live.liveActiveCalories == nil ? .learning : .estimate,
+                                        tint: .orange)
+                            .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+                    }
+                }
             }
 
-            restingTrend
+            if shows(.trend) { restingTrend }
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
