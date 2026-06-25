@@ -9064,6 +9064,9 @@ extension WhoopBLEManager: CBPeripheralDelegate {
                       data.count,
                       Self.hex([UInt8](data)))
             }
+            if uuid == UUIDs.whoopStream7 {
+                recordResearchProbeCandidate(payload: [UInt8](data), source: .diagnostic)
+            }
             // The "type" byte: for aa-framed packets it's payload[0] (index 4);
             // for unframed (identity) it's index 0.
             let typeByte = Self.protocolTypeByte(in: data)

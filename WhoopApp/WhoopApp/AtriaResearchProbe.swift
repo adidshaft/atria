@@ -4,6 +4,7 @@ enum AtriaResearchProbe {
     enum Source: String {
         case metadata = "0x31"
         case historical = "0x2f"
+        case diagnostic = "61080007"
     }
 
     enum ModelGeneration: String, Equatable {

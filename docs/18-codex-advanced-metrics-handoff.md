@@ -248,6 +248,16 @@ works in low-radio mode, but it does **not** prove the metadata token map; no
 `0x31`/`0x2f` probe rows appeared in that short standard-HR-only window. The
 debug harness now reports these model/probe counts explicitly.
 
+Follow-up bounded history probe, 2026-06-25: after adding aggregate-only
+diagnostic-source scanning, `logs/live-device/advanced-metrics-diagnostic-probe-20260625T0530Z.log`
+rebuilt, installed, and pulled `frame_61080005_types=0x2f:48,0x30:2,0x31:3,0x32:1`
+with `historical_2f_frames=48`, `sensor_research_probe_rows=51`,
+`sensor_research_probe_spo2_candidate_frames=20`, and
+`sensor_research_probe_skin_temp_candidate_frames=53`. Every probe row kept
+`metric_promotions=0 healthkit_write=0 raw_storage=0`, and
+`model_gate_metadata_explicit_rows=0`, so the visible label correctly remains
+generic until explicit model tokens are observed.
+
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
 `supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →
