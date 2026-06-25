@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 TOKEN_RE = re.compile(r"([A-Za-z0-9_]+)=([^ ]*)")
+FRAME_RE = re.compile(r"WHOOPDBG frame ch=([0-9A-Fa-f-]+) len=(\d+) hex=([0-9A-Fa-f]+)")
 
 
 def parse_tokens(line: str) -> dict[str, str]:
@@ -21,6 +22,46 @@ def add_offsets(counter: Counter[str], value: str) -> None:
         counter[item] += 1
 
 
+def parse_hex(value: str) -> bytes:
+    try:
+        return bytes.fromhex(value)
+    except ValueError:
+        return b""
+
+
+def printable_runs(data: bytes, minimum_length: int = 4) -> list[str]:
+    runs: list[str] = []
+    current = bytearray()
+
+    def flush() -> None:
+        nonlocal current
+        if len(current) >= minimum_length:
+            text = current.decode("utf-8", errors="ignore").strip()
+            if text:
+                runs.append(text)
+        current = bytearray()
+
+    for byte in data:
+        if byte in (0x0a, 0x0d) or 0x20 <= byte <= 0x7e:
+            current.append(byte)
+        else:
+            flush()
+    flush()
+    return runs
+
+
+def redact_identifier_like_tokens(value: str) -> str:
+    redacted: list[str] = []
+    for token in value.split(" "):
+        letters = sum(ch.isalpha() for ch in token)
+        digits = sum(ch.isdigit() for ch in token)
+        if len(token) >= 8 and letters >= 3 and digits >= 3:
+            redacted.append("[redacted]")
+        else:
+            redacted.append(token)
+    return " ".join(redacted)
+
+
 def analyze(path: Path) -> dict[str, str]:
     rows = 0
     sources: Counter[str] = Counter()
@@ -32,8 +73,27 @@ def analyze(path: Path) -> dict[str, str]:
     metric_promotions = 0
     healthkit_writes = 0
     raw_storage = 0
+    frame_types: Counter[str] = Counter()
+    metadata_lengths: Counter[str] = Counter()
+    metadata_printable: Counter[str] = Counter()
+    metadata_explicit_model_tokens = 0
 
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        frame_match = FRAME_RE.search(line)
+        if frame_match and frame_match.group(1).upper() == "61080005":
+            frame = parse_hex(frame_match.group(3))
+            if len(frame) > 4:
+                frame_type = f"0x{frame[4]:02x}"
+                frame_types[frame_type] += 1
+                if frame_type == "0x31":
+                    metadata_lengths[str(len(frame))] += 1
+                    redacted_runs = [redact_identifier_like_tokens(run) for run in printable_runs(frame[4:-4])]
+                    for run in redacted_runs:
+                        normalized = run.upper().replace("_", " ").replace("-", " ").replace(".", " ")
+                        if any(token in normalized for token in ("WHOOP 3", "WHOOP3", "WHOOP 4", "WHOOP4", "WHOOP 5", "WHOOP5", "WHOOP MG", "WHOOPMG")):
+                            metadata_explicit_model_tokens += 1
+                        metadata_printable[run] += 1
+
         if "WHOOPDBG sensor_research_probe " not in line:
             continue
         rows += 1
@@ -50,6 +110,11 @@ def analyze(path: Path) -> dict[str, str]:
 
     return {
         "probe_rows": str(rows),
+        "frame_61080005_types": format_counter(frame_types),
+        "metadata_0x31_frames": str(frame_types.get("0x31", 0)),
+        "metadata_0x31_lengths": format_counter(metadata_lengths),
+        "metadata_0x31_printable": format_counter(metadata_printable),
+        "metadata_explicit_model_tokens": str(metadata_explicit_model_tokens),
         "probe_sources": format_counter(sources),
         "model_generations": format_counter(model_generations),
         "spo2_candidate_frames": str(max_spo2_candidate_frames),

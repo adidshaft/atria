@@ -443,6 +443,13 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "WHOOPDBG sensor_research_probe ",
+            "WHOOPDBG frame ch=([0-9A-Fa-f-]+) len=(\\d+) hex=([0-9A-Fa-f]+)",
+            "frame_61080005_types",
+            "metadata_0x31_frames",
+            "metadata_0x31_lengths",
+            "metadata_0x31_printable",
+            "metadata_explicit_model_tokens",
+            "redact_identifier_like_tokens",
             "probe_sources",
             "model_generations",
             "spo2_top_offsets",
