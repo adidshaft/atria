@@ -378,6 +378,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaResearchProbe",
             "case metadata = \"0x31\"",
             "case historical = \"0x2f\"",
+            "case diagnostic = \"61080007\"",
             "enum ModelGeneration",
             "case whoopMG",
             "redactIdentifierLikeTokens",
@@ -405,6 +406,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "metric_promotions=0 healthkit_write=0 raw_storage=0",
             "recordResearchProbeCandidate(payload: payload, source: .metadata)",
             "recordResearchProbeCandidate(payload: payload, source: .historical)",
+            "recordResearchProbeCandidate(payload: [UInt8](data), source: .diagnostic)",
         ]:
             assert_contains(self, ble, needle)
 
