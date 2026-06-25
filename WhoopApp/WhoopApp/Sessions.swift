@@ -2030,7 +2030,13 @@ final class SessionStore: ObservableObject {
         let backupStatus: SessionBackupStatus
     }
 
-    @Published private(set) var sessions: [SavedSession] = []
+    @Published private(set) var sessions: [SavedSession] = [] {
+        didSet { recomputeDerivedMetrics() }
+    }
+    /// Phase-0 derived cache: the 14-point resting-HR trend, recomputed ONLY when
+    /// sessions change instead of being re-sorted inside the glance on every
+    /// render/BLE tick. Views read this directly (O(1)).
+    @Published private(set) var restingTrend14: [Int] = []
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2053,6 +2059,27 @@ final class SessionStore: ObservableObject {
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
+
+    /// Recompute cached derived metrics. Called from `sessions.didSet` only, so the
+    /// cost is paid once per data change rather than on every view render.
+    private func recomputeDerivedMetrics() {
+        let calendar = Calendar.current
+        // Only the last ~45 days can affect a 14-point trend.
+        let cutoff = Date().addingTimeInterval(-45 * 24 * 60 * 60)
+        restingTrend14 = sessions
+            .filter { $0.start >= cutoff && $0.points.count >= 8 && $0.restingStable > 0 }
+            .sorted { $0.start < $1.start }
+            .reduce(into: [(day: Date, value: Int)]()) { days, session in
+                let day = calendar.startOfDay(for: session.start)
+                if let index = days.lastIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+                    days[index] = (day, min(days[index].value, session.restingStable))
+                } else {
+                    days.append((day, session.restingStable))
+                }
+            }
+            .suffix(14)
+            .map(\.value)
+    }
 
     private enum ConfirmedWorkoutDefaults {
         static let key = "atria.confirmedWorkouts.v1"
