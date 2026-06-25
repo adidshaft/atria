@@ -23,6 +23,7 @@ struct AtriaSettingsView: View {
     @State private var exportTapped = false
     @State private var syncTapped = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
+    @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -64,6 +65,7 @@ struct AtriaSettingsView: View {
                 Form {
                     profileSection
                     appearanceSection
+                    todayLayoutSection
                     deviceSection
                     sensorAvailabilitySection
                     alertsSection
@@ -274,6 +276,33 @@ struct AtriaSettingsView: View {
     }
 
     // MARK: Device
+
+    // MARK: Today screen layout
+
+    private func todayBinding(_ metric: AtriaTodayMetric) -> Binding<Bool> {
+        Binding(
+            get: { !AtriaTodayMetric.hidden(from: todayHiddenCSV).contains(metric.rawValue) },
+            set: { visible in
+                var hidden = AtriaTodayMetric.hidden(from: todayHiddenCSV)
+                if visible { hidden.remove(metric.rawValue) } else { hidden.insert(metric.rawValue) }
+                todayHiddenCSV = hidden.sorted().joined(separator: ",")
+            }
+        )
+    }
+
+    private var todayLayoutSection: some View {
+        Section {
+            ForEach(AtriaTodayMetric.allCases) { metric in
+                Toggle(isOn: todayBinding(metric)) {
+                    Label(metric.label, systemImage: metric.systemImage)
+                }
+            }
+        } header: {
+            Text("Today screen")
+        } footer: {
+            Text("Choose which cards appear on Today.")
+        }
+    }
 
     private var deviceSection: some View {
         Section {

@@ -5872,6 +5872,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard shouldPublish else { return }
         lastLiveHeartDisplayPublishAt = sampleTime
         assignIfChanged(\.heartRate, displayRate)
+        // Live HR streaming proves the link is up. Heal a status that is stuck on
+        // .connecting/.scanning — e.g. a reconnect/didConnect callback that never
+        // arrived after state restoration, so the UI showed "Connecting" until a
+        // full relaunch even though data was flowing.
+        if displayRate > 0, status == .connecting || status == .scanning {
+            assignIfChanged(\.status, .connected)
+        }
         rebuildLiveHeartWindow()
     }
 
@@ -8757,7 +8764,6 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             assignIfChanged(\.status, .connected)
-            assignIfChanged(\.batteryIsCharging, false)
             connectedAt = Date()
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -9007,13 +9013,12 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         if uuid == UUIDs.batteryLevel {
             let newLevel = Int(data.first ?? 0)
             Task { @MainActor in
+                // Battery % only ever rises while on the charger, so any increase
+                // is a reliable "charging" signal; any decrease clears it. Sticky
+                // in between (sparse reads), and NOT reset on reconnect.
                 let previous = batteryLevel
-                if previous >= 0 {
-                    if newLevel - previous >= 2 {
-                        assignIfChanged(\.batteryIsCharging, true)
-                    } else if newLevel < previous {
-                        assignIfChanged(\.batteryIsCharging, false)
-                    }
+                if previous >= 0 && newLevel != previous {
+                    assignIfChanged(\.batteryIsCharging, newLevel > previous)
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19")
