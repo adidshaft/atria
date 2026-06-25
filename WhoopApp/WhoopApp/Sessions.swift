@@ -8634,10 +8634,10 @@ final class SessionStore: ObservableObject {
             }
         }
         cachedHomeDashboardDiagnostics = nil
-        // Canonical cache + baseline are now consistent — recompute insights once
-        // (the sessions.didSet above only refreshed the cheap trend).
-        recomputeBehaviorInsights()
         publishDashboardRevision()
+        // Insights compute AFTER the launch render (off the critical path). It's
+        // light now, but never let it touch the first-frame budget on a big store.
+        Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }
 
         WHOOPDebugLog("WHOOPDBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",
               decoded.count,
