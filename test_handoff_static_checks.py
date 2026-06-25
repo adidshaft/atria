@@ -434,10 +434,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"sensor_research_probe_rows\": 0",
             "\"model_gate_assume_4_class_rows\": 0",
             "\"model_gate_metadata_explicit_rows\": 0",
+            "\"metadata_0x31_frames\": 0",
+            "\"metadata_0x31_lengths\": \"\"",
+            "\"metadata_0x31_body_hashes\": \"\"",
             "WHOOPDBG sensor_research_probe ",
             "WHOOPDBG model_gate ",
             "tokens.get(\"spo2_candidate_frames\", \"\")",
             "tokens.get(\"model_evidence\", \"\")",
+            "metadata_0x31_body_hashes[hashlib.sha256(payload).hexdigest()[:16]] += 1",
         ]:
             assert_contains(self, harness, needle)
 
