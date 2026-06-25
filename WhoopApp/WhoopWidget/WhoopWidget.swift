@@ -17,6 +17,9 @@ struct WhoopWidgetSnapshot: Codable {
     let hrvRMSSD: Int?
     let hrvState: String
     let maxHR: Int
+    // Optional so schema-1 payloads still decode (missing keys -> nil).
+    let steps: Int?
+    let heartRate: Int?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -332,10 +335,141 @@ private func elapsedText(since start: Date) -> String {
     return "\(minutes)m"
 }
 
+// MARK: - Single-metric Lock Screen widgets (Steps / Strain / HRV / BPM)
+
+enum AtriaWidgetMetric {
+    case steps, strain, hrv, bpm
+
+    var title: String {
+        switch self {
+        case .steps: return "Steps"
+        case .strain: return "Strain"
+        case .hrv: return "HRV"
+        case .bpm: return "BPM"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .steps: return "figure.walk"
+        case .strain: return "bolt.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .bpm: return "heart.fill"
+        }
+    }
+
+    func value(_ s: WhoopWidgetSnapshot?) -> String {
+        guard let s else { return "--" }
+        switch self {
+        case .steps:
+            guard let steps = s.steps else { return "--" }
+            return steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
+        case .strain:
+            return String(format: "%.1f", s.strain)
+        case .hrv:
+            return s.hrvRMSSD.map(String.init) ?? "--"
+        case .bpm:
+            return s.heartRate.map(String.init) ?? "--"
+        }
+    }
+}
+
+struct AtriaMetricWidgetEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    let metric: AtriaWidgetMetric
+    let entry: WhoopWidgetEntry
+
+    private var value: String { metric.value(entry.snapshot) }
+
+    var body: some View {
+        switch family {
+        case .accessoryInline:
+            Label("\(metric.title) \(value)", systemImage: metric.icon)
+        case .accessoryRectangular:
+            HStack(spacing: 8) {
+                Image(systemName: metric.icon)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(metric.title.uppercased())
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .font(.title2.weight(.bold))
+                        .monospacedDigit()
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .containerBackground(.clear, for: .widget)
+        default: // accessoryCircular
+            VStack(spacing: 0) {
+                Image(systemName: metric.icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(value)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
+            .containerBackground(for: .widget) { AccessoryWidgetBackground() }
+            .widgetAccentable()
+        }
+    }
+}
+
+struct AtriaStepsWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaStepsWidget", provider: WhoopWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .steps, entry: entry)
+        }
+        .configurationDisplayName("Atria Steps")
+        .description("Today's steps on your Lock Screen.")
+        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+struct AtriaStrainWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaStrainWidget", provider: WhoopWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .strain, entry: entry)
+        }
+        .configurationDisplayName("Atria Strain")
+        .description("Today's strain on your Lock Screen.")
+        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+struct AtriaHRVWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaHRVWidget", provider: WhoopWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .hrv, entry: entry)
+        }
+        .configurationDisplayName("Atria HRV")
+        .description("Latest HRV on your Lock Screen.")
+        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+struct AtriaBPMWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaBPMWidget", provider: WhoopWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .bpm, entry: entry)
+        }
+        .configurationDisplayName("Atria BPM")
+        .description("Latest heart rate on your Lock Screen.")
+        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
 @main
 struct WhoopWidgetBundle: WidgetBundle {
     var body: some Widget {
         WhoopStatusWidget()
+        AtriaStepsWidget()
+        AtriaStrainWidget()
+        AtriaHRVWidget()
+        AtriaBPMWidget()
         AtriaLiveActivityWidget()
         AtriaStartCaptureControl()
         AtriaStopCaptureControl()

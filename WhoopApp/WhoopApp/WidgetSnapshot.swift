@@ -14,6 +14,9 @@ struct WidgetSnapshot: Codable {
     let hrvRMSSD: Int?
     let hrvState: String
     let maxHR: Int
+    // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
+    let steps: Int?
+    let heartRate: Int?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -86,7 +89,7 @@ enum WidgetSnapshotPublisher {
             hrvState = recovery.confidence == .validated ? "validated" : "personal_baseline"
         }
         let widgetDiagnostics = Self.diagnostics
-        let snapshot = WidgetSnapshot(schema: 1,
+        let snapshot = WidgetSnapshot(schema: 2,
                                       createdAt: Date(),
                                       recoveryPercent: recovery.percent,
                                       recoveryConfidence: recovery.confidence.rawValue,
@@ -96,6 +99,8 @@ enum WidgetSnapshotPublisher {
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
+                                      steps: ble.phoneStepsToday > 0 ? ble.phoneStepsToday : nil,
+                                      heartRate: ble.heartRate > 0 ? ble.heartRate : nil,
                                       storage: widgetDiagnostics.storage,
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
