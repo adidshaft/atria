@@ -292,19 +292,22 @@ private struct AtriaCollectionCaptureCardHost: View {
         }
         .buttonStyle(.glassProminent)
         .tint(collectionLiveStore.state.isRecording ? .red : .blue)
+        .frame(maxWidth: .infinity)
 
         Button("Prepare export") {
             captureShareURL = ble.exportCSV()
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
+        .frame(maxWidth: .infinity)
 
         if let captureShareURL {
             ShareLink(item: captureShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.glassProminent)
-        .tint(.green)
+            .tint(.green)
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -370,19 +373,22 @@ private struct AtriaCollectionRRReferenceCardHost: View {
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
+        .frame(maxWidth: .infinity)
 
         Button("Import RR") {
             showRRImporter = true
         }
         .buttonStyle(.glassProminent)
         .tint(.blue)
+        .frame(maxWidth: .infinity)
 
         if let rrShareURL {
             ShareLink(item: rrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.glassProminent)
-        .tint(.green)
+            .tint(.green)
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -443,19 +449,22 @@ private struct AtriaCollectionHRReferenceCardHost: View {
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
+        .frame(maxWidth: .infinity)
 
         Button("Import HR") {
             showHRImporter = true
         }
         .buttonStyle(.glassProminent)
         .tint(.blue)
+        .frame(maxWidth: .infinity)
 
         if let hrShareURL {
             ShareLink(item: hrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.glassProminent)
-        .tint(.green)
+            .tint(.green)
+            .frame(maxWidth: .infinity)
         }
     }
 }
