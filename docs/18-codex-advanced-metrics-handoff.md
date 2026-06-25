@@ -279,7 +279,10 @@ generic until explicit model tokens are observed. The local analyzer
 an explicit generation token in the current redacted parser. The hashes are
 privacy-safe body fingerprints for correlating future captures without storing
 serial-like raw metadata; the SpO2/temp offsets remain recurring candidates only,
-not validated metrics.
+not validated metrics. The live-device harness now emits the same metadata
+fingerprints in its summary; replaying the diagnostic log reports
+`metadata_0x31_frames=3`, body lengths `metadata_0x31_lengths=24:2,40:1`, and
+the same three `metadata_0x31_body_hashes`.
 
 Current-head bounded check, 2026-06-25: a 45 s physical-device probe at
 `logs/live-device/advanced-metrics-current-short-probe-20260625T0545Z.log`

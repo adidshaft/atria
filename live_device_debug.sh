@@ -1592,6 +1592,7 @@ import select
 import shlex
 import os
 import json
+import hashlib
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -1944,6 +1945,9 @@ rr_summary = {
         "frame_61080004_types": "",
         "frame_61080005_types": "",
         "frame_61080007_types": "",
+        "metadata_0x31_frames": 0,
+        "metadata_0x31_lengths": "",
+        "metadata_0x31_body_hashes": "",
         "historical_2f_frames": 0,
         "historical_data_rows": 0,
         "historical_archive_rows": 0,
@@ -2028,6 +2032,8 @@ frame_type_counts = {
     "61080005": Counter(),
     "61080007": Counter(),
 }
+metadata_0x31_lengths: Counter = Counter()
+metadata_0x31_body_hashes: Counter = Counter()
 sleep_motion_hint_kinds: Counter = Counter()
 trend_windows_seen: set[str] = set()
 segments: list[dict[str, object]] = []
@@ -2162,6 +2168,9 @@ def ingest_frame_catalog(line: str) -> None:
     if channel_short in frame_type_counts and payload:
         payload_type = f"0x{payload[0]:02x}"
         frame_type_counts[channel_short][payload_type] += 1
+        if channel_short == "61080005" and payload_type == "0x31":
+            metadata_0x31_lengths[str(len(payload))] += 1
+            metadata_0x31_body_hashes[hashlib.sha256(payload).hexdigest()[:16]] += 1
         segment_counter = (
             current_segment.get(f"frame_{channel_short}_types")
             if current_segment is not None
@@ -2889,6 +2898,9 @@ if rr_summary["realtime_frames"]:
 rr_summary["frame_61080004_types"] = format_counter(frame_type_counts["61080004"])
 rr_summary["frame_61080005_types"] = format_counter(frame_type_counts["61080005"])
 rr_summary["frame_61080007_types"] = format_counter(frame_type_counts["61080007"])
+rr_summary["metadata_0x31_frames"] = frame_type_counts["61080005"].get("0x31", 0)
+rr_summary["metadata_0x31_lengths"] = format_counter(metadata_0x31_lengths)
+rr_summary["metadata_0x31_body_hashes"] = format_counter(metadata_0x31_body_hashes)
 for name, value in flags.items():
     emit(f"{name}={str(value)}")
 for name, value in rr_summary.items():
