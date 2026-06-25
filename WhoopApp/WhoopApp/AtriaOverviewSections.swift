@@ -424,6 +424,8 @@ struct AtriaOverviewLeadingSection: View {
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
 
+    @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
+
     var body: some View {
         VStack(spacing: 16) {
             if segment == .today {
@@ -436,6 +438,10 @@ struct AtriaOverviewLeadingSection: View {
                 // Simple one-line "what to do today" guidance. No AI coach, no
                 // setup checklist, no strain-target maths — kept direct.
                 AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
+
+                if !AtriaTodayMetric.hidden(from: hiddenCSV).contains(AtriaTodayMetric.insights.rawValue) {
+                    AtriaInsightsCardHost(store: store)
+                }
             }
 
             if segment == .trends && hasUnlockedSecondarySections {
@@ -475,7 +481,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, steps, calories, trend
+    case recovery, strain, hrv, sleep, rhr, steps, calories, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -487,6 +493,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "Steps"
         case .calories: return "Calories"
         case .trend: return "Resting trend"
+        case .insights: return "Insights"
         }
     }
     var systemImage: String {
@@ -499,6 +506,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "figure.walk"
         case .calories: return "flame.fill"
         case .trend: return "chart.xyaxis.line"
+        case .insights: return "chart.line.uptrend.xyaxis"
         }
     }
     /// Persisted as a comma-separated list of HIDDEN raw values, so the default
@@ -850,6 +858,74 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
 
     static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
         lhs.hero == rhs.hero
+    }
+}
+
+struct AtriaInsightsCardHost: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        AtriaInsightsCard(insights: store.behaviorInsights,
+                          taggedDays: store.behaviorJournalEntries.count)
+            .equatable()
+    }
+}
+
+/// Smart insights: actionable, effect-size-ranked findings from behavior tags vs
+/// recovery/HRV (e.g. "Alcohol · Recovery 12% lower"). Local, never medical.
+struct AtriaInsightsCard: View, Equatable {
+    let insights: [AtriaInsight]
+    let taggedDays: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Insights", subtitle: "What moves your recovery")
+
+            if insights.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .foregroundStyle(.secondary)
+                    Text(taggedDays == 0
+                         ? "Tag your days (sleep, alcohol, training…) and Atria learns what moves your recovery."
+                         : "Keep tagging — clear patterns appear after a few matched days.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                ForEach(insights.prefix(3)) { insight in
+                    insightRow(insight)
+                }
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private func insightRow(_ i: AtriaInsight) -> some View {
+        let tint: Color = i.isPositive ? .green : .red
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(i.tagLabel)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(i.headline) · \(i.detail.lowercased())")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: i.isPositive ? "arrow.up.right" : "arrow.down.right")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+                .padding(8)
+                .background(tint.opacity(0.14), in: Circle())
+        }
+        .padding(12)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(i.tagLabel). \(i.headline). \(i.detail).")
     }
 }
 
