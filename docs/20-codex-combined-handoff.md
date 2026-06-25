@@ -43,6 +43,30 @@ cabled iPhone (`devicectl … capture screenshot`) → commit small.
 
 ## Remaining grunt work (in priority order)
 
+### A0. CRITICAL LESSON — main-thread watchdog crash (fixed 2026-06-26)
+`SessionStore` is `@MainActor`. The Smart-Insights work called
+`behaviorCorrelationSummaries → dailyRollups` (workout/sleep clustering +
+`detectedActivity` ×2 per session) **synchronously on the main thread**, including
+on launch over a large overnight store → main-thread block → iOS watchdog killed
+the app at the gym (slow launch → 20s workout-screen hang → crash). FIX shipped:
+`behaviorCorrelationSummaries` now computes a LIGHT per-day rollup (strain + avg
+HRV only, never `dailyRollups`); summaries are cached
+(`behaviorCorrelationSummariesCache`) and the Journal section reads O(1); launch
+insight compute is deferred in a post-render Task.
+**HARD RULE for the overnight run:** NEVER call `dailyRollups`, `canonicalSessions`-
+based aggregation, `detectedActivity`, `aggregateWorkout/SleepCandidates`, or any
+O(sessions×detection) work from a `var body`, a computed view property, or on the
+launch first-frame path. If a view needs it, cache it in a `@Published` recomputed
+off the hot path (or move it to a background queue with a snapshot).
+
+Remaining confirmed perf-audit findings (lower severity, not yet fixed):
+- `AtriaResearchManeuverMarkerCard.correlationSummary` — O(markers×sessions) in
+  body AND in `==` (developer-mode only). Precompute + pass as a `let`.
+- `SessionDetail.displayedPoints` — re-downsamples points on every render; compute
+  once in init/@State.
+- `AtriaConnectedPulseStatusCard.displayDeviceName` — string parse on every HR
+  tick; precompute from deviceName only.
+
 ### A. Finish Phase 0 — perf foundation (docs/19 §Phase 0)
 The lag root is heavy compute in view bodies. Extend the `restingTrend14` pattern:
 1. Build a full **`DerivedMetricsStore`** (or grow `SessionStore`'s cached set):
