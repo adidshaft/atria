@@ -81,6 +81,11 @@ test_handoff_static_checks.py`, no `https://` clients).
   native Liquid Glass system/light/dark switcher and applied via
   `preferredColorScheme`; the debug launch route now opens Settings immediately
   and retries after the first layout pass so physical screenshots can verify it.
+  Current iOS 27 physical-device verification also replaced the newer root
+  `Tab("...", value:)` DSL with the stable `TabView(selection:)` + `.tabItem` +
+  `.tag` shell after the newer DSL rendered as a black first scene on the cabled
+  phone; static coverage now forbids that regression while keeping the native
+  Liquid Glass toolbar/switcher.
   The static suite now guards the no-lag rule by forbidding `ViewThatFits`,
   `.shadow(`, `.blur(`, and material fallbacks in app Swift.
 - Verification so far: `python3 test_handoff_static_checks.py` green (43), generic
@@ -93,6 +98,10 @@ test_handoff_static_checks.py`, no `https://` clients).
   `logs/live-device/screenshots/advanced-metrics-settings-appearance-deferred-20260625T0456Z.png`;
   fixed Settings route screenshot captured at
   `logs/live-device/screenshots/advanced-metrics-settings-route-fixed-20260625T0520Z.png`;
+  current iOS 27 tab-shell fallback screenshots captured at
+  `logs/live-device/screenshots/advanced-metrics-current-today-tabfallback-20260625T0539Z.png`
+  and
+  `logs/live-device/screenshots/advanced-metrics-current-settings-route-retry-20260625T0543Z.png`;
   estimate/research badge screenshots captured at
   `logs/live-device/screenshots/advanced-metrics-calories-estimate-badge-20260625T0458Z.png`,
   `logs/live-device/screenshots/advanced-metrics-vo2-estimate-badge-20260625T0500Z.png`,

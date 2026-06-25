@@ -56,6 +56,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "TabView(selection:",
+            ".tabItem { Label(HomeTab.overview.title, systemImage: HomeTab.overview.systemImage) }",
+            ".tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }",
+            ".tabItem { Label(HomeTab.collection.title, systemImage: HomeTab.collection.systemImage) }",
             ".tabBarMinimizeBehavior(.onScrollDown)",
             ".tabViewBottomAccessory",
             ".scrollEdgeEffectStyle(.soft, for: .top)",
@@ -66,6 +69,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
+        assert_not_contains(self, text, "Tab(\"Today\"")
+        assert_not_contains(self, text, "Tab(\"Vitals\"")
+        assert_not_contains(self, text, "Tab(\"Data\"")
 
     def test_top_left_status_is_native_liquid_glass_button(self):
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
@@ -116,7 +122,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "arguments.contains(\"--atria-open-settings\")",
             "requestedScreen = \"settings\"",
             "didApplyDebugUIScreenLaunchArgument = true",
-            "case \"settings\":\n            selectedTab = .overview\n            showSettings = true",
+            "case \"settings\":\n            selectedTab = .overview",
+            "for delay in [100, 450, 900]",
+            "showSettings = false\n                    await Task.yield()\n                    showSettings = true",
             ".preferredColorScheme(preferredColorScheme)",
             "case \"light\": return .light",
             "case \"dark\": return .dark",
