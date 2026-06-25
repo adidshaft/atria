@@ -943,7 +943,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                     }
-                    .buttonStyle(AtriaSegmentButtonStyle(selected: selected == profile))
+                    .atriaGlassSelectable(selected: selected == profile)
                     .accessibilityLabel("Saving mode \(profile.label)")
                 }
             }
@@ -1170,7 +1170,7 @@ private struct AtriaProfileCard: View, Equatable {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 11)
                     }
-                    .buttonStyle(AtriaSegmentButtonStyle(selected: profile.maxHRSource == source))
+                    .atriaGlassSelectable(selected: profile.maxHRSource == source)
                 }
             }
             .padding(8)
