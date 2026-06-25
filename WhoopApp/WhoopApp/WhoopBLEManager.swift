@@ -8764,6 +8764,9 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             assignIfChanged(\.status, .connected)
+            // Start each live link assuming not charging; only an in-session rise
+            // re-asserts it (prevents a stale "Charging" sticking across sessions).
+            assignIfChanged(\.batteryIsCharging, false)
             connectedAt = Date()
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -9013,15 +9016,17 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         if uuid == UUIDs.batteryLevel {
             let newLevel = Int(data.first ?? 0)
             Task { @MainActor in
-                // Infer charging from the battery trend. A small gradual RISE
-                // (1–5%) between reads means it's actively on the charger now; a
+                // Infer charging from the in-session battery trend. A gradual RISE
+                // (2–5%) between reads means it's actively on the charger now; a
                 // DROP clears it. A big jump (>5%) is an ambiguous reconnect gap
-                // (e.g. charged while the app was away) — leave the flag unchanged
-                // so we don't show a false "Charging" the moment you put it back on.
+                // (charged while away) — left unchanged. `batteryIsCharging` is also
+                // reset to false on each connect (see didConnect), so the flag
+                // reflects active charging within the live link and can't stick on
+                // true forever after a plateau.
                 let previous = batteryLevel
                 if previous >= 0 {
                     let delta = newLevel - previous
-                    if delta >= 1 && delta <= 5 {
+                    if delta >= 2 && delta <= 5 {
                         assignIfChanged(\.batteryIsCharging, true)
                     } else if delta < 0 {
                         assignIfChanged(\.batteryIsCharging, false)
