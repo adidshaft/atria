@@ -40,12 +40,23 @@ struct AtriaOverviewTabContent: View {
     @State private var segment: AtriaTodaySegment = .today
 
     private var segmentPicker: some View {
-        Picker("Section", selection: $segment) {
-            ForEach(AtriaTodaySegment.allCases) { item in
-                Text(item.label).tag(item)
+        // Native Liquid Glass segmented control: each segment is a glass button,
+        // the selected one prominent. Floating control → real glass is right here.
+        GlassEffectContainer(spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(AtriaTodaySegment.allCases) { item in
+                    Button {
+                        withAnimation(.snappy(duration: 0.22)) { segment = item }
+                    } label: {
+                        Text(item.label)
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .atriaGlassSelectable(selected: segment == item)
+                }
             }
         }
-        .pickerStyle(.segmented)
     }
 
     var body: some View {
