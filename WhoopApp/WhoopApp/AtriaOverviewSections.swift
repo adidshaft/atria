@@ -465,31 +465,12 @@ struct AtriaOverviewReadinessSectionHost: View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
                                      live: liveStore.state,
                                      snapshot: snapshotStore.state,
-                                     trendValues: Self.restingTrendValues(from: store),
+                                     trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      subtitle: subtitle,
                                      hiddenMetrics: AtriaTodayMetric.hidden(from: hiddenCSV))
             .equatable()
     }
 
-    private static func restingTrendValues(from store: SessionStore) -> [Int] {
-        let calendar = Calendar.current
-        // Only the last ~45 days can affect a 14-point trend, so bound the work
-        // here — the full history was being re-sorted on every live tick.
-        let cutoff = Date().addingTimeInterval(-45 * 24 * 60 * 60)
-        return store.sessions
-            .filter { $0.start >= cutoff && $0.points.count >= 8 && $0.restingStable > 0 }
-            .sorted { $0.start < $1.start }
-            .reduce(into: [(day: Date, value: Int)]()) { days, session in
-                let day = calendar.startOfDay(for: session.start)
-                if let index = days.lastIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
-                    days[index] = (day, min(days[index].value, session.restingStable))
-                } else {
-                    days.append((day, session.restingStable))
-                }
-            }
-            .suffix(14)
-            .map(\.value)
-    }
 }
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
