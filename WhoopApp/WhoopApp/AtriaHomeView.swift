@@ -644,6 +644,17 @@ struct AtriaHomeView: View {
     }
 
     private var statusChipForeground: Color {
+        // Light mode: dark saturated colors (pale pastels are illegible on the
+        // light tinted glass). Dark mode: pale pastels read on dark glass.
+        if colorScheme == .light {
+            switch model.statusStore.state.status {
+            case .connected: return Color(red: 0.04, green: 0.42, blue: 0.20)
+            case .connecting: return Color(red: 0.52, green: 0.36, blue: 0.00)
+            case .scanning: return Color(red: 0.00, green: 0.36, blue: 0.46)
+            case .poweredOff: return Color(red: 0.62, green: 0.10, blue: 0.10)
+            case .disconnected: return Color(red: 0.10, green: 0.28, blue: 0.66)
+            }
+        }
         switch model.statusStore.state.status {
         case .connected: return Color(red: 0.77, green: 1.00, blue: 0.86)
         case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)

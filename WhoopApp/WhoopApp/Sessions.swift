@@ -2060,7 +2060,13 @@ final class SessionStore: ObservableObject {
     }
 
     @Published private(set) var sessions: [SavedSession] = [] {
-        didSet { recomputeDerivedMetrics() }
+        // Only the CHEAP, raw-sessions trend recomputes on every mutation. The
+        // expensive insights recompute (dailyRollups → canonical cache) is NOT
+        // hooked here: this didSet fires on every live checkpoint, before the
+        // canonical/baseline caches update, so it would be both stale and a
+        // main-thread stall. Insights are recomputed explicitly via
+        // recomputeBehaviorInsights() after those caches are consistent.
+        didSet { recomputeRestingTrend() }
     }
     /// Phase-0 derived cache: the 14-point resting-HR trend, recomputed ONLY when
     /// sessions change instead of being re-sorted inside the glance on every
@@ -2092,9 +2098,9 @@ final class SessionStore: ObservableObject {
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
 
-    /// Recompute cached derived metrics. Called from `sessions.didSet` only, so the
-    /// cost is paid once per data change rather than on every view render.
-    private func recomputeDerivedMetrics() {
+    /// CHEAP: 14-point resting-HR trend from raw `sessions` (current inside the
+    /// didSet, bounded to 45 days). Safe to run on every mutation.
+    private func recomputeRestingTrend() {
         let calendar = Calendar.current
         // Only the last ~45 days can affect a 14-point trend.
         let cutoff = Date().addingTimeInterval(-45 * 24 * 60 * 60)
@@ -2111,7 +2117,13 @@ final class SessionStore: ObservableObject {
             }
             .suffix(14)
             .map(\.value)
+    }
 
+    /// EXPENSIVE: behavior insights via dailyRollups → the canonical-session cache.
+    /// MUST be called only after `cachedCanonicalSessions` + `baseline` are
+    /// consistent (load / add / delete / journal change) — never from the hot
+    /// checkpoint path. See findings 1–3/5 in docs review.
+    func recomputeBehaviorInsights() {
         behaviorInsights = Self.deriveInsights(
             from: behaviorCorrelationSummaries(rest: baseline.restingInt ?? 60,
                                                maxHR: profile.maxHR))
@@ -2807,6 +2819,9 @@ final class SessionStore: ObservableObject {
         } else {
             learnBaselineIfEligible(from: s, reason: "session-add")
         }
+        // A finalized session can change behavior correlations; recompute now that
+        // the canonical cache + baseline are consistent (NOT in the checkpoint path).
+        recomputeBehaviorInsights()
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
             WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
@@ -2923,6 +2938,7 @@ final class SessionStore: ObservableObject {
         markSessionPersistenceDirty()
         refreshSessionDerivedCaches()
         invalidateHomeDashboardDiagnosticsCache()
+        recomputeBehaviorInsights()
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
     }
@@ -4863,25 +4879,32 @@ final class SessionStore: ObservableObject {
                 BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
             }
         }
-        let allRecovery = averageDouble(rollupsByDay.values.map(\.strain).map { max(0, 100 - $0 * 4) })
-        let allHRV = averageDouble(rollupsByDay.values.compactMap { $0.avgHRV.map(Double.init) })
+        let recoveryProxy: (DailyRollup) -> Double = { max(0, 100 - $0.strain * 4) }
 
         return BehaviorJournalEntry.Tag.allCases.map { tag in
-            let taggedRollups = cachedBehaviorJournalEntries.compactMap { entry -> DailyRollup? in
-                guard entry.tags.contains(tag) else { return nil }
-                return rollupsByDay[calendar.startOfDay(for: entry.day)]
-            }
-            let taggedRecovery = averageDouble(taggedRollups.map(\.strain).map { max(0, 100 - $0 * 4) })
+            // Genuine tagged-vs-UNtagged contrast: the baseline must exclude the
+            // tag's own days, otherwise the delta is diluted by the very days
+            // being measured (e.g. alcohol vs all-including-alcohol).
+            let taggedDayKeys = Set(cachedBehaviorJournalEntries
+                .filter { $0.tags.contains(tag) }
+                .map { calendar.startOfDay(for: $0.day) })
+            let taggedRollups = taggedDayKeys.compactMap { rollupsByDay[$0] }
+            let untaggedRollups = rollupsByDay.filter { !taggedDayKeys.contains($0.key) }.map(\.value)
+
+            let taggedRecovery = averageDouble(taggedRollups.map(recoveryProxy))
+            let untaggedRecovery = averageDouble(untaggedRollups.map(recoveryProxy))
             let taggedHRV = averageDouble(taggedRollups.compactMap { $0.avgHRV.map(Double.init) })
+            let untaggedHRV = averageDouble(untaggedRollups.compactMap { $0.avgHRV.map(Double.init) })
+
             let recoveryDelta: Double?
-            if taggedRollups.count >= 3, let taggedRecovery, let allRecovery {
-                recoveryDelta = taggedRecovery - allRecovery
+            if taggedRollups.count >= 3, let taggedRecovery, let untaggedRecovery {
+                recoveryDelta = taggedRecovery - untaggedRecovery
             } else {
                 recoveryDelta = nil
             }
             let hrvDelta: Double?
-            if taggedRollups.count >= 3, let taggedHRV, let allHRV {
-                hrvDelta = taggedHRV - allHRV
+            if taggedRollups.count >= 3, let taggedHRV, let untaggedHRV {
+                hrvDelta = taggedHRV - untaggedHRV
             } else {
                 hrvDelta = nil
             }
@@ -4905,7 +4928,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: BehaviorJournalDefaults.key)
         cachedBehaviorJournalEntries = sorted
-        recomputeDerivedMetrics()   // refresh insights when a day is tagged
+        recomputeBehaviorInsights()   // refresh insights when a day is tagged
     }
 
     func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind, at timestamp: Date = Date()) {
@@ -8597,6 +8620,9 @@ final class SessionStore: ObservableObject {
             }
         }
         cachedHomeDashboardDiagnostics = nil
+        // Canonical cache + baseline are now consistent — recompute insights once
+        // (the sessions.didSet above only refreshed the cheap trend).
+        recomputeBehaviorInsights()
         publishDashboardRevision()
 
         WHOOPDebugLog("WHOOPDBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",

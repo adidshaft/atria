@@ -77,7 +77,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "ToolbarItem(placement: .topBarLeading)",
-            "AtriaLiquidStatusPillBackground(tint: statusTint)",
+            # Genuine native Liquid Glass on the status chip (user-requested, verified
+            # on device) — replaced the hand-drawn AtriaLiquidStatusPillBackground.
+            ".glassEffect(.regular.tint(statusTint.opacity(0.55)).interactive(), in: .capsule)",
             ".onTapGesture",
             "ble.startScan(reason: \"home_status_chip\")",
             "case .connected: return \"Live\"",
@@ -97,7 +99,6 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for forbidden in [
             "ble.startScan(reason: \"home_status_button\")",
-            ".glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)",
             "case .connected: return \"Live/Connected\"",
             "case .connecting, .scanning: return \"Connecting...\"",
             "case .poweredOff, .disconnected: return \"Not Connected\"",
