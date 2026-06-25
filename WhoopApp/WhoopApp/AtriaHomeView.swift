@@ -237,19 +237,24 @@ struct AtriaHomeView: View {
             presentConnectionGuideIfNeeded()
         }
         .onChange(of: selectedTab) { _, tab in
-            ble.setForegroundHighFrequencyDisplayMode(tab == .vitals)
-            model.setPulseDetailMode(active: tab == .vitals)
-            if tab != .overview {
-                overviewDiagnosticsKickoffTask?.cancel()
-                overviewDiagnosticsKickoffTask = nil
-                hasUnlockedPrimaryContent = true
-                hasUnlockedSecondarySections = true
-                if tab == .collection {
-                    model.loadDeferredDiagnosticsIfNeeded(reason: "tab_\(tab.rawValue)")
+            // Defer radio/diagnostics reconfiguration to the next runloop so the
+            // tab transition renders immediately instead of janking while we
+            // reconfigure BLE notifications and kick off diagnostics work.
+            Task { @MainActor in
+                ble.setForegroundHighFrequencyDisplayMode(tab == .vitals)
+                model.setPulseDetailMode(active: tab == .vitals)
+                if tab != .overview {
+                    overviewDiagnosticsKickoffTask?.cancel()
+                    overviewDiagnosticsKickoffTask = nil
+                    hasUnlockedPrimaryContent = true
+                    hasUnlockedSecondarySections = true
+                    if tab == .collection {
+                        model.loadDeferredDiagnosticsIfNeeded(reason: "tab_\(tab.rawValue)")
+                    }
+                } else if !model.snapshotStore.diagnosticsReady {
+                    scheduleOverviewDiagnosticsKickoff(reason: "overview_return_idle",
+                                                       delayNanoseconds: 6_800_000_000)
                 }
-            } else if !model.snapshotStore.diagnosticsReady {
-                scheduleOverviewDiagnosticsKickoff(reason: "overview_return_idle",
-                                                   delayNanoseconds: 6_800_000_000)
             }
         }
         .onChange(of: hasUnlockedSecondarySections) { _, unlocked in

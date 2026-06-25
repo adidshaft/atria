@@ -72,7 +72,7 @@ private struct AtriaCardBackground: View {
     private var strokeShape: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .stroke(colorScheme == .dark ? Color.white.opacity(emphasis == .strong ? 0.06 : 0.045)
-                                         : Color.white.opacity(emphasis == .strong ? 0.52 : 0.34),
+                                         : Color.black.opacity(emphasis == .strong ? 0.12 : 0.08),
                     lineWidth: 1)
     }
 }
@@ -114,7 +114,7 @@ private struct AtriaRaisedCardBackground: View {
     private var strokeShape: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .stroke(colorScheme == .dark ? Color.white.opacity(emphasis == .strong ? 0.08 : 0.055)
-                                         : Color.white.opacity(emphasis == .strong ? 0.28 : 0.18),
+                                         : Color.black.opacity(emphasis == .strong ? 0.10 : 0.07),
                     lineWidth: 1)
     }
 }
@@ -131,7 +131,7 @@ private struct AtriaInsetCardBackground: View {
             .overlay(tintWash)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.10), lineWidth: 1)
+                    .stroke(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09), lineWidth: 1)
             )
     }
 
@@ -176,7 +176,7 @@ struct AtriaIconTileBackground: View {
             .overlay(tintWash)
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.14), lineWidth: 1)
+                    .stroke(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.10), lineWidth: 1)
             }
     }
 
@@ -280,7 +280,7 @@ private struct AtriaCapsuleChromeBackground: View {
 
     private var stroke: some View {
         Capsule(style: .continuous)
-            .stroke(Color.white.opacity(colorScheme == .dark ? 0.07 : 0.16), lineWidth: 1)
+            .stroke(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.12), lineWidth: 1)
     }
 
     private var effectiveTint: Color {
@@ -311,6 +311,6 @@ private struct AtriaIconChromeBackground: View {
 
     private var stroke: some View {
         Circle()
-            .stroke(Color.white.opacity(colorScheme == .dark ? 0.07 : 0.18), lineWidth: 1)
+            .stroke(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.12), lineWidth: 1)
     }
 }
