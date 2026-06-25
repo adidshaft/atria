@@ -73,10 +73,10 @@ test_handoff_static_checks.py`, no `https://` clients).
   baseline-only research with no absolute degrees C or Health export. HealthKit
   keeps cuff BP read types only; no BP/ECG/AFib samples are written or shown as
   strap metrics.
-- UI controls: **verified on physical iPhone**. Top-left status is now a
-  native SwiftUI Liquid Glass button and maps to green `Live/Connected`, yellow
-  `Connecting...`, and red `Not Connected`. Top-right buttons are grouped closer
-  as native circular glass controls, with static coverage pinning the compact
+- UI controls: **verified on physical iPhone**. Top-left status has been restored
+  to the earlier tappable liquid chip and maps to `Live`, `Connecting`,
+  `Searching`, `Bluetooth off`, and `Disconnected`. Top-right buttons are grouped
+  closer as native circular glass controls, with static coverage pinning the compact
   toolbar spacing. Theme preference is persisted through Settings with a bordered
   native Liquid Glass system/light/dark switcher and applied via
   `preferredColorScheme`; the debug launch route now opens Settings immediately

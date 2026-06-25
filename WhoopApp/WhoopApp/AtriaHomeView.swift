@@ -529,27 +529,27 @@ struct AtriaHomeView: View {
         // Single connection-status indicator for the whole screen, colored by
         // state and tappable to scan when not connected.
         ToolbarItem(placement: .topBarLeading) {
-            Button {
-                if model.statusStore.state.status != .connected {
-                    ble.startScan(reason: "home_status_button")
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: statusSymbol)
-                        .imageScale(.small)
-                    Text(statusShortLabel)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-                .font(.caption.weight(.bold))
-                .foregroundStyle(statusChipForeground)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .frame(minWidth: 112, minHeight: 34)
-                .fixedSize(horizontal: true, vertical: false)
+            // A non-button styled chip so iOS doesn't collapse it to an
+            // icon-only glass circle.
+            HStack(spacing: 5) {
+                Image(systemName: statusSymbol)
+                    .imageScale(.small)
+                Text(statusShortLabel)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(statusChipForeground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(AtriaLiquidStatusPillBackground(tint: statusTint))
+            .fixedSize()
+            .contentShape(.capsule)
+            .onTapGesture {
+                if model.statusStore.state.status != .connected {
+                    ble.startScan(reason: "home_status_chip")
+                }
+            }
             .accessibilityLabel("Connection \(statusShortLabel)")
         }
 
@@ -586,9 +586,11 @@ struct AtriaHomeView: View {
 
     private var statusShortLabel: String {
         switch model.statusStore.state.status {
-        case .connected: return "Live/Connected"
-        case .connecting, .scanning: return "Connecting..."
-        case .poweredOff, .disconnected: return "Not Connected"
+        case .connected: return "Live"
+        case .connecting: return "Connecting"
+        case .scanning: return "Searching"
+        case .poweredOff: return "Bluetooth off"
+        case .disconnected: return "Disconnected"
         }
     }
 
@@ -604,16 +606,20 @@ struct AtriaHomeView: View {
     private var statusTint: Color {
         switch model.statusStore.state.status {
         case .connected: return .green
-        case .connecting, .scanning: return .yellow
-        case .poweredOff, .disconnected: return .red
+        case .connecting: return .yellow
+        case .scanning: return .cyan
+        case .poweredOff: return .red
+        case .disconnected: return .blue
         }
     }
 
     private var statusChipForeground: Color {
         switch model.statusStore.state.status {
         case .connected: return Color(red: 0.77, green: 1.00, blue: 0.86)
-        case .connecting, .scanning: return Color(red: 1.00, green: 0.91, blue: 0.54)
-        case .poweredOff, .disconnected: return Color(red: 1.00, green: 0.72, blue: 0.72)
+        case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)
+        case .scanning: return Color(red: 0.64, green: 0.95, blue: 1.00)
+        case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
+        case .disconnected: return Color(red: 0.74, green: 0.84, blue: 1.00)
         }
     }
 
@@ -942,6 +948,68 @@ struct AtriaHomeView: View {
                       elapsedMS,
                       status.logToken,
                       selectedTab.rawValue)
+    }
+}
+
+private struct AtriaLiquidStatusPillBackground: View {
+    let tint: Color
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(baseFill)
+            .overlay {
+                Capsule(style: .continuous)
+                    .fill(liquidWash)
+                    .blendMode(colorScheme == .dark ? .screen : .plusLighter)
+                    .opacity(colorScheme == .dark ? 0.62 : 0.38)
+            }
+            .overlay(alignment: .topLeading) {
+                Capsule(style: .continuous)
+                    .fill(
+                        LinearGradient(colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.26 : 0.58),
+                            .clear
+                        ], startPoint: .topLeading, endPoint: .center)
+                    )
+                    .padding(1)
+                    .opacity(0.7)
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(borderGradient, lineWidth: 1)
+            }
+            .shadow(color: tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
+                    radius: 10,
+                    x: 0,
+                    y: 4)
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.42 : 0.10),
+                    radius: 8,
+                    x: 0,
+                    y: 2)
+    }
+
+    private var baseFill: AnyShapeStyle {
+        colorScheme == .dark
+            ? AnyShapeStyle(Color(red: 0.035, green: 0.045, blue: 0.058).opacity(0.94))
+            : AnyShapeStyle(Color.white.opacity(0.78))
+    }
+
+    private var liquidWash: LinearGradient {
+        LinearGradient(colors: [
+            tint.opacity(colorScheme == .dark ? 0.34 : 0.28),
+            tint.opacity(colorScheme == .dark ? 0.12 : 0.14),
+            Color.white.opacity(colorScheme == .dark ? 0.08 : 0.24)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var borderGradient: LinearGradient {
+        LinearGradient(colors: [
+            tint.opacity(0.95),
+            tint.opacity(colorScheme == .dark ? 0.42 : 0.30),
+            Color.white.opacity(colorScheme == .dark ? 0.12 : 0.70)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
 
