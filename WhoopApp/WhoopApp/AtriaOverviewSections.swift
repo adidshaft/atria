@@ -621,6 +621,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
+        // Flatten this heavy card (card + rings + tiles + sparkline) into one
+        // cached GPU texture. It's Equatable so it rarely rebuilds, so the texture
+        // stays valid and scrolling just blits it instead of recompositing ~20
+        // layers per frame.
+        .drawingGroup()
     }
 
     @ViewBuilder
