@@ -215,6 +215,10 @@ struct AtriaHomeView: View {
         }
         .onAppear {
             applyDebugUIScreenLaunchArgumentIfNeeded()
+            if workoutSession == nil,
+               ProcessInfo.processInfo.arguments.contains("--atria-show-workout") {
+                workoutSession = AtriaWorkoutSession(start: Date())
+            }
             presentCoexistenceModalIfNeeded(for: ble.officialWhoopCoexistenceRisk)
             guard !hasUnlockedPrimaryContent else { return }
             UIDevice.current.isBatteryMonitoringEnabled = true
