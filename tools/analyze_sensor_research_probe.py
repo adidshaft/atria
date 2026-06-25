@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import re
 from collections import Counter
 from pathlib import Path
@@ -75,6 +76,7 @@ def analyze(path: Path) -> dict[str, str]:
     raw_storage = 0
     frame_types: Counter[str] = Counter()
     metadata_lengths: Counter[str] = Counter()
+    metadata_body_hashes: Counter[str] = Counter()
     metadata_printable: Counter[str] = Counter()
     metadata_explicit_model_tokens = 0
 
@@ -86,8 +88,10 @@ def analyze(path: Path) -> dict[str, str]:
                 frame_type = f"0x{frame[4]:02x}"
                 frame_types[frame_type] += 1
                 if frame_type == "0x31":
+                    body = frame[4:-4]
                     metadata_lengths[str(len(frame))] += 1
-                    redacted_runs = [redact_identifier_like_tokens(run) for run in printable_runs(frame[4:-4])]
+                    metadata_body_hashes[hashlib.sha256(body).hexdigest()[:16]] += 1
+                    redacted_runs = [redact_identifier_like_tokens(run) for run in printable_runs(body)]
                     for run in redacted_runs:
                         normalized = run.upper().replace("_", " ").replace("-", " ").replace(".", " ")
                         if any(token in normalized for token in ("WHOOP 3", "WHOOP3", "WHOOP 4", "WHOOP4", "WHOOP 5", "WHOOP5", "WHOOP MG", "WHOOPMG")):
@@ -113,6 +117,7 @@ def analyze(path: Path) -> dict[str, str]:
         "frame_61080005_types": format_counter(frame_types),
         "metadata_0x31_frames": str(frame_types.get("0x31", 0)),
         "metadata_0x31_lengths": format_counter(metadata_lengths),
+        "metadata_0x31_body_hashes": format_counter(metadata_body_hashes),
         "metadata_0x31_printable": format_counter(metadata_printable),
         "metadata_explicit_model_tokens": str(metadata_explicit_model_tokens),
         "probe_sources": format_counter(sources),

@@ -269,14 +269,17 @@ generic until explicit model tokens are observed. The local analyzer
 `tools/analyze_sensor_research_probe.py` summarizes this same log as
 `frame_61080005_types=0x2f:48,0x31:3,0x30:2,0x32:1`,
 `metadata_0x31_frames=3`, `metadata_0x31_lengths=32:2,48:1`,
+`metadata_0x31_body_hashes=8fdd34f5d48f3dfa:1,fa02a80251ec4138:1,2fd1a09ea6c01857:1`,
 `metadata_explicit_model_tokens=0`, `probe_sources=0x2f:48,0x31:3`,
 `model_generations=unknown:51`,
 `spo2_top_offsets=40:92:5,56:92:5,45:93:2,61:93:2`, and
 `skin_temp_top_offsets=74:2976:48,76:3073:48,78:3074:48`, with
 `metric_promotions=0`, `healthkit_writes=0`, `raw_storage=0`, and
 `research_only=1`. These prove metadata-like frames were seen but did not carry
-an explicit generation token in the current redacted parser; the SpO2/temp
-offsets remain recurring candidates only, not validated metrics.
+an explicit generation token in the current redacted parser. The hashes are
+privacy-safe body fingerprints for correlating future captures without storing
+serial-like raw metadata; the SpO2/temp offsets remain recurring candidates only,
+not validated metrics.
 
 Current-head bounded check, 2026-06-25: a 45 s physical-device probe at
 `logs/live-device/advanced-metrics-current-short-probe-20260625T0545Z.log`
