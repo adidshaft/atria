@@ -39,7 +39,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "thinMaterial",
             "regularMaterial",
             "thickMaterial",
-            ".shadow(",
             ".blur(",
             "LegacyContentView",
             "DashboardSection",
@@ -73,28 +72,35 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, text, "Tab(\"Vitals\"")
         assert_not_contains(self, text, "Tab(\"Data\"")
 
-    def test_top_left_status_is_native_liquid_glass_button(self):
+    def test_top_left_status_restores_original_chip_and_labels(self):
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
 
         for needle in [
             "ToolbarItem(placement: .topBarLeading)",
-            "ble.startScan(reason: \"home_status_button\")",
-            ".buttonStyle(.plain)",
-            ".glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)",
-            "case .connected: return \"Live/Connected\"",
-            "case .connecting, .scanning: return \"Connecting...\"",
-            "case .poweredOff, .disconnected: return \"Not Connected\"",
+            "AtriaLiquidStatusPillBackground(tint: statusTint)",
+            ".onTapGesture",
+            "ble.startScan(reason: \"home_status_chip\")",
+            "case .connected: return \"Live\"",
+            "case .connecting: return \"Connecting\"",
+            "case .scanning: return \"Searching\"",
+            "case .poweredOff: return \"Bluetooth off\"",
+            "case .disconnected: return \"Disconnected\"",
             "case .connected: return .green",
-            "case .connecting, .scanning: return .yellow",
-            "case .poweredOff, .disconnected: return .red",
+            "case .connecting: return .yellow",
+            "case .scanning: return .cyan",
+            "case .poweredOff: return .red",
+            "case .disconnected: return .blue",
             "HStack(spacing: 7)",
             ".buttonBorderShape(.circle)",
         ]:
             assert_contains(self, home, needle)
 
         for forbidden in [
-            "AtriaLiquidStatusPillBackground",
-            "home_status_chip",
+            "ble.startScan(reason: \"home_status_button\")",
+            ".glassEffect(.regular.tint(statusTint.opacity(0.24)).interactive(), in: .capsule)",
+            "case .connected: return \"Live/Connected\"",
+            "case .connecting, .scanning: return \"Connecting...\"",
+            "case .poweredOff, .disconnected: return \"Not Connected\"",
         ]:
             assert_not_contains(self, home, forbidden)
 
