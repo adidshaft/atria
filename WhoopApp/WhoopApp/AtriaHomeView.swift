@@ -103,28 +103,28 @@ struct AtriaHomeView: View {
                 .allowsHitTesting(false)
 
             TabView(selection: $selectedTab) {
-                Tab("Today", systemImage: "house.fill", value: HomeTab.overview) {
-                    tabNavigation(title: "Today") {
-                        if hasUnlockedPrimaryContent {
-                            overviewContent
-                        } else {
-                            secondaryLoadingCard(title: "Preparing overview",
-                                                 subtitle: "Getting the first live readout on screen before the deeper cards load.")
-                        }
+                tabNavigation(title: "Today") {
+                    if hasUnlockedPrimaryContent {
+                        overviewContent
+                    } else {
+                        secondaryLoadingCard(title: "Preparing overview",
+                                             subtitle: "Getting the first live readout on screen before the deeper cards load.")
                     }
                 }
+                .tabItem { Label(HomeTab.overview.title, systemImage: HomeTab.overview.systemImage) }
+                .tag(HomeTab.overview)
 
-                Tab("Vitals", systemImage: "heart.text.square", value: HomeTab.vitals) {
-                    tabNavigation(title: "Vitals") {
-                        vitalsContent
-                    }
+                tabNavigation(title: "Vitals") {
+                    vitalsContent
                 }
+                .tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }
+                .tag(HomeTab.vitals)
 
-                Tab("Data", systemImage: "waveform.badge.magnifyingglass", value: HomeTab.collection) {
-                    tabNavigation(title: "Data") {
-                        collectionContent
-                    }
+                tabNavigation(title: "Data") {
+                    collectionContent
                 }
+                .tabItem { Label(HomeTab.collection.title, systemImage: HomeTab.collection.systemImage) }
+                .tag(HomeTab.collection)
             }
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
@@ -411,10 +411,13 @@ struct AtriaHomeView: View {
             model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
         case "settings":
             selectedTab = .overview
-            showSettings = true
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(250))
-                showSettings = true
+                for delay in [100, 450, 900] {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    showSettings = false
+                    await Task.yield()
+                    showSettings = true
+                }
             }
         default:
             break
