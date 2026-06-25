@@ -487,6 +487,35 @@ struct BehaviorCorrelationSummary: Equatable {
     }
 }
 
+/// A plain-language, effect-size-ranked finding derived from behavior tags vs
+/// recovery/HRV. Confidence-gated (needs enough tagged days); never medical.
+struct AtriaInsight: Identifiable, Equatable {
+    enum Metric { case recovery, hrv }
+    let id: String
+    let tagLabel: String
+    let metric: Metric
+    let delta: Double        // recovery: % points; hrv: ms
+    let days: Int
+
+    /// Rank key: bigger absolute effect first.
+    var magnitude: Double { abs(delta) }
+
+    var isPositive: Bool { delta >= 0 }
+
+    var headline: String {
+        let dir = delta < 0 ? "lower" : "higher"
+        let n = abs(Int(delta.rounded()))
+        switch metric {
+        case .recovery: return "Recovery \(n)% \(dir)"
+        case .hrv: return "HRV \(n) ms \(dir)"
+        }
+    }
+
+    var detail: String {
+        "On \(days) \(tagLabel.lowercased()) day\(days == 1 ? "" : "s")"
+    }
+}
+
 struct ResearchManeuverMarker: Codable, Identifiable, Equatable {
     enum Kind: String, Codable, CaseIterable, Identifiable {
         case breathHold
@@ -2037,6 +2066,9 @@ final class SessionStore: ObservableObject {
     /// sessions change instead of being re-sorted inside the glance on every
     /// render/BLE tick. Views read this directly (O(1)).
     @Published private(set) var restingTrend14: [Int] = []
+    /// Phase-0 derived cache: ranked behavior insights (effect-size, confidence-
+    /// gated). Recomputed on data/journal change, read O(1) by the insights card.
+    @Published private(set) var behaviorInsights: [AtriaInsight] = []
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2079,6 +2111,39 @@ final class SessionStore: ObservableObject {
             }
             .suffix(14)
             .map(\.value)
+
+        behaviorInsights = Self.deriveInsights(
+            from: behaviorCorrelationSummaries(rest: baseline.restingInt ?? 60,
+                                               maxHR: profile.maxHR))
+    }
+
+    /// Turn per-tag correlation deltas into ranked, plain-language findings.
+    /// Only surfaces a meaningful effect (recovery ≥2 pts, HRV ≥2 ms); the deltas
+    /// already require ≥3 tagged days. Recovery findings rank above HRV.
+    static func deriveInsights(from summaries: [BehaviorCorrelationSummary]) -> [AtriaInsight] {
+        var insights: [AtriaInsight] = []
+        for s in summaries {
+            if let rd = s.recoveryDelta, abs(rd) >= 2 {
+                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-recovery",
+                                             tagLabel: s.tag.label,
+                                             metric: .recovery,
+                                             delta: rd,
+                                             days: s.days))
+            }
+            if let hd = s.hrvDelta, abs(hd) >= 2 {
+                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-hrv",
+                                             tagLabel: s.tag.label,
+                                             metric: .hrv,
+                                             delta: hd,
+                                             days: s.days))
+            }
+        }
+        return insights.sorted { lhs, rhs in
+            if (lhs.metric == .recovery) != (rhs.metric == .recovery) {
+                return lhs.metric == .recovery
+            }
+            return lhs.magnitude > rhs.magnitude
+        }
     }
 
     private enum ConfirmedWorkoutDefaults {
@@ -4840,6 +4905,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: BehaviorJournalDefaults.key)
         cachedBehaviorJournalEntries = sorted
+        recomputeDerivedMetrics()   // refresh insights when a day is tagged
     }
 
     func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind, at timestamp: Date = Date()) {
