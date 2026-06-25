@@ -278,9 +278,13 @@ struct AtriaHomeView: View {
             updateMediaRefreshLoop()
             guard phase == .active else {
                 ble.pausePhoneStepUpdates(reason: "scene_inactive")
+                // Refresh Lock Screen / Home Screen widgets with the latest
+                // Steps/Strain/HRV/BPM right as the user leaves the app.
+                WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "scene_background")
                 return
             }
             ble.refreshPhoneStepsToday(reason: "scene_active")
+            WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "scene_active")
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
             updateHapticCoordinator()

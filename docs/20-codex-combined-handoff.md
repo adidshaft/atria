@@ -13,6 +13,21 @@ in docs/18; never fabricate from HR/HRV), **light + dark both legible**, and
 cabled iPhone (`devicectl … capture screenshot`) → commit small.
 
 ## Done already (don't redo — verify)
+- **Lock Screen widgets (singles)** — `WhoopWidget.swift` now has 4 single-metric
+  widgets: **Steps / Strain / HRV / BPM** (`AtriaStepsWidget` etc.), each
+  supporting `.accessoryCircular` + `.accessoryInline` + `.accessoryRectangular`,
+  rendered by the shared `AtriaMetricWidgetEntryView`. `WidgetSnapshot` schema
+  bumped to 2 with `steps` + `heartRate` (optional, back-compatible). The app
+  publishes the snapshot on scene active/background
+  (`WidgetSnapshotPublisher.publish`) so widgets refresh as the user leaves the
+  app; `WidgetCenter.reloadAllTimelines()` already fires. ✅ shipped (app + widget
+  build green). REMAINING for widgets: richer systemSmall/medium Home-Screen
+  layouts, StandBy, deep-link taps to the matching tab, and a more-live BPM (the
+  static widget shows last-published; the Live Activity is the truly-live path).
+- **Smart Insights** — `AtriaInsightsCard` + `SessionStore.behaviorInsights`
+  (effect-size-ranked, ≥3 tagged days, tagged-vs-UNtagged baseline). Computed in
+  the derived cache off the hot path. Toggleable Today card. ✅ shipped + the
+  adversarial review's staleness/perf/honesty fixes applied.
 - **Live Workout mode** — `AtriaLiveWorkoutView` (zones, strain, calories, elapsed,
   zone bar), started from the figure.run toolbar button. ✅ shipped.
 - **Today customization** — `AtriaTodayMetric` + Settings → Today screen. ✅
