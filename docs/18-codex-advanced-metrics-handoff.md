@@ -274,6 +274,17 @@ generic until explicit model tokens are observed. The local analyzer
 `research_only=1`. These are recurring candidate offsets only, not validated
 SpO2/temp metrics.
 
+Current-head bounded check, 2026-06-25: a 45 s physical-device probe at
+`logs/live-device/advanced-metrics-current-short-probe-20260625T0545Z.log`
+rebuilt, installed, restored the connected strap, and streamed standard `2A37`
+RR (`standard_2a37_rr_frames=22`, `standard_2a37_rr_values=25`,
+`last_standard_2a37_hr=69`) while leaving Atria relaunched in normal end-user
+mode. It again logged `model_gate_rows=1`,
+`model_gate_assume_4_class_rows=1`, `model_gate_metadata_explicit_rows=0`, and
+`sensor_research_probe_rows=0`. That is useful current-head liveness evidence,
+but it still does **not** prove the metadata token map or promote any SpO2/temp
+metric.
+
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
 `supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →
