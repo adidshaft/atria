@@ -295,6 +295,24 @@ mode. It again logged `model_gate_rows=1`,
 but it still does **not** prove the metadata token map or promote any SpO2/temp
 metric.
 
+Current-head metadata/hash probe, 2026-06-25: a 75 s physical-device run at
+`logs/live-device/advanced-metrics-current-metadata-hash-probe-20260625T0552Z.log`
+restored the strap, streamed standard `2A37` RR
+(`standard_2a37_rr_frames=41`, `standard_2a37_rr_values=47`,
+`last_standard_2a37_hr=70`), pulled
+`frame_61080005_types=0x2f:42,0x31:4`, and recorded
+`sensor_research_probe_rows=48`,
+`sensor_research_probe_spo2_candidate_frames=20`,
+`sensor_research_probe_skin_temp_candidate_frames=56`,
+`model_gate_metadata_explicit_rows=0`, and `model_generation=unknown`. The
+harness summary reported metadata body lengths `24:3,40:1` and body hashes
+`10014ca716daf6f0:1,49120775332edc0b:1,4b62088dcb55c032:1,8d629f8466e26c2c:1`;
+the standalone analyzer reports the same frames as full lengths `32:3,48:1` and
+the same hashes. Diagnostic source `61080007` exposed firmware-like evidence
+strings (`h17.2.2.0`, `harvard_r10`), but no explicit WHOOP generation token.
+Keep the visible model label generic and keep SpO2/temp at research-only
+`metric_promotions=0`, `healthkit_write=0`, `raw_storage=0`.
+
 ### Feature gating (the reason model matters)
 Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
 `supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →
