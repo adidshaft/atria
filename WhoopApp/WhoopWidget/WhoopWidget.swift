@@ -73,28 +73,68 @@ struct WhoopWidgetEntryView: View {
     }
 
     private var systemWidget: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Atria")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(primaryText)
-                .font(.title3.weight(.bold))
-                .monospacedDigit()
-            Text(secondaryText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Atria")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if let recovery = entry.snapshot?.recoveryPercent {
+                    Text("\(recovery)%")
+                        .font(.caption.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(recoveryColor(recovery))
+                }
+            }
+
+            // Recovery + Strain are the headline pair.
+            HStack(spacing: 12) {
+                homeMetric("Recovery", entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "--", "heart.circle.fill", .green)
+                homeMetric("Strain", entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--", "bolt.fill", .orange)
+            }
+
+            if family == .systemMedium {
+                HStack(spacing: 12) {
+                    homeMetric("BPM", entry.snapshot?.heartRate.map(String.init) ?? "--", "heart.fill", .red)
+                    homeMetric("HRV", entry.snapshot?.hrvRMSSD.map { "\($0)" } ?? "--", "waveform.path.ecg", .pink)
+                    homeMetric("Steps", stepsText, "figure.walk", .blue)
+                }
+            }
+
             Spacer(minLength: 0)
             Text(footerText)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
-            if family == .systemMedium {
-                controlButtons
-            }
         }
         .containerBackground(.background, for: .widget)
+    }
+
+    private func homeMetric(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Label(title, systemImage: icon)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(tint)
+                .labelStyle(.titleAndIcon)
+            Text(value)
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var stepsText: String {
+        guard let steps = entry.snapshot?.steps else { return "--" }
+        return steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
+    }
+
+    private func recoveryColor(_ percent: Int) -> Color {
+        if percent >= 67 { return .green }
+        if percent >= 34 { return .yellow }
+        return .red
     }
 
     private var controlButtons: some View {
