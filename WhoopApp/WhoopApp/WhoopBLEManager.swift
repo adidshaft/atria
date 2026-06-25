@@ -9013,12 +9013,19 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         if uuid == UUIDs.batteryLevel {
             let newLevel = Int(data.first ?? 0)
             Task { @MainActor in
-                // Battery % only ever rises while on the charger, so any increase
-                // is a reliable "charging" signal; any decrease clears it. Sticky
-                // in between (sparse reads), and NOT reset on reconnect.
+                // Infer charging from the battery trend. A small gradual RISE
+                // (1–5%) between reads means it's actively on the charger now; a
+                // DROP clears it. A big jump (>5%) is an ambiguous reconnect gap
+                // (e.g. charged while the app was away) — leave the flag unchanged
+                // so we don't show a false "Charging" the moment you put it back on.
                 let previous = batteryLevel
-                if previous >= 0 && newLevel != previous {
-                    assignIfChanged(\.batteryIsCharging, newLevel > previous)
+                if previous >= 0 {
+                    let delta = newLevel - previous
+                    if delta >= 1 && delta <= 5 {
+                        assignIfChanged(\.batteryIsCharging, true)
+                    } else if delta < 0 {
+                        assignIfChanged(\.batteryIsCharging, false)
+                    }
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19")
