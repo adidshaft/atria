@@ -974,8 +974,9 @@ struct AtriaOverviewBehaviorJournalSection: View {
     }
 
     private var summaries: [BehaviorCorrelationSummary] {
-        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? 60
-        return store.behaviorCorrelationSummaries(rest: rest, maxHR: store.profile.maxHR)
+        // Read the O(1) cache — never recompute the correlation in body (it used
+        // to run the heavy rollup on every render/checkpoint tick).
+        store.behaviorCorrelationSummariesCache
             .filter { $0.days > 0 }
             .sorted { lhs, rhs in
                 if lhs.days != rhs.days { return lhs.days > rhs.days }

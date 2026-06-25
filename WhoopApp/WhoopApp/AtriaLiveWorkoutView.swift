@@ -19,17 +19,16 @@ struct AtriaLiveWorkoutView: View {
     let onStop: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var now: Date = .distantPast
-    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var heartRate: Int { pulseStore.state.heartRate }
-    private var zone: HRZone { HRZone.zone(for: heartRate, maxHR: maxHR) }
     private var strain: Double { heroStore.state.strain }
-    private var elapsed: TimeInterval { max(0, now.timeIntervalSince(startDate)) }
 
     var body: some View {
-        ZStack {
-            // Zone-tinted backdrop so the screen reads at a glance mid-workout.
+        // Resolve the zone ONCE per render and pass it down (was recomputed in
+        // body + every subview). The elapsed clock is isolated in a TimelineView
+        // so the per-second tick no longer re-renders the whole HUD.
+        let zone = HRZone.zone(for: heartRate, maxHR: maxHR)
+        return ZStack {
             LinearGradient(colors: [zone.color.opacity(0.45), .black],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
@@ -38,8 +37,8 @@ struct AtriaLiveWorkoutView: View {
             VStack(spacing: 26) {
                 header
                 Spacer(minLength: 0)
-                heartBlock
-                zoneBar
+                heartBlock(zone)
+                zoneBar(zone)
                 Spacer(minLength: 0)
                 statsRow
                 stopButton
@@ -48,8 +47,6 @@ struct AtriaLiveWorkoutView: View {
             .padding(.top, 8)
         }
         .preferredColorScheme(.dark)
-        .onAppear { now = Date() }
-        .onReceive(ticker) { now = $0 }
     }
 
     private var header: some View {
@@ -58,14 +55,16 @@ struct AtriaLiveWorkoutView: View {
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
             Spacer()
-            Text(elapsedText)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.white)
+            TimelineView(.periodic(from: startDate, by: 1)) { context in
+                Text(elapsedText(context.date))
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+            }
         }
     }
 
-    private var heartBlock: some View {
+    private func heartBlock(_ zone: HRZone) -> some View {
         VStack(spacing: 4) {
             Image(systemName: "heart.fill")
                 .font(.title2)
@@ -84,22 +83,17 @@ struct AtriaLiveWorkoutView: View {
         .accessibilityLabel("Heart rate \(heartRate), \(zone.name) zone")
     }
 
-    private var zoneBar: some View {
+    private func zoneBar(_ zone: HRZone) -> some View {
         HStack(spacing: 4) {
             ForEach(HRZone.allCases, id: \.self) { z in
-                zoneSegment(z)
+                Capsule()
+                    .fill(z == zone ? z.color : z.color.opacity(0.22))
+                    .frame(height: z == zone ? 12 : 8)
+                    .animation(.snappy(duration: 0.25), value: zone)
             }
         }
         .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
-    }
-
-    private func zoneSegment(_ z: HRZone) -> some View {
-        let active = z == zone
-        return Capsule()
-            .fill(active ? z.color : z.color.opacity(0.22))
-            .frame(height: active ? 12 : 8)
-            .animation(.snappy(duration: 0.25), value: zone)
     }
 
     private var statsRow: some View {
@@ -148,8 +142,8 @@ struct AtriaLiveWorkoutView: View {
         .tint(.red)
     }
 
-    private var elapsedText: String {
-        let total = Int(elapsed)
+    private func elapsedText(_ date: Date) -> String {
+        let total = max(0, Int(date.timeIntervalSince(startDate)))
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%02d:%02d", m, s)

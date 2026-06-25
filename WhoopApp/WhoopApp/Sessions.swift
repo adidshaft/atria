@@ -2075,6 +2075,9 @@ final class SessionStore: ObservableObject {
     /// Phase-0 derived cache: ranked behavior insights (effect-size, confidence-
     /// gated). Recomputed on data/journal change, read O(1) by the insights card.
     @Published private(set) var behaviorInsights: [AtriaInsight] = []
+    /// Cached correlation summaries (per tag) so the Journal section reads O(1)
+    /// instead of recomputing on every render / checkpoint tick.
+    @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2124,9 +2127,10 @@ final class SessionStore: ObservableObject {
     /// consistent (load / add / delete / journal change) — never from the hot
     /// checkpoint path. See findings 1–3/5 in docs review.
     func recomputeBehaviorInsights() {
-        behaviorInsights = Self.deriveInsights(
-            from: behaviorCorrelationSummaries(rest: baseline.restingInt ?? 60,
-                                               maxHR: profile.maxHR))
+        let summaries = behaviorCorrelationSummaries(rest: baseline.restingInt ?? 60,
+                                                     maxHR: profile.maxHR)
+        behaviorCorrelationSummariesCache = summaries
+        behaviorInsights = Self.deriveInsights(from: summaries)
     }
 
     /// Turn per-tag correlation deltas into ranked, plain-language findings.
@@ -4868,48 +4872,58 @@ final class SessionStore: ObservableObject {
               entry.tags.map(\.rawValue).joined(separator: ","))
     }
 
+    private struct InsightDayMetrics { let recovery: Double; let hrv: Double? }
+
     func behaviorCorrelationSummaries(rest: Int,
                                       maxHR: Int,
                                       calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
-        let rollupsByDay = Dictionary(uniqueKeysWithValues: dailyRollups(rest: rest, maxHR: maxHR, calendar: calendar).map {
-            (calendar.startOfDay(for: $0.day), $0)
-        })
-        guard !rollupsByDay.isEmpty else {
+        // LIGHT per-day rollup: only strain (→ recovery proxy) + avg HRV. This
+        // deliberately does NOT call dailyRollups(), which runs workout/sleep
+        // clustering + detectedActivity twice per session and was blocking the
+        // main thread (SessionStore is @MainActor) — the cause of the launch /
+        // workout hang + watchdog crash. Insights never needed that detection.
+        let grouped = Dictionary(grouping: canonicalSessions()) { calendar.startOfDay(for: $0.start) }
+        guard !grouped.isEmpty else {
             return BehaviorJournalEntry.Tag.allCases.map {
                 BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
             }
         }
-        let recoveryProxy: (DailyRollup) -> Double = { max(0, 100 - $0.strain * 4) }
+        let metricsByDay: [Date: InsightDayMetrics] = grouped.mapValues { daySessions in
+            let trimp = daySessions.reduce(0.0) { $0 + $1.trimp(rest: rest, max: maxHR) }
+            let recovery = max(0, 100 - Metrics.strain(fromTRIMP: trimp) * 4)
+            let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
+            let hrv = hrvs.isEmpty ? nil : Double(hrvs.reduce(0, +)) / Double(hrvs.count)
+            return InsightDayMetrics(recovery: recovery, hrv: hrv)
+        }
 
         return BehaviorJournalEntry.Tag.allCases.map { tag in
-            // Genuine tagged-vs-UNtagged contrast: the baseline must exclude the
-            // tag's own days, otherwise the delta is diluted by the very days
-            // being measured (e.g. alcohol vs all-including-alcohol).
+            // Genuine tagged-vs-UNtagged contrast: the baseline excludes the tag's
+            // own days, otherwise the delta is diluted by the days being measured.
             let taggedDayKeys = Set(cachedBehaviorJournalEntries
                 .filter { $0.tags.contains(tag) }
                 .map { calendar.startOfDay(for: $0.day) })
-            let taggedRollups = taggedDayKeys.compactMap { rollupsByDay[$0] }
-            let untaggedRollups = rollupsByDay.filter { !taggedDayKeys.contains($0.key) }.map(\.value)
+            let tagged = metricsByDay.filter { taggedDayKeys.contains($0.key) }.map(\.value)
+            let untagged = metricsByDay.filter { !taggedDayKeys.contains($0.key) }.map(\.value)
 
-            let taggedRecovery = averageDouble(taggedRollups.map(recoveryProxy))
-            let untaggedRecovery = averageDouble(untaggedRollups.map(recoveryProxy))
-            let taggedHRV = averageDouble(taggedRollups.compactMap { $0.avgHRV.map(Double.init) })
-            let untaggedHRV = averageDouble(untaggedRollups.compactMap { $0.avgHRV.map(Double.init) })
+            let taggedRecovery = averageDouble(tagged.map(\.recovery))
+            let untaggedRecovery = averageDouble(untagged.map(\.recovery))
+            let taggedHRV = averageDouble(tagged.compactMap(\.hrv))
+            let untaggedHRV = averageDouble(untagged.compactMap(\.hrv))
 
             let recoveryDelta: Double?
-            if taggedRollups.count >= 3, let taggedRecovery, let untaggedRecovery {
+            if tagged.count >= 3, let taggedRecovery, let untaggedRecovery {
                 recoveryDelta = taggedRecovery - untaggedRecovery
             } else {
                 recoveryDelta = nil
             }
             let hrvDelta: Double?
-            if taggedRollups.count >= 3, let taggedHRV, let untaggedHRV {
+            if tagged.count >= 3, let taggedHRV, let untaggedHRV {
                 hrvDelta = taggedHRV - untaggedHRV
             } else {
                 hrvDelta = nil
             }
             return BehaviorCorrelationSummary(tag: tag,
-                                              days: taggedRollups.count,
+                                              days: tagged.count,
                                               recoveryDelta: recoveryDelta,
                                               hrvDelta: hrvDelta)
         }
