@@ -559,31 +559,12 @@ struct AtriaHomeView: View {
         // Single connection-status indicator for the whole screen, colored by
         // state and tappable to scan when not connected.
         ToolbarItem(placement: .topBarLeading) {
-            // A non-button styled chip so iOS doesn't collapse it to an
-            // icon-only glass circle.
-            HStack(spacing: 5) {
-                Image(systemName: statusSymbol)
-                    .imageScale(.small)
-                Text(statusShortLabel)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .font(.caption.weight(.bold))
-            .foregroundStyle(statusChipForeground)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            // Genuine native Liquid Glass (translucent, tinted by status), not a
-            // hand-drawn gradient. It's a single floating control, so it's the
-            // right place for real glass — performant and authentic.
-            .glassEffect(.regular.tint(statusTint.opacity(0.55)).interactive(), in: .capsule)
-            .fixedSize()
-            .contentShape(.capsule)
-            .onTapGesture {
-                if model.statusStore.state.status != .connected {
-                    ble.startScan(reason: "home_status_chip")
-                }
-            }
-            .accessibilityLabel("Connection \(statusShortLabel)")
+            // Dedicated subview so it OBSERVES both the status store and the pulse
+            // store — the "No signal" (connected but no contact) state must update
+            // the instant contact is lost, even without a status change.
+            AtriaTopStatusChip(statusStore: model.statusStore,
+                               pulseLiveStore: model.pulseLiveStore,
+                               onTapWhenNotConnected: { ble.startScan(reason: "home_status_chip") })
         }
 
         ToolbarItem(placement: .topBarTrailing) {
@@ -626,60 +607,6 @@ struct AtriaHomeView: View {
         }
     }
 
-    private var statusShortLabel: String {
-        switch model.statusStore.state.status {
-        case .connected: return "Live"
-        case .connecting: return "Connecting"
-        case .scanning: return "Searching"
-        case .poweredOff: return "Bluetooth off"
-        case .disconnected:
-            // Atria auto-reconnects to a known strap, so a bare "Disconnected" on
-            // launch reads as broken. If we've connected before, say "Reconnecting".
-            return UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0
-                ? "Reconnecting…"
-                : "Disconnected"
-        }
-    }
-
-    private var statusSymbol: String {
-        switch model.statusStore.state.status {
-        case .connected: return "bolt.heart.fill"
-        case .connecting, .scanning: return "dot.radiowaves.left.and.right"
-        case .poweredOff: return "bolt.slash.fill"
-        case .disconnected: return "bolt.horizontal.circle"
-        }
-    }
-
-    private var statusTint: Color {
-        switch model.statusStore.state.status {
-        case .connected: return .green
-        case .connecting: return .yellow
-        case .scanning: return .cyan
-        case .poweredOff: return .red
-        case .disconnected: return .blue
-        }
-    }
-
-    private var statusChipForeground: Color {
-        // Light mode: dark saturated colors (pale pastels are illegible on the
-        // light tinted glass). Dark mode: pale pastels read on dark glass.
-        if colorScheme == .light {
-            switch model.statusStore.state.status {
-            case .connected: return Color(red: 0.04, green: 0.42, blue: 0.20)
-            case .connecting: return Color(red: 0.52, green: 0.36, blue: 0.00)
-            case .scanning: return Color(red: 0.00, green: 0.36, blue: 0.46)
-            case .poweredOff: return Color(red: 0.62, green: 0.10, blue: 0.10)
-            case .disconnected: return Color(red: 0.10, green: 0.28, blue: 0.66)
-            }
-        }
-        switch model.statusStore.state.status {
-        case .connected: return Color(red: 0.77, green: 1.00, blue: 0.86)
-        case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)
-        case .scanning: return Color(red: 0.64, green: 0.95, blue: 1.00)
-        case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
-        case .disconnected: return Color(red: 0.74, green: 0.84, blue: 1.00)
-        }
-    }
 
     private var overviewContent: some View {
         VStack(spacing: 18) {
@@ -2638,5 +2565,92 @@ final class AtriaHomeModel {
             total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
         }
         return total
+    }
+}
+
+/// The top-left connection chip. A dedicated subview so it OBSERVES both stores —
+/// status changes AND contact changes (so "No signal" appears the instant the
+/// strap loses contact, even while the BLE link stays up).
+private struct AtriaTopStatusChip: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
+    let onTapWhenNotConnected: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var status: AtriaBLEManager.Status { statusStore.state.status }
+    private var hasContact: Bool { pulseLiveStore.state.hasContact }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .imageScale(.small)
+            Text(label)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .font(.caption.weight(.bold))
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)
+        .fixedSize()
+        .contentShape(.capsule)
+        .onTapGesture {
+            if status != .connected { onTapWhenNotConnected() }
+        }
+        .accessibilityLabel("Connection \(label)")
+    }
+
+    private var label: String {
+        switch status {
+        case .connected:
+            // "Live" must mean actually reading your pulse, not just a BLE link.
+            return hasContact ? "Live" : "No signal"
+        case .connecting: return "Connecting"
+        case .scanning: return "Searching"
+        case .poweredOff: return "Bluetooth off"
+        case .disconnected:
+            return UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0
+                ? "Reconnecting…"
+                : "Disconnected"
+        }
+    }
+
+    private var symbol: String {
+        switch status {
+        case .connected: return hasContact ? "bolt.heart.fill" : "heart.slash"
+        case .connecting, .scanning: return "dot.radiowaves.left.and.right"
+        case .poweredOff: return "bolt.slash.fill"
+        case .disconnected: return "bolt.horizontal.circle"
+        }
+    }
+
+    private var tint: Color {
+        switch status {
+        case .connected: return hasContact ? .green : .orange
+        case .connecting: return .yellow
+        case .scanning: return .cyan
+        case .poweredOff: return .red
+        case .disconnected: return .blue
+        }
+    }
+
+    private var foreground: Color {
+        if colorScheme == .light {
+            switch status {
+            case .connected: return hasContact ? Color(red: 0.04, green: 0.42, blue: 0.20) : Color(red: 0.60, green: 0.34, blue: 0.00)
+            case .connecting: return Color(red: 0.52, green: 0.36, blue: 0.00)
+            case .scanning: return Color(red: 0.00, green: 0.36, blue: 0.46)
+            case .poweredOff: return Color(red: 0.62, green: 0.10, blue: 0.10)
+            case .disconnected: return Color(red: 0.10, green: 0.28, blue: 0.66)
+            }
+        }
+        switch status {
+        case .connected: return hasContact ? Color(red: 0.77, green: 1.00, blue: 0.86) : Color(red: 1.00, green: 0.86, blue: 0.62)
+        case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)
+        case .scanning: return Color(red: 0.64, green: 0.95, blue: 1.00)
+        case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
+        case .disconnected: return Color(red: 0.74, green: 0.84, blue: 1.00)
+        }
     }
 }
