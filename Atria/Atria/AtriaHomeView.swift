@@ -631,7 +631,12 @@ struct AtriaHomeView: View {
         case .connecting: return "Connecting"
         case .scanning: return "Searching"
         case .poweredOff: return "Bluetooth off"
-        case .disconnected: return "Disconnected"
+        case .disconnected:
+            // Atria auto-reconnects to a known strap, so a bare "Disconnected" on
+            // launch reads as broken. If we've connected before, say "Reconnecting".
+            return UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0
+                ? "Reconnecting…"
+                : "Disconnected"
         }
     }
 
