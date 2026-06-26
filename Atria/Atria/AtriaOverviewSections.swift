@@ -1149,10 +1149,22 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
     }
 
     private var sleepStatusText: String {
-        if let latestNight {
-            return "\(latestNight.durationText) · \(latestNight.confidenceText)"
+        guard let latestNight else {
+            return snapshot.sleepDetail
         }
-        return snapshot.sleepDetail
+
+        var parts = [latestNight.durationText]
+        if latestNight.sleepEfficiencyText != "--" {
+            parts.append("Eff \(latestNight.sleepEfficiencyText)")
+        }
+        if latestNight.hrvText != "--" {
+            parts.append("HRV \(latestNight.hrvText)")
+        }
+        if latestNight.respiratoryRateText != "--" {
+            parts.append("Resp \(latestNight.respiratoryRateText)")
+        }
+        parts.append(latestNight.confidenceText)
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
