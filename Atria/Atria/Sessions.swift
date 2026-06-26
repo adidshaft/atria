@@ -2229,6 +2229,14 @@ final class SessionStore: ObservableObject {
             return "Saved · metrics gated"
         }
 
+        var userFootnoteText: String {
+            if !exists { return "Reconnect fills gaps." }
+            if !parseOK { return "Archive needs repair." }
+            if rows <= 0 { return "Waiting for missed data." }
+            if metricReady { return "\(metricUsableRows) rows ready." }
+            return "Saved locally; RR validation gates metrics."
+        }
+
         var metricReady: Bool {
             metricUsableRows > 0 && currentSessionUsableRows > 0
         }
