@@ -81,10 +81,13 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   instead of nested raised cards. Data developer/research cards now use the same
   flat card chrome as other Data panels, and the nested phone-haptics settings
   surface uses inset chrome inside Data settings.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (52), and
+- **Build hygiene:** the app target now declares all iPad orientations explicitly
+  while keeping the existing iPhone orientation set, so Release builds no longer
+  carry the "all interface orientations" warning.
+- **Verification:** `python3 test_handoff_static_checks.py` is green (53), and
   Release builds have been installed on the cabled iPhone. Static guards now pin
-  the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path
-  cache behavior.
+  the handoff-21 ordering, diagnosis behavior, UI uniformity, orientation settings,
+  and render-path cache behavior.
 
 ---
 
