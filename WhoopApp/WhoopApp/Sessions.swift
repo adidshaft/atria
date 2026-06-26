@@ -2127,10 +2127,22 @@ final class SessionStore: ObservableObject {
     /// consistent (load / add / delete / journal change) — never from the hot
     /// checkpoint path. See findings 1–3/5 in docs review.
     func recomputeBehaviorInsights() {
-        let summaries = behaviorCorrelationSummaries(rest: baseline.restingInt ?? 60,
-                                                     maxHR: profile.maxHR)
-        behaviorCorrelationSummariesCache = summaries
-        behaviorInsights = Self.deriveInsights(from: summaries)
+        // PRODUCT DECISION: derived metrics (insights/correlations) are NOT
+        // real-time — only live BPM is. Compute off the main thread (mirrors the
+        // diagnostics background pass) and publish the result on main when ready,
+        // so this can never block launch, scrolling, or the workout screen.
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let summaries = self.behaviorCorrelationSummaries(rest: rest, maxHR: maxHR)
+            let insights = Self.deriveInsights(from: summaries)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.behaviorCorrelationSummariesCache = summaries
+                self.behaviorInsights = insights
+            }
+        }
     }
 
     /// Turn per-tag correlation deltas into ranked, plain-language findings.
