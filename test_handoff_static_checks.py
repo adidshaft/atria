@@ -1079,6 +1079,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: summary.strapStepCount > 0 ? .research : .learning",
             "state: summary.sleepWakeText == \"--\" ? .learning : .research",
             "state: summary.probeFrameCount > 0 ? .research : .learning",
+            "footnote: \"candidate frame count only\"",
+            "footnote: \"RR-derived sleep research\"",
+            "Oxygen and skin-temperature rows are evidence counts, not measurements",
         ]:
             assert_contains(self, collection, needle)
 
@@ -1906,10 +1909,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Body temp\"",
             "AtriaMetricTile(label: \"Resp rate\"",
             "AtriaMetricTile(label: \"Strap steps\"",
-            "candidate frames; no Health export",
-            "skin-temp deviation only",
-            "RR-derived during sleep",
-            "Research only. Atria never shows absolute SpO2 or skin temperature until the sensor layout is validated.",
+            "candidate frame count only",
+            "RR-derived sleep research",
+            "Research only. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show absolute SpO2 or body temperature until the sensor layout is validated.",
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Research only; compare with phone motion before steps or sleep.",
