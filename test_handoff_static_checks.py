@@ -2163,7 +2163,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, 'title: "Bluetooth is off"')
         assert_contains(self, notifications, 'body: ble.bluetoothPermissionDenied')
         assert_contains(self, notifications, 'Turn on Bluetooth in Settings so Atria can read your strap.')
-        assert_contains(self, notifications, 'body: "Charge your strap. Battery is \\(battery.level)%."')
+        assert_contains(self, notifications, 'body: "Charge your strap before a workout or overnight wear. Battery is \\(battery.level)%."')
         assert_contains(self, notifications, 'bluetooth_off=%d')
         assert_contains(self, notifications, "title: \"Atria notification test\"")
         assert_contains(self, notifications, "body: \"Local notification delivery is working.\"")
