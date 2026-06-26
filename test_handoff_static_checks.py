@@ -950,8 +950,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaLocalCoachProvider",
             "AtriaCloudCoachProvider",
             "enum AtriaCoachKeychain",
-            "MPNowPlayingInfoCenter.default().nowPlayingInfo",
-            "MPMusicPlayerController.systemMusicPlayer",
             "CXCallObserver",
             "import ActivityKit",
             "ControlWidget",
@@ -959,6 +957,16 @@ class HandoffStaticChecks(unittest.TestCase):
         ]
         for needle in required:
             assert_contains(self, text, needle)
+
+        # Atria must NEVER touch the user's music/audio (no AVAudioSession grab, no
+        # system-music-player control). The media-control feature was removed on
+        # purpose; these tokens must stay absent everywhere.
+        for forbidden in [
+            "MPMusicPlayerController.systemMusicPlayer",
+            "beginGeneratingPlaybackNotifications",
+            "AVAudioSession.sharedInstance().setActive(true",
+        ]:
+            assert_not_contains(self, text, forbidden)
 
     def test_haptic_alerts_are_phone_side_only(self):
         haptics = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHapticAlerts.swift")
@@ -1162,28 +1170,30 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, coordinator, needle)
 
-    def test_media_refresh_loop_is_scene_and_connection_scoped(self):
+    def test_media_controller_is_inert_no_music_interference(self):
+        # The media-control feature was removed so Atria never interferes with the
+        # user's music (AirPods/speaker) or drains battery polling now-playing.
+        # AtriaMediaController must be a no-op shell: no MediaPlayer import, no
+        # system music player, no playback notifications, no polling loop.
         media = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaMediaControls.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
 
         for needle in [
-            "private var isRefreshLoopActive = false",
-            "func setRefreshLoopActive(_ active: Bool)",
-            "guard isRefreshLoopActive else { return }",
-            "guard let self, self.isRefreshLoopActive else { return }",
+            "final class AtriaMediaController",
+            "var hasNowPlayingInfo = false",
+            "func setRefreshLoopActive(_ active: Bool) {}",
         ]:
             assert_contains(self, media, needle)
 
-        assert_not_contains(self, media, "startRefreshLoop()\n    }")
-        for needle in [
-            "private func updateMediaRefreshLoop()",
-            "let isActive = scenePhase == .active",
-            "let isConnected = model.coreLiveStore.state.status == .connected",
-            "mediaController.setRefreshLoopActive(isActive && isConnected)",
-            ".onChange(of: scenePhase)",
-            "mediaController.setRefreshLoopActive(false)",
+        for forbidden in [
+            "import MediaPlayer",
+            "MPMusicPlayerController",
+            "beginGeneratingPlaybackNotifications",
+            "player.play()",
+            "player.pause()",
+            "skipToNextItem",
+            "Task.sleep(nanoseconds: 10_000_000_000)",
         ]:
-            assert_contains(self, home, needle)
+            assert_not_contains(self, media, forbidden)
 
     def test_deferred_home_diagnostics_do_not_overlap(self):
         home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
