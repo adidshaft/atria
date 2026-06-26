@@ -351,8 +351,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
             "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
             "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
+            "var label: String",
+            "case .recoveryStrain: return \"Recovery and strain\"",
             ".draggable(section.rawValue)",
             "AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)",
+            ".accessibilityAction(named: Text(\"Move \\(section.label) up\"))",
+            ".accessibilityAction(named: Text(\"Move \\(section.label) down\"))",
+            "private func moveSection(_ section: AtriaVitalsSection, direction: Int)",
+            "static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String",
             "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
         ]:
             assert_contains(self, vitals, needle)
