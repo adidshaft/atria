@@ -1157,6 +1157,11 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                                 state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning),
                                 tint: .cyan,
                                 footnote: sleepStatusText)
+                AtriaMetricTile(label: "Sleep eff",
+                                value: latestNight?.sleepEfficiencyText ?? "--",
+                                state: latestNight?.sleepEfficiency == nil ? .learning : .research,
+                                tint: .cyan,
+                                footnote: "Duration vs span")
                 AtriaMetricTile(label: "Recovery",
                                 value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
                                 unit: hero.recoveryEstimate.percent == nil ? nil : "%",
