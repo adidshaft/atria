@@ -355,7 +355,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         var supportsBloodPressure: Bool { self == .strapMG }
     }
 
-    @Published var status: Status = .disconnected
+    /// The displayed connection status. NEVER written ad-hoc — it is recomputed as a
+    /// pure function of CoreBluetooth ground truth via `recomputeConnectionStatus`.
+    @Published private(set) var status: Status = .disconnected
+    /// True while an active scan is in progress with no peripheral yet (first-time
+    /// setup). Feeds the derived status so it shows "Searching" only when truly scanning.
+    private var isActivelyScanning = false
     @Published private(set) var officialAppCoexistenceRisk: OfficialAppCoexistenceRisk = OfficialAppCoexistenceRisk.load()
     @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
     @Published var deviceName: String = "—"
@@ -2636,7 +2641,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if target.state == .disconnected || target.state == .disconnecting {
                 self.peripheral = target
                 self.recordLinkAttempt(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
-                self.assignIfChanged(\.status, .connecting)
+                self.recomputeConnectionStatus(reason: "event")
                 self.central.connect(target, options: nil)
                 self.startReconnectWatchdog(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=connect_known_peripheral",
@@ -2651,7 +2656,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // the data pipeline and heal the displayed status. A genuinely dead
                 // radio link is detected by iOS supervision -> didDisconnectPeripheral.
                 self.peripheral = target
-                if self.status != .connected { self.assignIfChanged(\.status, .connected) }
+                if self.status != .connected { self.recomputeConnectionStatus(reason: "event") }
                 target.discoverServices(Self.UUIDs.discoveryServices)
                 self.resetRecoveryReconnectBackoff(reason: "\(scheduledReason)_live_link")
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_skipped reason=%@ action=reassert_live_link",
@@ -2663,7 +2668,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if self.peripheral === target {
                 self.peripheral = nil
             }
-            self.assignIfChanged(\.status, .disconnected)
+            self.recomputeConnectionStatus(reason: "event")
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=fresh_scan_fallback",
                   scheduledReason,
                   self.recoveryReconnectAttempt)
@@ -3606,7 +3611,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // that should declare a real drop; the watchdog must not cancel a live
         // peripheral or show "Disconnected" while it is connected.
         if peripheral.state == .connected {
-            if status != .connected { assignIfChanged(\.status, .connected) }
+            if status != .connected { recomputeConnectionStatus(reason: "event") }
             if let ch = heartRateCharacteristic, ch.properties.contains(.notify) {
                 peripheral.setNotifyValue(true, for: ch)
             } else {
@@ -4982,7 +4987,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastScanRequestMode = requestedMode
         reconnectWatchdogTask?.cancel()
         scanWideningTask?.cancel()
-        assignIfChanged(\.status, .scanning)
+        isActivelyScanning = true
+        recomputeConnectionStatus(reason: "start_scan")
         // Prefer a staged fresh scan: start with the expected strap/heart-rate
         // services for faster discovery, then broaden only if nothing appears.
         AtriaDebugLog("ATRIADBG ble_scan status=started reason=%@ standard_hr_only=%d retry=%d mode=%@ broad_allowed=%d",
@@ -5084,9 +5090,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scanWideningTask?.cancel()
         scanRetryCount = 0
         central.stopScan()
+        isActivelyScanning = false
         peripheral = p
         assignIfChanged(\.deviceName, name)
-        assignIfChanged(\.status, .connecting)
+        recomputeConnectionStatus(reason: "attach")
         p.delegate = self
         recordLinkAttempt(reason: "fresh_scan_attach", peripheral: p)
         central.connect(p, options: nil)
@@ -5102,6 +5109,53 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// True once the user has paired a strap that we should keep reconnecting to.
     var hasSavedStrap: Bool {
         UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID) != nil
+    }
+
+    /// THE SINGLE SOURCE OF TRUTH for the displayed status. Derives it purely from
+    /// CoreBluetooth ground truth (central power state + the peripheral's real state
+    /// + whether a strap is saved + whether we're scanning). Call after ANY event
+    /// that can change those. Nothing else writes `status` — so heals, watchdogs, and
+    /// stale/queued data can never lie (e.g. "Live" with Bluetooth off).
+    func recomputeConnectionStatus(reason: String) {
+        let next = derivedConnectionStatus()
+        guard status != next else { return }
+        status = next
+        AtriaDebugLog("ATRIADBG status_derived to=%@ reason=%@ central=%ld peripheral=%ld saved=%d scanning=%d",
+                      next.logToken,
+                      reason,
+                      Int(central.state.rawValue),
+                      peripheral.map { Int($0.state.rawValue) } ?? -1,
+                      hasSavedStrap ? 1 : 0,
+                      isActivelyScanning ? 1 : 0)
+    }
+
+    private func derivedConnectionStatus() -> Status {
+        switch central.state {
+        case .poweredOff, .unauthorized, .unsupported:
+            // Bluetooth genuinely unavailable — a stale peripheral.state can't override this.
+            return .poweredOff
+        case .poweredOn:
+            if let peripheral {
+                switch peripheral.state {
+                case .connected:
+                    return .connected
+                case .connecting, .disconnecting:
+                    return .connecting
+                case .disconnected:
+                    // We hold a peripheral ref but it's down: a saved strap means we
+                    // have a standing pending connect (reconnecting), else first setup.
+                    return hasSavedStrap ? .connecting : (isActivelyScanning ? .scanning : .disconnected)
+                @unknown default:
+                    return .connecting
+                }
+            }
+            return isActivelyScanning ? .scanning : (hasSavedStrap ? .connecting : .disconnected)
+        case .resetting, .unknown:
+            // Transient — hold the last reasonable state without flapping.
+            return peripheral?.state == .connected ? .connected : (hasSavedStrap ? .connecting : .disconnected)
+        @unknown default:
+            return .disconnected
+        }
     }
 
     /// Re-arm a STANDING pending connection to the saved strap — no scan. iOS keeps
@@ -5120,11 +5174,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         self.peripheral = saved
         assignIfChanged(\.deviceName, saved.name ?? deviceName)
         if saved.state == .connected {
-            assignIfChanged(\.status, .connected)
+            recomputeConnectionStatus(reason: "event")
             saved.discoverServices(Self.UUIDs.discoveryServices)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=already_connected", reason)
         } else {
-            assignIfChanged(\.status, .connecting)
+            recomputeConnectionStatus(reason: "event")
             recordLinkAttempt(reason: reason, peripheral: saved)
             // Standing pending connect — never times out; iOS fulfils it whenever
             // the strap becomes reachable. No scanning, no give-up.
@@ -5148,7 +5202,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         self.peripheral = nil
         central.stopScan()
-        assignIfChanged(\.status, .disconnected)
+        isActivelyScanning = false
+        recomputeConnectionStatus(reason: "forget")
         AtriaDebugLog("ATRIADBG ble_link status=forgotten reason=%@ action=user_forget", reason)
     }
 
@@ -5994,8 +6049,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // (`ble_restore reuse_restored`), where notifications resume but no
         // didConnect arrives, so the UI showed "Disconnected" while HR/RR data was
         // actively flowing. If we're decoding the strap's HR, we are connected.
-        if displayRate > 0, status != .connected {
-            assignIfChanged(\.status, .connected)
+        // Only heal to .connected if Bluetooth is on AND the peripheral is actually
+        // connected. iOS does not always fire didDisconnect when Bluetooth is turned
+        // off, so peripheral.state can be a stale .connected — the `central.state`
+        // check is what blocks a queued HR from faking "Live" while Bluetooth is off.
+        if displayRate > 0, status != .connected,
+           central.state == .poweredOn, peripheral?.state == .connected {
+            recomputeConnectionStatus(reason: "event")
         }
         rebuildLiveHeartWindow()
     }
@@ -8809,12 +8869,15 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     // No saved strap yet (first-time setup) — scan to find one.
                     startScan(reason: reason)
                 }
+                self.recomputeConnectionStatus(reason: "central_powered_on")
             case .poweredOff:
                 preserveLongWearRangeLossRecovery(reason: "central_powered_off")
-                self.assignIfChanged(\.status, .poweredOff)
+                self.isActivelyScanning = false
+                self.recomputeConnectionStatus(reason: "central_powered_off")
             default:
                 preserveLongWearRangeLossRecovery(reason: "central_unavailable")
-                self.assignIfChanged(\.status, .disconnected)
+                self.isActivelyScanning = false
+                self.recomputeConnectionStatus(reason: "central_unavailable")
             }
         }
     }
@@ -8837,7 +8900,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.assignIfChanged(\.deviceName, restoredPeripheral.name ?? self.deviceName)
             switch restoredPeripheral.state {
             case .connected:
-                self.assignIfChanged(\.status, .connected)
+                self.recomputeConnectionStatus(reason: "event")
                 self.reconnectWatchdogTask?.cancel()
                 self.connectedAt = Date()
                 self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
@@ -8845,11 +8908,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 restoredPeripheral.discoverServices(Self.UUIDs.discoveryServices)
                 AtriaDebugLog("ATRIADBG ble_restore status=connected name=%@", self.deviceName)
             case .connecting:
-                self.assignIfChanged(\.status, .connecting)
+                self.recomputeConnectionStatus(reason: "event")
                 self.startReconnectWatchdog(reason: "state_restore_connecting", peripheral: restoredPeripheral)
                 AtriaDebugLog("ATRIADBG ble_restore status=connecting name=%@", self.deviceName)
             default:
-                self.assignIfChanged(\.status, .connecting)
+                self.recomputeConnectionStatus(reason: "event")
                 self.recordLinkAttempt(reason: "state_restore", peripheral: restoredPeripheral)
                 central.connect(restoredPeripheral, options: nil)
                 self.startReconnectWatchdog(reason: "state_restore", peripheral: restoredPeripheral)
@@ -8885,7 +8948,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             reconnectWatchdogTask?.cancel()
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
-            assignIfChanged(\.status, .connected)
+            isActivelyScanning = false
+            recomputeConnectionStatus(reason: "did_connect")
             // Start each live link assuming not charging; only an in-session rise
             // re-asserts it (prevents a stale "Charging" sticking across sessions).
             assignIfChanged(\.batteryIsCharging, false)
@@ -8899,7 +8963,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            assignIfChanged(\.status, .disconnected)
+            recomputeConnectionStatus(reason: "event")
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             realtimeArmed = false        // re-arm realtime after reconnect
@@ -8963,7 +9027,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 if self.peripheral === peripheral {
                     self.peripheral = nil
                 }
-                assignIfChanged(\.status, .disconnected)
+                recomputeConnectionStatus(reason: "event")
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
                 return
             }
@@ -8971,7 +9035,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 if self.peripheral === peripheral {
                     self.peripheral = nil
                 }
-                assignIfChanged(\.status, .disconnected)
+                recomputeConnectionStatus(reason: "event")
                 let freshReason = longWearModeEnabled ? "long_wear_disconnect" : "stale_data_recovery"
                 // Even on a forced fresh recovery, prefer a standing pending connect
                 // to the KNOWN strap over scanning — it reconnects without giving up.
@@ -8987,7 +9051,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             recordLinkAttempt(reason: "did_disconnect_reconnect", peripheral: peripheral)
             central.connect(peripheral, options: nil)
             startReconnectWatchdog(reason: "did_disconnect_reconnect", peripheral: peripheral)
-            assignIfChanged(\.status, .connecting)
+            recomputeConnectionStatus(reason: "event")
         }
     }
 
@@ -9008,7 +9072,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.heartRateCharacteristic = nil
             self.lastMissingHeartRateDiscoveryAt = nil
             self.dbgTxReady = false
-            self.assignIfChanged(\.status, .disconnected)
+            self.recomputeConnectionStatus(reason: "event")
             self.startScan(reason: "did_fail_to_connect_recovery")
         }
     }
@@ -9149,8 +9213,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 // restoration no didConnect fires, so HR is the only other healer
                 // and it can't fire during a low-radio HR silence).
                 self.lastGattActivityAt = Date()
-                if peripheral.state == .connected, self.status != .connected {
-                    self.assignIfChanged(\.status, .connected)
+                if central.state == .poweredOn, peripheral.state == .connected, self.status != .connected {
+                    self.recomputeConnectionStatus(reason: "event")
                 }
                 // Infer charging from the in-session battery trend. A gradual RISE
                 // (2–5%) between reads means it's actively on the charger now; a
