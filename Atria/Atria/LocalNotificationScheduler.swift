@@ -210,7 +210,7 @@ enum LocalNotificationScheduler {
                 kind: "battery",
                 identifier: Identifier.battery,
                 title: "Strap battery low",
-                body: "Charge your strap. Battery is \(battery.level)%.",
+                body: "Charge your strap before a workout or overnight wear. Battery is \(battery.level)%.",
                 reason: "battery_\(battery.level)_source_\(battery.source)",
                 shouldSchedule: true,
                 delay: 9
