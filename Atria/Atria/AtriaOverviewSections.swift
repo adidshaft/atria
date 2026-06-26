@@ -430,8 +430,6 @@ struct AtriaOverviewLeadingSection: View {
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
 
-    @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
-
     var body: some View {
         VStack(spacing: 16) {
             if segment == .today {
@@ -448,10 +446,6 @@ struct AtriaOverviewLeadingSection: View {
                 AtriaOverviewMorningJournalHost(heroStore: heroStore,
                                                 snapshotStore: snapshotStore,
                                                 store: store)
-
-                if !AtriaTodayMetric.hidden(from: hiddenCSV).contains(AtriaTodayMetric.insights.rawValue) {
-                    AtriaInsightsCardHost(store: store)
-                }
             }
 
             if segment == .trends && hasUnlockedSecondarySections {
@@ -483,6 +477,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      live: liveStore.state,
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
+                                     insights: store.behaviorInsights,
+                                     taggedDays: store.behaviorJournalEntries.count,
                                      subtitle: subtitle,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
@@ -529,7 +525,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var glanceGridSize: AtriaGlanceGridSize {
         switch self {
-        case .trend:
+        case .trend, .insights:
             return .wide
         default:
             return .compact
@@ -546,7 +542,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -599,6 +595,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
+    let insights: [AtriaInsight]
+    let taggedDays: Int
     let subtitle: String
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
@@ -619,6 +617,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.phoneStepsText == rhs.live.phoneStepsText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
+            && lhs.insights == rhs.insights
+            && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
     }
 
@@ -746,7 +746,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .trend:
             trendCard
         case .insights:
-            EmptyView()
+            insightsCard
         }
     }
 
@@ -757,6 +757,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                               systemImage: AtriaTodayMetric.trend.systemImage,
                               tint: .red,
                               sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
+    }
+
+    private var insightsCard: some View {
+        let topInsight = insights.first
+        return AtriaGlanceMetricCard(title: "Insights",
+                                     value: insights.isEmpty ? "--" : "\(insights.count)",
+                                     detail: topInsight?.tagLabel ?? (taggedDays > 0 ? "Learning patterns" : "Tag today"),
+                                     systemImage: AtriaTodayMetric.insights.systemImage,
+                                     tint: topInsight?.isPositive == false ? .red : .purple)
+            .accessibilityLabel(insights.isEmpty
+                                ? "Insights building from \(taggedDays) tagged days"
+                                : "\(insights.count) local insights ready")
     }
 
     private var hrvLearningState: AtriaMetricState {
