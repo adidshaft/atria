@@ -232,11 +232,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "static var defaultGlanceOrder: [AtriaTodayMetric]",
             "static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric]",
             "static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String",
+            "var glanceColumnSpan: Int",
+            "case .trend:\n            return 2",
+            "Grid(horizontalSpacing: 10, verticalSpacing: 10)",
+            "ForEach(glanceRows, id: \\.glanceRowID)",
+            ".gridCellColumns(metric.glanceColumnSpan)",
+            "private struct AtriaGlanceMetricCard: View, Equatable",
+            "static let cardHeight: CGFloat = 134",
+            "title == \"Recovery\" || title == \"Strain\"",
             ".draggable(metric.rawValue)",
             ".dropDestination(for: String.self)",
             "onMoveMetric(dragged, metric)",
         ]:
             assert_contains(self, overview, needle)
+
+        assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
@@ -1324,7 +1334,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"function\"",
         ]:
             assert_contains(self, shared, needle)
-        assert_contains(self, overview, "state: live.liveActiveCalories == nil ? .learning : .estimate")
+        assert_contains(self, overview, "detail: live.liveActiveCalories == nil ? \"Needs profile\" : \"Estimate\"")
         assert_not_contains(self, overview, "state: live.liveActiveCalories == nil ? .learning : .local")
 
         for needle in [

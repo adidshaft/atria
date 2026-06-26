@@ -505,8 +505,8 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
     var systemImage: String {
         switch self {
-        case .recovery: return "heart.circle.fill"
-        case .strain: return "bolt.circle.fill"
+        case .recovery: return "heart.fill"
+        case .strain: return "bolt.fill"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
         case .rhr: return "heart.fill"
@@ -514,6 +514,15 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .calories: return "flame.fill"
         case .trend: return "chart.xyaxis.line"
         case .insights: return "chart.line.uptrend.xyaxis"
+        }
+    }
+
+    var glanceColumnSpan: Int {
+        switch self {
+        case .trend:
+            return 2
+        default:
+            return 1
         }
     }
     /// Persisted as a comma-separated list of HIDDEN raw values, so the default
@@ -564,6 +573,12 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 }
 
+private extension Array where Element == AtriaTodayMetric {
+    var glanceRowID: String {
+        map(\.rawValue).joined(separator: "-")
+    }
+}
+
 struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let live: AtriaHomeModel.CoreLiveState
@@ -604,16 +619,27 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .padding(12)
                     .atriaInsetCard(tint: .secondary)
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
-                    ForEach(visibleMetrics) { metric in
-                        glanceCard(metric)
-                            .draggable(metric.rawValue)
-                            .dropDestination(for: String.self) { items, _ in
-                                guard let raw = items.first,
-                                      let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
-                                onMoveMetric(dragged, metric)
-                                return true
+                Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+                    ForEach(glanceRows, id: \.glanceRowID) { row in
+                        GridRow {
+                            ForEach(row) { metric in
+                                glanceCard(metric)
+                                    .gridCellColumns(metric.glanceColumnSpan)
+                                    .draggable(metric.rawValue)
+                                    .dropDestination(for: String.self) { items, _ in
+                                        guard let raw = items.first,
+                                              let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
+                                        onMoveMetric(dragged, metric)
+                                        return true
+                                    }
                             }
+
+                            if row.count == 1, row.first?.glanceColumnSpan == 1 {
+                                Color.clear
+                                    .frame(maxWidth: .infinity, minHeight: AtriaGlanceMetricCard.cardHeight)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                     }
                 }
             }
@@ -627,53 +653,78 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .drawingGroup()
     }
 
+    private var glanceRows: [[AtriaTodayMetric]] {
+        var rows: [[AtriaTodayMetric]] = []
+        var pending: [AtriaTodayMetric] = []
+        for metric in visibleMetrics {
+            if metric.glanceColumnSpan == 2 {
+                if !pending.isEmpty {
+                    rows.append(pending)
+                    pending.removeAll(keepingCapacity: true)
+                }
+                rows.append([metric])
+            } else {
+                pending.append(metric)
+                if pending.count == 2 {
+                    rows.append(pending)
+                    pending.removeAll(keepingCapacity: true)
+                }
+            }
+        }
+        if !pending.isEmpty {
+            rows.append(pending)
+        }
+        return rows
+    }
+
     @ViewBuilder
     private func glanceCard(_ metric: AtriaTodayMetric) -> some View {
         switch metric {
         case .recovery:
-            AtriaMetricRing(label: "Recovery",
-                            value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
-                            fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
-                            tint: recoveryColor(hero.recoveryEstimate.percent),
-                            size: 96)
-                .frame(maxWidth: .infinity, minHeight: 126)
-                .padding(10)
-                .atriaInsetCard(tint: recoveryColor(hero.recoveryEstimate.percent))
+            AtriaGlanceMetricCard(title: "Recovery",
+                                  value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
+                                  detail: "Today",
+                                  systemImage: metric.systemImage,
+                                  tint: recoveryColor(hero.recoveryEstimate.percent),
+                                  ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 })
         case .strain:
-            AtriaMetricRing(label: "Strain",
-                            value: metricDisplayValue(hero.strainValue),
-                            fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
-                            tint: .orange,
-                            size: 96)
-                .frame(maxWidth: .infinity, minHeight: 126)
-                .padding(10)
-                .atriaInsetCard(tint: .orange)
+            AtriaGlanceMetricCard(title: "Strain",
+                                  value: metricDisplayValue(hero.strainValue),
+                                  detail: "Day load",
+                                  systemImage: metric.systemImage,
+                                  tint: .orange,
+                                  ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1))
         case .hrv:
-            AtriaMetricTile(label: "HRV",
-                            value: metricDisplayValue(hero.hrvValue),
-                            state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
-                            tint: .pink)
+            AtriaGlanceMetricCard(title: "HRV",
+                                  value: metricDisplayValue(hero.hrvValue),
+                                  detail: hrvLearningState == .learning ? "Building" : "Baseline",
+                                  systemImage: metric.systemImage,
+                                  tint: .pink)
         case .sleep:
-            AtriaMetricTile(label: "Sleep",
-                            value: metricDisplayValue(snapshot.sleepValue),
-                            state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
-                            tint: .cyan)
+            AtriaGlanceMetricCard(title: "Sleep",
+                                  value: metricDisplayValue(snapshot.sleepValue),
+                                  detail: metricIsPending(snapshot.sleepValue) ? "Learning" : "Last sleep",
+                                  systemImage: metric.systemImage,
+                                  tint: .cyan)
         case .rhr:
-            AtriaMetricTile(label: "RHR",
-                            value: metricDisplayValue(hero.restingHeartRateText),
-                            state: .personalBaseline,
-                            tint: .red)
+            AtriaGlanceMetricCard(title: "RHR",
+                                  value: metricDisplayValue(hero.restingHeartRateText),
+                                  detail: "Baseline",
+                                  systemImage: metric.systemImage,
+                                  tint: .red)
         case .steps:
-            AtriaMetricTile(label: "Steps",
-                            value: live.phoneStepsText,
-                            state: live.phoneStepsToday > 0 ? .validated : .learning,
-                            tint: .green)
+            AtriaGlanceMetricCard(title: "Steps",
+                                  value: live.phoneStepsText,
+                                  detail: live.phoneStepsToday > 0 ? "iPhone motion" : "Building",
+                                  systemImage: metric.systemImage,
+                                  tint: .green)
                 .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
         case .calories:
-            AtriaMetricTile(label: "kcal",
-                            value: live.liveActiveCaloriesText,
-                            state: live.liveActiveCalories == nil ? .learning : .estimate,
-                            tint: .orange)
+            AtriaGlanceMetricCard(title: "Calories",
+                                  value: live.liveActiveCaloriesText,
+                                  detail: live.liveActiveCalories == nil ? "Needs profile" : "Estimate",
+                                  systemImage: metric.systemImage,
+                                  tint: .orange)
                 .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
         case .trend:
             trendCard
@@ -683,25 +734,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var trendCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Resting trend", systemImage: "waveform.path.ecg.rectangle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.red)
-                Spacer(minLength: 0)
-                Text(trendValues.count > 1 ? "14 sessions" : "Building")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            Sparkline(values: trendValues.count > 1 ? trendValues : [0, 0])
-                .frame(height: 58)
-                .opacity(trendValues.count > 1 ? 1 : 0.28)
-                .accessibilityLabel("Resting heart rate trend")
-        }
-        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .padding(12)
-        .atriaInsetCard(tint: .red)
+        AtriaGlanceMetricCard(title: "Resting trend",
+                              value: trendValues.count > 1 ? "\(trendValues.last ?? 0)" : "--",
+                              detail: trendValues.count > 1 ? "14 sessions" : "Building",
+                              systemImage: AtriaTodayMetric.trend.systemImage,
+                              tint: .red,
+                              sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
     }
 
     private var hrvLearningState: AtriaMetricState {
@@ -725,6 +763,112 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return .red
     }
 
+}
+
+private struct AtriaGlanceMetricCard: View, Equatable {
+    static let cardHeight: CGFloat = 134
+
+    let title: String
+    let value: String
+    let detail: String
+    let systemImage: String
+    let tint: Color
+    var ringFraction: Double? = nil
+    var sparklineValues: [Int]? = nil
+
+    private var showsRing: Bool {
+        title == "Recovery" || title == "Strain"
+    }
+
+    private var displayValue: String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "--" : value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                marker
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    Text(detail)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint.opacity(0.82))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(displayValue)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+
+                Spacer(minLength: 0)
+            }
+
+            if let sparklineValues {
+                Sparkline(values: sparklineValues)
+                    .frame(height: 32)
+                    .opacity(sparklineValues.count > 1 ? 1 : 0.28)
+                    .accessibilityLabel("\(title) sparkline")
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, alignment: .leading)
+        .padding(13)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) \(value), \(detail)")
+    }
+
+    @ViewBuilder
+    private var marker: some View {
+        if showsRing {
+            ZStack {
+                Circle()
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 5)
+
+                if let ringFraction {
+                    Circle()
+                        .trim(from: 0, to: min(max(ringFraction, 0), 1))
+                        .stroke(tint.gradient,
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                } else {
+                    Circle()
+                        .stroke(Color.secondary.opacity(0.35),
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [3, 6]))
+                }
+
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 42, height: 42)
+        } else {
+            Image(systemName: systemImage)
+                .font(.callout.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 42, height: 42)
+                .background {
+                    Circle()
+                        .fill(tint.opacity(0.14))
+                        .overlay {
+                            Circle()
+                                .stroke(tint.opacity(0.22), lineWidth: 1)
+                        }
+                }
+        }
+    }
 }
 
 struct AtriaOverviewLaunchChecklistHost: View {
