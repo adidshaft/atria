@@ -567,11 +567,11 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: .blue,
                                 footnote: "candidate frames; no Health export")
-                AtriaMetricTile(label: "Skin temp",
+                AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
                                 state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
                                 tint: .orange,
-                                footnote: "baseline deviation only")
+                                footnote: "skin-temp deviation only")
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
