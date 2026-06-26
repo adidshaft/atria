@@ -21,17 +21,16 @@ def all_swift_source():
     return "\n".join(source(path) for path in swift_files())
 
 
-def swift_var_body_blocks(text):
+def swift_braced_blocks(text, patterns):
     blocks = []
-    needle = "var body: some View"
-    start = 0
-    while True:
-        index = text.find(needle, start)
-        if index == -1:
-            return blocks
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.finditer(pattern, text))
+    for match in sorted(matches, key=lambda item: item.start()):
+        index = match.start()
         brace = text.find("{", index)
         if brace == -1:
-            return blocks
+            continue
         depth = 0
         for pos in range(brace, len(text)):
             char = text[pos]
@@ -41,10 +40,19 @@ def swift_var_body_blocks(text):
                 depth -= 1
                 if depth == 0:
                     blocks.append((index, text[index:pos + 1]))
-                    start = pos + 1
                     break
-        else:
-            return blocks
+    return blocks
+
+
+def swift_var_body_blocks(text):
+    return swift_braced_blocks(text, [r"\bvar\s+body\s*:\s*some\s+View\b"])
+
+
+def swift_some_view_blocks(text):
+    return swift_braced_blocks(text, [
+        r"\bvar\s+\w+\s*:\s*some\s+View\b",
+        r"\bfunc\s+\w+\s*\([^)]*\)\s*->\s*some\s+View\b",
+    ])
 
 
 def assert_contains(testcase, haystack, needle):
@@ -500,7 +508,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
         )
 
-    def test_swiftui_body_blocks_do_not_run_session_derivations(self):
+    def test_swiftui_render_blocks_do_not_run_session_derivations(self):
         forbidden = [
             ".sorted(",
             ".reduce(",
@@ -516,11 +524,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift",
             ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift",
         ]:
-            for start, body in swift_var_body_blocks(source(rel)):
+            for start, body in swift_some_view_blocks(source(rel)):
                 checked += 1
                 for needle in forbidden:
-                    self.assertNotIn(needle, body, f"{rel}:{start} keeps {needle} in var body")
-        self.assertGreater(checked, 20)
+                    self.assertNotIn(needle, body, f"{rel}:{start} keeps {needle} in a some View render block")
+        self.assertGreater(checked, 60)
 
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         for needle in [
@@ -533,6 +541,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "store.sleepEvidenceStatusFast(rest: rest, calendar: .current)",
         ]:
             assert_contains(self, content, needle)
+
+        checks = source(ROOT / "test_handoff_static_checks.py")
+        assert_contains(self, checks, "def swift_some_view_blocks(text):")
 
         daily_card = content[content.index("private struct DailyEvidenceCard"):content.index("private struct CollectionReliabilityCard")]
         body_start = daily_card.index("var body: some View")
