@@ -60,7 +60,9 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   custom glass inside a scrolling form. The shared `atriaGlassSelectable`
   compatibility helper now maps to cheap `AtriaSegmentButtonStyle` chrome, so
   in-scroll segmented choices and tags no longer instantiate repeated glass
-  controls.
+  controls. Card-body actions now use a shared `AtriaCardActionButtonStyle`
+  instead of repeated `.glass/.glassProminent`, including Data export/import/share,
+  probe markers, overview CTAs, Settings reorder controls, and inline banners.
 - **Verification:** `python3 test_handoff_static_checks.py` is green (46), and a
   generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
   pin the handoff-21 ordering and diagnosis behavior.

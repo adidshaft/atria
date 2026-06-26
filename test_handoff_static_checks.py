@@ -65,15 +65,23 @@ class HandoffStaticChecks(unittest.TestCase):
             "func atriaCard(",
             "func atriaRaisedCard(",
             "struct AtriaSegmentButtonStyle: ButtonStyle",
+            "struct AtriaCardActionButtonStyle: ButtonStyle",
             "var tint: Color = .blue",
             "func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View",
             "self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))",
+            "func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View",
+            "self.buttonStyle(AtriaCardActionButtonStyle(prominent: prominent, tint: tint))",
         ]:
             assert_contains(self, text, needle)
 
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         assert_not_contains(self, content, "self.buttonStyle(.glassProminent).tint(tint)")
         assert_not_contains(self, content, "self.buttonStyle(.glass)\n        }")
+        for scroll_surface in [overview, vitals, settings]:
+            assert_not_contains(self, scroll_surface, "GlassEffectContainer")
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
         assert_not_contains(self, text, "Tab(\"Today\"")
         assert_not_contains(self, text, "Tab(\"Vitals\"")
@@ -119,7 +127,7 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, home, forbidden)
 
-    def test_settings_appearance_switcher_is_bordered_native_glass(self):
+    def test_settings_appearance_switcher_uses_shared_scroll_safe_chrome(self):
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
@@ -130,8 +138,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "appearanceButton(\"Dark\", mode: \"dark\", icon: \"moon.fill\")",
             "HStack(spacing: 8)",
             ".atriaInsetCard(tint: .purple)",
-            ".buttonStyle(.glass)",
-            ".buttonBorderShape(.capsule)",
+            ".buttonStyle(AtriaSegmentButtonStyle(selected: isAppearanceModeSelected(mode), tint: .purple))",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
             "private func isAppearanceModeSelected(_ mode: String) -> Bool",
         ]:
             assert_contains(self, settings, needle)
@@ -612,7 +620,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
             "ForEach(ResearchManeuverMarker.Kind.allCases)",
-            ".buttonStyle(.glass)",
+            ".atriaCardAction(prominent: false, tint: .teal)",
             "AtriaMetricTile(label: \"Probe match\"",
             "state: markers.isEmpty ? .learning : .research",
             "state: correlationSummary.matchedMarkers > 0 ? .research : .learning",

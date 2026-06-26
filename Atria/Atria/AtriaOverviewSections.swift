@@ -40,21 +40,17 @@ struct AtriaOverviewTabContent: View {
     @State private var segment: AtriaTodaySegment = .today
 
     private var segmentPicker: some View {
-        // Native Liquid Glass segmented control: each segment is a glass button,
-        // the selected one prominent. Floating control → real glass is right here.
-        GlassEffectContainer(spacing: 6) {
-            HStack(spacing: 6) {
-                ForEach(AtriaTodaySegment.allCases) { item in
-                    Button {
-                        withAnimation(.snappy(duration: 0.22)) { segment = item }
-                    } label: {
-                        Text(item.label)
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .atriaGlassSelectable(selected: segment == item)
+        HStack(spacing: 6) {
+            ForEach(AtriaTodaySegment.allCases) { item in
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) { segment = item }
+                } label: {
+                    Text(item.label)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
                 }
+                .atriaGlassSelectable(selected: segment == item)
             }
         }
     }
@@ -869,8 +865,7 @@ private struct AtriaLaunchChecklistRow: View {
                     Text(actionTitle)
                         .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.glass)
-                .tint(item.tint)
+                .atriaCardAction(prominent: false, tint: item.tint)
             }
         }
         .padding(12)
@@ -1243,9 +1238,9 @@ struct AtriaOverviewCollectionSection: View, Equatable {
             Button(action: onOpenCollection) {
                 Label("Data", systemImage: "arrow.right.circle.fill")
                     .labelStyle(.iconOnly)
+                    .frame(width: 32, height: 32)
             }
-            .buttonStyle(.glassProminent)
-            .tint(.blue)
+            .atriaCardAction(tint: .blue)
             .accessibilityLabel("Open Data")
         }
         .padding(16)
@@ -1300,16 +1295,14 @@ private struct AtriaOverviewActionStrip: View {
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.glassProminent)
-        .tint(.blue)
+        .atriaCardAction(tint: .blue)
 
         Button(action: secondaryAction) {
             Label(secondaryTitle, systemImage: secondarySystemImage)
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.glassProminent)
-        .tint(.gray)
+        .atriaCardAction(prominent: false, tint: .gray)
     }
 }
 
@@ -1392,8 +1385,8 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
-                .buttonStyle(.glassProminent)
-        .tint(tint)
+                .frame(maxWidth: .infinity)
+                .atriaCardAction(tint: tint)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(16)

@@ -146,9 +146,7 @@ struct AtriaSettingsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .tint(isAppearanceModeSelected(mode) ? .purple : .secondary)
+        .buttonStyle(AtriaSegmentButtonStyle(selected: isAppearanceModeSelected(mode), tint: .purple))
         .accessibilityAddTraits(isAppearanceModeSelected(mode) ? .isSelected : [])
     }
 
@@ -318,7 +316,7 @@ struct AtriaSettingsView: View {
                             Image(systemName: "chevron.up")
                                 .frame(width: 28, height: 28)
                         }
-                        .buttonStyle(.glass)
+                        .atriaCardAction(prominent: false, tint: .secondary)
                         .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
                         .accessibilityLabel("Move \(metric.label) up")
 
@@ -328,7 +326,7 @@ struct AtriaSettingsView: View {
                             Image(systemName: "chevron.down")
                                 .frame(width: 28, height: 28)
                         }
-                        .buttonStyle(.glass)
+                        .atriaCardAction(prominent: false, tint: .secondary)
                         .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)
                         .accessibilityLabel("Move \(metric.label) down")
                     }

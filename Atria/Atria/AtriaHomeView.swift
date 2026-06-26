@@ -1047,14 +1047,14 @@ private struct AtriaMissedDataBanner: View, Equatable {
 
             Button("Sync", action: onSync)
                 .font(.caption.weight(.bold))
-                .buttonStyle(.glassProminent)
+                .atriaCardAction(tint: .blue)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
                     .frame(width: 28, height: 28)
             }
-            .buttonStyle(.glass)
+            .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityLabel("Dismiss missed data banner")
         }
         .padding(14)
@@ -2780,7 +2780,7 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
                 Image(systemName: "questionmark.circle")
                     .frame(width: 30, height: 30)
             }
-            .buttonStyle(.glass)
+            .atriaCardAction(prominent: false, tint: diagnosis.tint)
             .accessibilityLabel("Connection help")
         }
         .padding(14)

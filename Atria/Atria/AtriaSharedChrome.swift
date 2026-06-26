@@ -36,6 +36,52 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     }
 }
 
+struct AtriaCardActionButtonStyle: ButtonStyle {
+    var prominent = true
+    var tint: Color = .blue
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(fill)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(stroke, lineWidth: 1)
+                    }
+            }
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
+    }
+
+    private var foreground: Color {
+        if prominent { return colorScheme == .dark ? .white : .primary }
+        return colorScheme == .dark ? Color.white.opacity(0.86) : .secondary
+    }
+
+    private var fill: AnyShapeStyle {
+        if prominent {
+            return AnyShapeStyle(
+                LinearGradient(colors: [
+                    colorScheme == .dark ? tint.opacity(0.30) : tint.opacity(0.16),
+                    colorScheme == .dark ? Color.white.opacity(0.07) : Color.white.opacity(0.62)
+                ], startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+        }
+        return AnyShapeStyle(colorScheme == .dark ? Color.white.opacity(0.055) : Color.white.opacity(0.54))
+    }
+
+    private var stroke: Color {
+        colorScheme == .dark ? Color.white.opacity(prominent ? 0.10 : 0.07)
+                             : Color.black.opacity(prominent ? 0.12 : 0.09)
+    }
+}
+
 private struct AtriaCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
@@ -254,6 +300,10 @@ extension View {
             .background {
                 AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint)
             }
+    }
+
+    func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View {
+        self.buttonStyle(AtriaCardActionButtonStyle(prominent: prominent, tint: tint))
     }
 }
 

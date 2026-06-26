@@ -261,7 +261,7 @@ private struct DailyEvidenceCard: View {
                         Label("Confirm Sleep", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.glass)
+                    .atriaCardAction(prominent: false, tint: .green)
                 }
             }
         }
@@ -310,7 +310,7 @@ private struct DailyEvidenceCard: View {
                         Label("Confirm Activity", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.glass)
+                    .atriaCardAction(prominent: false, tint: rowColor)
                 }
             }
         }
@@ -961,8 +961,7 @@ struct ProfileOnboardingView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.glassProminent)
-                .tint(.orange)
+                .atriaCardAction(tint: .orange)
 
                 if didRecheckOfficialApp && officialAppMayBeInstalled {
                     Label("Official strap app still detected.",
@@ -1235,13 +1234,13 @@ struct ProfileOnboardingView: View {
                     Image(systemName: "minus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glass)
+                .atriaCardAction(prominent: false, tint: .secondary)
 
                 Button(action: increment) {
                     Image(systemName: "plus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glass)
+                .atriaCardAction(prominent: false, tint: .secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
