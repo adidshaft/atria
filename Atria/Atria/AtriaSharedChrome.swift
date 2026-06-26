@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AtriaSegmentButtonStyle: ButtonStyle {
     let selected: Bool
+    var tint: Color = .blue
     @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
@@ -29,7 +30,7 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
         return AnyShapeStyle(
             LinearGradient(colors: [
                 Color.white.opacity(0.70),
-                Color.white.opacity(0.42)
+                tint.opacity(0.10)
             ], startPoint: .topLeading, endPoint: .bottomTrailing)
         )
     }

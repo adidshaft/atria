@@ -47,11 +47,20 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   installed. No modal or polling was added.
 - **Perf cleanup:** the research maneuver marker card now receives its probe
   correlation summary from the parent render path instead of rebuilding it inside
-  the card body/equality checks.
+  the card body/equality checks. The developer-only IMU audit card now follows the
+  same pattern for `IMUAuditSummary`, so its view body/equality no longer reduces
+  session history.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
   live while RR-gated HRV/Recovery/sleep detail waits for validated RR windows.
+- **Uniformity pass started:** top-right toolbar actions now share one fixed-size
+  icon label, Data toggle cards allow two-line explanatory copy, and Settings
+  Appearance uses the same cheap inset-card chrome as other panels instead of
+  custom glass inside a scrolling form. The shared `atriaGlassSelectable`
+  compatibility helper now maps to cheap `AtriaSegmentButtonStyle` chrome, so
+  in-scroll segmented choices and tags no longer instantiate repeated glass
+  controls.
 - **Verification:** `python3 test_handoff_static_checks.py` is green (46), and a
   generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
   pin the handoff-21 ordering and diagnosis behavior.

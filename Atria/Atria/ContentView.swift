@@ -1281,15 +1281,12 @@ struct ProfileOnboardingView: View {
 }
 
 extension View {
-    /// Native Liquid Glass for a selectable control: prominent glass when
-    /// selected, subtle glass otherwise. Keeps every button native.
+    /// Cheap selectable chrome for in-scroll controls. Real Liquid Glass stays on
+    /// floating toolbar/safe-area controls; repeated glass buttons in cards and
+    /// grids are too expensive during scroll.
     @ViewBuilder
     func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View {
-        if selected {
-            self.buttonStyle(.glassProminent).tint(tint)
-        } else {
-            self.buttonStyle(.glass)
-        }
+        self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))
     }
 }
 

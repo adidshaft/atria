@@ -200,7 +200,8 @@ struct AtriaCollectionTabContent: View {
     }
 
     private var imuAuditCard: some View {
-        AtriaCollectionIMUAuditCard(sessions: store.sessions)
+        let summary = IMUAuditSummary(sessions: store.sessions)
+        return AtriaCollectionIMUAuditCard(summary: summary)
     }
 
     private var researchManeuverCard: some View {
@@ -539,7 +540,7 @@ private struct AtriaCollectionHRReferenceCardHost: View {
 }
 
 private struct AtriaCollectionIMUAuditCard: View, Equatable {
-    let sessions: [SavedSession]
+    let summary: IMUAuditSummary
 
     static func == (lhs: AtriaCollectionIMUAuditCard, rhs: AtriaCollectionIMUAuditCard) -> Bool {
         lhs.summary == rhs.summary
@@ -597,10 +598,6 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
         }
         .padding(18)
         .atriaRaisedCard(emphasis: .soft)
-    }
-
-    private var summary: IMUAuditSummary {
-        IMUAuditSummary(sessions: sessions)
     }
 
     private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
@@ -1360,7 +1357,7 @@ private struct AtriaCollectionToggleCard: View {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.78)
                     .fixedSize(horizontal: false, vertical: true)
             }
