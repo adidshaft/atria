@@ -1246,6 +1246,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
             parts.append("Resp \(latestNight.respiratoryRateText)")
         }
         parts.append(latestNight.confidenceText)
+        parts.append(latestNight.confirmed ? "Confirmed" : "Candidate")
         return parts.joined(separator: " · ")
     }
 
