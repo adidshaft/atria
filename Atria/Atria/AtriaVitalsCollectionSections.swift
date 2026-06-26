@@ -975,9 +975,12 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Live timeline")
+                    Text("Heart-rate timeline")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 8)
+                    Text("Tap to inspect")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
@@ -985,6 +988,14 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
 
                 AtriaHeartRateAxisChart(points: points, selectedTime: .constant(nil))
                     .frame(height: 170)
+
+                HStack {
+                    Label("Time", systemImage: "clock")
+                    Spacer(minLength: 8)
+                    Label("BPM", systemImage: "heart")
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
             }
             .padding(12)
             .atriaInsetCard(tint: .red)
@@ -1029,6 +1040,10 @@ private struct AtriaHeartRateExplorer: View {
 
                 if let selectedPoint {
                     Text(selectedPoint.t, format: .dateTime.hour().minute().second())
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Tap or drag on the graph to inspect any sample.")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
