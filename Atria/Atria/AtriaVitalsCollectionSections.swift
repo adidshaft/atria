@@ -148,6 +148,7 @@ struct AtriaCollectionTabContent: View {
                 HStack(alignment: .top, spacing: 18) {
                     LazyVStack(spacing: 18) {
                         captureCard
+                        researchSignalsCard
                         if developerModeEnabled {
                             rrReferenceCard
                             hrReferenceCard
@@ -166,6 +167,7 @@ struct AtriaCollectionTabContent: View {
             } else {
                 LazyVStack(spacing: 18) {
                     captureCard
+                    researchSignalsCard
                     if developerModeEnabled {
                         rrReferenceCard
                         hrReferenceCard
@@ -203,6 +205,11 @@ struct AtriaCollectionTabContent: View {
 
     private var imuAuditCard: some View {
         AtriaCollectionIMUAuditCard(summary: store.imuAuditSummary)
+    }
+
+    private var researchSignalsCard: some View {
+        AtriaCollectionResearchSignalsCard(summary: store.imuAuditSummary,
+                                           sleepHistory: store.sleepHistorySnapshot)
     }
 
     private var researchManeuverCard: some View {
@@ -525,6 +532,70 @@ private struct AtriaCollectionHRReferenceCardHost: View {
             .atriaCardAction(tint: .green)
         }
     }
+}
+
+private struct AtriaCollectionResearchSignalsCard: View, Equatable {
+    let summary: IMUAuditSummary
+    let sleepHistory: SleepHistorySnapshot
+
+    static func == (lhs: AtriaCollectionResearchSignalsCard, rhs: AtriaCollectionResearchSignalsCard) -> Bool {
+        lhs.summary == rhs.summary && lhs.sleepHistory == rhs.sleepHistory
+    }
+
+    private var hasEvidence: Bool {
+        summary.probeFrameCount > 0
+            || summary.strapStepCount > 0
+            || latestRespiratoryRate != "--"
+    }
+
+    private var latestRespiratoryRate: String {
+        sleepHistory.nights.first?.respiratoryRateText ?? "--"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Research signals", subtitle: "")
+                Spacer(minLength: 0)
+                AtriaStateBadge(state: hasEvidence ? .research : .learning)
+            }
+
+            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+                AtriaMetricTile(label: "Blood oxygen",
+                                value: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames)" : "--",
+                                state: summary.spo2CandidateFrames > 0 ? .research : .learning,
+                                tint: .blue,
+                                footnote: "candidate frames; no Health export")
+                AtriaMetricTile(label: "Skin temp",
+                                value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
+                                state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
+                                tint: .orange,
+                                footnote: "baseline deviation only")
+                AtriaMetricTile(label: "Resp rate",
+                                value: latestRespiratoryRate,
+                                unit: latestRespiratoryRate == "--" ? nil : "/min",
+                                state: latestRespiratoryRate == "--" ? .learning : .research,
+                                tint: .teal,
+                                footnote: "RR-derived during sleep")
+                AtriaMetricTile(label: "Strap steps",
+                                value: summary.strapStepText,
+                                state: summary.strapStepCount > 0 ? .research : .learning,
+                                tint: .green,
+                                footnote: summary.agreementText)
+            }
+
+            Text("Research only. Atria never shows absolute SpO2 or skin temperature until the sensor layout is validated.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
 private struct AtriaCollectionIMUAuditCard: View, Equatable {
