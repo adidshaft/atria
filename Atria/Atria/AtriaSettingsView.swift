@@ -310,6 +310,11 @@ struct AtriaSettingsView: View {
             || activeHidden.contains(metric.rawValue)
     }
 
+    private func resetTodayLayout() {
+        todayOrderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
+        todayHiddenCSV = ""
+    }
+
     private var todayLayoutSection: some View {
         Section {
             ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
@@ -344,6 +349,13 @@ struct AtriaSettingsView: View {
                     }
                 }
             }
+
+            Button(action: resetTodayLayout) {
+                Label("Reset Today layout", systemImage: "arrow.counterclockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .atriaCardAction(prominent: false, tint: .secondary)
+            .accessibilityLabel("Reset Today layout")
         } header: {
             Text("Today screen")
         } footer: {
