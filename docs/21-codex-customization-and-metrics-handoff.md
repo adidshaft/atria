@@ -45,14 +45,13 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   denied, connected/no pulse, searching/connecting, disconnected, low strap
   battery, and official WHOOP app coexistence when `whoop://` is actually
   installed. No modal or polling was added.
-- **Perf cleanup:** the research maneuver marker card now receives its probe
-  correlation summary from the parent render path instead of rebuilding it inside
-  the card body/equality checks. The developer-only IMU audit card now follows the
-  same pattern for `IMUAuditSummary`, so its view body/equality no longer reduces
-  session history. `SessionDetail` now downsamples chart points once at init instead
-  of recomputing the downsampled series on every render. The connected pulse status
-  card now receives a precomputed display name from core live state, avoiding string
-  parsing during live HR updates.
+- **Perf cleanup:** the research maneuver probe correlation and developer-only
+  IMU audit summaries are now cached in `SessionStore`, recomputed only when
+  sessions or local probe markers change, and read O(1) by the Data cards.
+  `SessionDetail` now downsamples chart points once at init instead of recomputing
+  the downsampled series on every render. The connected pulse status card now
+  receives a precomputed display name from core live state, avoiding string parsing
+  during live HR updates.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
@@ -70,9 +69,10 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   status, and the Data action do not squeeze each other, reconnect checklist rows
   can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy
   instead of nested raised cards.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (46), and a
-  generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
-  pin the handoff-21 ordering and diagnosis behavior.
+- **Verification:** `python3 test_handoff_static_checks.py` is green (49), and
+  Release builds have been installed on the cabled iPhone. Static guards now pin
+  the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path
+  cache behavior.
 
 ---
 

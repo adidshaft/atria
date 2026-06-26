@@ -674,30 +674,32 @@ class HandoffStaticChecks(unittest.TestCase):
             "case walkTest",
             "static let key = \"atria.researchManeuverMarkers.v1\"",
             "var researchManeuverMarkers: [ResearchManeuverMarker]",
+            "struct ResearchManeuverProbeCorrelationSummary: Equatable",
+            "@Published private(set) var researchManeuverProbeCorrelationSummary",
+            "private func recomputeCollectionResearchSummaries()",
+            "researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers",
             "func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind",
             "ATRIADBG research_maneuver_marker status=marked",
             "local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
+            "static let correlationWindow: TimeInterval = 15 * 60",
+            "guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }",
+            "marker.timestamp >= lower && marker.timestamp <= upper",
+            "oxygenCandidateFrames",
+            "temperatureCandidateFrames",
         ]:
             assert_contains(self, sessions, needle)
 
         for needle in [
             "researchManeuverCard",
-            "let summary = ResearchManeuverProbeCorrelationSummary(markers: store.researchManeuverMarkers",
             "AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers",
-            "correlationSummary: summary",
+            "correlationSummary: store.researchManeuverProbeCorrelationSummary",
             "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
-            "private struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
             "ForEach(ResearchManeuverMarker.Kind.allCases)",
             ".atriaCardAction(prominent: false, tint: .teal)",
             "AtriaMetricTile(label: \"Probe match\"",
             "state: markers.isEmpty ? .learning : .research",
             "state: correlationSummary.matchedMarkers > 0 ? .research : .learning",
-            "static let correlationWindow: TimeInterval = 15 * 60",
-            "guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }",
-            "marker.timestamp >= lower && marker.timestamp <= upper",
-            "oxygenCandidateFrames",
-            "temperatureCandidateFrames",
             "Research only; timestamps stay on device for probe correlation.",
         ]:
             assert_contains(self, collection, needle)
@@ -707,6 +709,8 @@ class HandoffStaticChecks(unittest.TestCase):
             collection,
             "private var correlationSummary: ResearchManeuverProbeCorrelationSummary",
         )
+        assert_not_contains(self, collection, "private struct ResearchManeuverProbeCorrelationSummary: Equatable")
+        assert_not_contains(self, collection, "ResearchManeuverProbeCorrelationSummary(markers: store.researchManeuverMarkers")
 
         for forbidden in [
             "markResearchManeuver",
@@ -1316,16 +1320,25 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Probes\"",
             "agreementText",
             "probeDetail",
-            "let summary = IMUAuditSummary(sessions: store.sessions)",
-            "AtriaCollectionIMUAuditCard(summary: summary)",
+            "AtriaCollectionIMUAuditCard(summary: store.imuAuditSummary)",
         ]:
             assert_contains(self, collection, needle)
+
+        for needle in [
+            "struct IMUAuditSummary: Equatable",
+            "@Published private(set) var imuAuditSummary",
+            "private func recomputeCollectionResearchSummaries()",
+            "imuAuditSummary = IMUAuditSummary(sessions: sessions)",
+        ]:
+            assert_contains(self, sessions, needle)
 
         assert_not_contains(
             self,
             collection,
             "private var summary: IMUAuditSummary",
         )
+        assert_not_contains(self, collection, "private struct IMUAuditSummary: Equatable")
+        assert_not_contains(self, collection, "IMUAuditSummary(sessions: store.sessions)")
 
         for forbidden in [
             "title: \"Low radio HR\"",

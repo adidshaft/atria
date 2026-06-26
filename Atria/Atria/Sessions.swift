@@ -559,6 +559,126 @@ struct ResearchManeuverMarker: Codable, Identifiable, Equatable {
     let createdAt: Date
 }
 
+struct IMUAuditSummary: Equatable {
+    let frameCount: Int
+    let sampleCount: Int
+    let validatedFrames: Int
+    let sampleRateHz: Double?
+    let scale: Double?
+    let endian: String?
+    let strapStepCount: Int
+    let agreement: Double?
+    let sleepWakeState: String?
+    let sleepWakeReason: String?
+    let probeFrameCount: Int
+    let spo2CandidateFrames: Int
+    let skinTempCandidateFrames: Int
+
+    init(sessions: [SavedSession]) {
+        let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
+        let probeSessions = sessions.filter { ($0.sensorResearchProbeFrames ?? 0) > 0 }
+        frameCount = imuSessions.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
+        sampleCount = imuSessions.reduce(0) { $0 + ($1.imuSampleCount ?? 0) }
+        validatedFrames = imuSessions.filter { $0.imuValidationState == "gravity_validated_research" }.reduce(0) { $0 + ($1.imuFrameCount ?? 0) }
+        let rates = imuSessions.compactMap(\.imuSampleRateHz)
+        sampleRateHz = rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
+        scale = imuSessions.compactMap(\.imuScale).last
+        endian = imuSessions.compactMap(\.imuEndian).last
+        strapStepCount = imuSessions.reduce(0) { $0 + ($1.strapStepResearchCount ?? 0) }
+        let agreements = imuSessions.compactMap(\.strapStepResearchAgreement)
+        agreement = agreements.isEmpty ? nil : agreements.reduce(0, +) / Double(agreements.count)
+        sleepWakeState = imuSessions.compactMap(\.sleepWakeResearchState).first
+        sleepWakeReason = imuSessions.compactMap(\.sleepWakeResearchReason).first
+        probeFrameCount = probeSessions.reduce(0) { $0 + ($1.sensorResearchProbeFrames ?? 0) }
+        spo2CandidateFrames = probeSessions.reduce(0) { $0 + ($1.spo2ResearchCandidateFrames ?? 0) }
+        skinTempCandidateFrames = probeSessions.reduce(0) { $0 + ($1.skinTempResearchCandidateFrames ?? 0) }
+    }
+
+    var frameText: String {
+        frameCount > 0 ? "\(frameCount)" : "--"
+    }
+
+    var sampleRateText: String {
+        sampleRateHz.map { String(format: "%.1f", $0) } ?? "--"
+    }
+
+    var layoutText: String {
+        guard let scale, let endian, !endian.isEmpty else { return "--" }
+        return "\(endian.prefix(1))/\(Int(scale.rounded()))"
+    }
+
+    var gravityText: String {
+        guard frameCount > 0 else { return "--" }
+        return validatedFrames > 0 ? "Seen" : "Waiting"
+    }
+
+    var strapStepText: String {
+        strapStepCount > 0 ? "\(strapStepCount)" : "--"
+    }
+
+    var agreementText: String {
+        agreement.map { "\(Int(($0 * 100).rounded()))% phone" } ?? "phone pending"
+    }
+
+    var sleepWakeText: String {
+        guard let sleepWakeState else { return "--" }
+        return sleepWakeState == "sleep_research" ? "Sleep" : "Wake"
+    }
+
+    var probeText: String {
+        probeFrameCount > 0 ? "\(probeFrameCount)" : "--"
+    }
+
+    var probeDetail: String {
+        probeFrameCount > 0 ? "O2 \(spo2CandidateFrames) · temp \(skinTempCandidateFrames)" : "none yet"
+    }
+}
+
+struct ResearchManeuverProbeCorrelationSummary: Equatable {
+    let markerCount: Int
+    let matchedMarkers: Int
+    let probeFrames: Int
+    let oxygenCandidateFrames: Int
+    let temperatureCandidateFrames: Int
+    private static let correlationWindow: TimeInterval = 15 * 60
+
+    init(markers: [ResearchManeuverMarker], sessions: [SavedSession]) {
+        markerCount = markers.count
+        var matchedIDs = Set<String>()
+        var probeTotal = 0
+        var oxygenTotal = 0
+        var temperatureTotal = 0
+
+        for marker in markers {
+            let matchingSessions = sessions.filter { session in
+                guard (session.sensorResearchProbeFrames ?? 0) > 0 else { return false }
+                let lower = session.start.addingTimeInterval(-Self.correlationWindow)
+                let upper = session.end.addingTimeInterval(Self.correlationWindow)
+                return marker.timestamp >= lower && marker.timestamp <= upper
+            }
+
+            guard !matchingSessions.isEmpty else { continue }
+            matchedIDs.insert(marker.id)
+            probeTotal += matchingSessions.reduce(0) { $0 + ($1.sensorResearchProbeFrames ?? 0) }
+            oxygenTotal += matchingSessions.reduce(0) { $0 + ($1.spo2ResearchCandidateFrames ?? 0) }
+            temperatureTotal += matchingSessions.reduce(0) { $0 + ($1.skinTempResearchCandidateFrames ?? 0) }
+        }
+
+        matchedMarkers = matchedIDs.count
+        probeFrames = probeTotal
+        oxygenCandidateFrames = oxygenTotal
+        temperatureCandidateFrames = temperatureTotal
+    }
+
+    var matchText: String {
+        markerCount == 0 ? "--" : "\(matchedMarkers)/\(markerCount)"
+    }
+
+    var candidateText: String {
+        probeFrames > 0 ? "O2 \(oxygenCandidateFrames) · temp \(temperatureCandidateFrames)" : "waiting"
+    }
+}
+
 struct GateEWorkoutTrainingStatus: Equatable {
     let present: Bool
     let confirmedID: String
@@ -2066,7 +2186,10 @@ final class SessionStore: ObservableObject {
         // canonical/baseline caches update, so it would be both stale and a
         // main-thread stall. Insights are recomputed explicitly via
         // recomputeBehaviorInsights() after those caches are consistent.
-        didSet { recomputeRestingTrend() }
+        didSet {
+            recomputeRestingTrend()
+            recomputeCollectionResearchSummaries()
+        }
     }
     /// Phase-0 derived cache: the 14-point resting-HR trend, recomputed ONLY when
     /// sessions change instead of being re-sorted inside the glance on every
@@ -2078,6 +2201,10 @@ final class SessionStore: ObservableObject {
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
     @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
+    /// Developer/research summaries for Data cards. Recomputed with session or
+    /// marker changes so SwiftUI renders read O(1) values.
+    @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
+    @Published private(set) var researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: [], sessions: [])
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2120,6 +2247,12 @@ final class SessionStore: ObservableObject {
             }
             .suffix(14)
             .map(\.value)
+    }
+
+    private func recomputeCollectionResearchSummaries() {
+        imuAuditSummary = IMUAuditSummary(sessions: sessions)
+        researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers,
+                                                                                          sessions: sessions)
     }
 
     /// EXPENSIVE: behavior insights via dailyRollups → the canonical-session cache.
@@ -2226,6 +2359,7 @@ final class SessionStore: ObservableObject {
         self.cachedCurrentCollectionStatus = nil
         loadPersistedSessionsDeferred()
         refreshSessionDerivedCaches()
+        recomputeCollectionResearchSummaries()
     }
 
     var latestReferenceValidatedHRV: Int? {
@@ -4982,6 +5116,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ResearchManeuverDefaults.key)
         cachedResearchManeuverMarkers = sorted
+        recomputeCollectionResearchSummaries()
     }
 
     private func behaviorJournalID(for day: Date) -> String {
