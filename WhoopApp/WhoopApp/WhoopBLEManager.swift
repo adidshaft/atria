@@ -870,6 +870,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private var lastRealtimeHR: (bpm: Int, t: Date)?
     private var lastHRVRefreshAt: Date?
     private var lastRawHRNotificationAt: Date?
+    /// Timestamp of the most recent inbound GATT value of ANY kind (battery, HR,
+    /// device-info…). Battery (0x2A19) reads recur every few seconds on a live
+    /// link, so this proves the link is alive even when the HR stream (0x2A37) is
+    /// briefly silent in low-radio mode — used so the no-data watchdog can't tear
+    /// down a genuinely connected peripheral.
+    private var lastGattActivityAt: Date?
     private var sessionRawHRNotifications = 0
     private var sessionAcceptedHRSamples = 0
     private var sessionZeroHRSamples = 0
@@ -2631,6 +2637,20 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                       self.recoveryReconnectAttempt)
                 return
             }
+            if target.state == .connected {
+                // Universal backstop: the link is STILL up (a watchdog fired on a
+                // transient data gap, not a real drop). Never cancel a healthy
+                // connection or show Disconnected — re-discover services to restart
+                // the data pipeline and heal the displayed status. A genuinely dead
+                // radio link is detected by iOS supervision -> didDisconnectPeripheral.
+                self.peripheral = target
+                if self.status != .connected { self.assignIfChanged(\.status, .connected) }
+                target.discoverServices(Self.UUIDs.discoveryServices)
+                self.resetRecoveryReconnectBackoff(reason: "\(scheduledReason)_live_link")
+                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_skipped reason=%@ action=reassert_live_link",
+                      scheduledReason)
+                return
+            }
             self.forceFreshScanAfterDisconnect = true
             self.central.cancelPeripheralConnection(target)
             if self.peripheral === target {
@@ -3271,7 +3291,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     lastAutoSaveAt = now
                 }
 
-                if let reference = lastRawHRNotificationAt ?? connectedAt {
+                // Anchor the no-data gap to ANY GATT activity (battery included),
+                // not just the HR stream — battery reads recur on a live link, so
+                // the gap only grows when the link is genuinely silent everywhere.
+                if let reference = lastRawHRNotificationAt ?? lastGattActivityAt ?? connectedAt {
                     let gap = now.timeIntervalSince(reference)
                     if gap >= config.noDataTimeout {
                         recoverNoDataWatchdog(label: config.label,
@@ -3499,7 +3522,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 guard longWearModeEnabled, standardHROnlyMode else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
-                guard let reference = lastRawHRNotificationAt ?? connectedAt else { continue }
+                guard let reference = lastRawHRNotificationAt ?? lastGattActivityAt ?? connectedAt else { continue }
                 let gap = now.timeIntervalSince(reference)
                 guard gap >= timeout else { continue }
 
@@ -3569,6 +3592,30 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               snapshot == nil ? "skipped" : "saved")
         preserveLongWearRangeLossRecovery(reason: "no_data_watchdog")
         guard let peripheral else { return }
+        // Never tear down a still-connected link. A no-data gap while the
+        // peripheral is CB-connected is recovered by re-subscribing / re-
+        // discovering — mirror the accepted_hr/hr_continuity escape hatch. iOS's
+        // own connection supervision (didDisconnectPeripheral) is the only thing
+        // that should declare a real drop; the watchdog must not cancel a live
+        // peripheral or show "Disconnected" while it is connected.
+        if peripheral.state == .connected {
+            if status != .connected { assignIfChanged(\.status, .connected) }
+            if let ch = heartRateCharacteristic, ch.properties.contains(.notify) {
+                peripheral.setNotifyValue(true, for: ch)
+            } else {
+                peripheral.discoverServices(Self.UUIDs.discoveryServices)
+            }
+            persistWatchdogRecovery(source: "no_data",
+                                    status: recoveryStatus,
+                                    action: "reassert_keep_connection",
+                                    rawGap: gap,
+                                    acceptedGap: nil,
+                                    samples: session.count,
+                                    checkpoint: "skipped")
+            WHOOPDebugLog("WHOOPDBG no_data_watchdog status=%@ gap_s=%.1f action=reassert_keep_connection samples=%d",
+                  recoveryStatus, gap, session.count)
+            return
+        }
         requestFreshScanReconnect(peripheral: peripheral, reason: "no_data_watchdog")
     }
 
@@ -9017,6 +9064,15 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         if uuid == UUIDs.batteryLevel {
             let newLevel = Int(data.first ?? 0)
             Task { @MainActor in
+                // A GATT value from a CB-connected peripheral proves the link is
+                // live. Record the activity and heal a status that a watchdog or a
+                // transient central blip wrongly left non-connected (after state
+                // restoration no didConnect fires, so HR is the only other healer
+                // and it can't fire during a low-radio HR silence).
+                self.lastGattActivityAt = Date()
+                if peripheral.state == .connected, self.status != .connected {
+                    self.assignIfChanged(\.status, .connected)
+                }
                 // Infer charging from the in-session battery trend. A gradual RISE
                 // (2–5%) between reads means it's actively on the charger now; a
                 // DROP clears it. A big jump (>5%) is an ambiguous reconnect gap
