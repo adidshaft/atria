@@ -18,6 +18,12 @@ struct AtriaHomeContainer: View, Equatable {
 }
 
 struct AtriaHomeView: View {
+    private struct AtriaWorkoutEndNotice: Identifiable, Equatable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+
     private enum HomeTab: String, CaseIterable, Identifiable {
         case overview
         case vitals
@@ -65,6 +71,7 @@ struct AtriaHomeView: View {
     @State private var showConnectionGuide = false
     @State private var showSettings = false
     @State private var workoutSession: AtriaWorkoutSession?
+    @State private var workoutEndNotice: AtriaWorkoutEndNotice?
     @State private var showCoexistenceModal = false
     @State private var officialAppInstalled: Bool = {
         guard let url = URL(string: "whoop://") else { return false }
@@ -208,7 +215,7 @@ struct AtriaHomeView: View {
                                  liveStore: model.coreLiveStore,
                                  maxHR: store.profile.maxHR,
                                  startDate: session.start,
-                                 onStop: { workoutSession = nil })
+                                 onStop: { endWorkoutSession(startedAt: session.start) })
         }
         .sheet(isPresented: $showCoexistenceModal) {
             AtriaCoexistenceModal(context: connectionGuideContext) {
@@ -216,6 +223,11 @@ struct AtriaHomeView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .alert(item: $workoutEndNotice) { notice in
+            Alert(title: Text(notice.title),
+                  message: Text(notice.message),
+                  dismissButton: .default(Text("OK")))
         }
         .onReceive(ble.$officialAppCoexistenceRisk.removeDuplicates()) { risk in
             presentCoexistenceModalIfNeeded(for: risk)
@@ -493,6 +505,49 @@ struct AtriaHomeView: View {
             mediaIsPlaying: mediaController.state.isPlaying,
             mediaHasNowPlayingInfo: mediaController.state.hasNowPlayingInfo
         ))
+    }
+
+    private func endWorkoutSession(startedAt: Date) {
+        let label = "Live workout"
+        let checkpointed = ble.checkpointCurrentSession(label: label, reason: "live_workout_end")
+        let rest = store.baseline.restingInt ?? model.heroStore.state.restingHeartRate
+        let confirmed = store.confirmBestWorkoutCandidateForUI(rest: rest,
+                                                               maxHR: store.profile.maxHR,
+                                                               source: "live_workout_end")
+        workoutSession = nil
+
+        if let confirmed {
+            store.exportToHealthKit()
+            workoutEndNotice = AtriaWorkoutEndNotice(
+                title: "Workout saved",
+                message: "Atria confirmed \(formatWorkoutDuration(confirmed.duration)) with \(confirmed.streamCoveragePercent)% stream coverage and queued it for Health export."
+            )
+        } else if checkpointed {
+            workoutEndNotice = AtriaWorkoutEndNotice(
+                title: "Workout evidence saved",
+                message: "Atria saved this live window locally. It is still learning because the workout gate needs at least 10 minutes of strong heart-rate evidence."
+            )
+        } else {
+            workoutEndNotice = AtriaWorkoutEndNotice(
+                title: "Not enough data yet",
+                message: "Keep the workout running until Atria has multiple heart-rate samples before ending it."
+            )
+        }
+
+        AtriaDebugLog("ATRIADBG live_workout_end checkpointed=%d confirmed=%d started_unix=%d",
+              checkpointed ? 1 : 0,
+              confirmed == nil ? 0 : 1,
+              Int(startedAt.timeIntervalSince1970.rounded()))
+    }
+
+    private func formatWorkoutDuration(_ duration: TimeInterval) -> String {
+        let minutes = max(1, Int((duration / 60).rounded()))
+        if minutes < 60 {
+            return "\(minutes) min"
+        }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours) hr" : "\(hours) hr \(remainder) min"
     }
 
     private func updateMediaRefreshLoop() {

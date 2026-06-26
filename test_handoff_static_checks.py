@@ -398,6 +398,39 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, content, ".atriaCardAction(tint: .blue)")
         assert_contains(self, live_workout, ".atriaCardAction(tint: .red)")
 
+    def test_live_workout_end_checkpoints_and_confirms_honestly(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        live_workout = source(ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift")
+
+        for needle in [
+            "private struct AtriaWorkoutEndNotice: Identifiable, Equatable",
+            "@State private var workoutEndNotice: AtriaWorkoutEndNotice?",
+            "onStop: { endWorkoutSession(startedAt: session.start) }",
+            ".alert(item: $workoutEndNotice)",
+            "private func endWorkoutSession(startedAt: Date)",
+            "ble.checkpointCurrentSession(label: label, reason: \"live_workout_end\")",
+            "store.confirmBestWorkoutCandidateForUI(rest: rest,",
+            "source: \"live_workout_end\"",
+            "store.exportToHealthKit()",
+            "Workout evidence saved",
+            "needs at least 10 minutes of strong heart-rate evidence",
+            "ATRIADBG live_workout_end",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "func checkpointCurrentSession(label: String, reason: String) -> Bool",
+            "snapshotSession(label: label)",
+            "onSessionCheckpoint?(saved) == true",
+            "persistActiveSessionJournalIfNeeded(reason: \"live_workout_end_checkpoint\", force: true)",
+            "source=live_workout_end mode=upsert reset_live_session=0",
+        ]:
+            assert_contains(self, ble, needle)
+
+        assert_contains(self, live_workout, "Label(\"End workout\", systemImage: \"stop.fill\")")
+        assert_not_contains(self, home, "onStop: { workoutSession = nil }")
+
     def test_session_detail_downsamples_once_for_render_perf(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 

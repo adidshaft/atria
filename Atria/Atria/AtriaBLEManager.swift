@@ -8081,6 +8081,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return saved
     }
 
+    @discardableResult
+    func checkpointCurrentSession(label: String, reason: String) -> Bool {
+        guard let saved = snapshotSession(label: label) else {
+            AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=%@ samples=%d rr_samples=%d label=%@ source=live_workout_end",
+                  reason,
+                  session.count,
+                  rrArchive.count,
+                  label)
+            return false
+        }
+        let persisted = onSessionCheckpoint?(saved) == true
+        persistActiveSessionJournalIfNeeded(reason: "live_workout_end_checkpoint", force: true)
+        AtriaDebugLog("ATRIADBG session_checkpoint status=%@ reason=%@ samples=%d rr_samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d label=%@ source=live_workout_end mode=upsert reset_live_session=0",
+              persisted ? "saved" : "store_failed",
+              reason,
+              saved.points.count,
+              saved.rrSampleCount,
+              saved.duration,
+              saved.avg,
+              saved.peak,
+              saved.label)
+        return persisted
+    }
+
     private func rollActiveSessionAfterLongGapIfNeeded(nextSampleTime: Date, reason: String) {
         guard longWearModeEnabled, !session.isEmpty else { return }
         let previous = [lastRawHRNotificationAt, lastAcceptedHRAt, session.last?.t].compactMap { $0 }.max()
