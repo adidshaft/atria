@@ -76,7 +76,9 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   The Overview backup/Data card now uses a two-row layout so text, HRV-window
   status, and the Data action do not squeeze each other, reconnect checklist rows
   can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy
-  instead of nested raised cards.
+  instead of nested raised cards. Data developer/research cards now use the same
+  flat card chrome as other Data panels, and the nested phone-haptics settings
+  surface uses inset chrome inside Data settings.
 - **Verification:** `python3 test_handoff_static_checks.py` is green (51), and
   Release builds have been installed on the cabled iPhone. Static guards now pin
   the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path

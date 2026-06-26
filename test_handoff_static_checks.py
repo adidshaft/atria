@@ -264,6 +264,7 @@ class HandoffStaticChecks(unittest.TestCase):
         connection = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         live_workout = source(ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift")
+        haptics = source(ROOT / "Atria" / "Atria" / "AtriaHapticAlerts.swift")
 
         for needle in [
             "struct AtriaOverviewCollectionSection: View, Equatable",
@@ -285,9 +286,19 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaInsetCard(tint: .purple)",
             "private struct AtriaRecoveryStrainCard: View, Equatable",
             "private struct AtriaProfileCard: View, Equatable",
+            "private struct AtriaCollectionIMUAuditCard: View, Equatable",
+            "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
             ".atriaCard(emphasis: .soft)",
         ]:
             assert_contains(self, vitals, needle)
+        assert_not_contains(self, vitals, ".atriaRaisedCard(")
+
+        for needle in [
+            "struct AtriaHapticAlertSettingsCard: View, Equatable",
+            ".atriaInsetCard(tint: .purple)",
+        ]:
+            assert_contains(self, haptics, needle)
+        assert_not_contains(self, haptics, ".atriaRaisedCard(")
 
         for needle in [
             "Text(\"I’ll handle it\")\n                        .frame(maxWidth: .infinity)",

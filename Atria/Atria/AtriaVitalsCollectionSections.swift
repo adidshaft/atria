@@ -581,7 +581,7 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
@@ -653,7 +653,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var latestMarkerText: String {
