@@ -1414,6 +1414,13 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         return "Wear the strap overnight. Atria shows duration and RHR once saved evidence exists."
     }
 
+    private var latestEvidenceFootnote: String {
+        guard let latest = snapshot.latest else { return "No saved sleep yet." }
+        return latest.confirmed
+            ? "\(latest.confidenceText) · confirmed"
+            : "\(latest.confidenceText) · candidate, confirm when ready"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -1440,7 +1447,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: snapshot.latest?.durationText ?? "--",
                                     state: snapshot.latest?.confirmed == true ? .validated : .research,
                                     tint: .cyan,
-                                    footnote: snapshot.latest?.confidenceText)
+                                    footnote: latestEvidenceFootnote)
                     AtriaMetricTile(label: "Average",
                                     value: snapshot.averageDurationText,
                                     state: .local,
