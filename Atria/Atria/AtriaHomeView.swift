@@ -575,7 +575,7 @@ struct AtriaHomeView: View {
                     Button {
                         workoutSession = AtriaWorkoutSession(start: Date())
                     } label: {
-                        Image(systemName: "figure.run")
+                        AtriaToolbarIcon(symbol: "figure.run")
                     }
                     .accessibilityLabel("Start workout")
                 }
@@ -585,7 +585,7 @@ struct AtriaHomeView: View {
                         connectionGuideSnoozedUntil = nil
                         showConnectionGuide = true
                     } label: {
-                        Image(systemName: "questionmark.circle")
+                        AtriaToolbarIcon(symbol: "questionmark.circle")
                     }
                     .accessibilityLabel("Connection help")
                 }
@@ -593,14 +593,14 @@ struct AtriaHomeView: View {
                 NavigationLink {
                     HistoryView(store: store)
                 } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                    AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
                 }
                 .accessibilityLabel("History")
 
                 Button {
                     showSettings = true
                 } label: {
-                    Image(systemName: "gearshape")
+                    AtriaToolbarIcon(symbol: "gearshape")
                 }
                 .accessibilityLabel("Settings")
             }
@@ -2583,6 +2583,18 @@ final class AtriaHomeModel {
             total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
         }
         return total
+    }
+}
+
+private struct AtriaToolbarIcon: View, Equatable {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.body.weight(.semibold))
+            .imageScale(.medium)
+            .frame(width: 34, height: 34)
+            .contentShape(.circle)
     }
 }
 

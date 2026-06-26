@@ -127,11 +127,7 @@ struct AtriaSettingsView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(14)
-            .glassEffect(.regular.tint(Color(red: 0.541, green: 0.22, blue: 0.961).opacity(0.12)), in: .rect(cornerRadius: 5))
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Color(red: 0.541, green: 0.22, blue: 0.961), lineWidth: 1)
-            }
+            .atriaInsetCard(tint: .purple)
         } header: {
             Text("Appearance")
         } footer: {

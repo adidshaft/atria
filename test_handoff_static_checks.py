@@ -64,9 +64,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaDesignTokens",
             "func atriaCard(",
             "func atriaRaisedCard(",
+            "struct AtriaSegmentButtonStyle: ButtonStyle",
+            "var tint: Color = .blue",
+            "func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View",
+            "self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))",
         ]:
             assert_contains(self, text, needle)
 
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        assert_not_contains(self, content, "self.buttonStyle(.glassProminent).tint(tint)")
+        assert_not_contains(self, content, "self.buttonStyle(.glass)\n        }")
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
         assert_not_contains(self, text, "Tab(\"Today\"")
         assert_not_contains(self, text, "Tab(\"Vitals\"")
@@ -94,6 +101,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .poweredOff: return .red",
             "case .disconnected: return .blue",
             "HStack(spacing: 7)",
+            "private struct AtriaToolbarIcon: View, Equatable",
+            "AtriaToolbarIcon(symbol: \"figure.run\")",
+            "AtriaToolbarIcon(symbol: \"questionmark.circle\")",
+            "AtriaToolbarIcon(symbol: \"clock.arrow.circlepath\")",
+            "AtriaToolbarIcon(symbol: \"gearshape\")",
+            ".frame(width: 34, height: 34)",
             ".buttonBorderShape(.circle)",
         ]:
             assert_contains(self, home, needle)
@@ -116,8 +129,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "appearanceButton(\"Light\", mode: \"light\", icon: \"sun.max.fill\")",
             "appearanceButton(\"Dark\", mode: \"dark\", icon: \"moon.fill\")",
             "HStack(spacing: 8)",
-            ".glassEffect(.regular.tint(Color(red: 0.541, green: 0.22, blue: 0.961).opacity(0.12)), in: .rect(cornerRadius: 5))",
-            ".stroke(Color(red: 0.541, green: 0.22, blue: 0.961), lineWidth: 1)",
+            ".atriaInsetCard(tint: .purple)",
             ".buttonStyle(.glass)",
             ".buttonBorderShape(.capsule)",
             "private func isAppearanceModeSelected(_ mode: String) -> Bool",
@@ -1221,14 +1233,22 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Research only; compare with phone motion before steps or sleep.",
+            ".lineLimit(2)",
             "AtriaMetricTile(label: \"Strap steps\"",
             "AtriaMetricTile(label: \"Sleep/wake\"",
             "AtriaMetricTile(label: \"Probes\"",
             "agreementText",
             "probeDetail",
-            "IMUAuditSummary(sessions: sessions)",
+            "let summary = IMUAuditSummary(sessions: store.sessions)",
+            "AtriaCollectionIMUAuditCard(summary: summary)",
         ]:
             assert_contains(self, collection, needle)
+
+        assert_not_contains(
+            self,
+            collection,
+            "private var summary: IMUAuditSummary",
+        )
 
         for forbidden in [
             "title: \"Low radio HR\"",
