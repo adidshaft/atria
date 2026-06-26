@@ -388,6 +388,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "private struct AtriaConnectionDiagnosis: Equatable",
+            "private static let lowBatteryThreshold = 20",
             "private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15",
             "private static let connectionDiagnosisTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()",
             "@State private var connectionDiagnosisCandidate: AtriaConnectionDiagnosis?",
@@ -405,6 +406,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "title == \"Bluetooth is off\"",
             "title == \"Bluetooth permission needed\"",
             "title == \"Strap battery low\"",
+            "live.batteryLevel <= Self.lowBatteryThreshold",
             "var bluetoothPermissionDenied: Bool",
             "ble.$bluetoothPermissionDenied.removeDuplicates()",
             "live.bluetoothPermissionDenied",
@@ -2222,6 +2224,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_diagnostic_notifications_are_not_production_active(self):
         notifications = source(ROOT / "Atria" / "Atria" / "LocalNotificationScheduler.swift")
 
+        assert_contains(self, notifications, "private static let actionableBatteryThreshold = 20")
         assert_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff]")
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
         assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
@@ -2236,6 +2239,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, 'title: "Bluetooth is off"')
         assert_contains(self, notifications, 'body: ble.bluetoothPermissionDenied')
         assert_contains(self, notifications, 'Turn on Bluetooth in Settings so Atria can read your strap.')
+        assert_contains(self, notifications, "threshold=%d")
+        assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold")
         assert_contains(self, notifications, 'body: "Charge your strap before a workout or overnight wear. Battery is \\(battery.level)%."')
         assert_contains(self, notifications, 'bluetooth_off=%d')
         assert_contains(self, notifications, "title: \"Atria notification test\"")
