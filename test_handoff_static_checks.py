@@ -385,6 +385,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityAction(named: Text(\"Move \\(section.label) up\"))",
             ".accessibilityAction(named: Text(\"Move \\(section.label) down\"))",
             "private func moveSection(_ section: AtriaVitalsSection, direction: Int)",
+            "private var hasCustomVitalsLayout: Bool",
+            "AtriaVitalsSection.ordered(from: sectionOrderCSV) != Array(AtriaVitalsSection.allCases)",
+            "private func resetVitalsLayout()",
+            "sectionOrderCSV = AtriaVitalsSection.allCases.map(\\.rawValue).joined(separator: \",\")",
+            "Label(\"Reset Vitals layout\", systemImage: \"arrow.counterclockwise\")",
             "static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String",
             "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
         ]:

@@ -16,29 +16,40 @@ struct AtriaVitalsTabContent: View {
 
     var body: some View {
         let sections = AtriaVitalsSection.ordered(from: sectionOrderCSV)
-        Group {
-            if horizontalSizeClass == .regular {
-                HStack(alignment: .top, spacing: 18) {
-                    LazyVStack(spacing: 18) {
-                        ForEach(sections.enumeratedColumn(0)) { section in
-                            sectionCard(section)
+        VStack(spacing: 18) {
+            Group {
+                if horizontalSizeClass == .regular {
+                    HStack(alignment: .top, spacing: 18) {
+                        LazyVStack(spacing: 18) {
+                            ForEach(sections.enumeratedColumn(0)) { section in
+                                sectionCard(section)
+                            }
                         }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
+                        .frame(maxWidth: .infinity, alignment: .top)
 
+                        LazyVStack(spacing: 18) {
+                            ForEach(sections.enumeratedColumn(1)) { section in
+                                sectionCard(section)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                } else {
                     LazyVStack(spacing: 18) {
-                        ForEach(sections.enumeratedColumn(1)) { section in
+                        ForEach(sections) { section in
                             sectionCard(section)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-            } else {
-                LazyVStack(spacing: 18) {
-                    ForEach(sections) { section in
-                        sectionCard(section)
-                    }
+            }
+
+            if hasCustomVitalsLayout {
+                Button(action: resetVitalsLayout) {
+                    Label("Reset Vitals layout", systemImage: "arrow.counterclockwise")
+                        .frame(maxWidth: .infinity)
                 }
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel("Reset Vitals layout")
             }
         }
     }
@@ -70,6 +81,14 @@ struct AtriaVitalsTabContent: View {
 
     private func moveSection(_ section: AtriaVitalsSection, direction: Int) {
         sectionOrderCSV = AtriaVitalsSection.moving(section, direction: direction, in: sectionOrderCSV)
+    }
+
+    private var hasCustomVitalsLayout: Bool {
+        AtriaVitalsSection.ordered(from: sectionOrderCSV) != Array(AtriaVitalsSection.allCases)
+    }
+
+    private func resetVitalsLayout() {
+        sectionOrderCSV = AtriaVitalsSection.allCases.map(\.rawValue).joined(separator: ",")
     }
 
     private var pulseCard: some View {
