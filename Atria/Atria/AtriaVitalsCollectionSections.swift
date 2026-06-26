@@ -1333,7 +1333,8 @@ private struct AtriaHRVCard: View, Equatable {
         AtriaMetricTile(label: "RMSSD",
                         value: hero.hrvValue,
                         state: hrvState,
-                        tint: .pink)
+                        tint: .pink,
+                        footnote: hero.hrvDetail)
         AtriaMetricTile(label: "Window",
                         value: hero.rrPackageText,
                         state: isConnected && !live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .live : .learning,
