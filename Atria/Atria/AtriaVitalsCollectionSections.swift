@@ -60,6 +60,16 @@ struct AtriaVitalsTabContent: View {
             sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
             return true
         }
+        .accessibilityAction(named: Text("Move \(section.label) up")) {
+            moveSection(section, direction: -1)
+        }
+        .accessibilityAction(named: Text("Move \(section.label) down")) {
+            moveSection(section, direction: 1)
+        }
+    }
+
+    private func moveSection(_ section: AtriaVitalsSection, direction: Int) {
+        sectionOrderCSV = AtriaVitalsSection.moving(section, direction: direction, in: sectionOrderCSV)
     }
 
     private var pulseCard: some View {
@@ -92,6 +102,15 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var label: String {
+        switch self {
+        case .pulse: return "Pulse"
+        case .hrv: return "HRV"
+        case .recoveryStrain: return "Recovery and strain"
+        case .profile: return "Profile"
+        }
+    }
+
     static let orderStorageKey = "atria.vitals.sectionOrderCSV"
 
     static func ordered(from csv: String) -> [AtriaVitalsSection] {
@@ -111,6 +130,15 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
         var order = ordered(from: csv).filter { $0 != dragged }
         let insertIndex = order.firstIndex(of: target) ?? order.endIndex
         order.insert(dragged, at: insertIndex)
+        return order.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String {
+        var order = ordered(from: csv)
+        guard let index = order.firstIndex(of: section) else { return order.map(\.rawValue).joined(separator: ",") }
+        let next = max(0, min(order.count - 1, index + direction))
+        guard next != index else { return order.map(\.rawValue).joined(separator: ",") }
+        order.swapAt(index, next)
         return order.map(\.rawValue).joined(separator: ",")
     }
 }
