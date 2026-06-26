@@ -900,7 +900,7 @@ private struct AtriaPulseCard: View, Equatable {
     }
 
     private var hasLiveContact: Bool {
-        isConnected && live.hasContact
+        isConnected && live.hasPulseSignal
     }
 
     var body: some View {

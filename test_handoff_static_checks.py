@@ -112,25 +112,26 @@ class HandoffStaticChecks(unittest.TestCase):
             ".glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)",
             ".onTapGesture",
             "ble.startScan(reason: \"home_status_chip\")",
-            "return hasContact ? \"Live\" : \"No signal\"",
+            "var hasPulseSignal: Bool { hasContact || heartRate > 0 }",
+            "return hasPulseSignal ? \"Live\" : \"No signal\"",
             "case .connecting: return \"Connecting\"",
             "case .scanning: return \"Searching\"",
             "case .poweredOff: return \"Bluetooth off\"",
             "? \"Reconnecting…\"",
             ": \"Disconnected\"",
-            "case .connected: return hasContact ? .green : .orange",
+            "case .connected: return hasPulseSignal ? .green : .orange",
             "case .connecting: return .yellow",
             "case .scanning: return .cyan",
             "case .poweredOff: return .red",
             "case .disconnected: return .blue",
-            "HStack(spacing: 7)",
+            "HStack(spacing: 5)",
             "private struct AtriaToolbarIcon: View, Equatable",
             "AtriaToolbarIcon(symbol: \"figure.run\")",
             "AtriaToolbarIcon(symbol: \"questionmark.circle\")",
             "AtriaToolbarIcon(symbol: \"clock.arrow.circlepath\")",
             "AtriaToolbarIcon(symbol: \"gearshape\")",
-            ".frame(width: 34, height: 34)",
-            ".buttonBorderShape(.circle)",
+            ".frame(width: 30, height: 30)",
+            ".glassEffect(.regular.interactive(), in: .circle)",
         ]:
             assert_contains(self, home, needle)
 
@@ -139,6 +140,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .connected: return \"Live/Connected\"",
             "case .connecting, .scanning: return \"Connecting...\"",
             "case .poweredOff, .disconnected: return \"Not Connected\"",
+            ".buttonStyle(.glass)\n            .buttonBorderShape(.circle)",
+            "case .connected where !pulse.hasContact:",
         ]:
             assert_not_contains(self, home, forbidden)
 
