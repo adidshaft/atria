@@ -2208,6 +2208,9 @@ final class SessionStore: ObservableObject {
     /// History opens with this cached snapshot instead of recomputing activity
     /// detection, trend summaries, and daily rollups on the navigation path.
     @Published private(set) var historySnapshot = HistorySnapshot.empty
+    /// Overview trends are prepared outside SwiftUI render paths; the chart reads
+    /// this O(1) array instead of filtering/sorting sessions or computing TRIMP.
+    @Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2230,6 +2233,7 @@ final class SessionStore: ObservableObject {
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var historySnapshotRevision = 0
+    private var overviewTrendPointsRevision = 0
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
 
     /// CHEAP: 14-point resting-HR trend from raw `sessions` (current inside the
@@ -2282,6 +2286,37 @@ final class SessionStore: ObservableObject {
                                           detections: detectedActivities(rest: rest, maxHR: maxHR),
                                           trends: trendSummaries(rest: rest, maxHR: maxHR),
                                           rollups: dailyRollups(rest: rest, maxHR: maxHR))
+    }
+
+    private func refreshOverviewTrendPointsCache(deferred: Bool = true) {
+        overviewTrendPointsRevision &+= 1
+        let revision = overviewTrendPointsRevision
+        let source = sessions
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        let delay: TimeInterval = deferred ? 0.12 : 0
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+            let points = Self.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, revision == self.overviewTrendPointsRevision else { return }
+                self.overviewTrendPoints = points
+            }
+        }
+    }
+
+    private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession],
+                                                            rest: Int,
+                                                            maxHR: Int) -> [AtriaTrendPoint] {
+        let cutoff = Date().addingTimeInterval(-92 * 86_400)
+        let meaningful = sessions.filter { $0.points.count >= 8 && $0.start >= cutoff }
+        let recent = meaningful.sorted { $0.start < $1.start }.suffix(200)
+        return recent.map { session in
+            AtriaTrendPoint(id: session.id,
+                            date: session.start,
+                            restingHR: session.restingStable,
+                            strain: Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)),
+                            hrv: session.hrv)
+        }
     }
 
     /// EXPENSIVE: behavior insights via dailyRollups → the canonical-session cache.
@@ -2390,6 +2425,7 @@ final class SessionStore: ObservableObject {
         refreshSessionDerivedCaches()
         recomputeCollectionResearchSummaries()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
     }
 
     var latestReferenceValidatedHRV: Int? {
@@ -3003,6 +3039,7 @@ final class SessionStore: ObservableObject {
         // the canonical cache + baseline are consistent (NOT in the checkpoint path).
         recomputeBehaviorInsights()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
             AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
@@ -3043,6 +3080,7 @@ final class SessionStore: ObservableObject {
         baseline.save()
         refreshHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         AtriaDebugLog("ATRIADBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
@@ -3082,6 +3120,7 @@ final class SessionStore: ObservableObject {
             cachedHomeDashboardDiagnostics = nil
         }
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         AtriaDebugLog("ATRIADBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
@@ -3123,6 +3162,7 @@ final class SessionStore: ObservableObject {
         invalidateHomeDashboardDiagnosticsCache()
         recomputeBehaviorInsights()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
     }
@@ -3141,6 +3181,7 @@ final class SessionStore: ObservableObject {
         profile.save()
         invalidateHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
@@ -3154,6 +3195,7 @@ final class SessionStore: ObservableObject {
         self.profile.save()
         invalidateHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         AtriaDebugLog("ATRIADBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
@@ -8820,6 +8862,7 @@ final class SessionStore: ObservableObject {
         }
         cachedHomeDashboardDiagnostics = nil
         refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
         publishDashboardRevision()
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
