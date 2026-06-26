@@ -358,6 +358,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// The displayed connection status. NEVER written ad-hoc — it is recomputed as a
     /// pure function of CoreBluetooth ground truth via `recomputeConnectionStatus`.
     @Published private(set) var status: Status = .disconnected
+    @Published private(set) var bluetoothPermissionDenied = false
     /// True while an active scan is in progress with no peripheral yet (first-time
     /// setup). Feeds the derived status so it shows "Searching" only when truly scanning.
     private var isActivelyScanning = false
@@ -8858,6 +8859,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             switch central.state {
             case .poweredOn:
+                assignIfChanged(\.bluetoothPermissionDenied, false)
                 let reason = pendingScanReason ?? "central_powered_on"
                 pendingScanReason = nil
                 if let peripheral, peripheral.state == .connected {
@@ -8871,10 +8873,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 }
                 self.recomputeConnectionStatus(reason: "central_powered_on")
             case .poweredOff:
+                assignIfChanged(\.bluetoothPermissionDenied, false)
                 preserveLongWearRangeLossRecovery(reason: "central_powered_off")
                 self.isActivelyScanning = false
                 self.recomputeConnectionStatus(reason: "central_powered_off")
+            case .unauthorized:
+                assignIfChanged(\.bluetoothPermissionDenied, true)
+                preserveLongWearRangeLossRecovery(reason: "central_unauthorized")
+                self.isActivelyScanning = false
+                self.recomputeConnectionStatus(reason: "central_unauthorized")
             default:
+                assignIfChanged(\.bluetoothPermissionDenied, false)
                 preserveLongWearRangeLossRecovery(reason: "central_unavailable")
                 self.isActivelyScanning = false
                 self.recomputeConnectionStatus(reason: "central_unavailable")

@@ -204,9 +204,11 @@ struct AtriaCollectionTabContent: View {
     }
 
     private var researchManeuverCard: some View {
-        AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers,
-                                        sessions: store.sessions,
-                                        onMark: { store.markResearchManeuver($0) })
+        let summary = ResearchManeuverProbeCorrelationSummary(markers: store.researchManeuverMarkers,
+                                                              sessions: store.sessions)
+        return AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers,
+                                               correlationSummary: summary,
+                                               onMark: { store.markResearchManeuver($0) })
     }
 
     private var collectionControlsCard: some View {
@@ -681,7 +683,7 @@ private struct IMUAuditSummary: Equatable {
 
 private struct AtriaResearchManeuverMarkerCard: View, Equatable {
     let markers: [ResearchManeuverMarker]
-    let sessions: [SavedSession]
+    let correlationSummary: ResearchManeuverProbeCorrelationSummary
     let onMark: (ResearchManeuverMarker.Kind) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -757,10 +759,6 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
     private var latestMarkerDetail: String? {
         guard let marker = markers.first else { return nil }
         return RelativeDateTimeFormatter().localizedString(for: marker.timestamp, relativeTo: Date())
-    }
-
-    private var correlationSummary: ResearchManeuverProbeCorrelationSummary {
-        ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessions)
     }
 
     private static let buttonColumns = [GridItem(.flexible()), GridItem(.flexible())]
