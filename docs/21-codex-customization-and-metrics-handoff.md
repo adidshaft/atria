@@ -48,7 +48,11 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 - **Perf cleanup:** the research maneuver marker card now receives its probe
   correlation summary from the parent render path instead of rebuilding it inside
   the card body/equality checks.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (45), and a
+- **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
+  saver** radio-mode toggle. It uses the existing reconnect-aware
+  `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
+  live while RR-gated HRV/Recovery/sleep detail waits for validated RR windows.
+- **Verification:** `python3 test_handoff_static_checks.py` is green (46), and a
   generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
   pin the handoff-21 ordering and diagnosis behavior.
 

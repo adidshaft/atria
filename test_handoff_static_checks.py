@@ -206,6 +206,37 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, home, "showConnectionDiagnosisModal")
 
+    def test_handoff_21_battery_saver_radio_mode_is_user_visible(self):
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+
+        for needle in [
+            "let batterySaverEnabled: Bool",
+            "let onUpdateBatterySaver: (Bool) -> Void",
+            "@State private var batterySaver: Bool",
+            "radioModeSection",
+            "Toggle(isOn: $batterySaver)",
+            "Label(\"Battery saver\", systemImage: \"battery.75percent\")",
+            "title: batterySaver ? \"Standard HR radio\" : \"Full protocol radio\"",
+            "HRV, Recovery and sleep detail wait for validated RR windows.",
+            "Atria reconnects the strap when the radio mode changes.",
+            ".onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }",
+        ]:
+            assert_contains(self, settings, needle)
+
+        for needle in [
+            "batterySaverEnabled: ble.standardHROnlyEnabled",
+            "onUpdateBatterySaver: { ble.setStandardHROnlyEnabled($0) }",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "func setStandardHROnlyEnabled(_ enabled: Bool)",
+            "applyStandardHROnly(enabled: enabled, persist: true, reconnect: true, reason: \"user_toggle\")",
+        ]:
+            assert_contains(self, ble, needle)
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)

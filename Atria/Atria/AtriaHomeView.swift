@@ -193,6 +193,8 @@ struct AtriaHomeView: View {
                               onUpdateProfile: store.updateProfile,
                               hapticSettings: hapticSettings,
                               onUpdateHaptics: { hapticSettings = $0 },
+                              batterySaverEnabled: ble.standardHROnlyEnabled,
+                              onUpdateBatterySaver: { ble.setStandardHROnlyEnabled($0) },
                               onExportHealth: { store.exportToHealthKit() },
                               onSyncMissedData: {
                                   _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
