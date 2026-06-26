@@ -39,7 +39,8 @@ enum LocalNotificationScheduler {
             }
             await schedule(store: store,
                            ble: ble,
-                           includeMetricDecisions: productionCadence || debugMetricRequest,
+                           includeMetricDecisions: debugMetricRequest,
+                           includeActionableConnectionDecisions: productionCadence || debugMetricRequest,
                            includeDiagnostic: debugDiagnosticRequest,
                            productionCadence: productionCadence)
         }
@@ -52,6 +53,7 @@ enum LocalNotificationScheduler {
     private static func schedule(store: SessionStore,
                                  ble: AtriaBLEManager,
                                  includeMetricDecisions: Bool,
+                                 includeActionableConnectionDecisions: Bool,
                                  includeDiagnostic: Bool,
                                  productionCadence: Bool) async {
         let center = UNUserNotificationCenter.current()
@@ -59,13 +61,14 @@ enum LocalNotificationScheduler {
         let settings = await notificationSettings(center: center)
         let status = statusName(settings.authorizationStatus)
         AtriaDebugLog("ATRIADBG notification_auth status=%@ granted=%d", status, granted ? 1 : 0)
-        AtriaDebugLog("ATRIADBG notification_readiness status=%@ authorization=%@ metric_decisions=%d diagnostic=%d production_cadence=%d action=%@",
+        AtriaDebugLog("ATRIADBG notification_readiness status=%@ authorization=%@ metric_decisions=%d actionable_connection_decisions=%d diagnostic=%d production_cadence=%d action=%@",
               productionCadence ? "production_cadence" : "debug_trigger",
               status,
               includeMetricDecisions ? 1 : 0,
+              includeActionableConnectionDecisions ? 1 : 0,
               includeDiagnostic ? 1 : 0,
               productionCadence ? 1 : 0,
-              productionCadence ? "monitor_confidence_gated_metric_triggers" : "debug_delivery_probe")
+              productionCadence ? "monitor_actionable_connection_triggers" : "debug_delivery_probe")
 
         guard settings.authorizationStatus == .authorized ||
                 settings.authorizationStatus == .provisional ||
@@ -77,7 +80,13 @@ enum LocalNotificationScheduler {
 
         center.removePendingNotificationRequests(withIdentifiers: Identifier.removable)
 
-        var decisions = includeMetricDecisions ? makeDecisions(store: store, ble: ble) : []
+        var decisions: [NotificationDecision] = []
+        if includeMetricDecisions {
+            decisions.append(contentsOf: makeMetricDecisions(store: store, ble: ble))
+        }
+        if includeActionableConnectionDecisions {
+            decisions.append(contentsOf: makeActionableConnectionDecisions(ble: ble))
+        }
         if includeDiagnostic {
             decisions.append(NotificationDecision(
                 kind: "diagnostic",
@@ -109,8 +118,8 @@ enum LocalNotificationScheduler {
         await logPendingRequests(center: center)
     }
 
-    private static func makeDecisions(store: SessionStore,
-                                      ble: AtriaBLEManager) -> [NotificationDecision] {
+    private static func makeMetricDecisions(store: SessionStore,
+                                            ble: AtriaBLEManager) -> [NotificationDecision] {
         let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
                                           fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
@@ -185,6 +194,10 @@ enum LocalNotificationScheduler {
             )
         }
 
+        return [recoveryDecision, strainDecision]
+    }
+
+    private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision] {
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
         AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
               battery.level,
@@ -242,7 +255,7 @@ enum LocalNotificationScheduler {
             )
         }
 
-        return [recoveryDecision, strainDecision, batteryDecision, bluetoothDecision]
+        return [batteryDecision, bluetoothDecision]
     }
 
     private static func batterySnapshot(liveLevel: Int) -> (level: Int, source: String, age: TimeInterval, usable: Bool) {

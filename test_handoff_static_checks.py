@@ -1907,6 +1907,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff]")
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
         assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
+        assert_contains(self, notifications, "includeMetricDecisions: debugMetricRequest")
+        assert_contains(self, notifications, "includeActionableConnectionDecisions: productionCadence || debugMetricRequest")
+        assert_contains(self, notifications, "actionable_connection_decisions=%d")
+        assert_contains(self, notifications, "monitor_actionable_connection_triggers")
+        assert_contains(self, notifications, "private static func makeMetricDecisions(store: SessionStore,")
+        assert_contains(self, notifications, "private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision]")
         assert_contains(self, notifications, 'static let bluetoothOff = "atria.bluetooth.off"')
         assert_contains(self, notifications, 'kind: "bluetooth_off"')
         assert_contains(self, notifications, 'title: "Bluetooth is off"')
@@ -1918,6 +1924,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "body: \"Local notification delivery is working.\"")
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, diagnostic]")
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff, diagnostic]")
+        assert_not_contains(self, notifications, "includeMetricDecisions: productionCadence || debugMetricRequest")
+        assert_not_contains(self, notifications, "monitor_confidence_gated_metric_triggers")
         assert_not_contains(self, notifications, "title: \"Atria diagnostic\"")
 
     def test_background_task_plumbing_is_present(self):
