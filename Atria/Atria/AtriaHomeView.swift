@@ -570,7 +570,7 @@ struct AtriaHomeView: View {
         }
 
         ToolbarItem(placement: .topBarTrailing) {
-            HStack(spacing: 7) {
+            HStack(spacing: 5) {
                 if model.statusStore.state.status == .connected {
                     Button {
                         workoutSession = AtriaWorkoutSession(start: Date())
@@ -604,8 +604,6 @@ struct AtriaHomeView: View {
                 }
                 .accessibilityLabel("Settings")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
         }
     }
 
@@ -1133,7 +1131,7 @@ private struct AtriaStandByOverlay: View {
                         .foregroundStyle(.white)
                         .minimumScaleFactor(0.7)
 
-                    Text(pulseLiveStore.state.hasContact ? "BPM live" : "BPM waiting")
+                    Text(pulseLiveStore.state.hasPulseSignal ? "BPM live" : "BPM waiting")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.58))
                 }
@@ -1261,7 +1259,8 @@ final class AtriaHomeModel {
         var peakHeartRate: Int?
 
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
-        var contactText: String { hasContact ? "Live" : "No contact" }
+        var hasPulseSignal: Bool { hasContact || heartRate > 0 }
+        var contactText: String { hasPulseSignal ? "Live" : "No contact" }
         var averageHeartRateText: String { averageHeartRate.map(String.init) ?? "--" }
         var peakHeartRateText: String { peakHeartRate.map(String.init) ?? "--" }
     }
@@ -2594,9 +2593,10 @@ private struct AtriaToolbarIcon: View, Equatable {
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.body.weight(.semibold))
-            .imageScale(.medium)
-            .frame(width: 34, height: 34)
+            .font(.callout.weight(.semibold))
+            .imageScale(.small)
+            .frame(width: 30, height: 30)
+            .glassEffect(.regular.interactive(), in: .circle)
             .contentShape(.circle)
     }
 }
@@ -2611,7 +2611,7 @@ private struct AtriaTopStatusChip: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var status: AtriaBLEManager.Status { statusStore.state.status }
-    private var hasContact: Bool { pulseLiveStore.state.hasContact }
+    private var hasPulseSignal: Bool { pulseLiveStore.state.hasPulseSignal }
 
     var body: some View {
         HStack(spacing: 5) {
@@ -2638,7 +2638,7 @@ private struct AtriaTopStatusChip: View {
         switch status {
         case .connected:
             // "Live" must mean actually reading your pulse, not just a BLE link.
-            return hasContact ? "Live" : "No signal"
+            return hasPulseSignal ? "Live" : "No signal"
         case .connecting: return "Connecting"
         case .scanning: return "Searching"
         case .poweredOff: return "Bluetooth off"
@@ -2651,7 +2651,7 @@ private struct AtriaTopStatusChip: View {
 
     private var symbol: String {
         switch status {
-        case .connected: return hasContact ? "bolt.heart.fill" : "heart.slash"
+        case .connected: return hasPulseSignal ? "bolt.heart.fill" : "heart.slash"
         case .connecting, .scanning: return "dot.radiowaves.left.and.right"
         case .poweredOff: return "bolt.slash.fill"
         case .disconnected: return "bolt.horizontal.circle"
@@ -2660,7 +2660,7 @@ private struct AtriaTopStatusChip: View {
 
     private var tint: Color {
         switch status {
-        case .connected: return hasContact ? .green : .orange
+        case .connected: return hasPulseSignal ? .green : .orange
         case .connecting: return .yellow
         case .scanning: return .cyan
         case .poweredOff: return .red
@@ -2671,7 +2671,7 @@ private struct AtriaTopStatusChip: View {
     private var foreground: Color {
         if colorScheme == .light {
             switch status {
-            case .connected: return hasContact ? Color(red: 0.04, green: 0.42, blue: 0.20) : Color(red: 0.60, green: 0.34, blue: 0.00)
+            case .connected: return hasPulseSignal ? Color(red: 0.04, green: 0.42, blue: 0.20) : Color(red: 0.60, green: 0.34, blue: 0.00)
             case .connecting: return Color(red: 0.52, green: 0.36, blue: 0.00)
             case .scanning: return Color(red: 0.00, green: 0.36, blue: 0.46)
             case .poweredOff: return Color(red: 0.62, green: 0.10, blue: 0.10)
@@ -2679,7 +2679,7 @@ private struct AtriaTopStatusChip: View {
             }
         }
         switch status {
-        case .connected: return hasContact ? Color(red: 0.77, green: 1.00, blue: 0.86) : Color(red: 1.00, green: 0.86, blue: 0.62)
+        case .connected: return hasPulseSignal ? Color(red: 0.77, green: 1.00, blue: 0.86) : Color(red: 1.00, green: 0.86, blue: 0.62)
         case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)
         case .scanning: return Color(red: 0.64, green: 0.95, blue: 1.00)
         case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
@@ -2722,7 +2722,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red)
-        case .connected where !pulse.hasContact:
+        case .connected where !pulse.hasPulseSignal:
             return AtriaConnectionDiagnosis(title: "Connected, no pulse",
                                             action: "Tighten the strap fit or wet the sensor.",
                                             systemImage: "heart.slash",
