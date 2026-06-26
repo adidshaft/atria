@@ -396,6 +396,35 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, ble, needle)
 
+    def test_handoff_21_historical_backfill_status_is_visible_and_fail_closed(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "struct HistoricalArchiveStatus: Equatable",
+            "@Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty",
+            "func refreshHistoricalArchiveStatus(reason: String = \"manual\")",
+            "DispatchQueue.global(qos: .utility).async",
+            "HistoricalArchive.diagnostics()",
+            "return \"Saved · metrics gated\"",
+            "var metricReady: Bool",
+            "metricUsableRows > 0 && currentSessionUsableRows > 0",
+            "refreshHistoricalArchiveStatus(reason: \"session_store_init\")",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "AtriaCollectionStatusCardHost(coreLiveStore: coreLiveStore,",
+            "store: store)",
+            "@ObservedObject var store: SessionStore",
+            "store.refreshHistoricalArchiveStatus(reason: \"data_status_appear\")",
+            "AtriaMetricTile(label: \"Backfill\"",
+            "value: store.historicalArchiveStatus.valueText",
+            "state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning)",
+            "footnote: store.historicalArchiveStatus.detailText",
+        ]:
+            assert_contains(self, collection, needle)
+
     def test_handoff_21_uniform_cards_avoid_clipping_and_nested_raised_chrome(self):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
