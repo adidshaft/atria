@@ -2307,6 +2307,8 @@ final class SessionStore: ObservableObject {
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
+    private var historicalArchiveStatusObserver: NSObjectProtocol?
+    private var pendingHistoricalArchiveStatusRefresh: Task<Void, Never>?
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
 
     /// CHEAP: 14-point resting-HR trend from raw `sessions` (current inside the
@@ -2396,6 +2398,15 @@ final class SessionStore: ObservableObject {
                               status.valueText,
                               status.detailText)
             }
+        }
+    }
+
+    private func scheduleHistoricalArchiveStatusRefresh(reason: String) {
+        pendingHistoricalArchiveStatusRefresh?.cancel()
+        pendingHistoricalArchiveStatusRefresh = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.refreshHistoricalArchiveStatus(reason: reason)
         }
     }
 
@@ -2520,6 +2531,13 @@ final class SessionStore: ObservableObject {
         self.cachedHomeDashboardDiagnostics = nil
         self.cachedHomeSavedAggregate = nil
         self.cachedCurrentCollectionStatus = nil
+        self.historicalArchiveStatusObserver = NotificationCenter.default.addObserver(forName: HistoricalArchive.didUpdateNotification,
+                                                                                      object: nil,
+                                                                                      queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.scheduleHistoricalArchiveStatusRefresh(reason: "archive_did_update")
+            }
+        }
         loadPersistedSessionsDeferred()
         refreshSessionDerivedCaches()
         recomputeCollectionResearchSummaries()
@@ -2528,6 +2546,13 @@ final class SessionStore: ObservableObject {
         refreshHistoricalArchiveStatus(reason: "session_store_init")
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+    }
+
+    deinit {
+        if let historicalArchiveStatusObserver {
+            NotificationCenter.default.removeObserver(historicalArchiveStatusObserver)
+        }
+        pendingHistoricalArchiveStatusRefresh?.cancel()
     }
 
     var latestReferenceValidatedHRV: Int? {
