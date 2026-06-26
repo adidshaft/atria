@@ -541,6 +541,35 @@ struct AtriaWhoopCoexistenceModal: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    private var coexistenceSteps: [AtriaConnectionGuideStep] {
+        if context.whoopAppInstalled {
+            return [
+                AtriaConnectionGuideStep(title: "Delete the WHOOP app",
+                                         detail: "Press and hold the WHOOP icon → Remove App → Delete App. (recommended)",
+                                         systemImage: "trash",
+                                         tint: .red),
+                AtriaConnectionGuideStep(title: "Or fully disable it",
+                                         detail: "Log out of WHOOP, then turn off its Bluetooth and Background App Refresh in iPhone Settings.",
+                                         systemImage: "powersleep",
+                                         tint: .orange),
+            ]
+        }
+        return [
+            AtriaConnectionGuideStep(title: "Forget the strap in Bluetooth",
+                                     detail: "Settings → Bluetooth → tap the (i) next to your strap → Forget This Device. Clears the stale pairing, then reopen Atria.",
+                                     systemImage: "minus.circle",
+                                     tint: .red),
+            AtriaConnectionGuideStep(title: "Charge the strap",
+                                     detail: "A low battery drops the link. Top it up before a workout or overnight wear.",
+                                     systemImage: "battery.25",
+                                     tint: .orange),
+            AtriaConnectionGuideStep(title: "Restart Bluetooth",
+                                     detail: "Toggle Bluetooth off and on in Settings (or Airplane Mode briefly). Restart the phone if it persists.",
+                                     systemImage: "antenna.radiowaves.left.and.right",
+                                     tint: .blue),
+        ]
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -561,19 +590,12 @@ struct AtriaWhoopCoexistenceModal: View {
                         }
 
                         VStack(alignment: .leading, spacing: 14) {
-                            Text("Pick one")
+                            Text(context.coexistencePickLabel)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            AtriaConnectionStepTile(step: AtriaConnectionGuideStep(
-                                title: "Delete the WHOOP app",
-                                detail: "Press and hold the WHOOP icon → Remove App → Delete App. (recommended)",
-                                systemImage: "trash",
-                                tint: .red))
-                            AtriaConnectionStepTile(step: AtriaConnectionGuideStep(
-                                title: "Or fully disable it",
-                                detail: "Log out of WHOOP, then turn off its Bluetooth and Background App Refresh in iPhone Settings.",
-                                systemImage: "powersleep",
-                                tint: .orange))
+                            ForEach(coexistenceSteps) { step in
+                                AtriaConnectionStepTile(step: step)
+                            }
                         }
                         .padding(18)
                         .atriaCard(emphasis: .soft)
