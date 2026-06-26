@@ -1322,6 +1322,17 @@ final class AtriaHomeModel {
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
         var liveActiveCaloriesText: String { liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "--" }
         var phoneStepsText: String { phoneStepsToday > 0 ? "\(phoneStepsToday)" : "--" }
+        var phoneMotionDetailText: String {
+            var parts: [String] = []
+            if let meters = phoneDistanceTodayMeters, meters >= 100 {
+                parts.append(String(format: "%.1f km", meters / 1_000))
+            }
+            if let floors = phoneFloorsToday, floors > 0 {
+                parts.append("\(floors) \(floors == 1 ? "floor" : "floors")")
+            }
+            if !parts.isEmpty { return parts.joined(separator: " · ") }
+            return phoneStepsToday > 0 ? "iPhone motion" : "Building"
+        }
 
         /// SF Symbol matching the level, with the bolt overlay while charging.
         var batterySymbol: String {
