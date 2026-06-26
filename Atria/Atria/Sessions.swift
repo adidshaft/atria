@@ -9314,9 +9314,12 @@ struct DetectionRow: View {
 
 struct SessionDetail: View {
     let session: SavedSession
+    private let displayedPoints: [SavedSession.Point]
     private var maxHR: Int { AthleteProfile.load().maxHR }
-    private var displayedPoints: [SavedSession.Point] {
-        downsampledPoints(session.points)
+
+    init(session: SavedSession) {
+        self.session = session
+        self.displayedPoints = Self.downsampledPoints(session.points)
     }
 
     var body: some View {
@@ -9361,7 +9364,7 @@ struct SessionDetail: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func downsampledPoints(_ points: [SavedSession.Point], targetCount: Int = 320) -> [SavedSession.Point] {
+    private static func downsampledPoints(_ points: [SavedSession.Point], targetCount: Int = 320) -> [SavedSession.Point] {
         guard points.count > targetCount, targetCount > 1 else { return points }
         let maxIndex = points.count - 1
         let step = Double(maxIndex) / Double(targetCount - 1)

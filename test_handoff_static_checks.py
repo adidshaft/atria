@@ -285,6 +285,25 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, vitals, needle)
 
+    def test_session_detail_downsamples_once_for_render_perf(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            "struct SessionDetail: View",
+            "private let displayedPoints: [SavedSession.Point]",
+            "init(session: SavedSession)",
+            "self.displayedPoints = Self.downsampledPoints(session.points)",
+            "private static func downsampledPoints",
+            "Chart(Array(displayedPoints.enumerated()), id: \\.offset)",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        assert_not_contains(
+            self,
+            sessions,
+            "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
+        )
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)
