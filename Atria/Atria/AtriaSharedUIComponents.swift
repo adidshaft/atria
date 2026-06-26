@@ -485,15 +485,17 @@ struct AtriaProfileStepperTile: View {
             HStack(spacing: 10) {
                 Button(action: decrement) {
                     Image(systemName: "minus")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
-                .buttonStyle(.glass)
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel("Decrease \(title)")
 
                 Button(action: increment) {
                     Image(systemName: "plus")
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
-                .buttonStyle(.glass)
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel("Increase \(title)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

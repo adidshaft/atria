@@ -138,8 +138,7 @@ struct AtriaLiveWorkoutView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
         }
-        .buttonStyle(.glassProminent)
-        .tint(.red)
+        .atriaCardAction(tint: .red)
     }
 
     private func elapsedText(_ date: Date) -> String {

@@ -64,7 +64,9 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   in-scroll segmented choices and tags no longer instantiate repeated glass
   controls. Card-body actions now use a shared `AtriaCardActionButtonStyle`
   instead of repeated `.glass/.glassProminent`, including Data export/import/share,
-  probe markers, overview CTAs, Settings reorder controls, and inline banners.
+  probe markers, overview CTAs, Settings reorder controls, inline banners,
+  connection/setup actions, profile steppers, AI coach key actions, onboarding
+  primary action, and workout stop.
   The Overview backup/Data card now uses a two-row layout so text, HRV-window
   status, and the Data action do not squeeze each other, reconnect checklist rows
   can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy

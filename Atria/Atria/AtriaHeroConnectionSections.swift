@@ -610,12 +610,13 @@ struct AtriaCoexistenceModal: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaBar(edge: .bottom) {
-                Button("I’ll handle it") { onAcknowledge() }
-                    .buttonStyle(.glassProminent)
-                    .tint(.orange)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
+                Button(action: onAcknowledge) {
+                    Text("I’ll handle it")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(tint: .orange)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
             }
         }
     }
@@ -821,22 +822,29 @@ private struct AtriaConnectionGuideSheet: View {
                 VStack(spacing: 10) {
                     if horizontalSizeClass == .compact {
                         VStack(spacing: 10) {
-                            Button(primaryButtonTitle, action: continueSetup)
-                                .buttonStyle(.glassProminent)
-                                .tint(.blue)
-                            Button("Retry scan now", action: retry)
-                                .buttonStyle(.glass)
-                                .tint(.gray)
+                            Button(action: continueSetup) {
+                                Text(primaryButtonTitle)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .atriaCardAction(tint: .blue)
+                            Button(action: retry) {
+                                Text("Retry scan now")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .atriaCardAction(prominent: false, tint: .gray)
                         }
                     } else {
                         HStack(spacing: 10) {
-                            Button(primaryButtonTitle, action: continueSetup)
-                                .buttonStyle(.glassProminent)
-                                .tint(.blue)
-                                .frame(maxWidth: .infinity)
-                            Button("Retry scan now", action: retry)
-                                .buttonStyle(.glass)
-                                .tint(.gray)
+                            Button(action: continueSetup) {
+                                Text(primaryButtonTitle)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .atriaCardAction(tint: .blue)
+                            Button(action: retry) {
+                                Text("Retry scan now")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .atriaCardAction(prominent: false, tint: .gray)
                         }
                     }
 

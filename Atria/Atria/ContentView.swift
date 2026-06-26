@@ -814,16 +814,17 @@ struct ProfileOnboardingView: View {
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 14) {
                     onboardingProgressDots
-                    Button(primaryButtonTitle) {
+                    Button {
                         if step.isLast {
                             onComplete(draft)
                         } else {
                             advance(to: OnboardingStep(rawValue: step.rawValue + 1) ?? .profile)
                         }
+                    } label: {
+                        Text(primaryButtonTitle)
+                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(.blue)
-                    .frame(maxWidth: .infinity)
+                    .atriaCardAction(tint: .blue)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
