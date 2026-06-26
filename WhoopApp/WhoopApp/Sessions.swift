@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 import CryptoKit
 
-/// A finished heart-rate session, persisted locally (no cloud, no WHOOP account).
+/// A finished heart-rate session, persisted locally (no cloud, no manufacturer account).
 struct SavedSession: Codable, Identifiable {
     let id: UUID
     let start: Date
@@ -19,14 +19,14 @@ struct SavedSession: Codable, Identifiable {
     /// Respiratory rate inferred from RR modulation, in breaths per minute.
     /// Optional because older sessions and insufficient RR windows have none.
     var respiratoryRate: Double? = nil
-    /// Real decoded RR/IBI intervals received from WHOOP realtime frames during
+    /// Real decoded RR/IBI intervals received from strap realtime frames during
     /// this saved session. These are preserved for audit/replay, but do not make
     /// HRV clinically usable unless the strict continuity and reference gates pass.
     var rrPoints: [RRPoint]? = nil
     /// True only after this session's RMSSD has been compared against an
     /// external RR/IBI reference within the Gate B tolerance.
     var hrvReferenceValidated: Bool?
-    /// Diagnostic-only motion/sleep hints extracted from WHOOP `0x32` text
+    /// Diagnostic-only motion/sleep hints extracted from strap `0x32` text
     /// packets while this session was active. These are not validated IMU
     /// metrics and must not raise sleep confidence by themselves.
     var motionHintCount: Int? = nil
@@ -40,7 +40,7 @@ struct SavedSession: Codable, Identifiable {
     var motionShortMin: Double? = nil
     var motionShortMax: Double? = nil
     var motionShortOverOneCount: Int? = nil
-    /// Research-gated features decoded from WHOOP `0x33` candidate IMU frames.
+    /// Research-gated features decoded from strap `0x33` candidate IMU frames.
     /// Raw frames are not stored. These fields stay unvalidated until gravity and
     /// phone-motion comparisons prove the layout on-device.
     var imuSampleCount: Int? = nil
@@ -160,7 +160,7 @@ struct SavedSession: Codable, Identifiable {
     var phoneStepEvidenceClause: String? {
         guard phoneStepCountValue > 0 else { return nil }
         let distanceClause = phoneStepDistanceMeters.map { String(format: ", %.0fm", $0) } ?? ""
-        return "phone steps \(phoneStepCountValue)\(distanceClause); WHOOP HR/RR remains primary, phone motion is adjunct only"
+        return "phone steps \(phoneStepCountValue)\(distanceClause); Strap HR/RR remains primary, phone motion is adjunct only"
     }
     var hrRaw2A37Value: Int { hrRaw2A37 ?? 0 }
     var hrAcceptedValue: Int { hrAccepted ?? 0 }
@@ -2391,7 +2391,7 @@ final class SessionStore: ObservableObject {
                                                     maxHR: profile.maxHR,
                                                     confirmedWorkouts: confirmedWorkouts,
                                                     confirmedSleeps: confirmedSleeps)
-        WHOOPDebugLog("WHOOPDBG bg_maintenance status=ok reason=%@ sessions=%d healthkit_hr_samples=%d healthkit_resting_hr_samples=%d healthkit_hrv_samples=%d healthkit_respiratory_rate_samples=%d healthkit_workouts=%d healthkit_sleeps=%d",
+        AtriaDebugLog("ATRIADBG bg_maintenance status=ok reason=%@ sessions=%d healthkit_hr_samples=%d healthkit_resting_hr_samples=%d healthkit_hrv_samples=%d healthkit_respiratory_rate_samples=%d healthkit_workouts=%d healthkit_sleeps=%d",
               reason,
               sessions.count,
               health.planned.hrSamples,
@@ -2406,12 +2406,12 @@ final class SessionStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(sessions)
             try data.write(to: url, options: .atomic)
-            WHOOPDebugLog("WHOOPDBG session_store_save status=ok op=%@ sessions=%d bytes=%d",
+            AtriaDebugLog("ATRIADBG session_store_save status=ok op=%@ sessions=%d bytes=%d",
                   reason,
                   sessions.count,
                   data.count)
         } catch {
-            WHOOPDebugLog("WHOOPDBG session_store_save status=failed op=%@ error=%@",
+            AtriaDebugLog("ATRIADBG session_store_save status=failed op=%@ error=%@",
                   reason,
                   error.localizedDescription)
         }
@@ -2840,7 +2840,7 @@ final class SessionStore: ObservableObject {
         recomputeBehaviorInsights()
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
-            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
+            AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -2860,7 +2860,7 @@ final class SessionStore: ObservableObject {
         let evidence = session.baselineLearningEvidence(rest: baseline.restingInt ?? session.restingStable,
                                                         maxHR: profile.maxHR)
         guard evidence.accepted else {
-            WHOOPDebugLog("WHOOPDBG resting_baseline_sample status=skipped reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
+            AtriaDebugLog("ATRIADBG resting_baseline_sample status=skipped reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
                   evidence.reason,
                   evidence.value,
                   evidence.source,
@@ -2877,7 +2877,7 @@ final class SessionStore: ObservableObject {
                        at: session.end)
         baseline.save()
         refreshHomeDashboardDiagnosticsCache()
-        WHOOPDebugLog("WHOOPDBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
+        AtriaDebugLog("ATRIADBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
               evidence.source,
@@ -2915,7 +2915,7 @@ final class SessionStore: ObservableObject {
         } else {
             cachedHomeDashboardDiagnostics = nil
         }
-        WHOOPDebugLog("WHOOPDBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
+        AtriaDebugLog("ATRIADBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
               skipped,
@@ -2934,7 +2934,7 @@ final class SessionStore: ObservableObject {
         scheduleSessionFilePersist(reason: "checkpoint", delay: Self.checkpointPersistenceDelay)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
-            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ source=checkpoint motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
+            AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ source=checkpoint motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -2972,7 +2972,7 @@ final class SessionStore: ObservableObject {
         profile = next
         profile.save()
         invalidateHomeDashboardDiagnosticsCache()
-        WHOOPDebugLog("WHOOPDBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
+        AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
     }
@@ -2984,7 +2984,7 @@ final class SessionStore: ObservableObject {
         self.profile = next
         self.profile.save()
         invalidateHomeDashboardDiagnosticsCache()
-        WHOOPDebugLog("WHOOPDBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
+        AtriaDebugLog("ATRIADBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
               self.profile.maxHR,
@@ -3006,7 +3006,7 @@ final class SessionStore: ObservableObject {
         let hrvReady = baseline.hrvSampleCount >= 7
         let recoveryPersonalReady = hrvReady && baseline.restingStats != nil
         let recoveryValidatedReady = recoveryPersonalReady && latestValidated > 0
-        WHOOPDebugLog("WHOOPDBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_baseline_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_personal_ready=%d recovery_validated_ready=%d",
+        AtriaDebugLog("ATRIADBG baseline_maturity sessions=%d resting_samples=%d resting_mean=%@ resting_sd=%@ hrv_baseline_samples=%d hrv_required=7 hrv_ready=%d latest_validated_hrv=%d recovery_personal_ready=%d recovery_validated_ready=%d",
               baseline.sessions,
               baseline.restingSampleCount,
               restingStats.map { String(format: "%.1f", $0.mean) } ?? "learning",
@@ -3016,7 +3016,7 @@ final class SessionStore: ObservableObject {
               latestValidated,
               recoveryPersonalReady ? 1 : 0,
               recoveryValidatedReady ? 1 : 0)
-        WHOOPDebugLog("WHOOPDBG baseline_hrv_stats count=%d lnrmssd_mean=%@ lnrmssd_sd=%@ state=%@",
+        AtriaDebugLog("ATRIADBG baseline_hrv_stats count=%d lnrmssd_mean=%@ lnrmssd_sd=%@ state=%@",
               hrvStats?.count ?? 0,
               hrvStats.map { String(format: "%.3f", $0.mean) } ?? "learning",
               hrvStats.map { String(format: "%.3f", $0.sd) } ?? "learning",
@@ -3030,7 +3030,7 @@ final class SessionStore: ObservableObject {
            arguments.indices.contains(arguments.index(after: delayIndex)),
            let delay = Double(arguments[arguments.index(after: delayIndex)]),
            delay > 0 {
-            WHOOPDebugLog("WHOOPDBG collection_health_schedule delay_s=%.1f", delay)
+            AtriaDebugLog("ATRIADBG collection_health_schedule delay_s=%.1f", delay)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 if Task.isCancelled { return }
@@ -3042,9 +3042,9 @@ final class SessionStore: ObservableObject {
         }
         let phase = arguments.contains("--whoop-log-collection-health-delay-fired") ? "delayed" : "launch"
         let journal = ActiveSessionJournal.diagnostics()
-        let linkEvidence = WhoopBLEManager.linkEvidence().replacingOccurrences(of: " ", with: "_")
-        let sampleEvidence = WhoopBLEManager.sampleGapEvidence().replacingOccurrences(of: " ", with: "_")
-        let watchdogEvidence = WhoopBLEManager.watchdogRecoveryEvidence().replacingOccurrences(of: " ", with: "_")
+        let linkEvidence = AtriaBLEManager.linkEvidence().replacingOccurrences(of: " ", with: "_")
+        let sampleEvidence = AtriaBLEManager.sampleGapEvidence().replacingOccurrences(of: " ", with: "_")
+        let watchdogEvidence = AtriaBLEManager.watchdogRecoveryEvidence().replacingOccurrences(of: " ", with: "_")
         let rrState: String
         if journal.rrContinuityReady {
             rrState = "gate_b_window_ready"
@@ -3066,7 +3066,7 @@ final class SessionStore: ObservableObject {
         } else {
             blocker = "active_journal_empty"
         }
-        WHOOPDebugLog("WHOOPDBG collection_health phase=%@ status=%@ blocker=%@ active_journal_present=%d active_journal_fresh=%d active_journal_samples=%d active_journal_rr_values=%d active_journal_duration_s=%d active_journal_rr_coverage_3s_percent=%d active_journal_recent_rr_values=%d active_journal_recent_rr_duration_s=%d active_journal_recent_rr_coverage_3s_percent=%d rr_state=%@ gate_b_current_rr_ready=%d metric_promotions=0 %@ %@ %@",
+        AtriaDebugLog("ATRIADBG collection_health phase=%@ status=%@ blocker=%@ active_journal_present=%d active_journal_fresh=%d active_journal_samples=%d active_journal_rr_values=%d active_journal_duration_s=%d active_journal_rr_coverage_3s_percent=%d active_journal_recent_rr_values=%d active_journal_recent_rr_duration_s=%d active_journal_recent_rr_coverage_3s_percent=%d rr_state=%@ gate_b_current_rr_ready=%d metric_promotions=0 %@ %@ %@",
               phase,
               collectionReady ? "ready" : "learning",
               blocker,
@@ -3090,7 +3090,7 @@ final class SessionStore: ObservableObject {
         guard arguments.contains("--whoop-log-gate-readiness") else { return }
         if !arguments.contains("--whoop-log-gate-readiness-delay-fired") {
             let delay = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 8.0 : 1.0
-            WHOOPDebugLog("WHOOPDBG gate_readiness_ui schedule delay_s=%.1f reason=launch_arg", delay)
+            AtriaDebugLog("ATRIADBG gate_readiness_ui schedule delay_s=%.1f reason=launch_arg", delay)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 var delayedArguments = arguments
@@ -3185,7 +3185,7 @@ final class SessionStore: ObservableObject {
             .map { "\($0.gate)=\($0.status)[\($0.blocker)]" }
             .joined(separator: ";")
             .replacingOccurrences(of: " ", with: "_")
-        WHOOPDebugLog("WHOOPDBG gate_readiness_ui source=launch_arg gates=%d ready=%d evidence=%@",
+        AtriaDebugLog("ATRIADBG gate_readiness_ui source=launch_arg gates=%d ready=%d evidence=%@",
               rows.count,
               readyCount,
               evidence)
@@ -3211,7 +3211,7 @@ final class SessionStore: ObservableObject {
         if !arguments.contains("--whoop-log-gate-status-delay-fired"),
            let delay = explicitDelay ?? liveCollectionSettleDelay {
             let clampedDelay = min(max(delay, 0), 86_400)
-            WHOOPDebugLog("WHOOPDBG gate_status schedule delay_s=%.1f reason=%@", clampedDelay, explicitDelay != nil ? "launch_arg" : "live_collection_settle")
+            AtriaDebugLog("ATRIADBG gate_status schedule delay_s=%.1f reason=%@", clampedDelay, explicitDelay != nil ? "launch_arg" : "live_collection_settle")
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(clampedDelay))
                 var delayedArguments = arguments
@@ -3232,7 +3232,7 @@ final class SessionStore: ObservableObject {
         let boundedLargeStore = sessions.count > 120 || hrAcceptedSamples > 20_000 || rrSamples > 20_000
         let workoutReplayLimit = boundedLargeStore ? 80 : nil
         let workoutReplayScope = boundedLargeStore ? "bounded_large_store" : "full"
-        WHOOPDebugLog("WHOOPDBG gate_status_start mode=%@ deep_replay=%d sessions=%d rr_sessions=%d rr_samples=%d hr_accepted=%d hrv_validated_sessions=%d hrv_baseline_samples=%d workout_replay_scope=%@ workout_replay_limit=%d",
+        AtriaDebugLog("ATRIADBG gate_status_start mode=%@ deep_replay=%d sessions=%d rr_sessions=%d rr_samples=%d hr_accepted=%d hrv_validated_sessions=%d hrv_baseline_samples=%d workout_replay_scope=%@ workout_replay_limit=%d",
               mode,
               includeDeepReplay ? 1 : 0,
               sessions.count,
@@ -3270,7 +3270,7 @@ final class SessionStore: ObservableObject {
         let backupAvailable = latestBackup != nil
         let backupLabel = latestBackup.map { backupRelativePath(for: $0) } ?? "none"
         let backupCurrent = latestBackup.map { latestBackupMatchesCurrentStore($0) } ?? false
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=local_rollups mode=%@ days=%d sleep_days=%d sleep_candidate_days=%d workout_days=%d trend90_coverage_percent=%d backup_available=%d backup_current=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=local_rollups mode=%@ days=%d sleep_days=%d sleep_candidate_days=%d workout_days=%d trend90_coverage_percent=%d backup_available=%d backup_current=%d",
               mode,
               rollups.count,
               sleepDays,
@@ -3279,7 +3279,7 @@ final class SessionStore: ObservableObject {
               trend90?.coveragePercent ?? 0,
               backupAvailable ? 1 : 0,
               backupCurrent ? 1 : 0)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_start mode=%@", mode)
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=healthkit_diagnostics_start mode=%@", mode)
         let confirmedWorkoutRecords = confirmedWorkouts
         let confirmedSleepRecords = confirmedSleeps
         let confirmedWorkoutCount = confirmedWorkoutRecords.count
@@ -3289,7 +3289,7 @@ final class SessionStore: ObservableObject {
                                                       maxHR: profile.maxHR,
                                                       confirmedWorkouts: confirmedWorkoutRecords,
                                                       confirmedSleeps: confirmedSleepRecords)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=healthkit_diagnostics_done mode=%@ entitlement=%d available=%d planned_hr=%d planned_workouts=%d planned_hrv=%d planned_sleeps=%d reference_status=%@ reference_ready=%d readback_status=%@ readback_missing_total_atria_hr_samples=%d readback_overfill_total_atria_hr_samples=%d readback_reconciliation=%@",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=healthkit_diagnostics_done mode=%@ entitlement=%d available=%d planned_hr=%d planned_workouts=%d planned_hrv=%d planned_sleeps=%d reference_status=%@ reference_ready=%d readback_status=%@ readback_missing_total_atria_hr_samples=%d readback_overfill_total_atria_hr_samples=%d readback_reconciliation=%@",
               mode,
               healthKit.entitlementPresent ? 1 : 0,
               healthKit.healthDataAvailable ? 1 : 0,
@@ -3310,23 +3310,23 @@ final class SessionStore: ObservableObject {
             ? "healthkit_validated"
             : self.externalHRReferenceSource
         let widget = WidgetSnapshotPublisher.diagnostics
-        let checkpointArmed = UserDefaults.standard.bool(forKey: WhoopBLEManager.CheckpointDefaults.armed)
-        let checkpointInterval = UserDefaults.standard.double(forKey: WhoopBLEManager.CheckpointDefaults.interval)
-        let checkpointLabel = UserDefaults.standard.string(forKey: WhoopBLEManager.CheckpointDefaults.label) ?? "none"
-        let checkpointSource = UserDefaults.standard.string(forKey: WhoopBLEManager.CheckpointDefaults.source) ?? "none"
-        let checkpointLastStatus = UserDefaults.standard.string(forKey: WhoopBLEManager.CheckpointDefaults.lastStatus) ?? "none"
-        let checkpointLastIndex = UserDefaults.standard.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastIndex)
-        let checkpointLastSamples = UserDefaults.standard.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastSamples)
-        let checkpointLastDuration = UserDefaults.standard.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastDuration)
+        let checkpointArmed = UserDefaults.standard.bool(forKey: AtriaBLEManager.CheckpointDefaults.armed)
+        let checkpointInterval = UserDefaults.standard.double(forKey: AtriaBLEManager.CheckpointDefaults.interval)
+        let checkpointLabel = UserDefaults.standard.string(forKey: AtriaBLEManager.CheckpointDefaults.label) ?? "none"
+        let checkpointSource = UserDefaults.standard.string(forKey: AtriaBLEManager.CheckpointDefaults.source) ?? "none"
+        let checkpointLastStatus = UserDefaults.standard.string(forKey: AtriaBLEManager.CheckpointDefaults.lastStatus) ?? "none"
+        let checkpointLastIndex = UserDefaults.standard.integer(forKey: AtriaBLEManager.CheckpointDefaults.lastIndex)
+        let checkpointLastSamples = UserDefaults.standard.integer(forKey: AtriaBLEManager.CheckpointDefaults.lastSamples)
+        let checkpointLastDuration = UserDefaults.standard.integer(forKey: AtriaBLEManager.CheckpointDefaults.lastDuration)
         let checkpointEvidence = "checkpoint_armed=\(checkpointArmed ? 1 : 0); checkpoint_interval_s=\(Int(checkpointInterval)); checkpoint_source=\(checkpointSource); checkpoint_label=\(checkpointLabel); checkpoint_last_status=\(checkpointLastStatus); checkpoint_last_index=\(checkpointLastIndex); checkpoint_last_samples=\(checkpointLastSamples); checkpoint_last_duration_s=\(checkpointLastDuration)"
-        let linkEvidence = WhoopBLEManager.linkEvidence()
-        let sampleEvidence = WhoopBLEManager.sampleGapEvidence()
-        let watchdogEvidence = WhoopBLEManager.watchdogRecoveryEvidence()
-        let batteryEvidence = WhoopBLEManager.batteryEvidence()
-        let radioEvidence = WhoopBLEManager.radioEvidence()
-        let offlineSyncEvidence = WhoopBLEManager.offlineSyncEvidence()
-        let protocolEvidence = WhoopBLEManager.protocolEvidence()
-        let journalEvidence = WhoopBLEManager.activeSessionJournalEvidence()
+        let linkEvidence = AtriaBLEManager.linkEvidence()
+        let sampleEvidence = AtriaBLEManager.sampleGapEvidence()
+        let watchdogEvidence = AtriaBLEManager.watchdogRecoveryEvidence()
+        let batteryEvidence = AtriaBLEManager.batteryEvidence()
+        let radioEvidence = AtriaBLEManager.radioEvidence()
+        let offlineSyncEvidence = AtriaBLEManager.offlineSyncEvidence()
+        let protocolEvidence = AtriaBLEManager.protocolEvidence()
+        let journalEvidence = AtriaBLEManager.activeSessionJournalEvidence()
         let historicalArchive = HistoricalArchive.diagnostics()
         let historicalArchiveSchemas = historicalArchive.schemas.isEmpty ? "none" : historicalArchive.schemas.joined(separator: ",")
         let historicalArchiveLayouts = historicalArchive.layoutVersions.isEmpty ? "none" : historicalArchive.layoutVersions.joined(separator: ",")
@@ -3341,7 +3341,7 @@ final class SessionStore: ObservableObject {
         let gateHStatus = historicalDownloadProtocolValidated ? "ready" : "partial"
         let reserveHR = max(profile.maxHR - rest, 0)
         let thresholdHR = rest + Int((Double(reserveHR) * 0.50).rounded())
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=workout_replay_start mode=%@ sessions=%d scope=%@ limit=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=workout_replay_start mode=%@ sessions=%d scope=%@ limit=%d",
               mode,
               sessions.count,
               workoutReplayScope,
@@ -3351,7 +3351,7 @@ final class SessionStore: ObservableObject {
                                                         limitSessions: workoutReplayLimit,
                                                         includeAggregates: workoutReplayLimit == nil,
                                                         includeActiveJournal: true)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=workout_replay_done mode=%@ ready=%d best_source=%@ best_blocker=%@ best_next_action=%@ scope=%@ limit=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=workout_replay_done mode=%@ ready=%d best_source=%@ best_blocker=%@ best_next_action=%@ scope=%@ limit=%d",
               mode,
               workoutReplay.readySessions,
               workoutReplay.bestSource,
@@ -3359,23 +3359,23 @@ final class SessionStore: ObservableObject {
               workoutReplay.bestNextAction,
               workoutReplayScope,
               workoutReplayLimit ?? 0)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_start mode=%@", mode)
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=historical_gap_repair_start mode=%@", mode)
         let historicalGapRepair = historicalGapRepairSummary(workoutReplay: workoutReplay,
                                                              archive: historicalArchive)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=historical_gap_repair_done mode=%@ status=%@ reason=%@ metric_usable=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=historical_gap_repair_done mode=%@ status=%@ reason=%@ metric_usable=%d",
               mode,
               historicalGapRepair.status,
               historicalGapRepair.reason,
               historicalGapRepair.metricUsable ? 1 : 0)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=strain_validation_start mode=%@", mode)
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=strain_validation_start mode=%@", mode)
         let strainValidation = strainValidationSummary(rest: rest, maxHR: profile.maxHR)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=strain_validation_done mode=%@ ready=%d blocker=%@ stream_coverage_percent=%d max_hrr_percent=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=strain_validation_done mode=%@ ready=%d blocker=%@ stream_coverage_percent=%d max_hrr_percent=%d",
               mode,
               strainValidation.ready ? 1 : 0,
               strainValidation.primaryBlocker,
               strainValidation.streamCoveragePercent,
               Int((strainValidation.maxHRReserve * 100).rounded()))
-        WHOOPDebugLog("WHOOPDBG gate_status_summary mode=%@ deep_replay=%d sessions=%d days=%d rest_hr=%d max_hr=%d hrv_validated_sessions=%d hrv_baseline_samples=%d backup_available=%d backup_current=%d healthkit_entitlement=%d healthkit_available=%d healthkit_hr_samples=%d healthkit_workouts=%d healthkit_hrv_samples=%d healthkit_sleeps=%d",
+        AtriaDebugLog("ATRIADBG gate_status_summary mode=%@ deep_replay=%d sessions=%d days=%d rest_hr=%d max_hr=%d hrv_validated_sessions=%d hrv_baseline_samples=%d backup_available=%d backup_current=%d healthkit_entitlement=%d healthkit_available=%d healthkit_hr_samples=%d healthkit_workouts=%d healthkit_hrv_samples=%d healthkit_sleeps=%d",
               mode,
               includeDeepReplay ? 1 : 0,
               sessions.count,
@@ -3393,14 +3393,14 @@ final class SessionStore: ObservableObject {
               healthKit.planned.hrvSamples,
               healthKit.planned.sleeps)
         let rrReplayLimit = includeDeepReplay ? 0 : 12
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=rr_replay_start mode=%@ rr_sessions=%d rr_samples=%d limit=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=rr_replay_start mode=%@ rr_sessions=%d rr_samples=%d limit=%d",
               mode,
               rrSessions,
               rrSamples,
               rrReplayLimit)
         let rrReplay = replaySavedRRLedger(limitSessions: rrReplayLimit == 0 ? nil : rrReplayLimit,
                                            includeActiveJournal: true)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@ limit=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@ limit=%d",
               mode,
               rrReplay.bestReady ? 1 : 0,
               rrReplay.bestSessionLabel,
@@ -3421,7 +3421,7 @@ final class SessionStore: ObservableObject {
             : (userConfirmedGateE ? "user_confirmed" : "partial")
         logGateStatus("local", status: "dashboard",
                       evidence: "status_mode=\(mode); sleep_days=\(sleepDays); sleep_candidate_days=\(sleepCandidateDays); sleep_state=\(sleepDays > 0 ? "ready" : (sleepCandidateDays > 0 ? "candidate" : "learning")); sleep_fallback_available=\(sleepEvidence.fallbackAvailable ? 1 : 0); sleep_fallback_source=\(sleepEvidence.fallbackSource); sleep_fallback_duration_s=\(Int(sleepEvidence.fallbackDuration.rounded())); sleep_fallback_span_s=\(Int(sleepEvidence.fallbackSpan.rounded())); sleep_fallback_chunks=\(sleepEvidence.fallbackSessions); sleep_fallback_diagnostic_only=1; workout_days=\(workoutDays); workout_state=\(workoutReplay.readySessions > 0 ? "ready" : "learning"); workout_replay_scope=\(workoutReplayScope); workout_replay_limit_sessions=\(workoutReplayLimit ?? 0); hrv_state=\(hrvValidated > 0 ? "reference_partial" : "reference_pending"); hrv_validated_sessions=\(hrvValidated); hrv_baseline_samples=\(baseline.hrvSampleCount); recovery_state=\(recoveryHighReady ? "ready" : "learning"); trend90_coverage_percent=\(trend90?.coveragePercent ?? 0); trend_state=\(trend90?.confidence ?? "learning"); motion_source=\(sleepMotionSource); motion_hint_sessions=\(motionHintSessions); motion_hints=\(motionHintTotal); motion_validated=0; historical_gap_repair_status=\(historicalGapRepair.status); historical_gap_repair_reason=\(historicalGapRepair.reason); historical_gap_repair_metric_usable=\(historicalGapRepair.metricUsable ? 1 : 0); historical_gap_repair_diagnostic_only=1; external_rr_reference=\(hrvValidated > 0 ? "present" : "missing"); \(checkpointEvidence); \(linkEvidence); \(sampleEvidence); \(watchdogEvidence); \(batteryEvidence); \(radioEvidence); \(offlineSyncEvidence); \(protocolEvidence); \(journalEvidence); \(collectionEvidence)")
-        logGateStatus("A", status: "runtime_required", evidence: "BLE realtime must be checked in live WHOOPDBG for this launch")
+        logGateStatus("A", status: "runtime_required", evidence: "BLE realtime must be checked in live ATRIADBG for this launch")
         let hrvDisplayTier = hrvValidated > 0 ? "validated" : (rrReplay.bestReady ? "personal_baseline" : "learning")
         logGateStatus("B", status: hrvValidated > 0 ? "reference_partial" : "reference_pending",
                       evidence: "status_mode=\(mode); display_tier=\(hrvDisplayTier); validated_hrv_sessions=\(hrvValidated); saved_rr_ready=\(rrReplay.bestReady ? 1 : 0); saved_rr_sessions=\(rrReplay.sessionsWithRR); saved_rr_samples=\(rrReplay.rrSamples); saved_rr_best_label=\(rrReplay.bestSessionLabel); saved_rr_best_raw=\(rrReplay.bestRaw); saved_rr_best_kept=\(rrReplay.bestKept); saved_rr_best_conf=\(rrReplay.bestConfidencePercent); saved_rr_best_gap_s=\(String(format: "%.1f", rrReplay.bestMaxRRGapSeconds)); saved_rr_best_rmssd=\(rrReplay.bestRMSSD.map { String(format: "%.1f", $0) } ?? "learning"); saved_rr_reason=\(rrReplay.reason); rr_replay=\(rrReplayLimit == 0 ? "computed_exhaustive" : "computed_bounded_fast"); rr_replay_limit=\(rrReplayLimit); rr_replay_active_journal=1; external_rr_reference_optional=1; validated_tier_requires_external_reference=1; reference_validated=\(hrvValidated > 0 ? 1 : 0)")
@@ -3486,7 +3486,7 @@ final class SessionStore: ObservableObject {
         guard includeDeepReplay else { return }
         logGateStatus("E.deep", status: workoutReplay.readySessions > 0 ? "ready" : "partial",
                       evidence: "workout_replay_scope=\(workoutReplayScope); workout_replay_limit_sessions=\(workoutReplayLimit ?? 0); workout_replay_aggregates=\(workoutReplayLimit == nil ? 1 : 0); workout_saved_ready=\(workoutReplay.readySessions); workout_near_miss=\(workoutReplay.nearMiss ? 1 : 0); workout_near_miss_reason=\(workoutReplay.nearMissReason); workout_strength_candidate=\(workoutReplay.strengthCandidate ? 1 : 0); workout_strength_candidate_reason=\(workoutReplay.strengthCandidateReason); workout_strength_diagnostic_only=1; workout_next_action=\(workoutReplay.bestNextAction); workout_best_source=\(workoutReplay.bestSource); workout_best_chunks=\(workoutReplay.bestChunkCount); workout_best_reason=\(workoutReplay.bestReason); workout_best_blocker=\(workoutReplay.bestPrimaryBlocker); workout_best_stream_coverage_percent=\(workoutReplay.bestStreamCoveragePercent); workout_best_threshold_gap_bpm=\(workoutReplay.bestThresholdGapBPM); workout_best_p95_hr=\(workoutReplay.bestP95HR); workout_best_p99_hr=\(workoutReplay.bestP99HR); workout_best_samples_above_threshold=\(workoutReplay.bestSamplesAboveThreshold); workout_best_samples_above_borderline=\(workoutReplay.bestSamplesAboveBorderline); workout_best_duration_s=\(Int(workoutReplay.bestDuration.rounded())); workout_best_observed_s=\(Int(workoutReplay.bestObservedDuration.rounded())); workout_best_dropped_gap_s=\(Int(workoutReplay.bestDroppedGapSeconds.rounded())); workout_best_elevated_s=\(Int(workoutReplay.bestElevatedSeconds.rounded())); workout_best_longest_bout_s=\(Int(workoutReplay.bestLongestBout.rounded())); workout_best_required_bout_s=\(Int(workoutReplay.bestRequiredBout.rounded())); profile_sensitivity_diagnostic_only=1; required_profile_max_hr_for_p95_hrr50=\(workoutReplay.profileMaxHRForBestP95AtHRR50); required_profile_max_hr_for_p99_hrr50=\(workoutReplay.profileMaxHRForBestP99AtHRR50); required_profile_max_hr_for_peak_hrr50=\(workoutReplay.profileMaxHRForBestPeakAtHRR50); current_profile_minus_p99_required_bpm=\(workoutReplay.p99ProfileMaxHRGap); historical_gap_repair_status=\(historicalGapRepair.status); historical_gap_repair_reason=\(historicalGapRepair.reason); historical_gap_repair_overlap_s=\(historicalGapRepair.overlapSeconds); historical_gap_repair_separation_s=\(historicalGapRepair.separationSeconds); historical_gap_repair_current_usable_rows=\(historicalGapRepair.archiveCurrentUsableRows); historical_gap_repair_metric_usable=\(historicalGapRepair.metricUsable ? 1 : 0); diagnostic_only=1")
-        WHOOPDebugLog("WHOOPDBG gate_status_deep status=ready stage=e_deep_logged deep_mode=%@ workout_replay_limit=%d rr_replay=skipped_bounded_deep_status rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
+        AtriaDebugLog("ATRIADBG gate_status_deep status=ready stage=e_deep_logged deep_mode=%@ workout_replay_limit=%d rr_replay=skipped_bounded_deep_status rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
               workoutReplayScope,
               workoutReplayLimit ?? 0,
               rrSamples,
@@ -3496,7 +3496,7 @@ final class SessionStore: ObservableObject {
               historicalGapRepair.status,
               historicalGapRepair.reason)
         guard workoutReplayLimit == nil else {
-            WHOOPDebugLog("WHOOPDBG gate_status_deep_detail status=skipped reason=bounded_large_store sessions=%d hr_accepted=%d rr_samples=%d action=use_fast_rows_or_run_targeted_workout_diagnostics diagnostic_only=1",
+            AtriaDebugLog("ATRIADBG gate_status_deep_detail status=skipped reason=bounded_large_store sessions=%d hr_accepted=%d rr_samples=%d action=use_fast_rows_or_run_targeted_workout_diagnostics diagnostic_only=1",
                   sessions.count,
                   hrAcceptedSamples,
                   rrSamples)
@@ -3505,7 +3505,7 @@ final class SessionStore: ObservableObject {
         logWorkoutReplay(workoutReplay)
         logWorkoutThresholdSensitivity(rest: rest, maxHR: profile.maxHR)
         logHistoricalGapRepair(historicalGapRepair)
-        WHOOPDebugLog("WHOOPDBG gate_status_deep rr_replay=%@ rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
+        AtriaDebugLog("ATRIADBG gate_status_deep rr_replay=%@ rr_samples=%d workout_ready=%d workout_near_miss=%d strain_ready=%d historical_gap_status=%@ historical_gap_reason=%@",
               "skipped_bounded_deep_status",
               rrSamples,
               workoutReplay.readySessions,
@@ -3541,14 +3541,14 @@ final class SessionStore: ObservableObject {
                                                       confirmedWorkouts: confirmedWorkoutRecords,
                                                       confirmedSleeps: confirmedSleepRecords)
         let widget = WidgetSnapshotPublisher.diagnostics
-        let linkEvidence = WhoopBLEManager.linkEvidence()
-        let sampleEvidence = WhoopBLEManager.sampleGapEvidence()
-        let watchdogEvidence = WhoopBLEManager.watchdogRecoveryEvidence()
-        let batteryEvidence = WhoopBLEManager.batteryEvidence()
-        let radioEvidence = WhoopBLEManager.radioEvidence()
-        let offlineSyncEvidence = WhoopBLEManager.offlineSyncEvidence()
-        let protocolEvidence = WhoopBLEManager.protocolEvidence()
-        let journalEvidence = WhoopBLEManager.activeSessionJournalEvidence()
+        let linkEvidence = AtriaBLEManager.linkEvidence()
+        let sampleEvidence = AtriaBLEManager.sampleGapEvidence()
+        let watchdogEvidence = AtriaBLEManager.watchdogRecoveryEvidence()
+        let batteryEvidence = AtriaBLEManager.batteryEvidence()
+        let radioEvidence = AtriaBLEManager.radioEvidence()
+        let offlineSyncEvidence = AtriaBLEManager.offlineSyncEvidence()
+        let protocolEvidence = AtriaBLEManager.protocolEvidence()
+        let journalEvidence = AtriaBLEManager.activeSessionJournalEvidence()
         let collectionEvidence = currentCollectionStatus().evidence
         let historicalArchive = HistoricalArchive.diagnostics()
         let historicalArchiveSchemas = historicalArchive.schemas.isEmpty ? "none" : historicalArchive.schemas.joined(separator: ",")
@@ -3611,12 +3611,12 @@ final class SessionStore: ObservableObject {
         let appGroupWidgetStatus = widget.appGroupEnabled
             && widget.widgetTargetPresent
             && widget.complicationTargetPresent ? "shared_ready" : "diagnostic_only"
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_start mode=%@ sessions=%d rr_samples=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=bounded_rr_replay_start mode=%@ sessions=%d rr_samples=%d",
               mode,
               sessions.count,
               rrSamples)
         let rrReplay = replaySavedRRLedger(limitSessions: nil, includeActiveJournal: true)
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=bounded_rr_replay_done mode=%@ ready=%d label=%@ raw=%d kept=%d conf=%d max_gap_s=%.1f reason=%@",
               mode,
               rrReplay.bestReady ? 1 : 0,
               rrReplay.bestSessionLabel,
@@ -3657,7 +3657,7 @@ final class SessionStore: ObservableObject {
             secondaryLocalAction = "decode_historical_or_new_sensor_when_new_evidence_exists"
         }
 
-        WHOOPDebugLog("WHOOPDBG gate_status_progress stage=bounded_fast_large_store mode=%@ sessions=%d rr_samples=%d hr_accepted=%d reason=avoid_inline_large_store_replay healthkit_cached=1 widget_cached=1 backup_current=%d",
+        AtriaDebugLog("ATRIADBG gate_status_progress stage=bounded_fast_large_store mode=%@ sessions=%d rr_samples=%d hr_accepted=%d reason=avoid_inline_large_store_replay healthkit_cached=1 widget_cached=1 backup_current=%d",
               mode,
               sessions.count,
               rrSamples,
@@ -3666,7 +3666,7 @@ final class SessionStore: ObservableObject {
         logGateStatus("local", status: "dashboard_bounded",
                       evidence: "status_mode=\(mode); bounded_large_store=1; sessions=\(sessions.count); rr_sessions=\(rrSessions); rr_samples=\(rrSamples); hr_accepted_samples=\(hrAcceptedSamples); workout_replay_limit_sessions=\(workoutReplayLimit ?? 0); workout_replay=skipped_bounded_audit; rr_replay=skipped_bounded_audit; healthkit_diagnostics=cached_fast; historical_archive=skipped_bounded_audit; recovery_state=\(recoveryHighReady ? "ready" : "learning"); hrv_validated_sessions=\(hrvValidated); hrv_baseline_samples=\(baseline.hrvSampleCount); backup_available=\(backupAvailable ? 1 : 0); backup_current=\(backupCurrent ? 1 : 0); backup=\(backupLabel); healthkit_readback_status=\(healthKit.readback.status); healthkit_readback_data_appears=\(healthKit.readback.dataAppears ? 1 : 0); widget_app_group=\(widget.appGroupEnabled ? 1 : 0); widget_target=\(widget.widgetTargetPresent ? 1 : 0); complication_target=\(widget.complicationTargetPresent ? 1 : 0); external_hr_reference=\(csvHRReference.status); \(linkEvidence); \(sampleEvidence); \(watchdogEvidence); \(batteryEvidence); \(radioEvidence); \(offlineSyncEvidence); \(protocolEvidence); \(journalEvidence); \(collectionEvidence)")
         logGateStatus("A", status: "runtime_required",
-                      evidence: "BLE realtime must be checked in live WHOOPDBG for this launch")
+                      evidence: "BLE realtime must be checked in live ATRIADBG for this launch")
         let boundedHRVDisplayTier = hrvValidated > 0 ? "validated" : (rrReplay.bestReady ? "personal_baseline" : "learning")
         logGateStatus("B", status: hrvValidated > 0 ? "reference_partial" : "reference_pending",
                       evidence: "status_mode=\(mode); bounded_large_store=1; display_tier=\(boundedHRVDisplayTier); validated_hrv_sessions=\(hrvValidated); saved_rr_ready=\(rrReplay.bestReady ? 1 : 0); saved_rr_sessions=\(rrReplay.sessionsWithRR); saved_rr_samples=\(rrReplay.rrSamples); saved_rr_best_label=\(rrReplay.bestSessionLabel); saved_rr_best_raw=\(rrReplay.bestRaw); saved_rr_best_kept=\(rrReplay.bestKept); saved_rr_best_conf=\(rrReplay.bestConfidencePercent); saved_rr_best_gap_s=\(String(format: "%.1f", rrReplay.bestMaxRRGapSeconds)); saved_rr_best_rmssd=\(rrReplay.bestRMSSD.map { String(format: "%.1f", $0) } ?? "learning"); saved_rr_reason=\(rrReplay.reason); rr_replay=computed_exhaustive_rr_only; active_journal_present=\(activeJournal.present ? 1 : 0); active_journal_fresh=\(activeJournal.fresh ? 1 : 0); active_journal_samples=\(activeJournal.samples); active_journal_rr_values=\(activeJournal.rrValues); active_journal_rr_coverage_3s_percent=\(activeJournal.rrCoverage3Percent); active_journal_max_rr_gap_s=\(String(format: "%.1f", activeJournal.maxRRGap)); active_journal_recent_rr_values=\(activeJournal.recentRRValues); active_journal_recent_rr_duration_s=\(Int(activeJournal.recentRRDuration.rounded())); active_journal_recent_rr_coverage_3s_percent=\(activeJournal.recentRRCoverage3Percent); active_journal_recent_rr_max_gap_s=\(String(format: "%.1f", activeJournal.recentRRMaxGap)); active_journal_recent_rr_clean=\(activeJournal.recentRRContinuityClean ? 1 : 0); external_rr_reference_optional=1; validated_tier_requires_external_reference=1; reference_validated=\(hrvValidated > 0 ? 1 : 0)")
@@ -3689,7 +3689,7 @@ final class SessionStore: ObservableObject {
         let boundedLocalWindows = boundedTrendSummaries.filter { $0.avgRHR != nil || $0.avgStrain != nil }.count
         let boundedLocalTrendReady = boundedLocalWindows > 0
         let boundedGateFStatus = gateFStatus(summary: boundedTrend90, hrvValidated: hrvValidated)
-        WHOOPDebugLog("WHOOPDBG trend_fast_local windows=%d local_windows=%d rhr_points=%d strain_points=%d recovery_points=%d hrv_points=%d trend90_confidence=%@ trend90_coverage_days=%d trend90_required_coverage_days=%d trend90_coverage_percent=%d trend90_anomaly_source=%@ trend90_anomaly_days=%d hrv_reference_gated=%d status=%@ blockers=%@",
+        AtriaDebugLog("ATRIADBG trend_fast_local windows=%d local_windows=%d rhr_points=%d strain_points=%d recovery_points=%d hrv_points=%d trend90_confidence=%@ trend90_coverage_days=%d trend90_required_coverage_days=%d trend90_coverage_percent=%d trend90_anomaly_source=%@ trend90_anomaly_days=%d hrv_reference_gated=%d status=%@ blockers=%@",
               boundedTrendSummaries.count,
               boundedLocalWindows,
               boundedTrendSummaries.filter { $0.avgRHR != nil }.count,
@@ -3727,9 +3727,9 @@ final class SessionStore: ObservableObject {
 
     private func logGateStatus(_ gate: String, status: String, evidence: String) {
         let sanitizedEvidence = evidence.replacingOccurrences(of: " ", with: "_")
-        persistGateStatusSnapshotLine("WHOOPDBG gate_status gate=\(gate) status=\(status) evidence=\(sanitizedEvidence)",
+        persistGateStatusSnapshotLine("ATRIADBG gate_status gate=\(gate) status=\(status) evidence=\(sanitizedEvidence)",
                                       reset: gate == "local")
-        WHOOPDebugLog("WHOOPDBG gate_status gate=%@ status=%@ evidence=%@",
+        AtriaDebugLog("ATRIADBG gate_status gate=%@ status=%@ evidence=%@",
               gate,
               status,
               sanitizedEvidence)
@@ -3751,10 +3751,10 @@ final class SessionStore: ObservableObject {
             guard let action = secondaryLocalAction else { return nil }
             return " secondary_local_gate=\(gate) secondary_local_action=\(action)"
         } ?? ""
-        let line = "WHOOPDBG execution_priority next_gate=\(nextGate) next_action=\(nextAction) next_local_gate=\(nextLocalGate) next_local_action=\(nextLocalAction)\(secondary) external_blocked=\(externalBlocked) real_world_needed=\(realWorldNeeded) local_blocked=\(localBlocked) ready=\(ready) diagnostic_only=\(diagnosticOnly) skip=\(skip)"
+        let line = "ATRIADBG execution_priority next_gate=\(nextGate) next_action=\(nextAction) next_local_gate=\(nextLocalGate) next_local_action=\(nextLocalAction)\(secondary) external_blocked=\(externalBlocked) real_world_needed=\(realWorldNeeded) local_blocked=\(localBlocked) ready=\(ready) diagnostic_only=\(diagnosticOnly) skip=\(skip)"
         persistGateStatusSnapshotLine(line, reset: false)
         if let secondaryLocalGate, let secondaryLocalAction {
-            WHOOPDebugLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ secondary_local_gate=%@ secondary_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
+            AtriaDebugLog("ATRIADBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ secondary_local_gate=%@ secondary_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
                   nextGate,
                   nextAction,
                   nextLocalGate,
@@ -3768,7 +3768,7 @@ final class SessionStore: ObservableObject {
                   diagnosticOnly,
                   skip)
         } else {
-            WHOOPDebugLog("WHOOPDBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
+            AtriaDebugLog("ATRIADBG execution_priority next_gate=%@ next_action=%@ next_local_gate=%@ next_local_action=%@ external_blocked=%@ real_world_needed=%@ local_blocked=%@ ready=%@ diagnostic_only=%@ skip=%@",
                   nextGate,
                   nextAction,
                   nextLocalGate,
@@ -3788,21 +3788,21 @@ final class SessionStore: ObservableObject {
                                              confirmedSleeps: [UserConfirmedSleep]) {
         guard !confirmedWorkouts.isEmpty || !confirmedSleeps.isEmpty else { return }
         let summary = gateETrainingSummary(rest: rest, maxHR: maxHR)
-        logGateETrainingLine("WHOOPDBG gate_e_training kind=plan auto_ready=\(summary.autoReady ? 1 : 0) auto_detection_required=\(summary.autoReady ? 0 : 1) blocker=\(summary.primaryBlocker) sleep_blocker=\(summary.compactSleepBlocker) workout_blocker=\(summary.compactWorkoutBlocker) sleep_proof=\(summary.sleepProofNeeded) sleep_proof_status=\(summary.sleepProofStatus) sleep_fallback_accepted=\(summary.sleep.fallbackAccepted ? 1 : 0) sleep_fallback_policy=\(summary.sleep.fallbackPolicy) workout_proof=\(summary.workoutProofNeeded) workout_proof_status=\(summary.workoutProofStatus) workout_intensity_proof=\(summary.workoutIntensityProof) workout_profile_proof=\(summary.workoutProfileSensitivityProof) workout_progress=\(summary.workoutProofProgress) workout_next_step=\(summary.workoutProofNextStep) workout_required_coverage_percent=\(summary.workoutCoverageTargetPercent) workout_missing_coverage_percent=\(summary.workoutCoverageMissingPercent) workout_observed_s=\(summary.workoutObservedSeconds) workout_required_observed_s=\(summary.workoutObservedTargetSeconds) workout_missing_observed_s=\(summary.workoutObservedMissingSeconds) workout_p95_hr=\(summary.workout.p95HR) workout_p99_hr=\(summary.workout.p99HR) workout_p95_gap_bpm=\(summary.workoutP95GapBPM) workout_peak_gap_bpm=\(summary.workoutPeakGapBPM) workout_profile_max_hr=\(summary.workout.profileMaxHR) workout_required_profile_max_hr_for_p95_hrr50=\(summary.workout.requiredProfileMaxHRForP95AtHRR50) workout_profile_max_lowering_for_p95_bpm=\(summary.workoutProfileMaxLoweringForP95BPM) workout_missing_elevated_s=\(summary.workoutElevatedMissingSeconds) workout_missing_bout_s=\(summary.workoutBoutMissingSeconds) workout_ready_if=\(summary.workoutProofReadyIf) next_proof=\(summary.nextProof)")
+        logGateETrainingLine("ATRIADBG gate_e_training kind=plan auto_ready=\(summary.autoReady ? 1 : 0) auto_detection_required=\(summary.autoReady ? 0 : 1) blocker=\(summary.primaryBlocker) sleep_blocker=\(summary.compactSleepBlocker) workout_blocker=\(summary.compactWorkoutBlocker) sleep_proof=\(summary.sleepProofNeeded) sleep_proof_status=\(summary.sleepProofStatus) sleep_fallback_accepted=\(summary.sleep.fallbackAccepted ? 1 : 0) sleep_fallback_policy=\(summary.sleep.fallbackPolicy) workout_proof=\(summary.workoutProofNeeded) workout_proof_status=\(summary.workoutProofStatus) workout_intensity_proof=\(summary.workoutIntensityProof) workout_profile_proof=\(summary.workoutProfileSensitivityProof) workout_progress=\(summary.workoutProofProgress) workout_next_step=\(summary.workoutProofNextStep) workout_required_coverage_percent=\(summary.workoutCoverageTargetPercent) workout_missing_coverage_percent=\(summary.workoutCoverageMissingPercent) workout_observed_s=\(summary.workoutObservedSeconds) workout_required_observed_s=\(summary.workoutObservedTargetSeconds) workout_missing_observed_s=\(summary.workoutObservedMissingSeconds) workout_p95_hr=\(summary.workout.p95HR) workout_p99_hr=\(summary.workout.p99HR) workout_p95_gap_bpm=\(summary.workoutP95GapBPM) workout_peak_gap_bpm=\(summary.workoutPeakGapBPM) workout_profile_max_hr=\(summary.workout.profileMaxHR) workout_required_profile_max_hr_for_p95_hrr50=\(summary.workout.requiredProfileMaxHRForP95AtHRR50) workout_profile_max_lowering_for_p95_bpm=\(summary.workoutProfileMaxLoweringForP95BPM) workout_missing_elevated_s=\(summary.workoutElevatedMissingSeconds) workout_missing_bout_s=\(summary.workoutBoutMissingSeconds) workout_ready_if=\(summary.workoutProofReadyIf) next_proof=\(summary.nextProof)")
         let workout = summary.workout
         if workout.present {
-            logGateETrainingLine("WHOOPDBG gate_e_training kind=workout confirmed=1 id=\(workout.confirmedID) source=\(workout.source) confidence=\(workout.confidence) auto_ready=\(workout.autoReady ? 1 : 0) auto_status=\(workout.autoStatus) auto_reason=\(workout.autoReason) primary_blocker=\(workout.primaryBlocker) proof_status=\(summary.workoutProofStatus) intensity_proof=\(summary.workoutIntensityProof) profile_proof=\(summary.workoutProfileSensitivityProof) progress=\(summary.workoutProofProgress) next_step=\(summary.workoutProofNextStep) samples=\(workout.samples) overlap_s=\(Int(workout.overlap.rounded())) duration_s=\(Int(workout.duration.rounded())) observed_s=\(summary.workoutObservedSeconds) required_observed_s=\(summary.workoutObservedTargetSeconds) missing_observed_s=\(summary.workoutObservedMissingSeconds) coverage_percent=\(workout.streamCoveragePercent) required_coverage_percent=\(summary.workoutCoverageTargetPercent) missing_coverage_percent=\(summary.workoutCoverageMissingPercent) peak_hr=\(workout.peakHR) p95_hr=\(workout.p95HR) p99_hr=\(workout.p99HR) p95_gap_bpm=\(summary.workoutP95GapBPM) peak_gap_bpm=\(summary.workoutPeakGapBPM) threshold_hr=\(workout.thresholdHR) threshold_gap_bpm=\(workout.thresholdGapBPM) profile_max_hr=\(workout.profileMaxHR) required_profile_max_hr_for_p95_hrr50=\(workout.requiredProfileMaxHRForP95AtHRR50) profile_max_lowering_for_p95_bpm=\(summary.workoutProfileMaxLoweringForP95BPM) elevated_s=\(summary.workoutElevatedSeconds) required_elevated_s=\(summary.workoutElevatedTargetSeconds) missing_elevated_s=\(summary.workoutElevatedMissingSeconds) longest_bout_s=\(summary.workoutBoutSeconds) required_bout_s=\(summary.workoutBoutTargetSeconds) missing_bout_s=\(summary.workoutBoutMissingSeconds) ready_if=\(summary.workoutProofReadyIf) auto_detection_required=\(workout.autoReady ? 0 : 1)")
+            logGateETrainingLine("ATRIADBG gate_e_training kind=workout confirmed=1 id=\(workout.confirmedID) source=\(workout.source) confidence=\(workout.confidence) auto_ready=\(workout.autoReady ? 1 : 0) auto_status=\(workout.autoStatus) auto_reason=\(workout.autoReason) primary_blocker=\(workout.primaryBlocker) proof_status=\(summary.workoutProofStatus) intensity_proof=\(summary.workoutIntensityProof) profile_proof=\(summary.workoutProfileSensitivityProof) progress=\(summary.workoutProofProgress) next_step=\(summary.workoutProofNextStep) samples=\(workout.samples) overlap_s=\(Int(workout.overlap.rounded())) duration_s=\(Int(workout.duration.rounded())) observed_s=\(summary.workoutObservedSeconds) required_observed_s=\(summary.workoutObservedTargetSeconds) missing_observed_s=\(summary.workoutObservedMissingSeconds) coverage_percent=\(workout.streamCoveragePercent) required_coverage_percent=\(summary.workoutCoverageTargetPercent) missing_coverage_percent=\(summary.workoutCoverageMissingPercent) peak_hr=\(workout.peakHR) p95_hr=\(workout.p95HR) p99_hr=\(workout.p99HR) p95_gap_bpm=\(summary.workoutP95GapBPM) peak_gap_bpm=\(summary.workoutPeakGapBPM) threshold_hr=\(workout.thresholdHR) threshold_gap_bpm=\(workout.thresholdGapBPM) profile_max_hr=\(workout.profileMaxHR) required_profile_max_hr_for_p95_hrr50=\(workout.requiredProfileMaxHRForP95AtHRR50) profile_max_lowering_for_p95_bpm=\(summary.workoutProfileMaxLoweringForP95BPM) elevated_s=\(summary.workoutElevatedSeconds) required_elevated_s=\(summary.workoutElevatedTargetSeconds) missing_elevated_s=\(summary.workoutElevatedMissingSeconds) longest_bout_s=\(summary.workoutBoutSeconds) required_bout_s=\(summary.workoutBoutTargetSeconds) missing_bout_s=\(summary.workoutBoutMissingSeconds) ready_if=\(summary.workoutProofReadyIf) auto_detection_required=\(workout.autoReady ? 0 : 1)")
         }
         let sleep = summary.sleep
         if sleep.present {
-            logGateETrainingLine("WHOOPDBG gate_e_training kind=sleep confirmed=1 id=\(sleep.confirmedID) source=\(sleep.source) confidence=\(sleep.confidence) auto_ready=\(sleep.autoReady ? 1 : 0) auto_reason=\(sleep.autoReason) matched_source=\(sleep.matchedSource) overlap_s=\(Int(sleep.overlap.rounded())) duration_s=\(Int(sleep.duration.rounded())) span_s=\(Int(sleep.span.rounded())) candidate_duration_s=\(Int(sleep.candidateDuration.rounded())) candidate_span_s=\(Int(sleep.candidateSpan.rounded())) avg_hr=\(sleep.avgHR) peak_hr=\(sleep.peakHR) sleep_rhr=\(sleep.sleepRHR) motion_source=\(sleep.motionSource) motion_validated=\(sleep.motionValidated ? 1 : 0) motion_hints=\(sleep.motionHints) historical_motion_status=\(sleep.historicalMotionStatus) fallback_accepted=\(sleep.fallbackAccepted ? 1 : 0) fallback_policy=\(sleep.fallbackPolicy) auto_detection_required=\(sleep.autoReady ? 0 : 1)")
+            logGateETrainingLine("ATRIADBG gate_e_training kind=sleep confirmed=1 id=\(sleep.confirmedID) source=\(sleep.source) confidence=\(sleep.confidence) auto_ready=\(sleep.autoReady ? 1 : 0) auto_reason=\(sleep.autoReason) matched_source=\(sleep.matchedSource) overlap_s=\(Int(sleep.overlap.rounded())) duration_s=\(Int(sleep.duration.rounded())) span_s=\(Int(sleep.span.rounded())) candidate_duration_s=\(Int(sleep.candidateDuration.rounded())) candidate_span_s=\(Int(sleep.candidateSpan.rounded())) avg_hr=\(sleep.avgHR) peak_hr=\(sleep.peakHR) sleep_rhr=\(sleep.sleepRHR) motion_source=\(sleep.motionSource) motion_validated=\(sleep.motionValidated ? 1 : 0) motion_hints=\(sleep.motionHints) historical_motion_status=\(sleep.historicalMotionStatus) fallback_accepted=\(sleep.fallbackAccepted ? 1 : 0) fallback_policy=\(sleep.fallbackPolicy) auto_detection_required=\(sleep.autoReady ? 0 : 1)")
         }
     }
 
     private func logGateETrainingLine(_ line: String) {
         let sanitized = line.replacingOccurrences(of: " ", with: "_")
         persistGateStatusSnapshotLine(sanitized, reset: false)
-        WHOOPDebugLog("%@", sanitized)
+        AtriaDebugLog("%@", sanitized)
     }
 
     private func exactWorkoutTrainingReadiness(for workout: UserConfirmedWorkout,
@@ -3929,7 +3929,7 @@ final class SessionStore: ObservableObject {
                 try handle.write(contentsOf: data)
             }
         } catch {
-            WHOOPDebugLog("WHOOPDBG gate_status_snapshot_error error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG gate_status_snapshot_error error=%@", String(describing: error))
         }
     }
 
@@ -4114,7 +4114,7 @@ final class SessionStore: ObservableObject {
             requiredProof = "inspect_detector_inputs_no_metric_credit"
         }
 
-        WHOOPDebugLog("WHOOPDBG hr_profile_validation_plan status=needed reason=%@ gate_d_ready=%d gate_e_ready=0 workout_ready=0 next_action=%@ next_proof=%@ required_proof=%@ reference_state=%@ reference_required=independent_hr_csv_or_healthkit_non_atria export_action=run_--export-hr-reference-package validate_action=push_independent_hr_csv_to_Documents/atria-reference/hr-reference.csv_then_run_--validate-hr-reference cannot_count_workout_without=sustained_hr_or_external_reference source=%@ chunks=%d coverage_percent=%d duration_s=%.0f observed_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d rest_hr=%d profile_max_hr=%d reserve_hr=%d threshold_hr=%d threshold_hrr_percent=%d peak_hr=%d p95_hr=%d p95_hrr_percent=%d p99_hr=%d p99_hrr_percent=%d required_profile_max_hr_for_p95_hrr50=%d required_profile_max_hr_for_p99_hrr50=%d required_profile_max_hr_for_peak_hrr50=%d current_profile_minus_p99_required_bpm=%d profile_sensitivity_diagnostic_only=1 samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d primary_blocker=%@ stream_coverage_required_percent=75 hrr50_required=1 external_hr_reference_required=1 always_emit_when_workout_ready_0=1",
+        AtriaDebugLog("ATRIADBG hr_profile_validation_plan status=needed reason=%@ gate_d_ready=%d gate_e_ready=0 workout_ready=0 next_action=%@ next_proof=%@ required_proof=%@ reference_state=%@ reference_required=independent_hr_csv_or_healthkit_non_atria export_action=run_--export-hr-reference-package validate_action=push_independent_hr_csv_to_Documents/atria-reference/hr-reference.csv_then_run_--validate-hr-reference cannot_count_workout_without=sustained_hr_or_external_reference source=%@ chunks=%d coverage_percent=%d duration_s=%.0f observed_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d rest_hr=%d profile_max_hr=%d reserve_hr=%d threshold_hr=%d threshold_hrr_percent=%d peak_hr=%d p95_hr=%d p95_hrr_percent=%d p99_hr=%d p99_hrr_percent=%d required_profile_max_hr_for_p95_hrr50=%d required_profile_max_hr_for_p99_hrr50=%d required_profile_max_hr_for_peak_hrr50=%d current_profile_minus_p99_required_bpm=%d profile_sensitivity_diagnostic_only=1 samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d primary_blocker=%@ stream_coverage_required_percent=75 hrr50_required=1 external_hr_reference_required=1 always_emit_when_workout_ready_0=1",
               reason,
               gateDReady ? 1 : 0,
               action,
@@ -4165,7 +4165,7 @@ final class SessionStore: ObservableObject {
         } else {
             metricSummary = "rmssd=learning sdnn=learning pnn50=learning lnrmssd=learning resp=learning"
         }
-        WHOOPDebugLog("WHOOPDBG rr_ledger_summary sessions=%d rr_samples=%d best_ready=%d best_label=%@ raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f reason=%@ source=saved_rr_points reference_validated=0 %@",
+        AtriaDebugLog("ATRIADBG rr_ledger_summary sessions=%d rr_samples=%d best_ready=%d best_label=%@ raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f reason=%@ source=saved_rr_points reference_validated=0 %@",
               summary.sessionsWithRR,
               summary.rrSamples,
               summary.bestReady ? 1 : 0,
@@ -4404,7 +4404,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logWorkoutReplay(_ summary: WorkoutReplaySummary) {
-        WHOOPDebugLog("WHOOPDBG workout_replay_summary raw_sessions=%d canonical_sessions=%d sessions=%d ready=%d near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ best_source=%@ best_chunks=%d best_span_s=%.0f best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d hr_distribution_below_workout_band=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f elevated_fraction=%.2f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f source=saved_sessions_plus_aggregates",
+        AtriaDebugLog("ATRIADBG workout_replay_summary raw_sessions=%d canonical_sessions=%d sessions=%d ready=%d near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ best_source=%@ best_chunks=%d best_span_s=%.0f best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d hr_distribution_below_workout_band=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f elevated_fraction=%.2f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f source=saved_sessions_plus_aggregates",
               summary.rawSessions,
               summary.canonicalSessions,
               summary.sessionsEvaluated,
@@ -4507,7 +4507,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logHistoricalGapRepair(_ summary: HistoricalGapRepairSummary) {
-        WHOOPDebugLog("WHOOPDBG historical_gap_repair status=%@ reason=%@ diagnostic_only=%d metric_usable=%d archive_rows=%d archive_current_usable_rows=%d archive_metric_usable_rows=%d archive_start_unix=%d archive_end_unix=%d workout_start_unix=%d workout_end_unix=%d overlap_s=%d separation_s=%d source=historical_archive_vs_saved_workout",
+        AtriaDebugLog("ATRIADBG historical_gap_repair status=%@ reason=%@ diagnostic_only=%d metric_usable=%d archive_rows=%d archive_current_usable_rows=%d archive_metric_usable_rows=%d archive_start_unix=%d archive_end_unix=%d workout_start_unix=%d workout_end_unix=%d overlap_s=%d separation_s=%d source=historical_archive_vs_saved_workout",
               summary.status,
               summary.reason,
               summary.diagnosticOnly ? 1 : 0,
@@ -4651,7 +4651,7 @@ final class SessionStore: ObservableObject {
         let summary = replaySavedWorkoutReadiness(rest: rest, maxHR: maxHR)
         guard let bestStart = summary.bestStart,
               let bestEnd = summary.bestEnd else {
-            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_window source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=no_confirmable_window source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
                   source,
                   rest,
                   maxHR)
@@ -4660,7 +4660,7 @@ final class SessionStore: ObservableObject {
         guard summary.sessionsEvaluated > 0,
               summary.bestSource != "none",
               bestEnd > bestStart else {
-            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d max_hr=%d metric_promotions=0",
                   source,
                   rest,
                   maxHR)
@@ -4669,7 +4669,7 @@ final class SessionStore: ObservableObject {
         let confirmable = summary.bestObservedDuration >= 10 * 60
             && (summary.nearMiss || summary.strengthCandidate || summary.readySessions > 0 || summary.bestStreamCoveragePercent >= 20)
         guard confirmable else {
-            WHOOPDebugLog("WHOOPDBG workout_confirm status=learning reason=candidate_too_weak source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=candidate_too_weak source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
                   source,
                   summary.bestSource,
                   summary.bestObservedDuration,
@@ -4682,7 +4682,7 @@ final class SessionStore: ObservableObject {
         var existing = cachedConfirmedWorkouts
         let id = confirmedWorkoutID(start: bestStart, end: bestEnd, source: summary.bestSource)
         if let already = existing.first(where: { $0.id == id }) {
-            WHOOPDebugLog("WHOOPDBG workout_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG workout_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ metric_promotions=0 auto_gate_e_unchanged=1",
                   already.id,
                   source,
                   already.source,
@@ -4712,7 +4712,7 @@ final class SessionStore: ObservableObject {
                                              reason: summary.bestReason)
         existing.append(confirmed)
         saveConfirmedWorkouts(existing)
-        WHOOPDebugLog("WHOOPDBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
+        AtriaDebugLog("ATRIADBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
               confirmed.id,
               source,
               confirmed.source,
@@ -4766,7 +4766,7 @@ final class SessionStore: ObservableObject {
 
     private func confirmBestSleepCandidate(rest: Int, source: String) -> UserConfirmedSleep? {
         guard let best = aggregateSleepCandidates(rest: rest, calendar: .current).first else {
-            WHOOPDebugLog("WHOOPDBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
                   rest)
             return nil
@@ -4774,7 +4774,7 @@ final class SessionStore: ObservableObject {
         let confirmable = best.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
             && best.span >= AggregateSleepCandidate.fragmentedMinimumSpan
         guard confirmable else {
-            WHOOPDebugLog("WHOOPDBG sleep_confirm status=learning reason=candidate_too_short source=%@ duration_s=%.0f span_s=%.0f sessions=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=candidate_too_short source=%@ duration_s=%.0f span_s=%.0f sessions=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
                   best.duration,
                   best.span,
@@ -4784,7 +4784,7 @@ final class SessionStore: ObservableObject {
         var existing = cachedConfirmedSleeps
         let id = confirmedSleepID(start: best.start, end: best.end, source: best.sessions > 1 ? "aggregate_sleep" : "sleep_window")
         if let already = existing.first(where: { $0.id == id }) {
-            WHOOPDebugLog("WHOOPDBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   already.id,
                   source,
                   already.source,
@@ -4815,7 +4815,7 @@ final class SessionStore: ObservableObject {
                                            motionValidated: best.motionEvidenceValidated)
         existing.append(confirmed)
         saveConfirmedSleeps(existing)
-        WHOOPDebugLog("WHOOPDBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
+        AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
               confirmed.id,
               source,
               confirmed.source,
@@ -4877,7 +4877,7 @@ final class SessionStore: ObservableObject {
         }
         saveBehaviorJournalEntries(entries)
         dashboardRevision += 1
-        WHOOPDebugLog("WHOOPDBG behavior_journal status=updated day=%@ tag=%@ active=%d tags=%@ local_only=1",
+        AtriaDebugLog("ATRIADBG behavior_journal status=updated day=%@ tag=%@ active=%d tags=%@ local_only=1",
               isoString(entry.day),
               tag.rawValue,
               entry.tags.contains(tag) ? 1 : 0,
@@ -4964,7 +4964,7 @@ final class SessionStore: ObservableObject {
                                             createdAt: Date())
         saveResearchManeuverMarkers(([marker] + cachedResearchManeuverMarkers).prefix(ResearchManeuverDefaults.maxMarkers).map { $0 })
         dashboardRevision += 1
-        WHOOPDebugLog("WHOOPDBG research_maneuver_marker status=marked kind=%@ timestamp=%@ local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
+        AtriaDebugLog("ATRIADBG research_maneuver_marker status=marked kind=%@ timestamp=%@ local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
               kind.rawValue,
               isoString(timestamp))
     }
@@ -5012,7 +5012,7 @@ final class SessionStore: ObservableObject {
             if summary.readySessions > 0 {
                 readyFractions.append("hrr\(fractionPercent)")
             }
-            WHOOPDebugLog("WHOOPDBG workout_threshold_sensitivity hrr_percent=%d rest_hr=%d max_hr=%d threshold_hr=%d ready=%d ready_candidates=%d best_source=%@ best_chunks=%d best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d peak_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
+            AtriaDebugLog("ATRIADBG workout_threshold_sensitivity hrr_percent=%d rest_hr=%d max_hr=%d threshold_hr=%d ready=%d ready_candidates=%d best_source=%@ best_chunks=%d best_label=%@ status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f samples=%d peak_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
                   fractionPercent,
                   rest,
                   maxHR,
@@ -5041,7 +5041,7 @@ final class SessionStore: ObservableObject {
                   summary.bestBorderlineElevatedSeconds,
                   summary.bestBorderlineLongestBout)
         }
-        WHOOPDebugLog("WHOOPDBG workout_threshold_sensitivity_summary fractions=%@ ready_fractions=%@ diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
+        AtriaDebugLog("ATRIADBG workout_threshold_sensitivity_summary fractions=%@ ready_fractions=%@ diagnostic_only=1 detector_threshold_hrr50_unchanged=1",
               fractions.map { "hrr\(Int(($0 * 100).rounded()))" }.joined(separator: ","),
               readyFractions.isEmpty ? "none" : readyFractions.joined(separator: ","))
     }
@@ -5401,7 +5401,7 @@ final class SessionStore: ObservableObject {
             }
             return lhs.peakHR > rhs.peakHR
         }
-        WHOOPDebugLog("WHOOPDBG activity_detect_summary sessions=%d detections=%d emitted=%d suppressed=%d workouts=%d activity_candidates=%d sleep_candidates=%d rest_candidates=%d rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG activity_detect_summary sessions=%d detections=%d emitted=%d suppressed=%d workouts=%d activity_candidates=%d sleep_candidates=%d rest_candidates=%d rest_hr=%d max_hr=%d",
               sessions.count,
               detections.count,
               min(maxRows, detections.count),
@@ -5413,7 +5413,7 @@ final class SessionStore: ObservableObject {
               baseline.restingInt ?? 60,
               profile.maxHR)
         for detection in rankedDetections.prefix(maxRows) {
-            WHOOPDebugLog("WHOOPDBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@",
+            AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@",
                   detection.kind.rawValue,
                   detection.confidence.rawValue,
                   detection.duration,
@@ -5450,7 +5450,7 @@ final class SessionStore: ObservableObject {
         let minDuration = 10 * 60
         let minElevated = min(max(Double(minDuration) * 0.35, 5 * 60), 20 * 60)
         let minBout = min(max(Double(minDuration) * 0.20, 3 * 60), 8 * 60)
-        WHOOPDebugLog("WHOOPDBG workout_preflight rest_hr=%d max_hr=%d reserve_hr=%d threshold_hr=%d hrr50_hr=%d threshold_method=hrr50 min_duration_s=%d min_elevated_s=%.0f min_bout_s=%.0f elevated_rule=max(duration*0.35,5m)_cap20m bout_rule=max(duration*0.20,3m)_cap8m saved_sessions=%d",
+        AtriaDebugLog("ATRIADBG workout_preflight rest_hr=%d max_hr=%d reserve_hr=%d threshold_hr=%d hrr50_hr=%d threshold_method=hrr50 min_duration_s=%d min_elevated_s=%.0f min_bout_s=%.0f elevated_rule=max(duration*0.35,5m)_cap20m bout_rule=max(duration*0.20,3m)_cap8m saved_sessions=%d",
               rest,
               maxHR,
               reserve,
@@ -5473,7 +5473,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func logStrainValidation(_ summary: StrainValidationSummary) {
-        WHOOPDebugLog("WHOOPDBG strain_validation ready=%d rest_to_max_ready=%d primary_blocker=%@ external_hr_reference_validated=%d days=%d sessions=%d best_day=%@ best_day_sessions=%d rest_hr=%d max_hr=%d reserve_hr=%d samples=%d total_s=%.0f dropped_gap_s=%.0f stream_coverage_percent=%d z0_lt30_s=%.0f z1_30_50_s=%.0f z2_50_70_s=%.0f z3_70_85_s=%.0f z4_85_100_s=%.0f high_z3_z4_s=%.0f min_hrr=%.2f max_hrr=%.2f max_hrr_percent=%d trimp=%.2f strain=%.2f criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required source=saved_sessions_grouped_by_day_no_hr_estimation",
+        AtriaDebugLog("ATRIADBG strain_validation ready=%d rest_to_max_ready=%d primary_blocker=%@ external_hr_reference_validated=%d days=%d sessions=%d best_day=%@ best_day_sessions=%d rest_hr=%d max_hr=%d reserve_hr=%d samples=%d total_s=%.0f dropped_gap_s=%.0f stream_coverage_percent=%d z0_lt30_s=%.0f z1_30_50_s=%.0f z2_50_70_s=%.0f z3_70_85_s=%.0f z4_85_100_s=%.0f high_z3_z4_s=%.0f min_hrr=%.2f max_hrr=%.2f max_hrr_percent=%d trimp=%.2f strain=%.2f criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required source=saved_sessions_grouped_by_day_no_hr_estimation",
               summary.ready ? 1 : 0,
               summary.restToMaxReady ? 1 : 0,
               summary.primaryBlocker,
@@ -5598,7 +5598,7 @@ final class SessionStore: ObservableObject {
     }
 
     /// Sum of today's saved sessions' TRIMP — combine with the live session to
-    /// get day strain (strain accumulates across the whole day, like WHOOP).
+    /// get day strain (strain accumulates across the whole day).
     func todayTRIMP(rest: Int, max: Int) -> Double {
         let cal = Calendar.current
         return canonicalSessions().filter { cal.isDateInToday($0.start) }
@@ -6536,12 +6536,12 @@ final class SessionStore: ObservableObject {
         guard arguments.contains("--whoop-log-trends") else { return }
         let rest = baseline.restingInt ?? 60
         let summaries = trendSummaries(rest: rest, maxHR: profile.maxHR)
-        WHOOPDebugLog("WHOOPDBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
+        AtriaDebugLog("ATRIADBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
               sessions.count, rest, profile.maxHR, summaries.count)
         for summary in summaries {
             let anomalyFlags = trendAnomalyFlags(summary.anomalies)
             let detail = summary.detail.replacingOccurrences(of: " ", with: "_")
-            WHOOPDebugLog("WHOOPDBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ respiratory_rate=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
+            AtriaDebugLog("ATRIADBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ respiratory_rate=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
                   summary.days,
                   summary.sessions,
                   summary.coverageDays,
@@ -6574,13 +6574,13 @@ final class SessionStore: ObservableObject {
         let confirmedWorkoutCount = rollups.reduce(0) { $0 + $1.confirmedWorkouts }
         let restCandidateDays = rollups.filter { $0.restCandidates > 0 }.count
         let restCandidateCount = rollups.reduce(0) { $0 + $1.restCandidates }
-        WHOOPDebugLog("WHOOPDBG daily_rollup_summary sessions=%d days=%d sleep_ready_days=%d sleep_candidate_days=%d rest_candidate_days=%d rest_candidates=%d workout_days=%d confirmed_workout_days=%d confirmed_workouts=%d rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG daily_rollup_summary sessions=%d days=%d sleep_ready_days=%d sleep_candidate_days=%d rest_candidate_days=%d rest_candidates=%d workout_days=%d confirmed_workout_days=%d confirmed_workouts=%d rest_hr=%d max_hr=%d",
               sessions.count, rollups.count, sleepReadyDays, sleepCandidateDays, restCandidateDays, restCandidateCount, workoutDays, confirmedWorkoutDays, confirmedWorkoutCount, rest, profile.maxHR)
         let formatter = DateFormatter()
         formatter.calendar = Calendar.current
         formatter.dateFormat = "yyyy-MM-dd"
         for rollup in rollups.prefix(14) {
-            WHOOPDebugLog("WHOOPDBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ respiratory_rate=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
+            AtriaDebugLog("ATRIADBG daily_rollup day=%@ sessions=%d activity_candidates=%d workouts=%d confirmed_workouts=%d rest_candidates=%d sleep_ready=%d sleep_candidates=%d duration_s=%.0f strain=%.2f hrv=%@ rhr=%@ respiratory_rate=%@ workout_gate_strict=1 sleep_gate_strict=1 rest_diagnostic_only=1",
                   formatter.string(from: rollup.day),
                   rollup.sessions,
                   rollup.activityCandidates,
@@ -6598,7 +6598,7 @@ final class SessionStore: ObservableObject {
         let aggregateWorkouts = aggregateWorkoutCandidates(rest: rest, maxHR: profile.maxHR, calendar: Calendar.current)
         let readyAggregateWorkouts = aggregateWorkouts.filter { $0.readiness.ready }.count
         let bestAggregateWorkout = aggregateWorkouts.first
-        WHOOPDebugLog("WHOOPDBG aggregate_workout_summary candidates=%d ready=%d best_source=%@ best_status=%@ best_reason=%@ best_blocker=%@ best_strength_candidate=%d best_strength_candidate_reason=%@ strength_diagnostic_only=1 best_next_action=%@ best_stream_coverage_percent=%d best_chunks=%d best_duration_s=%.0f best_observed_duration_s=%.0f best_dropped_gap_s=%.0f best_max_gap_s=%.1f best_p90_hr=%d best_p95_hr=%d best_p99_hr=%d best_threshold_gap_bpm=%d best_samples_above_threshold=%d best_samples_above_borderline=%d best_elevated_s=%.0f best_required_elevated_s=%.0f best_longest_bout_s=%.0f best_required_bout_s=%.0f best_borderline_threshold_hr=%d best_borderline_elevated_s=%.0f best_borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 best_hr_raw_2a37=%d best_hr_accepted=%d best_hr_zero=%d best_hr_artifact_held=%d best_hr_artifact_dropped=%d best_hr_raw_gaps=%d best_hr_accepted_gaps=%d best_hr_max_raw_gap_s=%.1f best_hr_max_accepted_gap_s=%.1f cluster_gap_limit_s=1800 window_min_s=600 window_max_s=5400 sample_gap_limit_s=5 source=saved_session_chunks",
+        AtriaDebugLog("ATRIADBG aggregate_workout_summary candidates=%d ready=%d best_source=%@ best_status=%@ best_reason=%@ best_blocker=%@ best_strength_candidate=%d best_strength_candidate_reason=%@ strength_diagnostic_only=1 best_next_action=%@ best_stream_coverage_percent=%d best_chunks=%d best_duration_s=%.0f best_observed_duration_s=%.0f best_dropped_gap_s=%.0f best_max_gap_s=%.1f best_p90_hr=%d best_p95_hr=%d best_p99_hr=%d best_threshold_gap_bpm=%d best_samples_above_threshold=%d best_samples_above_borderline=%d best_elevated_s=%.0f best_required_elevated_s=%.0f best_longest_bout_s=%.0f best_required_bout_s=%.0f best_borderline_threshold_hr=%d best_borderline_elevated_s=%.0f best_borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 best_hr_raw_2a37=%d best_hr_accepted=%d best_hr_zero=%d best_hr_artifact_held=%d best_hr_artifact_dropped=%d best_hr_raw_gaps=%d best_hr_accepted_gaps=%d best_hr_max_raw_gap_s=%.1f best_hr_max_accepted_gap_s=%.1f cluster_gap_limit_s=1800 window_min_s=600 window_max_s=5400 sample_gap_limit_s=5 source=saved_session_chunks",
               aggregateWorkouts.count,
               readyAggregateWorkouts,
               bestAggregateWorkout?.source ?? "none",
@@ -6638,7 +6638,7 @@ final class SessionStore: ObservableObject {
               bestAggregateWorkout?.hrMaxAcceptedGap ?? 0)
         for aggregate in aggregateWorkouts.prefix(7) {
             let readiness = aggregate.readiness
-            WHOOPDebugLog("WHOOPDBG aggregate_workout_candidate day=%@ source=%@ status=%@ reason=%@ primary_blocker=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 hr_distribution_below_workout_band=%d next_action=%@ stream_coverage_percent=%d chunks=%d duration_s=%.0f span_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f labels=%@",
+            AtriaDebugLog("ATRIADBG aggregate_workout_candidate day=%@ source=%@ status=%@ reason=%@ primary_blocker=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 hr_distribution_below_workout_band=%d next_action=%@ stream_coverage_percent=%d chunks=%d duration_s=%.0f span_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f labels=%@",
                   formatter.string(from: aggregate.day),
                   aggregate.source,
                   readiness.status,
@@ -6689,7 +6689,7 @@ final class SessionStore: ObservableObject {
         let motionHintSessions = sessions.filter { $0.motionHintCountValue > 0 }.count
         let motionSource = motionHintTotal > 0 ? "diagnostic_observe_only" : "unavailable"
         let motionShortStats = motionShortSummary(for: sessions)
-        WHOOPDebugLog("WHOOPDBG broken_sleep_summary candidates=%d eligible_sessions=%d evaluated_sessions=%d rejected_too_short=%d rejected_not_overnight=%d rejected_hr_too_high=%d rejected_workout_like=%d min_total_s=10800 fragmented_min_total_s=9000 fragmented_min_span_s=10800 max_gap_s=7200 confidence=low motion_source=%@ motion_hint_sessions=%d motion_hints=%d motion_validated=0 motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_policy=window_overlap_required",
+        AtriaDebugLog("ATRIADBG broken_sleep_summary candidates=%d eligible_sessions=%d evaluated_sessions=%d rejected_too_short=%d rejected_not_overnight=%d rejected_hr_too_high=%d rejected_workout_like=%d min_total_s=10800 fragmented_min_total_s=9000 fragmented_min_span_s=10800 max_gap_s=7200 confidence=low motion_source=%@ motion_hint_sessions=%d motion_hints=%d motion_validated=0 motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_policy=window_overlap_required",
               aggregateDiagnostics.candidates,
               aggregateDiagnostics.eligible,
               aggregateDiagnostics.evaluated,
@@ -6706,7 +6706,7 @@ final class SessionStore: ObservableObject {
               formatDouble(motionShortStats.max),
               motionShortStats.overOne)
         for aggregate in aggregateSleepCandidates(rest: rest, calendar: Calendar.current).prefix(7) {
-            WHOOPDebugLog("WHOOPDBG broken_sleep_candidate day=%@ sessions=%d duration_s=%.0f span_s=%.0f max_gap_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d confidence=%@ reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d",
+            AtriaDebugLog("ATRIADBG broken_sleep_candidate day=%@ sessions=%d duration_s=%.0f span_s=%.0f max_gap_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d confidence=%@ reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d",
                   formatter.string(from: aggregate.day),
                   aggregate.sessions,
                   aggregate.duration,
@@ -6741,7 +6741,7 @@ final class SessionStore: ObservableObject {
         }
         for session in sessions.prefix(10) {
             let restingEvidence = session.restingHRForBaseline(rest: rest, maxHR: profile.maxHR)
-            WHOOPDebugLog("WHOOPDBG resting_source label=%@ value=%d source=%@ stable_10th=%d sleep_5th=%d motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
+            AtriaDebugLog("ATRIADBG resting_source label=%@ value=%d source=%@ stable_10th=%d sleep_5th=%d motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
                   session.label,
                   restingEvidence.value,
                   restingEvidence.source,
@@ -6759,7 +6759,7 @@ final class SessionStore: ObservableObject {
         }
         for session in sessions.prefix(10) {
             let readiness = session.workoutReadiness(rest: rest, maxHR: profile.maxHR)
-            WHOOPDebugLog("WHOOPDBG workout_readiness label=%@ status=%@ reason=%@ ready=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.2f required_elevated_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f",
+            AtriaDebugLog("ATRIADBG workout_readiness label=%@ status=%@ reason=%@ ready=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.2f required_elevated_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f",
                   session.label,
                   readiness.status,
                   readiness.reason,
@@ -6794,7 +6794,7 @@ final class SessionStore: ObservableObject {
                   session.hrAcceptedGapsValue,
                   session.hrMaxRawGapValue,
                   session.hrMaxAcceptedGapValue)
-            WHOOPDebugLog("WHOOPDBG workout_sustained label=%@ longest_bout_s=%.0f required_bout_s=%.0f elevated_s=%.0f required_elevated_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d decision=%@ reason=%@",
+            AtriaDebugLog("ATRIADBG workout_sustained label=%@ longest_bout_s=%.0f required_bout_s=%.0f elevated_s=%.0f required_elevated_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d decision=%@ reason=%@",
                   session.label,
                   readiness.longestElevatedBout,
                   readiness.requiredElevatedBout,
@@ -6817,7 +6817,7 @@ final class SessionStore: ObservableObject {
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
-        WHOOPDebugLog("WHOOPDBG sleep_validation schedule delay_s=%.1f label=%@", delay, label ?? "latest")
+        AtriaDebugLog("ATRIADBG sleep_validation schedule delay_s=%.1f label=%@", delay, label ?? "latest")
         Task { @MainActor in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
@@ -6840,7 +6840,7 @@ final class SessionStore: ObservableObject {
             let validationReason = validationReady
                 ? "aggregate_overnight_low_hr_window"
                 : sleepEvidenceBlocker(for: aggregate)
-            WHOOPDebugLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=aggregate_sleep duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
+            AtriaDebugLog("ATRIADBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=aggregate_sleep duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
                   validationReady ? "ready" : "learning",
                   validationReason,
                   "latest",
@@ -6897,7 +6897,7 @@ final class SessionStore: ObservableObject {
                 return $0.start > $1.start
             }
         guard let session = matching.first else {
-            WHOOPDebugLog("WHOOPDBG sleep_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
+            AtriaDebugLog("ATRIADBG sleep_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
                   label ?? "latest", sessions.count, rest, profile.maxHR)
             return
         }
@@ -6924,7 +6924,7 @@ final class SessionStore: ObservableObject {
         } else {
             reason = "overnight_low_hr_window"
         }
-        WHOOPDebugLog("WHOOPDBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ duration_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=%d low_hr=%d sleep_candidates_matching=%d confidence=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
+        AtriaDebugLog("ATRIADBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ duration_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=%d low_hr=%d sleep_candidates_matching=%d confidence=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0",
               status,
               reason,
               label ?? "latest",
@@ -6961,7 +6961,7 @@ final class SessionStore: ObservableObject {
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
-        WHOOPDebugLog("WHOOPDBG workout_validation schedule delay_s=%.1f label=%@", delay, label)
+        AtriaDebugLog("ATRIADBG workout_validation schedule delay_s=%.1f label=%@", delay, label)
         Task { @MainActor in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
@@ -7023,7 +7023,7 @@ final class SessionStore: ObservableObject {
             }
             return lhs.readiness.maxSampleGap < rhs.readiness.maxSampleGap
         }).first else {
-            WHOOPDebugLog("WHOOPDBG workout_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
+            AtriaDebugLog("ATRIADBG workout_validation status=learning reason=no_saved_session label=%@ sessions=%d rest_hr=%d max_hr=%d",
                   requestedLabel, sessions.count, rest, profile.maxHR)
             return
         }
@@ -7031,7 +7031,7 @@ final class SessionStore: ObservableObject {
         let status = readiness.ready ? "ready" : "learning"
         let reason = status == "ready" ? "sustained_elevated_hr" : readiness.reason
         let readyMatches = candidates.filter { $0.readiness.ready }.count
-        WHOOPDebugLog("WHOOPDBG workout_validation status=%@ reason=%@ primary_blocker=%@ near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ stream_coverage_percent=%d label=%@ matched_label=%@ source=%@ chunks=%d span_s=%.0f duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 workouts_matching=%d aggregate_candidates=%d",
+        AtriaDebugLog("ATRIADBG workout_validation status=%@ reason=%@ primary_blocker=%@ near_miss=%d near_miss_reason=%@ strength_candidate=%d strength_candidate_reason=%@ strength_diagnostic_only=1 next_action=%@ stream_coverage_percent=%d label=%@ matched_label=%@ source=%@ chunks=%d span_s=%.0f duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d samples=%d avg_hr=%d peak_hr=%d p90_hr=%d p95_hr=%d p99_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d samples_above_threshold=%d samples_above_borderline=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f borderline_threshold_hr=%d borderline_elevated_s=%.0f borderline_longest_bout_s=%.0f borderline_diagnostic_only=1 workouts_matching=%d aggregate_candidates=%d",
               status,
               reason,
               readiness.primaryBlocker,
@@ -7105,7 +7105,7 @@ final class SessionStore: ObservableObject {
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
                                              profile: profile) ?? "error"
-            WHOOPDebugLog("WHOOPDBG session_backup path=%@ sessions=%d rr_samples=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d schema=%d digest=%@",
+            AtriaDebugLog("ATRIADBG session_backup path=%@ sessions=%d rr_samples=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d schema=%d digest=%@",
                   backupRelativePath(for: backupURL),
                   sessions.count,
                   totalRRSamples(in: sessions),
@@ -7120,7 +7120,7 @@ final class SessionStore: ObservableObject {
             pruneAutomaticBackups(in: backupDir, keep: 24)
             return backupURL
         } catch {
-            WHOOPDebugLog("WHOOPDBG session_backup_error error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG session_backup_error error=%@", String(describing: error))
             return nil
         }
     }
@@ -7153,7 +7153,7 @@ final class SessionStore: ObservableObject {
             }
         }
         clearHRReferenceValidation(reason: "reference_inputs_cleared")
-        WHOOPDebugLog("WHOOPDBG reference_inputs_clear status=%@ removed=%d missing=%d failed=%d paths=rr-reference.csv,hr-reference.csv error=%@",
+        AtriaDebugLog("ATRIADBG reference_inputs_clear status=%@ removed=%d missing=%d failed=%d paths=rr-reference.csv,hr-reference.csv error=%@",
               failures.isEmpty ? "ok" : "partial",
               removed,
               missing,
@@ -7163,7 +7163,7 @@ final class SessionStore: ObservableObject {
 
     func exportRRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-export-rr-reference-package") else { return }
-        WHOOPDebugLog("WHOOPDBG rr_reference_package status=started sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
+        AtriaDebugLog("ATRIADBG rr_reference_package status=started sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
               sessions.count,
               totalRRSamples(in: sessions))
         _ = exportRRReferencePackage()
@@ -7171,19 +7171,19 @@ final class SessionStore: ObservableObject {
 
     func validateRRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-validate-rr-reference") else { return }
-        WHOOPDebugLog("WHOOPDBG rr_reference_validation status=started sessions=%d rr_samples=%d expected_reference=Documents/atria-reference/rr-reference.csv tolerance_ms=5 external_reference_required=1",
+        AtriaDebugLog("ATRIADBG rr_reference_validation status=started sessions=%d rr_samples=%d expected_reference=Documents/atria-reference/rr-reference.csv tolerance_ms=5 external_reference_required=1",
               sessions.count,
               totalRRSamples(in: sessions))
         _ = validateRRReferenceFromDocuments()
     }
 
     func exportRRReferencePackageForUI() -> URL? {
-        WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=started source=dashboard external_reference_required=1 tolerance_ms=5")
+        AtriaDebugLog("ATRIADBG rr_reference_export_ui status=started source=dashboard external_reference_required=1 tolerance_ms=5")
         guard let exported = exportRRReferencePackage() else {
-            WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=learning reason=no_exportable_rr_reference source=dashboard")
+            AtriaDebugLog("ATRIADBG rr_reference_export_ui status=learning reason=no_exportable_rr_reference source=dashboard")
             return nil
         }
-        WHOOPDebugLog("WHOOPDBG rr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
+        AtriaDebugLog("ATRIADBG rr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
               "Documents/atria-rr-reference-packages/\(exported.csv.lastPathComponent)",
               "Documents/atria-rr-reference-packages/\(exported.manifest.lastPathComponent)")
         return exported.csv
@@ -7206,12 +7206,12 @@ final class SessionStore: ObservableObject {
             }
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
             let bytes = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? NSNumber)?.intValue ?? 0
-            WHOOPDebugLog("WHOOPDBG rr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1 tolerance_ms=5",
+            AtriaDebugLog("ATRIADBG rr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1 tolerance_ms=5",
                   sourceURL.lastPathComponent,
                   bytes)
             return validateRRReferenceFromDocuments()
         } catch {
-            WHOOPDebugLog("WHOOPDBG rr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv validation_triggered=0 error=%@",
+            AtriaDebugLog("ATRIADBG rr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/rr-reference.csv validation_triggered=0 error=%@",
                   sourceURL.lastPathComponent,
                   String(describing: error))
             return false
@@ -7221,7 +7221,7 @@ final class SessionStore: ObservableObject {
     func exportHRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-export-hr-reference-package") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
-        WHOOPDebugLog("WHOOPDBG hr_reference_package status=started sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
+        AtriaDebugLog("ATRIADBG hr_reference_package status=started sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
               sessions.count,
               hrSamples)
         _ = exportHRReferencePackage()
@@ -7230,19 +7230,19 @@ final class SessionStore: ObservableObject {
     func validateHRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-validate-hr-reference") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
-        WHOOPDebugLog("WHOOPDBG hr_reference_validation status=started sessions=%d hr_samples=%d expected_reference=Documents/atria-reference/hr-reference.csv tolerance_bpm=2 max_pair_age_s=5 external_reference_required=1",
+        AtriaDebugLog("ATRIADBG hr_reference_validation status=started sessions=%d hr_samples=%d expected_reference=Documents/atria-reference/hr-reference.csv tolerance_bpm=2 max_pair_age_s=5 external_reference_required=1",
               sessions.count,
               hrSamples)
         _ = validateHRReferenceFromDocuments()
     }
 
     func exportHRReferencePackageForUI() -> URL? {
-        WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=started source=dashboard external_reference_required=1")
+        AtriaDebugLog("ATRIADBG hr_reference_export_ui status=started source=dashboard external_reference_required=1")
         guard let exported = exportHRReferencePackage() else {
-            WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=learning reason=no_exportable_hr_reference source=dashboard")
+            AtriaDebugLog("ATRIADBG hr_reference_export_ui status=learning reason=no_exportable_hr_reference source=dashboard")
             return nil
         }
-        WHOOPDebugLog("WHOOPDBG hr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
+        AtriaDebugLog("ATRIADBG hr_reference_export_ui status=ok csv=%@ manifest=%@ share=csv source=dashboard",
               "Documents/atria-hr-reference-packages/\(exported.csv.lastPathComponent)",
               "Documents/atria-hr-reference-packages/\(exported.manifest.lastPathComponent)")
         return exported.csv
@@ -7265,12 +7265,12 @@ final class SessionStore: ObservableObject {
             }
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
             let bytes = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? NSNumber)?.intValue ?? 0
-            WHOOPDebugLog("WHOOPDBG hr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1",
+            AtriaDebugLog("ATRIADBG hr_reference_import status=ok source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv bytes=%d validation_triggered=1 external_reference_required=1",
                   sourceURL.lastPathComponent,
                   bytes)
             return validateHRReferenceFromDocuments()
         } catch {
-            WHOOPDebugLog("WHOOPDBG hr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv validation_triggered=0 error=%@",
+            AtriaDebugLog("ATRIADBG hr_reference_import status=error source=dashboard filename=%@ path=Documents/atria-reference/hr-reference.csv validation_triggered=0 error=%@",
                   sourceURL.lastPathComponent,
                   String(describing: error))
             return false
@@ -7282,7 +7282,7 @@ final class SessionStore: ObservableObject {
         let rrSamples = totalRRSamples(in: sessions)
         guard let best = bestSavedRRReferenceWindow() else {
             let reason = rrSamples > 0 ? "no_300s_window" : "no_saved_rr"
-            WHOOPDebugLog("WHOOPDBG rr_reference_package status=learning reason=%@ sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
+            AtriaDebugLog("ATRIADBG rr_reference_package status=learning reason=%@ sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
                   reason,
                   sessions.count,
                   rrSamples)
@@ -7290,7 +7290,7 @@ final class SessionStore: ObservableObject {
         }
 
         guard best.ready else {
-            WHOOPDebugLog("WHOOPDBG rr_reference_package status=learning reason=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f external_reference_required=1 reference_validated=0",
+            AtriaDebugLog("ATRIADBG rr_reference_package status=learning reason=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f external_reference_required=1 reference_validated=0",
                   best.reason,
                   best.session.label,
                   best.snapshot.raw,
@@ -7367,7 +7367,7 @@ final class SessionStore: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: manifestURL, options: .atomic)
 
-            WHOOPDebugLog("WHOOPDBG rr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f rmssd=%.1f sdnn=%.1f pnn50=%.1f lnrmssd=%.2f external_reference_required=1 reference_validated=0 reference_path=Documents/atria-reference/rr-reference.csv tolerance_ms=5 self_compare_rejected=1 schema=2",
+            AtriaDebugLog("ATRIADBG rr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ raw=%d kept=%d conf=%d window_s=300 max_rr_gap_s=%.1f rmssd=%.1f sdnn=%.1f pnn50=%.1f lnrmssd=%.2f external_reference_required=1 reference_validated=0 reference_path=Documents/atria-reference/rr-reference.csv tolerance_ms=5 self_compare_rejected=1 schema=2",
                   "\(relativeDir)/\(csvURL.lastPathComponent)",
                   "\(relativeDir)/\(manifestURL.lastPathComponent)",
                   best.session.label,
@@ -7381,7 +7381,7 @@ final class SessionStore: ObservableObject {
                   best.snapshot.lnRMSSD)
             return (csvURL, manifestURL)
         } catch {
-            WHOOPDebugLog("WHOOPDBG rr_reference_package status=error reason=write_failed error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG rr_reference_package status=error reason=write_failed error=%@", String(describing: error))
             return nil
         }
     }
@@ -7389,15 +7389,15 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func validateRRReferenceFromDocuments() -> Bool {
         guard let best = bestSavedRRReferenceWindow(), best.ready else {
-            let reason = totalRRSamples(in: sessions) > 0 ? "no_ready_whoop_rr_window" : "no_saved_rr"
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=learning reason=%@ gate_b_pass=0 external_reference=0 reference_validated=0",
+            let reason = totalRRSamples(in: sessions) > 0 ? "no_ready_strap_rr_window" : "no_saved_rr"
+            AtriaDebugLog("ATRIADBG rr_reference_validation status=learning reason=%@ gate_b_pass=0 external_reference=0 reference_validated=0",
                   reason)
             return false
         }
 
         let reference = resolveReferenceCSV(kind: "rr", preferredFileName: "rr-reference.csv")
         guard let referenceURL = reference.url else {
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=missing reason=%@ path=Documents/atria-reference/rr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_rmssd=%.1f gate_b_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_rr_csv_in_Documents/atria-reference_or_push_rr-reference.csv",
+            AtriaDebugLog("ATRIADBG rr_reference_validation status=missing reason=%@ path=Documents/atria-reference/rr-reference.csv candidate_count=%d candidates=%@ strap_ready=1 strap_raw=%d strap_kept=%d strap_conf=%d strap_rmssd=%.1f gate_b_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_rr_csv_in_Documents/atria-reference_or_push_rr-reference.csv",
                   reference.reason,
                   reference.candidateCount,
                   reference.candidates.isEmpty ? "none" : reference.candidates.joined(separator: "|"),
@@ -7408,7 +7408,7 @@ final class SessionStore: ObservableObject {
             return false
         }
         if reference.autoSelected {
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation_reference status=auto_selected preferred=rr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
+            AtriaDebugLog("ATRIADBG rr_reference_validation_reference status=auto_selected preferred=rr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
                   referenceURL.lastPathComponent,
                   reference.candidateCount)
         }
@@ -7417,7 +7417,7 @@ final class SessionStore: ObservableObject {
             let referenceText = try String(contentsOf: referenceURL, encoding: .utf8)
             let selfCSV = rrReferenceCSV(for: best, isoFormatter: ISO8601DateFormatter())
             if normalizeReferenceCSV(referenceText) == normalizeReferenceCSV(selfCSV) {
-                WHOOPDebugLog("WHOOPDBG rr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_b_pass=0 external_reference=0 reference_validated=0 action=provide_independent_rr_ibi_recording",
+                AtriaDebugLog("ATRIADBG rr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_b_pass=0 external_reference=0 reference_validated=0 action=provide_independent_rr_ibi_recording",
                       referenceURL.lastPathComponent)
                 return false
             }
@@ -7427,9 +7427,9 @@ final class SessionStore: ObservableObject {
             let metricPassed = best.ready
                 && referenceScore.ready
                 && delta.map { $0 <= 5.0 } == true
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=%@ reason=%@ whoop_ready=%d whoop_raw=%d whoop_kept=%d whoop_conf=%d whoop_gap_s=%.1f whoop_rmssd=%.1f reference_ready=%d reference_raw=%d reference_kept=%d reference_conf=%d reference_gap_s=%.1f reference_rmssd=%.1f rmssd_delta_ms=%.1f tolerance_ms=5 gate_b_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
+            AtriaDebugLog("ATRIADBG rr_reference_validation status=%@ reason=%@ strap_ready=%d strap_raw=%d strap_kept=%d strap_conf=%d strap_gap_s=%.1f strap_rmssd=%.1f reference_ready=%d reference_raw=%d reference_kept=%d reference_conf=%d reference_gap_s=%.1f reference_rmssd=%.1f rmssd_delta_ms=%.1f tolerance_ms=5 gate_b_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
                   metricPassed ? "pass" : "fail",
-                  metricPassed ? "ready" : rrReferenceFailureReason(whoop: best, reference: referenceScore, delta: delta),
+                  metricPassed ? "ready" : rrReferenceFailureReason(strap: best, reference: referenceScore, delta: delta),
                   best.ready ? 1 : 0,
                   best.snapshot.raw,
                   best.snapshot.kept,
@@ -7454,7 +7454,7 @@ final class SessionStore: ObservableObject {
             }
             return metricPassed
         } catch {
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation status=error reason=parse_failed error=%@ gate_b_pass=0 external_reference=1 reference_validated=0",
+            AtriaDebugLog("ATRIADBG rr_reference_validation status=error reason=parse_failed error=%@ gate_b_pass=0 external_reference=1 reference_validated=0",
                   String(describing: error))
             return false
         }
@@ -7472,7 +7472,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: nil,
                                      invalidateExistingValidation: false)
-            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=learning reason=%@ gate_d_pass=0 external_reference=0 reference_validated=0",
+            AtriaDebugLog("ATRIADBG hr_reference_validation status=learning reason=%@ gate_d_pass=0 external_reference=0 reference_validated=0",
                   reason)
             return false
         }
@@ -7490,7 +7490,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: best.session,
                                      invalidateExistingValidation: false)
-            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=missing reason=%@ path=Documents/atria-reference/hr-reference.csv candidate_count=%d candidates=%@ whoop_ready=1 whoop_samples=%d whoop_duration_s=%.0f whoop_avg_hr=%.1f whoop_peak_hr=%d whoop_resting_hr=%d tolerance_bpm=2 gate_d_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_hr_csv_in_Documents/atria-reference_or_push_hr-reference.csv",
+            AtriaDebugLog("ATRIADBG hr_reference_validation status=missing reason=%@ path=Documents/atria-reference/hr-reference.csv candidate_count=%d candidates=%@ strap_ready=1 strap_samples=%d strap_duration_s=%.0f strap_avg_hr=%.1f strap_peak_hr=%d strap_resting_hr=%d tolerance_bpm=2 gate_d_pass=0 external_reference=0 reference_validated=0 action=place_exactly_one_independent_hr_csv_in_Documents/atria-reference_or_push_hr-reference.csv",
                   reference.reason,
                   reference.candidateCount,
                   reference.candidates.isEmpty ? "none" : reference.candidates.joined(separator: "|"),
@@ -7502,7 +7502,7 @@ final class SessionStore: ObservableObject {
             return false
         }
         if reference.autoSelected {
-            WHOOPDebugLog("WHOOPDBG hr_reference_validation_reference status=auto_selected preferred=hr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
+            AtriaDebugLog("ATRIADBG hr_reference_validation_reference status=auto_selected preferred=hr-reference.csv selected=%@ candidate_count=%d external_reference_required=1",
                   referenceURL.lastPathComponent,
                   reference.candidateCount)
         }
@@ -7518,13 +7518,13 @@ final class SessionStore: ObservableObject {
                                          comparison: nil,
                                          session: best.session,
                                          invalidateExistingValidation: true)
-                WHOOPDebugLog("WHOOPDBG hr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_d_pass=0 external_reference=0 reference_validated=0 action=provide_independent_chest_strap_hr_recording",
+                AtriaDebugLog("ATRIADBG hr_reference_validation status=fail reason=same_content_not_external_reference source=Documents/atria-reference/%@ gate_d_pass=0 external_reference=0 reference_validated=0 action=provide_independent_chest_strap_hr_recording",
                       referenceURL.lastPathComponent)
                 return false
             }
             let reference = try parseExternalHRReferenceCSV(at: referenceURL)
-            let whoop = best.samples.sorted { $0.t < $1.t }.map { ExternalHRSample(t: $0.t, bpm: Double($0.bpm)) }
-            let comparison = compareHRReference(whoop: whoop,
+            let strap = best.samples.sorted { $0.t < $1.t }.map { ExternalHRSample(t: $0.t, bpm: Double($0.bpm)) }
+            let comparison = compareHRReference(strap: strap,
                                                 reference: reference,
                                                 toleranceBPM: 2,
                                                 maxPairAge: 5)
@@ -7535,10 +7535,10 @@ final class SessionStore: ObservableObject {
                                      comparison: comparison,
                                      session: best.session,
                                      invalidateExistingValidation: !comparison.ready)
-            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=%@ reason=%@ whoop_samples=%d reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 gate_d_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
+            AtriaDebugLog("ATRIADBG hr_reference_validation status=%@ reason=%@ strap_samples=%d reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 gate_d_pass=%d external_reference=1 reference_validated=%d source=Documents/atria-reference/%@",
                   comparison.ready ? "pass" : "fail",
                   comparison.reason,
-                  whoop.count,
+                  strap.count,
                   reference.count,
                   comparison.pairs,
                   comparison.duration,
@@ -7564,7 +7564,7 @@ final class SessionStore: ObservableObject {
                                      comparison: nil,
                                      session: best.session,
                                      invalidateExistingValidation: true)
-            WHOOPDebugLog("WHOOPDBG hr_reference_validation status=error reason=parse_failed error=%@ gate_d_pass=0 external_reference=1 reference_validated=0",
+            AtriaDebugLog("ATRIADBG hr_reference_validation status=error reason=parse_failed error=%@ gate_d_pass=0 external_reference=1 reference_validated=0",
                   String(describing: error))
             return false
         }
@@ -7629,7 +7629,7 @@ final class SessionStore: ObservableObject {
                                               sdnn: Double,
                                               delta: Double) {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else {
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_not_found session_id=%@ reference_validated=0",
+            AtriaDebugLog("ATRIADBG rr_reference_validation_persist status=failed reason=session_not_found session_id=%@ reference_validated=0",
                   session.id.uuidString)
             return
         }
@@ -7637,7 +7637,7 @@ final class SessionStore: ObservableObject {
         sessions[index].hrvSDNN = sdnn
         sessions[index].hrvReferenceValidated = true
         guard save() else {
-            WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=failed reason=session_store_save session_id=%@ reference_validated=0",
+            AtriaDebugLog("ATRIADBG rr_reference_validation_persist status=failed reason=session_store_save session_id=%@ reference_validated=0",
                   session.id.uuidString)
             return
         }
@@ -7645,7 +7645,7 @@ final class SessionStore: ObservableObject {
         refreshSessionDerivedCaches()
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG rr_reference_validation_persist status=ok session_id=%@ label=%@ rmssd=%d sdnn=%.1f rmssd_delta_ms=%.1f reference_validated=1",
+        AtriaDebugLog("ATRIADBG rr_reference_validation_persist status=ok session_id=%@ label=%@ rmssd=%d sdnn=%.1f rmssd_delta_ms=%.1f reference_validated=1",
               session.id.uuidString,
               session.label,
               sessions[index].referenceValidatedHRV ?? 0,
@@ -7668,7 +7668,7 @@ final class SessionStore: ObservableObject {
         defaults.set(session.label, forKey: ExternalReferenceDefaults.hrSessionLabel)
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG hr_reference_validation_persist status=ok session_id=%@ label=%@ source=csv pairs=%d mean_delta_bpm=%.2f max_delta_bpm=%.2f reference_validated=1",
+        AtriaDebugLog("ATRIADBG hr_reference_validation_persist status=ok session_id=%@ label=%@ source=csv pairs=%d mean_delta_bpm=%.2f max_delta_bpm=%.2f reference_validated=1",
               session.id.uuidString,
               session.label,
               pairs,
@@ -7708,7 +7708,7 @@ final class SessionStore: ObservableObject {
         }
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG hr_reference_validation_record status=%@ reason=%@ source=%@ reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d reference_validated=%d invalidated=%d",
+        AtriaDebugLog("ATRIADBG hr_reference_validation_record status=%@ reason=%@ source=%@ reference_samples=%d pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d reference_validated=%d invalidated=%d",
               status,
               reason,
               source,
@@ -7738,7 +7738,7 @@ final class SessionStore: ObservableObject {
         defaults.set(0, forKey: ExternalReferenceDefaults.hrWithinTolerancePercent)
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG hr_reference_validation_clear status=ok reason=%@ reference_validated=0",
+        AtriaDebugLog("ATRIADBG hr_reference_validation_clear status=ok reason=%@ reference_validated=0",
               reason)
     }
 
@@ -7747,7 +7747,7 @@ final class SessionStore: ObservableObject {
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
         guard let best = bestSavedHRReferenceSession() else {
             let reason = hrSamples > 0 ? "no_60s_saved_hr_window" : "no_saved_hr"
-            WHOOPDebugLog("WHOOPDBG hr_reference_package status=learning reason=%@ sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
+            AtriaDebugLog("ATRIADBG hr_reference_package status=learning reason=%@ sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
                   reason,
                   sessions.count,
                   hrSamples)
@@ -7802,7 +7802,7 @@ final class SessionStore: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: manifestURL, options: .atomic)
 
-            WHOOPDebugLog("WHOOPDBG hr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ samples=%d duration_s=%.0f observed_s=%.0f coverage_percent=%d avg_hr=%.1f peak_hr=%d resting_hr=%d source=2a37 external_reference_required=1 reference_validated=0 gate_d_pass=0",
+            AtriaDebugLog("ATRIADBG hr_reference_package status=ok csv=%@ manifest=%@ session_label=%@ samples=%d duration_s=%.0f observed_s=%.0f coverage_percent=%d avg_hr=%.1f peak_hr=%d resting_hr=%d source=2a37 external_reference_required=1 reference_validated=0 gate_d_pass=0",
                   "\(relativeDir)/\(csvURL.lastPathComponent)",
                   "\(relativeDir)/\(manifestURL.lastPathComponent)",
                   best.session.label,
@@ -7815,7 +7815,7 @@ final class SessionStore: ObservableObject {
                   resting)
             return (csvURL, manifestURL)
         } catch {
-            WHOOPDebugLog("WHOOPDBG hr_reference_package status=error reason=write_failed error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG hr_reference_package status=error reason=write_failed error=%@", String(describing: error))
             return nil
         }
     }
@@ -7971,22 +7971,22 @@ final class SessionStore: ObservableObject {
                                 reason: reason)
     }
 
-    private func rrReferenceFailureReason(whoop: RRSavedReferenceWindow,
+    private func rrReferenceFailureReason(strap: RRSavedReferenceWindow,
                                           reference: RRReferenceScore,
                                           delta: Double?) -> String {
-        if !whoop.ready { return "whoop_\(whoop.reason)" }
+        if !strap.ready { return "strap_\(strap.reason)" }
         if !reference.ready { return reference.reason }
         guard let delta else { return "missing_rmssd" }
         if delta > 5 { return "rmssd_delta_over_tolerance" }
         return "unknown"
     }
 
-    private func compareHRReference(whoop: [ExternalHRSample],
+    private func compareHRReference(strap: [ExternalHRSample],
                                     reference: [ExternalHRSample],
                                     toleranceBPM: Double,
                                     maxPairAge: TimeInterval) -> HRReferenceComparison {
-        let paired = pairHRSamples(whoop: whoop, reference: reference, maxAge: maxPairAge)
-        let deltas = paired.map { abs($0.whoop.bpm - $0.reference.bpm) }
+        let paired = pairHRSamples(strap: strap, reference: reference, maxAge: maxPairAge)
+        let deltas = paired.map { abs($0.strap.bpm - $0.reference.bpm) }
         let duration = pairedDuration(paired)
         let meanDelta = deltas.isEmpty ? nil : deltas.reduce(0, +) / Double(deltas.count)
         let medianDelta = median(deltas)
@@ -8014,12 +8014,12 @@ final class SessionStore: ObservableObject {
                                      reason: reason)
     }
 
-    private func pairHRSamples(whoop: [ExternalHRSample],
+    private func pairHRSamples(strap: [ExternalHRSample],
                                reference: [ExternalHRSample],
-                               maxAge: TimeInterval) -> [(whoop: ExternalHRSample, reference: ExternalHRSample)] {
+                               maxAge: TimeInterval) -> [(strap: ExternalHRSample, reference: ExternalHRSample)] {
         let refs = reference.sorted { $0.t < $1.t }
         guard !refs.isEmpty else { return [] }
-        return whoop.sorted { $0.t < $1.t }.compactMap { sample in
+        return strap.sorted { $0.t < $1.t }.compactMap { sample in
             var best: ExternalHRSample?
             var bestDelta = maxAge
             for candidate in refs {
@@ -8036,9 +8036,9 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func pairedDuration(_ pairs: [(whoop: ExternalHRSample, reference: ExternalHRSample)]) -> TimeInterval {
-        guard let first = pairs.first?.whoop.t,
-              let last = pairs.last?.whoop.t else { return 0 }
+    private func pairedDuration(_ pairs: [(strap: ExternalHRSample, reference: ExternalHRSample)]) -> TimeInterval {
+        guard let first = pairs.first?.strap.t,
+              let last = pairs.last?.strap.t else { return 0 }
         return max(0, last - first)
     }
 
@@ -8122,7 +8122,7 @@ final class SessionStore: ObservableObject {
         refreshBackupStatusCache()
         refreshHomeDashboardDiagnosticsCache()
         publishDashboardRevision()
-        WHOOPDebugLog("WHOOPDBG session_backup_auto status=%@ reason=%@ path=%@ sessions=%d",
+        AtriaDebugLog("ATRIADBG session_backup_auto status=%@ reason=%@ path=%@ sessions=%d",
               backupURL == nil ? "error" : "ok",
               reason,
               backupURL.map { backupRelativePath(for: $0) } ?? "none",
@@ -8136,7 +8136,7 @@ final class SessionStore: ObservableObject {
 
     func verifyLatestSessionBackup() {
         guard let latest = latestSessionBackupURL() else {
-            WHOOPDebugLog("WHOOPDBG session_backup_verify status=missing reason=no_backup_files")
+            AtriaDebugLog("ATRIADBG session_backup_verify status=missing reason=no_backup_files")
             return
         }
         verifySessionBackup(at: latest)
@@ -8149,7 +8149,7 @@ final class SessionStore: ObservableObject {
 
     func restoreLatestSessionBackup() {
         guard let latest = latestRestorableSessionBackupURL() else {
-            WHOOPDebugLog("WHOOPDBG session_backup_restore status=missing reason=no_backup_files")
+            AtriaDebugLog("ATRIADBG session_backup_restore status=missing reason=no_backup_files")
             return
         }
 
@@ -8160,7 +8160,7 @@ final class SessionStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
             guard envelope.schema == 1 else {
-                WHOOPDebugLog("WHOOPDBG session_backup_restore status=error reason=unsupported_schema schema=%d", envelope.schema)
+                AtriaDebugLog("ATRIADBG session_backup_restore status=error reason=unsupported_schema schema=%d", envelope.schema)
                 return
             }
 
@@ -8168,7 +8168,7 @@ final class SessionStore: ObservableObject {
             profile = envelope.profile
             refreshSessionDerivedCaches()
             guard save() else {
-                WHOOPDebugLog("WHOOPDBG session_backup_restore status=error reason=store_save_failed")
+                AtriaDebugLog("ATRIADBG session_backup_restore status=error reason=store_save_failed")
                 return
             }
             rebuildBaselineFromEligibleSessions(reason: "restore-backup")
@@ -8179,7 +8179,7 @@ final class SessionStore: ObservableObject {
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
                                              profile: profile) ?? "error"
-            WHOOPDebugLog("WHOOPDBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d baseline_samples=%d profile_max_hr=%d digest=%@",
+            AtriaDebugLog("ATRIADBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d baseline_samples=%d profile_max_hr=%d digest=%@",
                   backupRelativePath(for: latest),
                   safetyURL.map { backupRelativePath(for: $0) } ?? "none",
                   envelope.schema,
@@ -8188,7 +8188,7 @@ final class SessionStore: ObservableObject {
                   profile.maxHR,
                   digest)
         } catch {
-            WHOOPDebugLog("WHOOPDBG session_backup_restore status=error error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG session_backup_restore status=error error=%@", String(describing: error))
         }
     }
 
@@ -8246,7 +8246,7 @@ final class SessionStore: ObservableObject {
                                                                        includingPropertiesForKeys: nil,
                                                                        options: [.skipsHiddenFiles])
             .filter({ $0.pathExtension == "json" }) else {
-            WHOOPDebugLog("WHOOPDBG session_backup_prune status=missing_dir keep=%d deleted=0 total_json=0 auto_json=0",
+            AtriaDebugLog("ATRIADBG session_backup_prune status=missing_dir keep=%d deleted=0 total_json=0 auto_json=0",
                   keep)
             return
         }
@@ -8261,12 +8261,12 @@ final class SessionStore: ObservableObject {
                 try FileManager.default.removeItem(at: file)
                 deleted += 1
             } catch {
-                WHOOPDebugLog("WHOOPDBG session_backup_prune_error file=%@ error=%@",
+                AtriaDebugLog("ATRIADBG session_backup_prune_error file=%@ error=%@",
                       file.lastPathComponent,
                       String(describing: error))
             }
         }
-        WHOOPDebugLog("WHOOPDBG session_backup_prune status=ok keep=%d kept_auto=%d deleted=%d total_json=%d auto_json=%d",
+        AtriaDebugLog("ATRIADBG session_backup_prune status=ok keep=%d kept_auto=%d deleted=%d total_json=%d auto_json=%d",
               keep,
               min(automatic.count, keep),
               deleted,
@@ -8290,7 +8290,7 @@ final class SessionStore: ObservableObject {
                                                     profile: profile)
             let digestMatches = backupDigest != nil && backupDigest == currentDigest
             let status = countMatches && schemaOK && digestMatches ? "ok" : "mismatch"
-            WHOOPDebugLog("WHOOPDBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
+            AtriaDebugLog("ATRIADBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
                   status,
                   backupRelativePath(for: latest),
                   envelope.schema,
@@ -8317,7 +8317,7 @@ final class SessionStore: ObservableObject {
                   currentDigest ?? "error",
                   digestMatches ? 1 : 0)
         } catch {
-            WHOOPDebugLog("WHOOPDBG session_backup_verify status=error error=%@", String(describing: error))
+            AtriaDebugLog("ATRIADBG session_backup_verify status=error error=%@", String(describing: error))
         }
     }
 
@@ -8612,7 +8612,7 @@ final class SessionStore: ObservableObject {
             guard let data = try? Data(contentsOf: sourceURL),
                   let decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
                 await MainActor.run {
-                    WHOOPDebugLog("WHOOPDBG session_store_load status=empty")
+                    AtriaDebugLog("ATRIADBG session_store_load status=empty")
                 }
                 return
             }
@@ -8651,7 +8651,7 @@ final class SessionStore: ObservableObject {
         // light now, but never let it touch the first-frame budget on a big store.
         Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }
 
-        WHOOPDebugLog("WHOOPDBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",
+        AtriaDebugLog("ATRIADBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",
               decoded.count,
               preparation.didRebuildBaseline ? 1 : 0,
               elapsedMS)
@@ -8712,7 +8712,7 @@ final class SessionStore: ObservableObject {
             try data.write(to: url, options: .atomic)
             return true
         } catch {
-            WHOOPDebugLog("WHOOPDBG session_store_save status=failed error=%@", error.localizedDescription)
+            AtriaDebugLog("ATRIADBG session_store_save status=failed error=%@", error.localizedDescription)
             return false
         }
     }
@@ -9101,7 +9101,7 @@ struct TrendSummaryView: View {
                                      coverageMin: coverageMin,
                                      hrvStates: summaries.map(\.hrvState),
                                      confidence: summaries.map(\.confidence))
-        WHOOPDebugLog("WHOOPDBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d respiratory_rate_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
+        AtriaDebugLog("ATRIADBG trend_chart_ui windows=%@ recovery_points=%d hrv_points=%d rhr_points=%d strain_points=%d respiratory_rate_points=%d coverage_min=%d required_coverage_days=%@ confidence=%@ hrv_state=%@ anomaly_flags=%@ window_blockers=%@ blockers=%@",
               windows,
               recoveryPoints,
               hrvPoints,

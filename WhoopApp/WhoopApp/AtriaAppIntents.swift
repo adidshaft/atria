@@ -235,29 +235,29 @@ enum AtriaIntentCommandStore {
 
     static func persistFocusMode(_ mode: AtriaFocusMode) {
         let defaults = UserDefaults.standard
-        defaults.set(true, forKey: WhoopBLEManager.CaptureDefaults.configured)
+        defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.configured)
         switch mode {
         case .off:
-            defaults.set(false, forKey: WhoopBLEManager.LongWearDefaults.enabled)
-            defaults.set(false, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
-            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
-            defaults.set("focus_off", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+            defaults.set(false, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+            defaults.set(false, forKey: AtriaBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.userSelected)
+            defaults.set("focus_off", forKey: AtriaBLEManager.RadioDefaults.lastReason)
         case .workout:
-            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.enabled)
-            defaults.set(true, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
-            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
-            defaults.set("Workout Focus", forKey: WhoopBLEManager.LongWearDefaults.label)
-            defaults.set(WhoopBLEManager.CollectionProfile.maxCoverage.rawValue,
-                         forKey: WhoopBLEManager.CollectionProfileDefaults.profile)
-            defaults.set("focus_workout", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+            defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+            defaults.set(true, forKey: AtriaBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.userSelected)
+            defaults.set("Workout Focus", forKey: AtriaBLEManager.LongWearDefaults.label)
+            defaults.set(AtriaBLEManager.CollectionProfile.maxCoverage.rawValue,
+                         forKey: AtriaBLEManager.CollectionProfileDefaults.profile)
+            defaults.set("focus_workout", forKey: AtriaBLEManager.RadioDefaults.lastReason)
         case .sleep:
-            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.enabled)
-            defaults.set(true, forKey: WhoopBLEManager.RadioDefaults.standardHROnly)
-            defaults.set(true, forKey: WhoopBLEManager.LongWearDefaults.userSelected)
-            defaults.set("Sleep Focus", forKey: WhoopBLEManager.LongWearDefaults.label)
-            defaults.set(WhoopBLEManager.CollectionProfile.batterySaver.rawValue,
-                         forKey: WhoopBLEManager.CollectionProfileDefaults.profile)
-            defaults.set("focus_sleep", forKey: WhoopBLEManager.RadioDefaults.lastReason)
+            defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+            defaults.set(true, forKey: AtriaBLEManager.RadioDefaults.standardHROnly)
+            defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.userSelected)
+            defaults.set("Sleep Focus", forKey: AtriaBLEManager.LongWearDefaults.label)
+            defaults.set(AtriaBLEManager.CollectionProfile.batterySaver.rawValue,
+                         forKey: AtriaBLEManager.CollectionProfileDefaults.profile)
+            defaults.set("focus_sleep", forKey: AtriaBLEManager.RadioDefaults.lastReason)
         }
     }
 }

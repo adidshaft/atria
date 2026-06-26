@@ -100,11 +100,11 @@ struct AtriaConnectionGuideContext: Equatable {
     let failures: Int
     let lastStatus: String
     let lastReason: String
-    let officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
-    /// Whether the official WHOOP app is actually installed (canOpenURL whoop://).
-    /// The short-disconnect heuristic alone over-blames WHOOP; only point at WHOOP
+    let officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+    /// Whether the official strap app is actually installed (canOpenURL whoop://).
+    /// The short-disconnect heuristic alone over-blames the official app; only point at it
     /// when it's genuinely present, otherwise show generic connection recovery.
-    var whoopAppInstalled: Bool = false
+    var officialAppInstalled: Bool = false
 
     var isFirstHandoff: Bool {
         !hasEverConnected
@@ -128,8 +128,8 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var progressDetail: String {
-        if officialWhoopCoexistenceRisk == .suspected {
-            return "Atria has seen connection behavior that can happen when the official WHOOP app or widget is still holding the strap."
+        if officialAppCoexistenceRisk == .suspected {
+            return "Atria has seen connection behavior that can happen when the official strap app or widget is still holding the strap."
         }
         if hasEverConnected {
             return "Atria keeps reconnecting in the background and saves what the strap makes available."
@@ -145,8 +145,8 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var actionSummary: String {
-        if officialWhoopCoexistenceRisk == .suspected {
-            return "Remove or fully disable the official WHOOP app before relying on Atria for overnight or workout collection."
+        if officialAppCoexistenceRisk == .suspected {
+            return "Remove or fully disable the official strap app before relying on Atria for overnight or workout collection."
         }
         if hasEverConnected {
             return "You can lock the phone after setup; Atria resumes from saved sessions and background reconnects."
@@ -155,24 +155,24 @@ struct AtriaConnectionGuideContext: Equatable {
     }
 
     var coexistenceTitle: String {
-        switch officialWhoopCoexistenceRisk {
+        switch officialAppCoexistenceRisk {
         case .advisory:
             return "Before relying on Atria"
         case .suspected:
-            return whoopAppInstalled ? "WHOOP may be interfering" : "Connection keeps dropping"
+            return officialAppInstalled ? "Another app may be interfering" : "Connection keeps dropping"
         case .cleared:
             return "Atria has the strap"
         }
     }
 
     var coexistenceDetail: String {
-        switch officialWhoopCoexistenceRisk {
+        switch officialAppCoexistenceRisk {
         case .advisory:
-            return "If the official WHOOP app or widget is installed, iOS may let it reclaim the strap. Atria cannot kill another app, so uninstall or fully disable WHOOP if readings keep dropping."
+            return "If the official strap app or widget is installed, iOS may let it reclaim the strap. Atria cannot kill another app, so uninstall or fully disable it if readings keep dropping."
         case .suspected:
-            return whoopAppInstalled
-                ? "Atria cannot terminate another iOS app. For reliable readings, uninstall WHOOP or remove its widget/background access, then reopen Atria and reconnect."
-                : "The strap dropped soon after connecting, and WHOOP isn't installed — so it's most likely a stale Bluetooth pairing or a low strap battery. The steps below fix it for good."
+            return officialAppInstalled
+                ? "Atria cannot terminate another iOS app. For reliable readings, uninstall the official strap app or remove its widget/background access, then reopen Atria and reconnect."
+                : "The strap dropped soon after connecting, and the official strap app isn't installed — so it's most likely a stale Bluetooth pairing or a low strap battery. The steps below fix it for good."
         case .cleared:
             return "The current Atria connection is active. If readings drop again, Atria will warn here."
         }
@@ -180,14 +180,14 @@ struct AtriaConnectionGuideContext: Equatable {
 
     /// Header above the recovery steps in the modal.
     var coexistencePickLabel: String {
-        whoopAppInstalled ? "Pick one" : "Try these"
+        officialAppInstalled ? "Pick one" : "Try these"
     }
 }
 
 struct AtriaHomeObservers: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    let onStatusChange: (WhoopBLEManager.Status) -> Void
+    let onStatusChange: (AtriaBLEManager.Status) -> Void
     let onDiagnosticsReady: () -> Void
 
     var body: some View {
@@ -203,7 +203,7 @@ struct AtriaHomeObservers: View {
     }
 }
 
-extension WhoopBLEManager.Status {
+extension AtriaBLEManager.Status {
     var logToken: String {
         switch self {
         case .connecting:

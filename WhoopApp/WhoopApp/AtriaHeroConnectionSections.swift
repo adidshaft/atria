@@ -37,7 +37,7 @@ private struct AtriaConnectedHeroPanel: View {
 }
 
 private struct AtriaDisconnectedHeroPanel: View, Equatable {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let hero: AtriaHomeModel.HeroSnapshot
 
     private var tint: Color {
@@ -101,7 +101,7 @@ private struct AtriaDisconnectedHeroPanel: View, Equatable {
 
 private struct AtriaHeroHeadlineBlock: View, Equatable {
     let guidance: Coach.Guidance
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let heroStatusTint: Color
 
     @Environment(\.colorScheme) private var colorScheme
@@ -163,7 +163,7 @@ private struct AtriaHeroHeadlineHost: View {
         }
 
         return Coach.Guidance(headline: "Connected and reading live",
-                              detail: "Atria is using the WHOOP strap as your primary signal while your personal baseline finishes.",
+                              detail: "Atria is using the strap as your primary signal while your personal baseline finishes.",
                               color: .green,
                               target: guidance.target,
                               state: guidance.state,
@@ -192,7 +192,7 @@ private struct AtriaHeroHeadlineHost: View {
 }
 
 private struct AtriaHeroStatusCardHost: View, Equatable {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let deviceName: String
     let heartRateText: String
 
@@ -216,7 +216,7 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                 .equatable()
         case .disconnected:
             AtriaHeroStatusTile(title: "Automatic setup is ready",
-                                detail: "Atria keeps scanning. If WHOOP or its widget is still running, close it first so it cannot reclaim the strap.",
+                                detail: "Atria keeps scanning. If the official strap app or its widget is still running, close it first so it cannot reclaim the strap.",
                                 systemImage: "bolt.horizontal.circle",
                                 tint: .blue)
                 .equatable()
@@ -249,11 +249,11 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
 
     private var displayDeviceName: String {
         let trimmed = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "WHOOP strap" }
+        guard !trimmed.isEmpty else { return "Strap" }
 
         let uppercased = trimmed.uppercased()
         if uppercased.contains("WHOOP") || uppercased.contains(" WHO") {
-            return "WHOOP strap"
+            return "Strap"
         }
 
         if let apostropheIndex = trimmed.firstIndex(of: "'") {
@@ -302,7 +302,7 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
 }
 
 private struct AtriaHeroMetricRow: View, Equatable {
-    let liveStatus: WhoopBLEManager.Status
+    let liveStatus: AtriaBLEManager.Status
     let hero: AtriaHomeModel.HeroSnapshot
 
     private var metricItems: [AtriaHeroMetricItem] {
@@ -532,9 +532,9 @@ private struct AtriaHeroStatusTile: View, Equatable {
     }
 }
 
-/// Modal card surfaced only when WHOOP interference is suspected, instead of a
+/// Modal card surfaced only when interference from the official strap app is suspected, instead of a
 /// permanent inline card. Explains the iOS limitation and the exact fix.
-struct AtriaWhoopCoexistenceModal: View {
+struct AtriaCoexistenceModal: View {
     let context: AtriaConnectionGuideContext
     let onAcknowledge: () -> Void
 
@@ -542,14 +542,14 @@ struct AtriaWhoopCoexistenceModal: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var coexistenceSteps: [AtriaConnectionGuideStep] {
-        if context.whoopAppInstalled {
+        if context.officialAppInstalled {
             return [
-                AtriaConnectionGuideStep(title: "Delete the WHOOP app",
-                                         detail: "Press and hold the WHOOP icon → Remove App → Delete App. (recommended)",
+                AtriaConnectionGuideStep(title: "Delete the official strap app",
+                                         detail: "Press and hold the official strap app's icon → Remove App → Delete App. (recommended)",
                                          systemImage: "trash",
                                          tint: .red),
                 AtriaConnectionGuideStep(title: "Or fully disable it",
-                                         detail: "Log out of WHOOP, then turn off its Bluetooth and Background App Refresh in iPhone Settings.",
+                                         detail: "Log out of the official strap app, then turn off its Bluetooth and Background App Refresh in iPhone Settings.",
                                          systemImage: "powersleep",
                                          tint: .orange),
             ]
@@ -620,7 +620,7 @@ struct AtriaWhoopCoexistenceModal: View {
 }
 
 private struct AtriaConnectionGuideSheet: View {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let context: AtriaConnectionGuideContext
     let continueSetup: () -> Void
     let retry: () -> Void
@@ -632,8 +632,8 @@ private struct AtriaConnectionGuideSheet: View {
     }
 
     private var guideSubtitle: String {
-        if context.officialWhoopCoexistenceRisk == .suspected {
-            return "Atria cannot kill the official WHOOP app from inside iOS. Remove or disable WHOOP first, then reconnect here for reliable readings."
+        if context.officialAppCoexistenceRisk == .suspected {
+            return "Atria cannot kill the official strap app from inside iOS. Remove or disable the official strap app first, then reconnect here for reliable readings."
         }
         return context.isFirstHandoff
             ? "Atria scans for the strap, connects when iOS makes it available, and keeps saving data without requiring the display to stay awake."
@@ -698,10 +698,10 @@ private struct AtriaConnectionGuideSheet: View {
 
     private var manualSteps: [AtriaConnectionGuideStep] {
         let coexistenceStep = AtriaConnectionGuideStep(
-            title: context.officialWhoopCoexistenceRisk == .suspected ? "Remove WHOOP first" : "Check WHOOP coexistence",
+            title: context.officialAppCoexistenceRisk == .suspected ? "Remove the official strap app first" : "Check app coexistence",
             detail: context.coexistenceDetail,
             systemImage: "exclamationmark.triangle.fill",
-            tint: context.officialWhoopCoexistenceRisk == .suspected ? .red : .orange
+            tint: context.officialAppCoexistenceRisk == .suspected ? .red : .orange
         )
         if context.isFirstHandoff {
             return [
@@ -739,11 +739,11 @@ private struct AtriaConnectionGuideSheet: View {
     }
 
     private var automaticItems: [String] {
-        if context.officialWhoopCoexistenceRisk == .suspected {
+        if context.officialAppCoexistenceRisk == .suspected {
             return [
                 "Atria keeps saved data intact while the live BLE owner changes.",
-                "Atria warns instead of pretending collection is reliable when WHOOP may reclaim the strap.",
-                "After WHOOP is removed or disabled, Atria reconnects and resumes normal collection."
+                "Atria warns instead of pretending collection is reliable when another app may reclaim the strap.",
+                "After the official strap app is removed or disabled, Atria reconnects and resumes normal collection."
             ]
         }
         if context.isFirstHandoff {
@@ -875,7 +875,7 @@ struct AtriaConnectionGuideSheetHost: View {
 }
 
 private struct AtriaConnectionProgressStrip: View, Equatable {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let attempts: Int
     let statusTint: Color
     let flowLabel: String
@@ -944,7 +944,7 @@ private struct AtriaConnectionStepTile: View, Equatable {
 private struct AtriaConnectionStatusCard: View, Equatable {
     let title: String
     let detail: String
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
 
     private var tint: Color {
         switch status {

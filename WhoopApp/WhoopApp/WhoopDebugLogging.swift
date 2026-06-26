@@ -1,6 +1,6 @@
 import Foundation
 
-enum WhoopDebugLogging {
+enum AtriaDebugLogging {
     private static let enableFlag = "--whoop-enable-debug-logs"
 
     static let isEnabled: Bool = {
@@ -41,8 +41,8 @@ enum WhoopDebugLogging {
     }()
 }
 
-func WHOOPDebugLog(_ format: StaticString, _ args: CVarArg...) {
-    guard WhoopDebugLogging.isEnabled else { return }
+func AtriaDebugLog(_ format: StaticString, _ args: CVarArg...) {
+    guard AtriaDebugLogging.isEnabled else { return }
     withVaList(args) { pointer in
         NSLogv(String(describing: format), pointer)
     }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// One decoded frame from the WHOOP proprietary stream.
+/// One decoded frame from the strap's proprietary stream.
 ///
 /// Wire format (verified against captures):
 ///   aa | len(2, little-endian) | crc8(len) | payload... | checksum(4)
@@ -8,7 +8,7 @@ import Foundation
 /// The `len` field is `payload.count + 4`, so `total = len + 4`. The byte right
 /// after `len` is the CRC8 header byte; the payload's first byte is the packet
 /// type/opcode.
-struct WhoopFrame: Identifiable {
+struct AtriaFrame: Identifiable {
     let id = UUID()
     let timestamp = Date()
     let source: String        // which characteristic it came from
@@ -22,12 +22,12 @@ struct WhoopFrame: Identifiable {
     var hex: String { raw.map { String(format: "%02x", $0) }.joined() }
     var checksumHex: String { checksum.map { String(format: "%02x", $0) }.joined() }
 
-    static func parse(_ data: Data, source: String) -> WhoopFrame? {
+    static func parse(_ data: Data, source: String) -> AtriaFrame? {
         let b = [UInt8](data)
         // Minimum sensible frame: aa + len(2) + crc8(1) + type(1) + checksum(4)
         guard b.count >= 8, b[0] == 0xAA else {
             // Unknown shape — still surface it raw rather than dropping it.
-            return WhoopFrame(source: source, opcode: b.first ?? 0, declaredLen: b.count,
+            return AtriaFrame(source: source, opcode: b.first ?? 0, declaredLen: b.count,
                               payload: data, checksum: Data(), wellFormed: false, raw: data)
         }
         let len = Int(b[1]) | (Int(b[2]) << 8)      // counts everything but the 4B checksum
@@ -36,14 +36,14 @@ struct WhoopFrame: Identifiable {
         let payloadEnd = min(max(len, payloadStart), b.count)
         let payload = payloadStart < payloadEnd ? Data(b[payloadStart..<payloadEnd]) : Data()
         let checksum = payloadEnd + 4 <= b.count ? Data(b[payloadEnd..<payloadEnd+4]) : Data(b[payloadEnd...])
-        return WhoopFrame(source: source, opcode: payload.first ?? 0, declaredLen: len,
+        return AtriaFrame(source: source, opcode: payload.first ?? 0, declaredLen: len,
                           payload: payload, checksum: checksum, wellFormed: wellFormed, raw: data)
     }
 }
 
 /// CRC-32/ISO-HDLC (zlib), forward-reflected form: poly 0x04C11DB7, init 0xFFFFFFFF,
 /// reflect-in/reflect-out, final XOR 0xFFFFFFFF. Verified to match Python's
-/// zlib.crc32 AND the real WHOOP device frame trailer (the previous reflected
+/// zlib.crc32 AND the real strap device frame trailer (the previous reflected
 /// `>>` variant did NOT — it produced an invalid checksum the strap rejected,
 /// which is why realtime never started on iOS).
 func crc32<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
@@ -79,7 +79,7 @@ func crc8<S: Sequence>(_ bytes: S) -> UInt8 where S.Element == UInt8 {
     return c
 }
 
-/// Wrap a payload in a valid WHOOP frame the strap will accept:
+/// Wrap a payload in a valid strap frame the strap will accept:
 ///   0xAA | len(LE) | CRC8(len) | payload | CRC32(payload, LE)   (len = payload+4)
 func encodeFrame(_ payload: [UInt8]) -> Data {
     let len = UInt16(payload.count + 4)

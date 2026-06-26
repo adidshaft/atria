@@ -175,7 +175,7 @@ enum ActiveSessionJournal {
             let data = try Data(contentsOf: target)
             return try JSONDecoder().decode(ActiveSessionJournalRecord.self, from: data)
         } catch {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=load_failed error=%@", error.localizedDescription)
+            AtriaDebugLog("ATRIADBG active_session_journal status=load_failed error=%@", error.localizedDescription)
             return nil
         }
     }
@@ -253,7 +253,7 @@ enum ActiveSessionJournal {
             do {
                 try FileManager.default.removeItem(at: target)
             } catch {
-                WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
+                AtriaDebugLog("ATRIADBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
             }
         }
     }
@@ -291,14 +291,14 @@ enum ActiveSessionJournal {
             if record.samples.count == segment.sampleStartIndex {
                 record.samples.append(contentsOf: segment.samples)
             } else if record.samples.count < segment.sampleStartIndex {
-                WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_gap sequence=%d sample_start=%d current_samples=%d",
+                AtriaDebugLog("ATRIADBG active_session_journal status=segment_gap sequence=%d sample_start=%d current_samples=%d",
                       segment.sequence, segment.sampleStartIndex, record.samples.count)
             }
             var rr = record.rrSamples ?? []
             if rr.count == segment.rrSampleStartIndex {
                 rr.append(contentsOf: segment.rrSamples)
             } else if rr.count < segment.rrSampleStartIndex {
-                WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_gap sequence=%d rr_start=%d current_rr=%d",
+                AtriaDebugLog("ATRIADBG active_session_journal status=segment_gap sequence=%d rr_start=%d current_rr=%d",
                       segment.sequence, segment.rrSampleStartIndex, rr.count)
             }
             record.rrSamples = rr
@@ -357,14 +357,14 @@ enum ActiveSessionJournal {
                         guard segment.schema == Self.segmentSchema else { return nil }
                         return segment
                     } catch {
-                        WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_load_failed file=%@ error=%@",
+                        AtriaDebugLog("ATRIADBG active_session_journal status=segment_load_failed file=%@ error=%@",
                               url.lastPathComponent, error.localizedDescription)
                         return nil
                     }
                 }
                 .sorted { $0.sequence < $1.sequence }
         } catch {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_list_failed error=%@", error.localizedDescription)
+            AtriaDebugLog("ATRIADBG active_session_journal status=segment_list_failed error=%@", error.localizedDescription)
             return []
         }
     }
@@ -390,7 +390,7 @@ enum ActiveSessionJournal {
             let data = try Data(contentsOf: target)
             return try JSONDecoder().decode(ActiveSessionJournalSegment.self, from: data)
         } catch {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=segment_load_failed file=%@ error=%@",
+            AtriaDebugLog("ATRIADBG active_session_journal status=segment_load_failed file=%@ error=%@",
                           target.lastPathComponent, error.localizedDescription)
             return nil
         }
@@ -412,7 +412,7 @@ enum ActiveSessionJournal {
                 try FileManager.default.removeItem(at: file)
             }
         } catch {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_segments_failed error=%@", error.localizedDescription)
+            AtriaDebugLog("ATRIADBG active_session_journal status=clear_segments_failed error=%@", error.localizedDescription)
         }
     }
 
@@ -421,7 +421,7 @@ enum ActiveSessionJournal {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=clear_legacy_snapshot_failed error=%@", error.localizedDescription)
+            AtriaDebugLog("ATRIADBG active_session_journal status=clear_legacy_snapshot_failed error=%@", error.localizedDescription)
         }
     }
 

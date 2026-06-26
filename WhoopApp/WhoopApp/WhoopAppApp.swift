@@ -3,19 +3,19 @@ import UIKit
 import BackgroundTasks
 
 @main
-struct WhoopAppApp: App {
+struct AtriaApp: App {
     private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
     private static let processingTaskIdentifier = "com.adidshaft.atria.processing"
 
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var ble: WhoopBLEManager
+    @StateObject private var ble: AtriaBLEManager
     @StateObject private var store: SessionStore
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
     private let launchStartedAt = Date()
 
     init() {
-        let ble = WhoopBLEManager()
+        let ble = AtriaBLEManager()
         let store = SessionStore()
         ble.onSessionEnd = { [store] saved in store.add(saved) }
         ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
@@ -94,7 +94,7 @@ struct WhoopAppApp: App {
         }
     }
 
-    private static func registerBackgroundTasks(store: SessionStore, ble: WhoopBLEManager) {
+    private static func registerBackgroundTasks(store: SessionStore, ble: AtriaBLEManager) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: appRefreshTaskIdentifier, using: nil) { task in
             handleBackgroundTask(task,
                                  store: store,
@@ -111,7 +111,7 @@ struct WhoopAppApp: App {
 
     private static func handleBackgroundTask(_ task: BGTask,
                                              store: SessionStore,
-                                             ble: WhoopBLEManager,
+                                             ble: AtriaBLEManager,
                                              reason: String) {
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
@@ -138,7 +138,7 @@ struct WhoopAppApp: App {
     private func performSceneBackgroundMaintenance(reason: String) {
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Atria background flush") {
-            WHOOPDebugLog("WHOOPDBG background_flush status=expired reason=%@", reason)
+            AtriaDebugLog("ATRIADBG background_flush status=expired reason=%@", reason)
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
@@ -152,7 +152,7 @@ struct WhoopAppApp: App {
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
         }
-        WHOOPDebugLog("WHOOPDBG background_flush status=ok reason=%@", reason)
+        AtriaDebugLog("ATRIADBG background_flush status=ok reason=%@", reason)
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {
@@ -160,9 +160,9 @@ struct WhoopAppApp: App {
         request.earliestBeginDate = Date(timeIntervalSinceNow: 30 * 60)
         do {
             try BGTaskScheduler.shared.submit(request)
-            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=ok kind=refresh reason=%@", reason)
+            AtriaDebugLog("ATRIADBG bg_task_schedule status=ok kind=refresh reason=%@", reason)
         } catch {
-            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=failed kind=refresh reason=%@ error=%@",
+            AtriaDebugLog("ATRIADBG bg_task_schedule status=failed kind=refresh reason=%@ error=%@",
                           reason,
                           String(describing: error))
         }
@@ -175,9 +175,9 @@ struct WhoopAppApp: App {
         request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60)
         do {
             try BGTaskScheduler.shared.submit(request)
-            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=ok kind=processing reason=%@", reason)
+            AtriaDebugLog("ATRIADBG bg_task_schedule status=ok kind=processing reason=%@", reason)
         } catch {
-            WHOOPDebugLog("WHOOPDBG bg_task_schedule status=failed kind=processing reason=%@ error=%@",
+            AtriaDebugLog("ATRIADBG bg_task_schedule status=failed kind=processing reason=%@ error=%@",
                           reason,
                           String(describing: error))
         }
@@ -271,7 +271,7 @@ struct WhoopAppApp: App {
 
     private func logLaunchTiming(event: String) {
         let elapsedMS = Int(Date().timeIntervalSince(launchStartedAt) * 1000)
-        WHOOPDebugLog("WHOOPDBG launch_timing event=%@ elapsed_ms=%d scene=%@",
+        AtriaDebugLog("ATRIADBG launch_timing event=%@ elapsed_ms=%d scene=%@",
                       event,
                       elapsedMS,
                       String(describing: scenePhase))
@@ -292,7 +292,7 @@ struct WhoopAppApp: App {
         let needsWorkoutConfirm = arguments.contains("--whoop-confirm-best-workout-candidate")
         let needsSleepConfirm = arguments.contains("--whoop-confirm-best-sleep-candidate")
         guard needsRR || needsRRUI || needsHR || needsHRUI || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
-        WHOOPDebugLog("WHOOPDBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+        AtriaDebugLog("ATRIADBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                       needsRR ? 1 : 0,
                       needsRRUI ? 1 : 0,
                       needsHR ? 1 : 0,
@@ -327,7 +327,7 @@ struct WhoopAppApp: App {
                                                     arguments: arguments,
                                                     needsHealthKit: needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild,
                                                     needsResetRebuild: needsHealthKitResetRebuild)
-            WHOOPDebugLog("WHOOPDBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+            AtriaDebugLog("ATRIADBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                           needsRR ? 1 : 0,
                           needsRRUI ? 1 : 0,
                           needsHR ? 1 : 0,
@@ -356,9 +356,9 @@ struct WhoopAppApp: App {
             if !statusArguments.contains("--whoop-log-gate-status-delay-fired") {
                 statusArguments.append("--whoop-log-gate-status-delay-fired")
             }
-            WHOOPDebugLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=scheduled delay_s=%llu", delaySeconds)
+            AtriaDebugLog("ATRIADBG launch_exports_post_healthkit_gate_status status=scheduled delay_s=%llu", delaySeconds)
             store.logGateStatusFromLaunchIfRequested(arguments: statusArguments)
-            WHOOPDebugLog("WHOOPDBG launch_exports_post_healthkit_gate_status status=completed")
+            AtriaDebugLog("ATRIADBG launch_exports_post_healthkit_gate_status status=completed")
         }
     }
 }

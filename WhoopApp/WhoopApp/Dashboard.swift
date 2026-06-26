@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// WHOOP's core daily loop: recovery sets an "optimal strain" target for the day,
+/// The core daily loop: recovery sets an "optimal strain" target for the day,
 /// and we tell you whether to push, hold, or rest based on where today's strain
 /// sits relative to that target.
 enum Coach {

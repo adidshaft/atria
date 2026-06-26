@@ -316,7 +316,7 @@ struct AtriaSettingsView: View {
                     .foregroundStyle(.primary)
             }
             LabeledContent("Model") {
-                Text(strapModel.isEmpty ? "WHOOP strap" : strapModel)
+                Text(strapModel.isEmpty ? "Strap" : strapModel)
                     .foregroundStyle(.secondary)
             }
             if !strapFirmware.isEmpty {

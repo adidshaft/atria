@@ -185,7 +185,7 @@ final class HealthKitExporter {
                                                         confirmedSleeps: confirmedSleeps)
         let planned = diagnostics.planned
         guard diagnostics.entitlementPresent else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=missing_entitlement sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d action=enable_healthkit_capability",
+            AtriaDebugLog("ATRIADBG healthkit_export status=missing_entitlement sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d action=enable_healthkit_capability",
                   sessions.count,
                   planned.hrSamples,
                   planned.workouts,
@@ -194,7 +194,7 @@ final class HealthKitExporter {
             return
         }
         guard diagnostics.healthDataAvailable else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=unavailable sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
+            AtriaDebugLog("ATRIADBG healthkit_export status=unavailable sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
                   sessions.count,
                   planned.hrSamples,
                   planned.workouts,
@@ -203,7 +203,7 @@ final class HealthKitExporter {
             return
         }
         guard !sessions.isEmpty else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=no_sessions sessions=0 hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
+            AtriaDebugLog("ATRIADBG healthkit_export status=no_sessions sessions=0 hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
                   planned.hrSamples,
                   planned.workouts,
                   planned.hrvSamples,
@@ -227,7 +227,7 @@ final class HealthKitExporter {
                                  restingBaselineSamples: restingBaselineSamples,
                                  ledger: &ledger)
             saveExportLedger(ledger)
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=skipped_existing_atria_samples sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d atria_hr_samples=%d ledger_seeded=1 idempotent=1 action=incremental_exports_only",
+            AtriaDebugLog("ATRIADBG healthkit_export status=skipped_existing_atria_samples sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d atria_hr_samples=%d ledger_seeded=1 idempotent=1 action=incremental_exports_only",
                   sessions.count,
                   planned.hrSamples,
                   planned.workouts,
@@ -253,7 +253,7 @@ final class HealthKitExporter {
                                          profile: profile,
                                          restingBaselineSamples: restingBaselineSamples)
         guard deltaPlanned.hrSamples > 0 || deltaPlanned.restingHRSamples > 0 || deltaPlanned.workouts > 0 || deltaPlanned.hrvSamples > 0 || deltaPlanned.respiratoryRateSamples > 0 || deltaPlanned.activeEnergySamples > 0 || deltaPlanned.vo2MaxSamples > 0 || deltaPlanned.sleeps > 0 else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=0 ledger_entries=%d idempotent=1",
+            AtriaDebugLog("ATRIADBG healthkit_export status=up_to_date sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=0 ledger_entries=%d idempotent=1",
                   sessions.count,
                   ledger.count)
             verifyHeartRateExportReadback(sessions: sessions,
@@ -272,11 +272,11 @@ final class HealthKitExporter {
         let sleepAuthorizationStatus = deltaPlanned.sleeps > 0 ? store.authorizationStatus(for: sleepType) : .sharingAuthorized
         let sleepShareDenied = deltaPlanned.sleeps > 0 && sleepAuthorizationStatus == .sharingDenied
         if sleepShareDenied {
-            WHOOPDebugLog("WHOOPDBG healthkit_sleep_export status=permission_required sleeps=%d authorization=%@ action=grant_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG healthkit_sleep_export status=permission_required sleeps=%d authorization=%@ action=grant_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1",
                   deltaPlanned.sleeps,
                   Self.authorizationStatusLabel(sleepAuthorizationStatus))
         } else if deltaPlanned.sleeps > 0 && sleepAuthorizationStatus == .notDetermined {
-            WHOOPDebugLog("WHOOPDBG healthkit_sleep_export status=authorization_required sleeps=%d authorization=%@ action=request_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1",
+            AtriaDebugLog("ATRIADBG healthkit_sleep_export status=authorization_required sleeps=%d authorization=%@ action=request_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1",
                   deltaPlanned.sleeps,
                   Self.authorizationStatusLabel(sleepAuthorizationStatus))
         }
@@ -289,7 +289,7 @@ final class HealthKitExporter {
                                             vo2MaxSamples: deltaPlanned.vo2MaxSamples,
                                             sleeps: sleepShareDenied ? 0 : deltaPlanned.sleeps)
         guard writablePlanned.hrSamples > 0 || writablePlanned.restingHRSamples > 0 || writablePlanned.workouts > 0 || writablePlanned.hrvSamples > 0 || writablePlanned.respiratoryRateSamples > 0 || writablePlanned.activeEnergySamples > 0 || writablePlanned.vo2MaxSamples > 0 || writablePlanned.sleeps > 0 else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=sleep_permission_required sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=%d ledger_entries=%d idempotent=1 action=grant_health_sleep_analysis",
+            AtriaDebugLog("ATRIADBG healthkit_export status=sleep_permission_required sessions=%d hr_samples=0 resting_hr_samples=0 workouts=0 hrv_samples=0 respiratory_rate_samples=0 sleeps=%d ledger_entries=%d idempotent=1 action=grant_health_sleep_analysis",
                   sessions.count,
                   deltaPlanned.sleeps,
                   ledger.count)
@@ -313,7 +313,7 @@ final class HealthKitExporter {
         }
         let writeAuthorization = writeAuthorizationState(for: writeTypes)
         if !writeAuthorization.denied.isEmpty {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=share_permission_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d denied=%@ action=grant_health_write_permissions",
+            AtriaDebugLog("ATRIADBG healthkit_export status=share_permission_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d denied=%@ action=grant_health_write_permissions",
                   sessions.count,
                   writablePlanned.hrSamples,
                   writablePlanned.workouts,
@@ -324,7 +324,7 @@ final class HealthKitExporter {
             return
         }
         if writeAuthorization.cached {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=authorization_cached sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
+            AtriaDebugLog("ATRIADBG healthkit_export status=authorization_cached sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
                   sessions.count,
                   writablePlanned.hrSamples,
                   writablePlanned.workouts,
@@ -352,7 +352,7 @@ final class HealthKitExporter {
 
         let requestID = UUID()
         pendingAuthorizationRequestID = requestID
-        WHOOPDebugLog("WHOOPDBG healthkit_export status=authorization_requested sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
+        AtriaDebugLog("ATRIADBG healthkit_export status=authorization_requested sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
               sessions.count,
               writablePlanned.hrSamples,
               writablePlanned.workouts,
@@ -368,7 +368,7 @@ final class HealthKitExporter {
                     self.pendingAuthorizationRequestID = nil
                 }
                 if let error {
-                    WHOOPDebugLog("WHOOPDBG healthkit_export status=auth_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d error=%@",
+                    AtriaDebugLog("ATRIADBG healthkit_export status=auth_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d error=%@",
                           sessions.count,
                           writablePlanned.hrSamples,
                           writablePlanned.workouts,
@@ -378,7 +378,7 @@ final class HealthKitExporter {
                     return
                 }
                 guard granted else {
-                    WHOOPDebugLog("WHOOPDBG healthkit_export status=auth_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
+                    AtriaDebugLog("ATRIADBG healthkit_export status=auth_denied sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d",
                           sessions.count,
                           writablePlanned.hrSamples,
                           writablePlanned.workouts,
@@ -406,8 +406,8 @@ final class HealthKitExporter {
     }
 
     func auditHeartRateReferenceFromLaunchIfRequested(arguments: [String], sessions: [SavedSession]) {
-        guard arguments.contains("--whoop-healthkit-reference-audit") else { return }
-        WHOOPDebugLog("WHOOPDBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
+        guard arguments.contains("--strap-healthkit-reference-audit") else { return }
+        AtriaDebugLog("ATRIADBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
         auditHeartRateReferenceAvailability(sessions: sessions)
         auditAppleStepCountReadAvailability(reason: "launch_arg")
         auditSleepingWristTemperatureReadAvailability(reason: "launch_arg")
@@ -418,7 +418,7 @@ final class HealthKitExporter {
                                                             sessions: [SavedSession],
                                                             rest: Int,
                                                             maxHR: Int) {
-        guard arguments.contains("--whoop-healthkit-reset-rebuild-atria-hr") else { return }
+        guard arguments.contains("--strap-healthkit-reset-rebuild-atria-hr") else { return }
         resetAndRebuildAtriaHeartRate(sessions: sessions, rest: rest, maxHR: maxHR)
     }
 
@@ -511,7 +511,7 @@ final class HealthKitExporter {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 15_000_000_000)
             guard pendingAuthorizationRequestID == requestID else { return }
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=authorization_pending sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d read_hr=1 read_sleep=%d timeout_s=15 action=approve_health_permissions_on_device",
+            AtriaDebugLog("ATRIADBG healthkit_export status=authorization_pending sessions=%d hr_samples=%d workouts=%d hrv_samples=%d sleeps=%d read_hr=1 read_sleep=%d timeout_s=15 action=approve_health_permissions_on_device",
                   sessions,
                   planned.hrSamples,
                   planned.workouts,
@@ -817,7 +817,7 @@ final class HealthKitExporter {
         let sampleCap = missingSessions.reduce(0) {
             $0 + Self.healthKitWritableHRPoints(for: $1, exportedPointCount: 0)
         }
-        WHOOPDebugLog("WHOOPDBG healthkit_backfill_repair status=started sessions=%d attributed_missing_hr_samples=%d global_missing_hr_samples=%d write_hr_sample_cap=%d candidate_sessions=%d metric_promotions=0 reason=readback_missing_atria_session_ids_capped_to_global_gap",
+        AtriaDebugLog("ATRIADBG healthkit_backfill_repair status=started sessions=%d attributed_missing_hr_samples=%d global_missing_hr_samples=%d write_hr_sample_cap=%d candidate_sessions=%d metric_promotions=0 reason=readback_missing_atria_session_ids_capped_to_global_gap",
               missingSessions.count,
               missingSamples,
               missingTotal,
@@ -989,7 +989,7 @@ final class HealthKitExporter {
             })
         }
         guard !samples.isEmpty || !workoutPlans.isEmpty else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=up_to_date sessions=%d hr_samples=0 workouts=0 hrv_samples=0 sleeps=0 ledger_entries=%d idempotent=1 reason=%@",
+            AtriaDebugLog("ATRIADBG healthkit_export status=up_to_date sessions=%d hr_samples=0 workouts=0 hrv_samples=0 sleeps=0 ledger_entries=%d idempotent=1 reason=%@",
                   sessions.count,
                   ledger.count,
                   reason)
@@ -1016,7 +1016,7 @@ final class HealthKitExporter {
                 try await self.save(samples: samples)
                 try await self.saveWorkoutPlans(workoutPlans)
             } catch {
-                WHOOPDebugLog("WHOOPDBG healthkit_export status=save_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d reason=%@ error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_export status=save_error sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d reason=%@ error=%@",
                       sessions.count,
                       hrSamples,
                       workouts,
@@ -1041,7 +1041,7 @@ final class HealthKitExporter {
                                           ledger: &updatedLedger)
             }
             self.saveExportLedger(updatedLedger)
-            WHOOPDebugLog("WHOOPDBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
+            AtriaDebugLog("ATRIADBG healthkit_export status=saved sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d ledger_entries=%d idempotent=1 incremental=1 reason=%@",
                   sessions.count,
                   hrSamples,
                   workouts,
@@ -1065,7 +1065,7 @@ final class HealthKitExporter {
                                            expectedDeltaSleeps: sleeps,
                                            reason: reason)
             if reason == "hr_reset_rebuild" {
-                WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=complete sessions=%d rebuilt_hr_samples=%d metric_promotions=0",
+                AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=complete sessions=%d rebuilt_hr_samples=%d metric_promotions=0",
                       sessions.count,
                       hrSamples)
             }
@@ -1124,7 +1124,7 @@ final class HealthKitExporter {
                                                reason: String) {
         let readbackSessions = verificationSessions ?? sessions
         guard expectedDeltaHRSamples > 0 || expectedTotalAtriaHRSamples > 0 else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=skipped reason=%@ expected_delta_hr_samples=0 expected_total_atria_hr_samples=0 readback_atria_hr_samples=0 data_appears=0",
+            AtriaDebugLog("ATRIADBG healthkit_export_verify status=skipped reason=%@ expected_delta_hr_samples=0 expected_total_atria_hr_samples=0 readback_atria_hr_samples=0 data_appears=0",
                   reason)
             Self.recordReadback(status: "skipped",
                                 reason: reason,
@@ -1138,7 +1138,7 @@ final class HealthKitExporter {
         guard let start = readbackSessions.map(\.start).min(),
               let end = readbackSessions.map(\.end).max(),
               end > start else {
-            WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=no_session_window reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0",
+            AtriaDebugLog("ATRIADBG healthkit_export_verify status=no_session_window reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0",
                   reason,
                   expectedDeltaHRSamples,
                   expectedTotalAtriaHRSamples)
@@ -1155,7 +1155,7 @@ final class HealthKitExporter {
         store.getRequestStatusForAuthorization(toShare: [], read: [heartRateType]) { [weak self] status, error in
             guard let self else { return }
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=request_status_error reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_export_verify status=request_status_error reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 error=%@",
                       reason,
                       expectedDeltaHRSamples,
                       expectedTotalAtriaHRSamples,
@@ -1170,7 +1170,7 @@ final class HealthKitExporter {
                 return
             }
             guard status == .unnecessary else {
-                WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=read_permission_required reason=%@ request_status=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 action=grant_health_read_heart_rate",
+                AtriaDebugLog("ATRIADBG healthkit_export_verify status=read_permission_required reason=%@ request_status=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 action=grant_health_read_heart_rate",
                       reason,
                       Self.requestStatusLabel(status),
                       expectedDeltaHRSamples,
@@ -1202,7 +1202,7 @@ final class HealthKitExporter {
                                            reason: String) {
         guard expectedDeltaSleeps > 0 else {
             if !confirmedSleeps.isEmpty {
-                WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=skipped reason=%@ expected_delta_sleeps=0 confirmed_sleeps=%d data_appears=0",
+                AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=skipped reason=%@ expected_delta_sleeps=0 confirmed_sleeps=%d data_appears=0",
                       reason,
                       confirmedSleeps.count)
             }
@@ -1211,7 +1211,7 @@ final class HealthKitExporter {
         guard let start = confirmedSleeps.map(\.start).min(),
               let end = confirmedSleeps.map(\.end).max(),
               end > start else {
-            WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=no_sleep_window reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0",
+            AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=no_sleep_window reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0",
                   reason,
                   expectedDeltaSleeps)
             return
@@ -1220,14 +1220,14 @@ final class HealthKitExporter {
         store.getRequestStatusForAuthorization(toShare: [], read: [sleepType]) { [weak self] status, error in
             guard let self else { return }
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=request_status_error reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=request_status_error reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 error=%@",
                       reason,
                       expectedDeltaSleeps,
                       String(describing: error))
                 return
             }
             guard status == .unnecessary else {
-                WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=read_permission_required reason=%@ request_status=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 action=grant_health_read_sleep",
+                AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=read_permission_required reason=%@ request_status=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 action=grant_health_read_sleep",
                       reason,
                       Self.requestStatusLabel(status),
                       expectedDeltaSleeps)
@@ -1254,7 +1254,7 @@ final class HealthKitExporter {
                                   limit: HKObjectQueryNoLimit,
                                   sortDescriptors: nil) { _, samples, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=query_error reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=query_error reason=%@ expected_delta_sleeps=%d readback_sleeps=0 data_appears=0 error=%@",
                       reason,
                       expectedDeltaSleeps,
                       String(describing: error))
@@ -1275,7 +1275,7 @@ final class HealthKitExporter {
                 scoped += 1
             }
             let dataAppears = scoped >= expectedDeltaSleeps
-            WHOOPDebugLog("WHOOPDBG healthkit_sleep_export_verify status=%@ reason=%@ expected_delta_sleeps=%d readback_sleeps=%d broad_atria_sleeps=%d total_sleep_samples=%d data_appears=%d scope=atria_sleep_id source=healthkit_read note=user_confirmed_sleep_not_auto_gate_e",
+            AtriaDebugLog("ATRIADBG healthkit_sleep_export_verify status=%@ reason=%@ expected_delta_sleeps=%d readback_sleeps=%d broad_atria_sleeps=%d total_sleep_samples=%d data_appears=%d scope=atria_sleep_id source=healthkit_read note=user_confirmed_sleep_not_auto_gate_e",
                   dataAppears ? "ok" : "short",
                   reason,
                   expectedDeltaSleeps,
@@ -1295,13 +1295,13 @@ final class HealthKitExporter {
                                       quantitySamplePredicate: predicate,
                                       options: .cumulativeSum) { _, statistics, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_step_read status=query_error reason=%@ apple_steps_today=0 source=healthkit_read write_steps=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_step_read status=query_error reason=%@ apple_steps_today=0 source=healthkit_read write_steps=0 error=%@",
                       reason,
                       String(describing: error))
                 return
             }
             let steps = Int((statistics?.sumQuantity()?.doubleValue(for: .count()) ?? 0).rounded())
-            WHOOPDebugLog("WHOOPDBG healthkit_step_read status=%@ reason=%@ apple_steps_today=%d source=healthkit_read write_steps=0",
+            AtriaDebugLog("ATRIADBG healthkit_step_read status=%@ reason=%@ apple_steps_today=%d source=healthkit_read write_steps=0",
                   steps > 0 ? "ok" : "empty",
                   reason,
                   steps)
@@ -1311,7 +1311,7 @@ final class HealthKitExporter {
 
     private func auditSleepingWristTemperatureReadAvailability(reason: String) {
         guard let sleepingWristTemperatureType else {
-            WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=unavailable reason=%@ samples=0 source=healthkit_read write_temperature=0",
+            AtriaDebugLog("ATRIADBG healthkit_sleeping_wrist_temp_read status=unavailable reason=%@ samples=0 source=healthkit_read write_temperature=0",
                   reason)
             return
         }
@@ -1323,14 +1323,14 @@ final class HealthKitExporter {
                                   limit: 1,
                                   sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=query_error reason=%@ samples=0 source=healthkit_read write_temperature=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_sleeping_wrist_temp_read status=query_error reason=%@ samples=0 source=healthkit_read write_temperature=0 error=%@",
                       reason,
                       String(describing: error))
                 return
             }
             let quantitySamples = samples as? [HKQuantitySample] ?? []
             let latest = quantitySamples.first?.quantity.doubleValue(for: .degreeCelsius())
-            WHOOPDebugLog("WHOOPDBG healthkit_sleeping_wrist_temp_read status=%@ reason=%@ samples=%d latest_celsius=%@ source=healthkit_read write_temperature=0 baseline_only=1",
+            AtriaDebugLog("ATRIADBG healthkit_sleeping_wrist_temp_read status=%@ reason=%@ samples=%d latest_celsius=%@ source=healthkit_read write_temperature=0 baseline_only=1",
                   quantitySamples.isEmpty ? "empty" : "ok",
                   reason,
                   quantitySamples.count,
@@ -1359,7 +1359,7 @@ final class HealthKitExporter {
                                   limit: 1,
                                   sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_cuff_bp_read status=query_error reason=%@ component=%@ samples=0 source=healthkit_read write_bp=0 strap_bp=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_cuff_bp_read status=query_error reason=%@ component=%@ samples=0 source=healthkit_read write_bp=0 strap_bp=0 error=%@",
                       reason,
                       component,
                       String(describing: error))
@@ -1367,7 +1367,7 @@ final class HealthKitExporter {
             }
             let quantitySamples = samples as? [HKQuantitySample] ?? []
             let latest = quantitySamples.first?.quantity.doubleValue(for: .millimeterOfMercury())
-            WHOOPDebugLog("WHOOPDBG healthkit_cuff_bp_read status=%@ reason=%@ component=%@ samples=%d latest_mmhg=%@ source=healthkit_read write_bp=0 strap_bp=0 cuff_only=1",
+            AtriaDebugLog("ATRIADBG healthkit_cuff_bp_read status=%@ reason=%@ component=%@ samples=%d latest_mmhg=%@ source=healthkit_read write_bp=0 strap_bp=0 cuff_only=1",
                   quantitySamples.isEmpty ? "empty" : "ok",
                   reason,
                   component,
@@ -1391,7 +1391,7 @@ final class HealthKitExporter {
                                   limit: HKObjectQueryNoLimit,
                                   sortDescriptors: nil) { _, samples, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=query_error reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_export_verify status=query_error reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=0 data_appears=0 error=%@",
                       reason,
                       expectedDeltaHRSamples,
                       expectedTotalAtriaHRSamples,
@@ -1438,7 +1438,7 @@ final class HealthKitExporter {
             let reconciliationStatus = overfillTotal > 0
                 ? "overfilled"
                 : (expectedTotalReconciled ? "reconciled" : "legacy_backfill_pending")
-            WHOOPDebugLog("WHOOPDBG healthkit_export_verify status=%@ reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=%d broad_atria_hr_samples=%d scoped_atria_hr_samples=%d expected_session_ids=%d missing_total_atria_hr_samples=%d overfill_total_atria_hr_samples=%d missing_attributed_sessions=%d missing_attributed_hr_samples=%d total_hr_samples=%d readback_covers_delta=%d expected_total_covered=%d expected_total_reconciled=%d reconciliation=%@ data_appears=%d scope=session_metadata source=healthkit_read note=atria_samples_not_external_reference",
+            AtriaDebugLog("ATRIADBG healthkit_export_verify status=%@ reason=%@ expected_delta_hr_samples=%d expected_total_atria_hr_samples=%d readback_atria_hr_samples=%d broad_atria_hr_samples=%d scoped_atria_hr_samples=%d expected_session_ids=%d missing_total_atria_hr_samples=%d overfill_total_atria_hr_samples=%d missing_attributed_sessions=%d missing_attributed_hr_samples=%d total_hr_samples=%d readback_covers_delta=%d expected_total_covered=%d expected_total_reconciled=%d reconciliation=%@ data_appears=%d scope=session_metadata source=healthkit_read note=atria_samples_not_external_reference",
                   dataAppears ? "ok" : "short",
                   reason,
                   expectedDeltaHRSamples,
@@ -1480,13 +1480,13 @@ final class HealthKitExporter {
     private func resetAndRebuildAtriaHeartRate(sessions: [SavedSession], rest: Int, maxHR: Int) {
         let planned = Self.plannedCounts(for: sessions, rest: rest, maxHR: maxHR)
         guard Self.hasHealthKitEntitlement() else {
-            WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=missing_entitlement sessions=%d expected_hr_samples=%d action=enable_healthkit_capability",
+            AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=missing_entitlement sessions=%d expected_hr_samples=%d action=enable_healthkit_capability",
                   sessions.count,
                   planned.hrSamples)
             return
         }
         guard HKHealthStore.isHealthDataAvailable() else {
-            WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=unavailable sessions=%d expected_hr_samples=%d",
+            AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=unavailable sessions=%d expected_hr_samples=%d",
                   sessions.count,
                   planned.hrSamples)
             return
@@ -1495,27 +1495,27 @@ final class HealthKitExporter {
               let start = sessions.map(\.start).min(),
               let end = sessions.map(\.end).max(),
               end > start else {
-            WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=no_session_window sessions=%d expected_hr_samples=%d",
+            AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=no_session_window sessions=%d expected_hr_samples=%d",
                   sessions.count,
                   planned.hrSamples)
             return
         }
 
-        WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=authorization_requested sessions=%d expected_hr_samples=%d scope=atria_heart_rate_only",
+        AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=authorization_requested sessions=%d expected_hr_samples=%d scope=atria_heart_rate_only",
               sessions.count,
               planned.hrSamples)
         store.requestAuthorization(toShare: [heartRateType], read: [heartRateType]) { [weak self] success, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let error {
-                    WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=auth_error sessions=%d expected_hr_samples=%d error=%@",
+                    AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=auth_error sessions=%d expected_hr_samples=%d error=%@",
                           sessions.count,
                           planned.hrSamples,
                           String(describing: error))
                     return
                 }
                 guard success else {
-                    WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=auth_denied sessions=%d expected_hr_samples=%d action=grant_health_write_permissions",
+                    AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=auth_denied sessions=%d expected_hr_samples=%d action=grant_health_write_permissions",
                           sessions.count,
                           planned.hrSamples)
                     return
@@ -1543,7 +1543,7 @@ final class HealthKitExporter {
                                   sortDescriptors: nil) { [weak self] _, samples, error in
             guard let self else { return }
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=query_error sessions=%d expected_hr_samples=%d error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=query_error sessions=%d expected_hr_samples=%d error=%@",
                       sessions.count,
                       expectedHRSamples,
                       String(describing: error))
@@ -1561,7 +1561,7 @@ final class HealthKitExporter {
             }
             let independentSamples = quantitySamples.count - broadAtriaSamples.count
             let preservedAtriaSamples = broadAtriaSamples.count - atriaSamples.count
-            WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=delete_selected sessions=%d expected_hr_samples=%d total_hr_samples=%d atria_hr_samples=%d broad_atria_hr_samples=%d preserved_atria_hr_samples=%d independent_hr_samples=%d expected_session_ids=%d scope=session_metadata",
+            AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=delete_selected sessions=%d expected_hr_samples=%d total_hr_samples=%d atria_hr_samples=%d broad_atria_hr_samples=%d preserved_atria_hr_samples=%d independent_hr_samples=%d expected_session_ids=%d scope=session_metadata",
                   sessions.count,
                   expectedHRSamples,
                   quantitySamples.count,
@@ -1582,7 +1582,7 @@ final class HealthKitExporter {
             self.store.delete(atriaSamples) { success, error in
                 Task { @MainActor in
                     if let error {
-                        WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=delete_error sessions=%d expected_hr_samples=%d selected_hr_samples=%d error=%@",
+                        AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=delete_error sessions=%d expected_hr_samples=%d selected_hr_samples=%d error=%@",
                               sessions.count,
                               expectedHRSamples,
                               atriaSamples.count,
@@ -1590,13 +1590,13 @@ final class HealthKitExporter {
                         return
                     }
                     guard success else {
-                        WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=delete_failed sessions=%d expected_hr_samples=%d selected_hr_samples=%d",
+                        AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=delete_failed sessions=%d expected_hr_samples=%d selected_hr_samples=%d",
                               sessions.count,
                               expectedHRSamples,
                               atriaSamples.count)
                         return
                     }
-                    WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=deleted sessions=%d expected_hr_samples=%d deleted_hr_samples=%d independent_hr_samples_preserved=%d",
+                    AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=deleted sessions=%d expected_hr_samples=%d deleted_hr_samples=%d independent_hr_samples_preserved=%d",
                           sessions.count,
                           expectedHRSamples,
                           atriaSamples.count,
@@ -1630,7 +1630,7 @@ final class HealthKitExporter {
                                                 workoutExported: existing?.workoutExported ?? false,
                                                 end: session.end.timeIntervalSince1970)
         }
-        WHOOPDebugLog("WHOOPDBG healthkit_reset_rebuild status=rebuild_started sessions=%d expected_hr_samples=%d deleted_hr_samples=%d metric_promotions=0 reason=atria_hr_overfill_cleanup",
+        AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=rebuild_started sessions=%d expected_hr_samples=%d deleted_hr_samples=%d metric_promotions=0 reason=atria_hr_overfill_cleanup",
               sessions.count,
               expectedHRSamples,
               deletedHRSamples)
@@ -1649,7 +1649,7 @@ final class HealthKitExporter {
         guard let start = sessions.map(\.start).min(),
               let end = sessions.map(\.end).max(),
               end > start else {
-            WHOOPDebugLog("WHOOPDBG healthkit_reference_audit status=no_session_window external_reference_ready=0 source=healthkit_read")
+            AtriaDebugLog("ATRIADBG healthkit_reference_audit status=no_session_window external_reference_ready=0 source=healthkit_read")
             Self.recordReferenceAudit(status: "no_session_window",
                                       total: 0,
                                       atria: 0,
@@ -1661,7 +1661,7 @@ final class HealthKitExporter {
         store.getRequestStatusForAuthorization(toShare: [], read: [heartRateType]) { [weak self] status, error in
             guard let self else { return }
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_reference_audit status=request_status_error external_reference_ready=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_reference_audit status=request_status_error external_reference_ready=0 error=%@",
                       String(describing: error))
                 Self.recordReferenceAudit(status: "request_status_error",
                                           total: 0,
@@ -1671,7 +1671,7 @@ final class HealthKitExporter {
                 return
             }
             guard status == .unnecessary else {
-                WHOOPDebugLog("WHOOPDBG healthkit_reference_audit status=read_permission_required request_status=%@ external_reference_ready=0 source=healthkit_read action=grant_health_read_heart_rate",
+                AtriaDebugLog("ATRIADBG healthkit_reference_audit status=read_permission_required request_status=%@ external_reference_ready=0 source=healthkit_read action=grant_health_read_heart_rate",
                       Self.requestStatusLabel(status))
                 Self.recordReferenceAudit(status: "read_permission_required",
                                           total: 0,
@@ -1694,7 +1694,7 @@ final class HealthKitExporter {
                                   limit: HKObjectQueryNoLimit,
                                   sortDescriptors: [sort]) { _, samples, error in
             if let error {
-                WHOOPDebugLog("WHOOPDBG healthkit_reference_audit status=query_error external_reference_ready=0 error=%@",
+                AtriaDebugLog("ATRIADBG healthkit_reference_audit status=query_error external_reference_ready=0 error=%@",
                       String(describing: error))
                 Self.recordReferenceAudit(status: "query_error",
                                           total: 0,
@@ -1732,13 +1732,13 @@ final class HealthKitExporter {
                 }
             }
             let atriaReference = Self.savedHeartRateReferencePoints(from: sessions)
-            let comparison = Self.compareHRReference(whoop: atriaReference,
+            let comparison = Self.compareHRReference(strap: atriaReference,
                                                      reference: independentSamples,
                                                      toleranceBPM: 2,
                                                      maxPairAge: 5)
             let validationReason = independentSamples.isEmpty ? "independent_reference_missing" : comparison.reason
             let sourceList = sourceBundles.sorted().prefix(5).joined(separator: ",")
-            WHOOPDebugLog("WHOOPDBG healthkit_reference_audit status=ok total_hr_samples=%d atria_hr_samples=%d independent_candidate_hr_samples=%d user_entered_hr_samples=%d rejected_user_entered_hr_samples=%d independent_hr_samples=%d independent_sources=%@ window_s=%.0f pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 independent_reference_present=%d reference_validated=%d external_reference_ready=%d validation_reason=%@ source=healthkit_read",
+            AtriaDebugLog("ATRIADBG healthkit_reference_audit status=ok total_hr_samples=%d atria_hr_samples=%d independent_candidate_hr_samples=%d user_entered_hr_samples=%d rejected_user_entered_hr_samples=%d independent_hr_samples=%d independent_sources=%@ window_s=%.0f pairs=%d duration_s=%.0f mean_delta_bpm=%.2f median_delta_bpm=%.2f max_delta_bpm=%.2f within_tolerance_percent=%d tolerance_bpm=2 max_pair_age_s=5 independent_reference_present=%d reference_validated=%d external_reference_ready=%d validation_reason=%@ source=healthkit_read",
                   quantitySamples.count,
                   atriaSamples,
                   independentCandidateSamples,
@@ -1795,12 +1795,12 @@ final class HealthKitExporter {
         }.sorted { $0.t < $1.t }
     }
 
-    nonisolated private static func compareHRReference(whoop: [HRReferencePoint],
+    nonisolated private static func compareHRReference(strap: [HRReferencePoint],
                                                        reference: [HRReferencePoint],
                                                        toleranceBPM: Double,
                                                        maxPairAge: TimeInterval) -> HRReferenceComparison {
-        let paired = pairHRSamples(whoop: whoop, reference: reference, maxAge: maxPairAge)
-        let deltas = paired.map { abs($0.whoop.bpm - $0.reference.bpm) }
+        let paired = pairHRSamples(strap: strap, reference: reference, maxAge: maxPairAge)
+        let deltas = paired.map { abs($0.strap.bpm - $0.reference.bpm) }
         let duration = pairedDuration(paired)
         let meanDelta = deltas.isEmpty ? nil : deltas.reduce(0, +) / Double(deltas.count)
         let medianDelta = median(deltas)
@@ -1828,12 +1828,12 @@ final class HealthKitExporter {
                                      reason: reason)
     }
 
-    nonisolated private static func pairHRSamples(whoop: [HRReferencePoint],
+    nonisolated private static func pairHRSamples(strap: [HRReferencePoint],
                                                   reference: [HRReferencePoint],
-                                                  maxAge: TimeInterval) -> [(whoop: HRReferencePoint, reference: HRReferencePoint)] {
+                                                  maxAge: TimeInterval) -> [(strap: HRReferencePoint, reference: HRReferencePoint)] {
         let refs = reference.sorted { $0.t < $1.t }
         guard !refs.isEmpty else { return [] }
-        return whoop.sorted { $0.t < $1.t }.compactMap { sample in
+        return strap.sorted { $0.t < $1.t }.compactMap { sample in
             var best: HRReferencePoint?
             var bestDelta = maxAge
             for candidate in refs {
@@ -1850,9 +1850,9 @@ final class HealthKitExporter {
         }
     }
 
-    nonisolated private static func pairedDuration(_ pairs: [(whoop: HRReferencePoint, reference: HRReferencePoint)]) -> TimeInterval {
-        guard let first = pairs.first?.whoop.t,
-              let last = pairs.last?.whoop.t else { return 0 }
+    nonisolated private static func pairedDuration(_ pairs: [(strap: HRReferencePoint, reference: HRReferencePoint)]) -> TimeInterval {
+        guard let first = pairs.first?.strap.t,
+              let last = pairs.last?.strap.t else { return 0 }
         return max(0, last - first)
     }
 
