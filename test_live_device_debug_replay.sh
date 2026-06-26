@@ -8,18 +8,18 @@ log="$tmpdir/live-device.log"
 out="$tmpdir/summary.out"
 
 cat > "$log" <<'LOG'
-2026-06-12 18:39:00.375 WhoopApp[5457:962682] WHOOPDBG notifyState ch=61080005-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
-2026-06-12 18:39:03.532 WhoopApp[5457:962682] WHOOPDBG send mode=wwr cmd=03 seq=0 to=61080002-8D6D-82B8-614A-1C8CB0F8DCC6 props=12 frame=aa0800a82300030199bce9cf
-2026-06-12 18:39:03.700 WhoopApp[5457:962682] WHOOPDBG frame ch=61080003 len=16 hex=aa0c00fc242003000200000096a2d488
-2026-06-12 18:39:03.795 WhoopApp[5457:962682] WHOOPDBG cmdResp ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 payload=2420030002000000
-2026-06-12 18:39:04.000 WhoopApp[5457:962682] WHOOPDBG frame ch=61080004 len=20 hex=aa100057300f2100e9332c6a983d0000eff824ae
-2026-06-12 18:39:04.577 WhoopApp[5457:962682] WHOOPDBG frame ch=61080005 len=28 hex=aa0e005c2802ef042c6ab8765100a17b5091
-2026-06-12 18:39:05.000 WhoopApp[5457:962682] WHOOPDBG frame ch=61080007 len=12 hex=aa0800010802a7020103010a
-2026-06-12 18:39:16.247 WhoopApp[5457:962682] WHOOPDBG rr hr=84 rrnum=1 decoded=1 total_decoded=1 truncated=0 hr_mismatch=0 implied_bpm=81 values=740
-2026-06-12 18:39:33.000 WhoopApp[5457:962682] WHOOPDBG probeSweep send index=0 raw=0302 cmd=03 data=02 interval_s=30.0 mode=wwr
-2026-06-12 18:40:03.795 WhoopApp[5457:962682] WHOOPDBG cmdResp ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 payload=2421030002000000
-2026-06-12 18:40:04.000 WhoopApp[5457:962682] WHOOPDBG frame ch=61080004 len=12 hex=2f2c010403
-2026-06-12 18:40:04.577 WhoopApp[5457:962682] WHOOPDBG frame ch=61080005 len=28 hex=aa1000572802ef042c6ab8765101e60211111111
+2026-06-12 18:39:00.375 Atria[5457:962682] ATRIADBG notifyState ch=61080005-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-06-12 18:39:03.532 Atria[5457:962682] ATRIADBG send mode=wwr cmd=03 seq=0 to=61080002-8D6D-82B8-614A-1C8CB0F8DCC6 props=12 frame=aa0800a82300030199bce9cf
+2026-06-12 18:39:03.700 Atria[5457:962682] ATRIADBG frame ch=61080003 len=16 hex=aa0c00fc242003000200000096a2d488
+2026-06-12 18:39:03.795 Atria[5457:962682] ATRIADBG cmdResp ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 payload=2420030002000000
+2026-06-12 18:39:04.000 Atria[5457:962682] ATRIADBG frame ch=61080004 len=20 hex=aa100057300f2100e9332c6a983d0000eff824ae
+2026-06-12 18:39:04.577 Atria[5457:962682] ATRIADBG frame ch=61080005 len=28 hex=aa0e005c2802ef042c6ab8765100a17b5091
+2026-06-12 18:39:05.000 Atria[5457:962682] ATRIADBG frame ch=61080007 len=12 hex=aa0800010802a7020103010a
+2026-06-12 18:39:16.247 Atria[5457:962682] ATRIADBG rr hr=84 rrnum=1 decoded=1 total_decoded=1 truncated=0 hr_mismatch=0 implied_bpm=81 values=740
+2026-06-12 18:39:33.000 Atria[5457:962682] ATRIADBG probeSweep send index=0 raw=0302 cmd=03 data=02 interval_s=30.0 mode=wwr
+2026-06-12 18:40:03.795 Atria[5457:962682] ATRIADBG cmdResp ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 payload=2421030002000000
+2026-06-12 18:40:04.000 Atria[5457:962682] ATRIADBG frame ch=61080004 len=12 hex=2f2c010403
+2026-06-12 18:40:04.577 Atria[5457:962682] ATRIADBG frame ch=61080005 len=28 hex=aa1000572802ef042c6ab8765101e60211111111
 LOG
 
 ./live_device_debug.sh --replay-log "$log" --seconds 1 --no-build > "$out"
@@ -81,12 +81,12 @@ health_log="$tmpdir/healthkit-sleep-auth.log"
 health_out="$tmpdir/healthkit-sleep-auth.out"
 
 cat > "$health_log" <<'LOG'
-2026-06-15 18:50:00.000 Atria[100:200] WHOOPDBG launch_exports status=scheduled rr_reference=0 rr_reference_ui=0 hr_reference=0 hr_reference_ui=0 rr_reference_validation=0 hr_reference_validation=0 reference_clear=0 healthkit=1 healthkit_reference_audit=0 healthkit_reset_rebuild=0 workout_confirm=0 sleep_confirm=1
-2026-06-15 18:50:00.100 Atria[100:200] WHOOPDBG sleep_confirm status=already_confirmed id=123 source=launch_arg candidate_source=aggregate_sleep start=2026-06-15T00:00:00Z end=2026-06-15T06:00:00Z confidence=user_confirmed_hr_only motion_source=unavailable motion_validated=0 metric_promotions=0 auto_gate_e_unchanged=1
-2026-06-15 18:50:00.200 Atria[100:200] WHOOPDBG healthkit_sleep_export status=authorization_required sleeps=1 authorization=not_determined action=request_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1
-2026-06-15 18:50:00.300 Atria[100:200] WHOOPDBG healthkit_export status=authorization_requested sessions=10 hr_samples=0 workouts=0 hrv_samples=0 sleeps=1 read_hr=1 read_sleep=1
-2026-06-15 18:50:15.300 Atria[100:200] WHOOPDBG healthkit_export status=authorization_pending sessions=10 hr_samples=0 workouts=0 hrv_samples=0 sleeps=1 read_hr=1 read_sleep=1 timeout_s=15 action=approve_health_permissions_on_device
-2026-06-15 18:50:16.000 Atria[100:200] WHOOPDBG launch_exports status=completed rr_reference=0 rr_reference_ui=0 hr_reference=0 hr_reference_ui=0 rr_reference_validation=0 hr_reference_validation=0 reference_clear=0 healthkit=1 healthkit_reference_audit=0 healthkit_reset_rebuild=0 workout_confirm=0 sleep_confirm=1
+2026-06-15 18:50:00.000 Atria[100:200] ATRIADBG launch_exports status=scheduled rr_reference=0 rr_reference_ui=0 hr_reference=0 hr_reference_ui=0 rr_reference_validation=0 hr_reference_validation=0 reference_clear=0 healthkit=1 healthkit_reference_audit=0 healthkit_reset_rebuild=0 workout_confirm=0 sleep_confirm=1
+2026-06-15 18:50:00.100 Atria[100:200] ATRIADBG sleep_confirm status=already_confirmed id=123 source=launch_arg candidate_source=aggregate_sleep start=2026-06-15T00:00:00Z end=2026-06-15T06:00:00Z confidence=user_confirmed_hr_only motion_source=unavailable motion_validated=0 metric_promotions=0 auto_gate_e_unchanged=1
+2026-06-15 18:50:00.200 Atria[100:200] ATRIADBG healthkit_sleep_export status=authorization_required sleeps=1 authorization=not_determined action=request_health_sleep_analysis metric_promotions=0 auto_gate_e_unchanged=1
+2026-06-15 18:50:00.300 Atria[100:200] ATRIADBG healthkit_export status=authorization_requested sessions=10 hr_samples=0 workouts=0 hrv_samples=0 sleeps=1 read_hr=1 read_sleep=1
+2026-06-15 18:50:15.300 Atria[100:200] ATRIADBG healthkit_export status=authorization_pending sessions=10 hr_samples=0 workouts=0 hrv_samples=0 sleeps=1 read_hr=1 read_sleep=1 timeout_s=15 action=approve_health_permissions_on_device
+2026-06-15 18:50:16.000 Atria[100:200] ATRIADBG launch_exports status=completed rr_reference=0 rr_reference_ui=0 hr_reference=0 hr_reference_ui=0 rr_reference_validation=0 hr_reference_validation=0 reference_clear=0 healthkit=1 healthkit_reference_audit=0 healthkit_reset_rebuild=0 workout_confirm=0 sleep_confirm=1
 LOG
 
 ./live_device_debug.sh --replay-log "$health_log" --seconds 1 --no-build --healthkit-export --confirm-best-sleep-candidate > "$health_out"

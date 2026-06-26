@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze WHOOP 0x2f historical frames captured in WHOOPDBG logs.
+"""Analyze WHOOP 0x2f historical frames captured in ATRIADBG logs.
 
 This is an evidence tool, not a production decoder. It finds fixed payload
 offsets that look like RR/IBI u16 little-endian values and evaluates explicit

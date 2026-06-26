@@ -161,19 +161,19 @@ threshold_max_window_alignment_s=$(report_value "$report" "thresholds.max_window
 threshold_min_resp_bpm=$(report_value "$report" "thresholds.min_resp_bpm")
 threshold_max_resp_bpm=$(report_value "$report" "thresholds.max_resp_bpm")
 threshold_max_resp_match_delta_bpm=$(report_value "$report" "thresholds.max_resp_match_delta_bpm")
-whoop_rmssd_ms=$(report_value "$report" "whoop.rmssd")
+strap_rmssd_ms=$(report_value "$report" "atria.rmssd")
 reference_rmssd_ms=$(report_value "$report" "reference.rmssd")
-whoop_confidence_percent=$(report_value "$report" "whoop.confidence_percent")
+whoop_confidence_percent=$(report_value "$report" "atria.confidence_percent")
 reference_confidence_percent=$(report_value "$report" "reference.confidence_percent")
 whoop_total_raw=$(report_value "$report" "whoop_total.raw")
 reference_total_raw=$(report_value "$report" "reference_total.raw")
 whoop_total_raw_duration_s=$(report_value "$report" "whoop_total.raw_duration_s")
 reference_total_raw_duration_s=$(report_value "$report" "reference_total.raw_duration_s")
-whoop_raw_duration_s=$(report_value "$report" "whoop.raw_duration_s")
+whoop_raw_duration_s=$(report_value "$report" "atria.raw_duration_s")
 reference_raw_duration_s=$(report_value "$report" "reference.raw_duration_s")
-whoop_corrected_duration_s=$(report_value "$report" "whoop.corrected_duration_s")
+whoop_corrected_duration_s=$(report_value "$report" "atria.corrected_duration_s")
 reference_corrected_duration_s=$(report_value "$report" "reference.corrected_duration_s")
-whoop_max_raw_gap_s=$(report_value "$report" "whoop.max_raw_gap_s")
+whoop_max_raw_gap_s=$(report_value "$report" "atria.max_raw_gap_s")
 reference_max_raw_gap_s=$(report_value "$report" "reference.max_raw_gap_s")
 clean_rr_marker_elapsed_s=$(report_value "$report" "quality_markers.0.elapsed_s")
 clean_rr_marker_value=$(report_value "$report" "quality_markers.0.value")
@@ -197,7 +197,7 @@ rmssd_within_tolerance=$(report_value "$report" "rmssd_within_tolerance")
 sdnn_within_tolerance=$(report_value "$report" "reference_metric_within_tolerance.sdnn")
 pnn50_within_tolerance=$(report_value "$report" "reference_metric_within_tolerance.pnn50")
 lnrmssd_within_tolerance=$(report_value "$report" "reference_metric_within_tolerance.lnrmssd")
-clean_rr_marker_before_first_rr=$(python3 - "$clean_rr_marker_elapsed_s" "$(report_value "$report" "whoop.window_start_s")" <<'PY'
+clean_rr_marker_before_first_rr=$(python3 - "$clean_rr_marker_elapsed_s" "$(report_value "$report" "atria.window_start_s")" <<'PY'
 import sys
 
 marker, first_rr = sys.argv[1], sys.argv[2]
@@ -305,7 +305,7 @@ validator_sha256=$(shasum -a 256 validate_hrv.py | awk '{print $1}')
   printf 'threshold_min_resp_bpm=%s\n' "$threshold_min_resp_bpm"
   printf 'threshold_max_resp_bpm=%s\n' "$threshold_max_resp_bpm"
   printf 'threshold_max_resp_match_delta_bpm=%s\n' "$threshold_max_resp_match_delta_bpm"
-  printf 'whoop_rmssd_ms=%s\n' "$whoop_rmssd_ms"
+  printf 'strap_rmssd_ms=%s\n' "$strap_rmssd_ms"
   printf 'reference_rmssd_ms=%s\n' "$reference_rmssd_ms"
   printf 'whoop_confidence_percent=%s\n' "$whoop_confidence_percent"
   printf 'reference_confidence_percent=%s\n' "$reference_confidence_percent"
@@ -360,7 +360,7 @@ if [[ -n "$report_failure" ]]; then
   printf 'Failure: %s\n' "$report_failure"
 fi
 printf 'RMSSD: WHOOP=%s ms reference=%s ms delta=%s ms within_5ms=%s\n' \
-  "$whoop_rmssd_ms" "$reference_rmssd_ms" "$delta_rmssd_ms" "$rmssd_within_tolerance"
+  "$strap_rmssd_ms" "$reference_rmssd_ms" "$delta_rmssd_ms" "$rmssd_within_tolerance"
 printf 'Reference deltas: SDNN=%s ms/%s ok=%s; pNN50=%s pct/%s ok=%s; lnRMSSD=%s/%s ok=%s\n' \
   "$delta_sdnn_ms" "$threshold_max_sdnn_delta_ms" "$sdnn_within_tolerance" \
   "$delta_pnn50_pct" "$threshold_max_pnn50_delta_pct" "$pnn50_within_tolerance" \

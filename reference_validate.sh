@@ -138,7 +138,7 @@ python3 -m json.tool "$evidence_dir/sessions.json" >/dev/null
   if [[ -f "$evidence_dir/reference-preflight-summary.txt" ]]; then
     cat "$evidence_dir/reference-preflight-summary.txt"
   fi
-  grep -En "WHOOPDBG (reference_inputs_clear|rr_reference_validation|rr_reference_validation_reference|hr_reference_validation|hr_reference_validation_reference|healthkit_reference_audit|gate_status gate=B|gate_status gate=C|gate_status gate=D|gate_status gate=E|gate_status gate=G|execution_priority)|WHOOPDBG_(RR|HR)_REFERENCE_PUSH_FILE|WHOOPDBG_SESSIONS_PULL_FILE|HARNESS_(CAPTURE_TIMEOUT|ERROR)" \
+  grep -En "ATRIADBG (reference_inputs_clear|rr_reference_validation|rr_reference_validation_reference|hr_reference_validation|hr_reference_validation_reference|healthkit_reference_audit|gate_status gate=B|gate_status gate=C|gate_status gate=D|gate_status gate=E|gate_status gate=G|execution_priority)|ATRIADBG_(RR|HR)_REFERENCE_PUSH_FILE|ATRIADBG_SESSIONS_PULL_FILE|HARNESS_(CAPTURE_TIMEOUT|ERROR)" \
     "$evidence_dir/reference-validate.log" \
     "$evidence_dir/reference-validate-run.log" || true
 } | tee "$evidence_dir/reference-validate-summary.txt"
@@ -161,9 +161,9 @@ def parse_tokens(line: str) -> dict[str, str]:
 for path in sys.argv[1:]:
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            if "WHOOPDBG rr_reference_validation status=" in line and "gate_b_pass=" in line:
+            if "ATRIADBG rr_reference_validation status=" in line and "gate_b_pass=" in line:
                 rr = parse_tokens(line)
-            if "WHOOPDBG hr_reference_validation status=" in line and "gate_d_pass=" in line:
+            if "ATRIADBG hr_reference_validation status=" in line and "gate_d_pass=" in line:
                 hr = parse_tokens(line)
 
 def emit(prefix: str, tokens: dict[str, str], pass_key: str) -> None:

@@ -103,7 +103,7 @@ def summarize(path: Path) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("logs", nargs="+", type=Path, help="WHOOPDBG log files")
+    parser.add_argument("logs", nargs="+", type=Path, help="ATRIADBG log files")
     args = parser.parse_args()
 
     rows = [summarize(path) for path in args.logs]

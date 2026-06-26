@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find Gate-B-ready live RR windows in WHOOPDBG logs.
+"""Find Gate-B-ready live RR windows in ATRIADBG logs.
 
 This evidence tool uses only logged realtime RR/IBI values. It never estimates
 RR from HR-only frames.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 RR_RE = re.compile(
     r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)"
-    r".*WHOOPDBG rr (?P<body>.*) values=(?P<values>[0-9,]+)"
+    r".*ATRIADBG rr (?P<body>.*) values=(?P<values>[0-9,]+)"
 )
 
 

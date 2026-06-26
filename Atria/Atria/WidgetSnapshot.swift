@@ -51,7 +51,7 @@ enum WidgetSnapshotPublisher {
     static func publishFromLaunchIfRequested(store: SessionStore,
                                              ble: AtriaBLEManager,
                                              arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-widget-snapshot") else { return }
+        guard arguments.contains("--atria-log-widget-snapshot") else { return }
         publish(store: store, ble: ble, reason: "launch")
         Task {
             try? await Task.sleep(nanoseconds: 6_000_000_000)

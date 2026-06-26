@@ -80,7 +80,7 @@ data = json.load(open(path, encoding="utf-8"))
 processes = data.get("result", {}).get("runningProcesses", [])
 for process in processes:
     text = json.dumps(process, sort_keys=True)
-    if bundle_id in text or "Atria" in text or "WhoopApp" in text:
+    if bundle_id in text or "Atria" in text or "Atria" in text:
         for key in ("processIdentifier", "pid", "processID"):
             value = process.get(key)
             if isinstance(value, int):

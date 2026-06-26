@@ -20,13 +20,13 @@ launch_keepalive_after_failure() {
       --device "$device_id" \
       --terminate-existing \
       com.adidshaft.atria \
-      --whoop-capture-label Long_wear \
-      --whoop-standard-hr-only \
-      --whoop-long-wear-mode \
-      --whoop-checkpoint-session-every 60 \
-      --whoop-auto-save-session-every 900 \
-      --whoop-log-live-workout-every 60 \
-      --whoop-auto-save-workout-when-ready 60
+      --atria-capture-label Long_wear \
+      --atria-standard-hr-only \
+      --atria-long-wear-mode \
+      --atria-checkpoint-session-every 60 \
+      --atria-auto-save-session-every 900 \
+      --atria-log-live-workout-every 60 \
+      --atria-auto-save-workout-when-ready 60
     echo "ATRIA_REFERENCE_HANDOFF_KEEPALIVE_AFTER_FAILURE=launched"
   } >> "$evidence_dir/reference-handoff-run.log" 2>&1 || {
     status=$?
@@ -60,7 +60,7 @@ if [[ "$handoff_status" -ne 0 ]]; then
     echo "ATRIA_REFERENCE_HANDOFF_DIR=$evidence_dir"
     echo "ATRIA_REFERENCE_HANDOFF_STATUS=failed"
     echo "ATRIA_REFERENCE_HANDOFF_EXIT=$handoff_status"
-    grep -En "WHOOPDBG (rr_reference_package|hr_reference_package|healthkit_reference_audit|gate_status gate=B|gate_status gate=D|gate_status gate=E|execution_priority)|WHOOPDBG_(RR|HR)_REFERENCE_PULL_FILE|WHOOPDBG_SESSIONS_PULL_FILE|HARNESS_(ERROR|CAPTURE_TIMEOUT)|ATRIA_REFERENCE_HANDOFF_KEEPALIVE_AFTER_FAILURE" \
+    grep -En "ATRIADBG (rr_reference_package|hr_reference_package|healthkit_reference_audit|gate_status gate=B|gate_status gate=D|gate_status gate=E|execution_priority)|ATRIADBG_(RR|HR)_REFERENCE_PULL_FILE|ATRIADBG_SESSIONS_PULL_FILE|HARNESS_(ERROR|CAPTURE_TIMEOUT)|ATRIA_REFERENCE_HANDOFF_KEEPALIVE_AFTER_FAILURE" \
       "$evidence_dir/reference-handoff.log" \
       "$evidence_dir/reference-handoff-run.log" || true
   } | tee "$evidence_dir/reference-handoff-summary.txt"
@@ -72,7 +72,7 @@ python3 -m json.tool "$evidence_dir/sessions.json" >/dev/null
 
 {
   echo "ATRIA_REFERENCE_HANDOFF_DIR=$evidence_dir"
-  grep -En "WHOOPDBG (rr_reference_package|hr_reference_package|healthkit_reference_audit|gate_status gate=B|gate_status gate=D|gate_status gate=E|execution_priority)|WHOOPDBG_(RR|HR)_REFERENCE_PULL_FILE|WHOOPDBG_SESSIONS_PULL_FILE|HARNESS_ERROR" \
+  grep -En "ATRIADBG (rr_reference_package|hr_reference_package|healthkit_reference_audit|gate_status gate=B|gate_status gate=D|gate_status gate=E|execution_priority)|ATRIADBG_(RR|HR)_REFERENCE_PULL_FILE|ATRIADBG_SESSIONS_PULL_FILE|HARNESS_ERROR" \
     "$evidence_dir/reference-handoff.log" \
     "$evidence_dir/reference-handoff-run.log" || true
 } | tee "$evidence_dir/reference-handoff-summary.txt"

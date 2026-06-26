@@ -217,7 +217,7 @@ def main() -> int:
             "gate_d_pass": False,
             "tolerance_bpm": args.tolerance_bpm,
             "max_pair_age_s": args.max_pair_age_s,
-            "whoop_samples": 0,
+            "strap_samples": 0,
             "reference_samples": 0,
             "comparison": asdict(Comparison(0, None, None, None, None, 0.0, False, "same_file_not_external_reference")),
         }
@@ -254,7 +254,7 @@ def main() -> int:
         "metric_passed": result.ready,
         "tolerance_bpm": args.tolerance_bpm,
         "max_pair_age_s": args.max_pair_age_s,
-        "whoop_samples": len(whoop),
+        "strap_samples": len(whoop),
         "reference_samples": len(reference),
         "comparison": asdict(result),
     }
@@ -263,7 +263,7 @@ def main() -> int:
     print(f"reason={reason}")
     print(f"external_reference={int(external_reference)}")
     print(f"gate_d_pass={int(passed)}")
-    print(f"whoop_samples={len(whoop)} reference_samples={len(reference)} pairs={result.pairs}")
+    print(f"strap_samples={len(whoop)} reference_samples={len(reference)} pairs={result.pairs}")
     print(f"mean_delta_bpm={fmt(result.mean_delta_bpm)}")
     print(f"median_delta_bpm={fmt(result.median_delta_bpm)}")
     print(f"max_delta_bpm={fmt(result.max_delta_bpm)}")

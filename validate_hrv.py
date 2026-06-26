@@ -412,11 +412,11 @@ def last_time(samples: list[tuple[float, float]]) -> float | None:
 
 
 def window_alignment(
-    whoop_samples: list[tuple[float, float]],
+    strap_samples: list[tuple[float, float]],
     reference_samples: list[tuple[float, float]],
 ) -> dict[str, float | None]:
-    whoop_start = first_time(whoop_samples)
-    whoop_end = last_time(whoop_samples)
+    whoop_start = first_time(strap_samples)
+    whoop_end = last_time(strap_samples)
     reference_start = first_time(reference_samples)
     reference_end = last_time(reference_samples)
     start_delta = (

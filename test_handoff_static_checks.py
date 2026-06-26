@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-APP_ROOTS = [ROOT / "WhoopApp" / "WhoopApp", ROOT / "WhoopApp" / "WhoopWidget"]
+APP_ROOTS = [ROOT / "Atria" / "Atria", ROOT / "Atria" / "AtriaWidget"]
 
 
 def swift_files():
@@ -73,7 +73,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, text, "Tab(\"Data\"")
 
     def test_top_left_status_restores_original_chip_and_labels(self):
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
             "ToolbarItem(placement: .topBarLeading)",
@@ -106,8 +106,8 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, home, forbidden)
 
     def test_settings_appearance_switcher_is_bordered_native_glass(self):
-        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
             "@AppStorage(\"atriaAppearanceMode\") private var appearanceMode = \"system\"",
@@ -140,7 +140,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, home, needle)
 
     def test_standard_hr_only_mode_blocks_strap_writes(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)
         self.assertIsNotNone(match)
         body = match.group("body")
@@ -155,8 +155,8 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(body.count("writeValue("), 2)
 
     def test_offline_historical_sync_is_bounded_standard_hr_exception(self):
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
-        app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
 
         for needle in [
             "enum OfflineSyncDefaults",
@@ -165,7 +165,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "stored_session_backfill_default",
             "applyEarlyHistoricalLaunchConfiguration(arguments: arguments)",
             "private func applyEarlyHistoricalLaunchConfiguration(arguments: [String])",
-            "WHOOPDBG realtimeConfig history_only_probe=1 phase=early",
+            "ATRIADBG realtimeConfig history_only_probe=1 phase=early",
             "@discardableResult",
             "func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false)",
             "private func startOfflineHistoricalSync(reason: String, force: Bool)",
@@ -179,7 +179,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "[Cmd.enterHighFreqSync, 0x00]",
             "[Cmd.sendHistoricalData, 0x00]",
             "historySkipDataRangeRequest = true",
-            "WHOOPDBG offline_sync status=armed",
+            "ATRIADBG offline_sync status=armed",
             "live_realtime=skipped metrics_fail_closed=1",
             "deferred_live_link",
             "detail=live_link_connected action=keep_ble_stream",
@@ -188,8 +188,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func markRangeLossBackfillRequired(reason: String)",
             "private func preserveLongWearRangeLossRecovery(reason: String)",
             "private func scheduleRangeLossBackfillIfNeeded(reason: String)",
-            "WHOOPDBG offline_sync status=pending_range_loss_backfill",
-            "WHOOPDBG offline_sync status=requesting_range_loss_backfill",
+            "ATRIADBG offline_sync status=pending_range_loss_backfill",
+            "ATRIADBG offline_sync status=requesting_range_loss_backfill",
             "action=defer_if_live_link_connected",
             "requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false)",
             "static func offlineSyncEvidence() -> String",
@@ -291,11 +291,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, ble, "usabilityReason: \"provisional_historical_layout_old_or_unvalidated\"")
 
     def test_advanced_metrics_imu_decoder_is_research_gated(self):
-        decoder = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaIMUDecoder.swift")
-        steps = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaStrapStepResearch.swift")
-        sleep = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSleepWakeResearch.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        decoder = source(ROOT / "Atria" / "Atria" / "AtriaIMUDecoder.swift")
+        steps = source(ROOT / "Atria" / "Atria" / "AtriaStrapStepResearch.swift")
+        sleep = source(ROOT / "Atria" / "Atria" / "AtriaSleepWakeResearch.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
         for needle in [
             "static func syntheticRestPayload",
@@ -307,8 +307,8 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, decoder, needle)
 
-        shared = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSharedUIComponents.swift")
-        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         for needle in [
             "case research",
             "return \"Research\"",
@@ -328,7 +328,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaIMUDecoder.decode(payload: payload)",
             "recordIMUFeatures(decoded)",
-            "WHOOPDBG imu_candidate validated=%d validation_state=%@",
+            "ATRIADBG imu_candidate validated=%d validation_state=%@",
             "sample_rate_hz=%@",
             "metric_promotions=0 i16=%@",
             "imuSampleRateHzSum += Double(decoded.samples.count) / delta",
@@ -384,9 +384,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, sessions, needle)
 
     def test_advanced_metrics_temp_spo2_probe_is_research_only(self):
-        probe = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaResearchProbe.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
-        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        probe = source(ROOT / "Atria" / "Atria" / "AtriaResearchProbe.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
         harness = source(ROOT / "live_device_debug.sh")
         analyzer = source(ROOT / "tools" / "analyze_sensor_research_probe.py")
 
@@ -396,7 +396,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case historical = \"0x2f\"",
             "case diagnostic = \"61080007\"",
             "enum ModelGeneration",
-            "case whoopMG",
+            "case strapMG",
             "redactIdentifierLikeTokens",
             "(90...100).contains(value)",
             "(2_500...4_200).contains(value)",
@@ -407,17 +407,17 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, probe, needle)
 
         for needle in [
-            "case whoop4",
-            "case .whoop4: return \"WHOOP 4.0\"",
-            "case .whoop4Class: return \"WHOOP strap\"",
+            "case strap4",
+            "case .strap4: return \"Strap 4.0\"",
+            "case .strap4Class: return \"Strap\"",
             "guard supportsSpO2Probe || supportsSkinTempProbe else { return }",
             "AtriaResearchProbe.analyze(payload: payload, source: source)",
             "applyModelMetadataIfExplicit(summary)",
             "sensorResearchProbeFrames: researchProbeFrameCount > 0 ? researchProbeFrameCount : nil",
             "spo2ResearchCandidateFrames: researchProbeOxygenCandidateFrames > 0 ? researchProbeOxygenCandidateFrames : nil",
             "skinTempResearchCandidateFrames: researchProbeTemperatureCandidateFrames > 0 ? researchProbeTemperatureCandidateFrames : nil",
-            "WHOOPDBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
-            "WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated",
+            "ATRIADBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
+            "ATRIADBG sensor_research_probe source=%@ status=research_unvalidated",
             "model_generation=%@ model_evidence=%@",
             "metric_promotions=0 healthkit_write=0 raw_storage=0",
             "recordResearchProbeCandidate(payload: payload, source: .metadata)",
@@ -426,12 +426,12 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, ble, needle)
 
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
-        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
-        assert_contains(self, home, "strapModel: ble.whoopModelLabel")
-        assert_not_contains(self, home, "strapModel: ble.status == .connected ? ble.whoopModelLabel : \"\"")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+        assert_contains(self, home, "strapModel: ble.strapModelLabel")
+        assert_not_contains(self, home, "strapModel: ble.status == .connected ? ble.strapModelLabel : \"\"")
         assert_contains(self, settings, "LabeledContent(\"Model\")")
-        assert_contains(self, settings, "Text(strapModel.isEmpty ? \"WHOOP strap\" : strapModel)")
+        assert_contains(self, settings, "Text(strapModel.isEmpty ? \"Strap\" : strapModel)")
 
         text = all_swift_source()
         assert_not_contains(self, text, ".oxygenSaturation")
@@ -444,8 +444,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"metadata_0x31_frames\": 0",
             "\"metadata_0x31_lengths\": \"\"",
             "\"metadata_0x31_body_hashes\": \"\"",
-            "WHOOPDBG sensor_research_probe ",
-            "WHOOPDBG model_gate ",
+            "ATRIADBG sensor_research_probe ",
+            "ATRIADBG model_gate ",
             "tokens.get(\"spo2_candidate_frames\", \"\")",
             "tokens.get(\"model_evidence\", \"\")",
             "metadata_0x31_body_hashes[hashlib.sha256(payload).hexdigest()[:16]] += 1",
@@ -453,8 +453,8 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, harness, needle)
 
         for needle in [
-            "WHOOPDBG sensor_research_probe ",
-            "WHOOPDBG frame ch=([0-9A-Fa-f-]+) len=(\\d+) hex=([0-9A-Fa-f]+)",
+            "ATRIADBG sensor_research_probe ",
+            "ATRIADBG frame ch=([0-9A-Fa-f-]+) len=(\\d+) hex=([0-9A-Fa-f]+)",
             "frame_61080005_types",
             "metadata_0x31_frames",
             "metadata_0x31_lengths",
@@ -475,9 +475,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, analyzer, needle)
 
     def test_self_induced_probe_markers_are_local_research_only(self):
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
-        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
-        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "struct ResearchManeuverMarker: Codable, Identifiable, Equatable",
@@ -488,7 +488,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "static let key = \"atria.researchManeuverMarkers.v1\"",
             "var researchManeuverMarkers: [ResearchManeuverMarker]",
             "func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind",
-            "WHOOPDBG research_maneuver_marker status=marked",
+            "ATRIADBG research_maneuver_marker status=marked",
             "local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
         ]:
             assert_contains(self, sessions, needle)
@@ -521,10 +521,10 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, healthkit, forbidden)
 
-    def test_bp_ecg_are_fail_closed_on_whoop4(self):
-        settings = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSettingsView.swift")
-        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+    def test_bp_ecg_are_fail_closed_on_strap4(self):
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private var sensorAvailabilitySection: some View",
@@ -541,14 +541,14 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, settings, needle)
 
         for needle in [
-            "var supportsECG: Bool { self == .whoopMG }",
-            "var supportsBloodPressure: Bool { self == .whoopMG }",
+            "var supportsECG: Bool { self == .strapMG }",
+            "var supportsBloodPressure: Bool { self == .strapMG }",
             "var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]",
             "private func auditCuffBloodPressureReadAvailability(reason: String)",
             "auditBloodPressureComponentReadAvailability(type: bloodPressureSystolicType",
             "auditBloodPressureComponentReadAvailability(type: bloodPressureDiastolicType",
             "HKSampleQuery(sampleType: type",
-            "WHOOPDBG healthkit_cuff_bp_read status=%@",
+            "ATRIADBG healthkit_cuff_bp_read status=%@",
             "source=healthkit_read write_bp=0 strap_bp=0 cuff_only=1",
             "auditCuffBloodPressureReadAvailability(reason: \"authorization_cached\")",
             "auditCuffBloodPressureReadAvailability(reason: \"authorization_granted\")",
@@ -565,7 +565,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, all_swift_source(), forbidden)
 
     def test_production_capture_defaults_land_on_balanced_profile(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "case balanced",
@@ -579,7 +579,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
     def test_production_capture_defaults_enable_protected_long_wear(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "static let protectedLongWearMigrated",
@@ -613,14 +613,14 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
     def test_state_restoration_reuses_restored_peripheral(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private var pendingScanReason: String?",
             "pendingScanReason = reason",
             "let reason = pendingScanReason ?? \"central_powered_on\"",
-            "WHOOPDBG ble_restore status=reuse_restored reason=fresh_scan_deferred",
-            "WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only",
+            "ATRIADBG ble_restore status=reuse_restored reason=fresh_scan_deferred",
+            "ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only",
             "recordLinkObservedConnected(reason: \"state_restore_connected\"",
             "central.connect(restoredPeripheral, options: nil)",
         ]:
@@ -637,7 +637,7 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertNotIn("full_protocol_fresh_scan", body)
 
     def test_long_wear_keepalive_survives_app_switch(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "enum KeepaliveDefaults",
@@ -675,7 +675,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, keepalive_body, "let reconnectWindow = hasSeenPacket ? silenceTimeout : initialReconnectWindow")
 
     def test_long_wear_disconnect_preserves_session_continuity(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private var userRequestedDisconnect = false",
@@ -691,7 +691,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "preserveLongWearRangeLossRecovery(reason: \"no_data_watchdog\")",
             "preserveLongWearRangeLossRecovery(reason: \"accepted_hr_watchdog\")",
             "preserveLongWearRangeLossRecovery(reason: \"central_powered_off\")",
-            "WHOOPDBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected",
+            "ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected",
         ]:
             assert_contains(self, text, needle)
 
@@ -710,7 +710,7 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreater(reconnect_index, finish_index)
 
     def test_long_wear_auto_save_keeps_live_session_open(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         auto_save = re.search(
             r"private func runLongWearSupervisorAutoSave\(index: Int, label: String, rest: Int, maxHR: Int\) -> Bool \{(?P<body>.*?)\n    \}",
@@ -726,7 +726,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, body, "return false")
 
     def test_live_sample_counters_flush_on_healthy_stream(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         raw = re.search(
             r"private func recordRawHRNotification\(hr: Int, at sampleTime: Date\) \{(?P<body>.*?)\n    \}",
@@ -759,7 +759,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, lifecycle_body, "flushActiveSessionJournal(reason: reason)")
 
     def test_healthkit_hrv_export_uses_validated_sdnn_only(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "private var hrvType",
@@ -771,7 +771,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, text, needle)
 
     def test_healthkit_rhr_and_respiratory_rate_export_use_correct_types(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "private var restingHeartRateType",
@@ -787,7 +787,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
     def test_healthkit_step_count_is_read_only(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "private var stepCountType",
@@ -796,7 +796,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func auditAppleStepCountReadAvailability(reason: String)",
             "HKStatisticsQuery(quantityType: stepCountType",
             "options: .cumulativeSum",
-            "WHOOPDBG healthkit_step_read status=%@",
+            "ATRIADBG healthkit_step_read status=%@",
             "source=healthkit_read write_steps=0",
             "auditAppleStepCountReadAvailability(reason: \"authorization_cached\")",
             "auditAppleStepCountReadAvailability(reason: \"authorization_granted\")",
@@ -807,7 +807,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, text, "HKQuantitySample(type: stepCountType")
 
     def test_healthkit_sleeping_wrist_temperature_is_read_only(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
         app_text = all_swift_source()
 
         for needle in [
@@ -817,7 +817,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func auditSleepingWristTemperatureReadAvailability(reason: String)",
             "HKSampleQuery(sampleType: sleepingWristTemperatureType",
             "HKSampleSortIdentifierEndDate",
-            "WHOOPDBG healthkit_sleeping_wrist_temp_read status=%@",
+            "ATRIADBG healthkit_sleeping_wrist_temp_read status=%@",
             "source=healthkit_read write_temperature=0 baseline_only=1",
             "auditSleepingWristTemperatureReadAvailability(reason: \"authorization_cached\")",
             "auditSleepingWristTemperatureReadAvailability(reason: \"authorization_granted\")",
@@ -833,9 +833,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, app_text, forbidden)
 
     def test_active_calories_are_persisted_as_estimates(self):
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
-        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "var activeCalories: Double? = nil",
@@ -843,8 +843,8 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
 
-        shared = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaSharedUIComponents.swift")
-        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
+        shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
             "case estimate",
             "return \"Estimate\"",
@@ -874,9 +874,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, healthkit, needle)
 
     def test_vo2max_fails_closed_until_confident(self):
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
-        healthkit = source(ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift")
-        vitals = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
 
         match = re.search(r"func vo2MaxEstimateSummary\(rest: Int, maxHR: Int\) -> VO2MaxEstimateSummary \{(?P<body>.*?)\n    \}", sessions, re.S)
         self.assertIsNotNone(match)
@@ -911,9 +911,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, vitals, "AtriaInlineQuickStat(label: \"VO2max\"")
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "Metrics.swift")
-        widget = source(ROOT / "WhoopApp" / "WhoopApp" / "WidgetSnapshot.swift")
-        intents = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAppIntents.swift")
+        text = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
+        widget = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
+        intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
         docs = "\n".join(source(path) for path in (ROOT / "docs").rglob("*.md"))
 
         for needle in [
@@ -969,7 +969,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, text, forbidden)
 
     def test_haptic_alerts_are_phone_side_only(self):
-        haptics = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHapticAlerts.swift")
+        haptics = source(ROOT / "Atria" / "Atria" / "AtriaHapticAlerts.swift")
 
         for needle in [
             "import CallKit",
@@ -991,7 +991,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, haptics, forbidden)
 
     def test_ai_coach_local_mode_is_explicitly_offline(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAICoach.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaAICoach.swift")
 
         for needle in [
             "enum AtriaCoachNetworkPolicy",
@@ -1006,7 +1006,7 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
-        card = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAICoachCard.swift")
+        card = source(ROOT / "Atria" / "Atria" / "AtriaAICoachCard.swift")
         assert_contains(self, card, "does not send metrics until a reviewed")
         assert_contains(self, card, "Enable local mode for an offline summary")
         assert_contains(self, card, ".privacySensitive()")
@@ -1026,7 +1026,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_monetization_seam_exists_without_paywall_or_storekit(self):
         app_text = all_swift_source()
-        entitlements = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaEntitlements.swift")
+        entitlements = source(ROOT / "Atria" / "Atria" / "AtriaEntitlements.swift")
 
         for needle in [
             "struct AtriaEntitlements",
@@ -1084,11 +1084,11 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, app_text, forbidden)
 
     def test_developer_only_surfaces_are_hidden_by_default(self):
-        developer_mode = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaDeveloperMode.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
-        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
-        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
+        developer_mode = source(ROOT / "Atria" / "Atria" / "AtriaDeveloperMode.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
         for needle in [
             "enum AtriaDeveloperMode",
@@ -1135,16 +1135,16 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, collection, forbidden)
 
         assert_contains(self, content, "let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled")
-        assert_contains(self, content, "&& ProcessInfo.processInfo.arguments.contains(\"--whoop-complete-onboarding\")")
+        assert_contains(self, content, "&& ProcessInfo.processInfo.arguments.contains(\"--atria-complete-onboarding\")")
         assert_contains(self, sessions, "func completeOnboardingFromLaunchIfRequested")
-        assert_contains(self, sessions, "guard AtriaDeveloperMode.isEnabled else { return }\n        guard arguments.contains(\"--whoop-complete-onboarding\") else { return }")
+        assert_contains(self, sessions, "guard AtriaDeveloperMode.isEnabled else { return }\n        guard arguments.contains(\"--atria-complete-onboarding\") else { return }")
 
     def test_live_activity_uses_end_user_reading_language(self):
-        app_attributes = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityAttributes.swift")
-        widget_attributes = source(ROOT / "WhoopApp" / "WhoopWidget" / "AtriaLiveActivityAttributes.swift")
-        coordinator = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityCoordinator.swift")
-        widget = source(ROOT / "WhoopApp" / "WhoopWidget" / "WhoopWidget.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        app_attributes = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityAttributes.swift")
+        widget_attributes = source(ROOT / "Atria" / "AtriaWidget" / "AtriaLiveActivityAttributes.swift")
+        coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
+        widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for text in [app_attributes, widget_attributes, coordinator]:
             assert_contains(self, text, "readingCount")
@@ -1156,7 +1156,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, widget, "samples ·")
 
     def test_live_activity_updates_are_throttled_off_the_sample_hot_path(self):
-        coordinator = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaLiveActivityCoordinator.swift")
+        coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
 
         for needle in [
             "private var lastActivitySnapshot: Snapshot?",
@@ -1175,7 +1175,7 @@ class HandoffStaticChecks(unittest.TestCase):
         # user's music (AirPods/speaker) or drains battery polling now-playing.
         # AtriaMediaController must be a no-op shell: no MediaPlayer import, no
         # system music player, no playback notifications, no polling loop.
-        media = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaMediaControls.swift")
+        media = source(ROOT / "Atria" / "Atria" / "AtriaMediaControls.swift")
 
         for needle in [
             "final class AtriaMediaController",
@@ -1196,7 +1196,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, media, forbidden)
 
     def test_deferred_home_diagnostics_do_not_overlap(self):
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
             "private var diagnosticsWorkInFlight = false",
@@ -1209,9 +1209,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, home, needle)
 
     def test_backdrop_respects_reduce_transparency(self):
-        shell = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeShellSupport.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
-        guide = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
+        shell = source(ROOT / "Atria" / "Atria" / "AtriaHomeShellSupport.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        guide = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
 
         for needle in [
             "let reduceTransparency: Bool",
@@ -1226,11 +1226,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, guide, "AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency)")
 
     def test_user_flow_animations_respect_reduce_motion(self):
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
-        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
-        collection = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift")
-        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
-        heart_rate = source(ROOT / "WhoopApp" / "WhoopApp" / "HeartRate.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        heart_rate = source(ROOT / "Atria" / "Atria" / "HeartRate.swift")
 
         for text in [home, overview, collection, content, heart_rate]:
             assert_contains(self, text, "accessibilityReduceMotion")
@@ -1240,13 +1240,13 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, heart_rate, ".animation(reduceMotion ? nil")
 
     def test_end_user_copy_avoids_lab_only_language(self):
-        content = source(ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift")
-        hero = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHeroConnectionSections.swift")
-        home = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift")
-        overview = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift")
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
-        intents = source(ROOT / "WhoopApp" / "WhoopApp" / "AtriaAppIntents.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
         assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
@@ -1296,23 +1296,23 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_user_path_debug_logs_are_gated(self):
         for rel in [
-            ROOT / "WhoopApp" / "WhoopApp" / "ContentView.swift",
-            ROOT / "WhoopApp" / "WhoopApp" / "WidgetSnapshot.swift",
-            ROOT / "WhoopApp" / "WhoopApp" / "AtriaHomeView.swift",
-            ROOT / "WhoopApp" / "WhoopApp" / "AtriaOverviewSections.swift",
-            ROOT / "WhoopApp" / "WhoopApp" / "AtriaVitalsCollectionSections.swift",
-            ROOT / "WhoopApp" / "WhoopApp" / "HealthKitExporter.swift",
+            ROOT / "Atria" / "Atria" / "ContentView.swift",
+            ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift",
+            ROOT / "Atria" / "Atria" / "AtriaHomeView.swift",
+            ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift",
+            ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift",
+            ROOT / "Atria" / "Atria" / "HealthKitExporter.swift",
         ]:
             text = source(rel)
-            assert_not_contains(self, text, "NSLog(\"WHOOPDBG")
+            assert_not_contains(self, text, "NSLog(\"ATRIADBG")
 
-        assert_not_contains(self, all_swift_source(), "NSLog(\"WHOOPDBG")
-        debug_logging = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopDebugLogging.swift")
-        assert_contains(self, debug_logging, "guard WhoopDebugLogging.isEnabled else { return }")
+        assert_not_contains(self, all_swift_source(), "NSLog(\"ATRIADBG")
+        debug_logging = source(ROOT / "Atria" / "Atria" / "AtriaDebugLogging.swift")
+        assert_contains(self, debug_logging, "guard AtriaDebugLogging.isEnabled else { return }")
         assert_contains(self, debug_logging, "NSLogv(String(describing: format), pointer)")
 
     def test_diagnostic_notifications_are_not_production_active(self):
-        notifications = source(ROOT / "WhoopApp" / "WhoopApp" / "LocalNotificationScheduler.swift")
+        notifications = source(ROOT / "Atria" / "Atria" / "LocalNotificationScheduler.swift")
 
         assert_contains(self, notifications, "static let active = [recovery, strain, battery]")
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
@@ -1323,8 +1323,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, notifications, "title: \"Atria diagnostic\"")
 
     def test_background_task_plumbing_is_present(self):
-        app = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopAppApp.swift")
-        plist = source(ROOT / "WhoopApp" / "Info.plist")
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        plist = source(ROOT / "Atria" / "Info.plist")
 
         for needle in [
             "import BackgroundTasks",
@@ -1374,7 +1374,7 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreater(validate_device, parse_args)
 
     def test_unsavable_active_journals_are_cleared_during_recovery(self):
-        text = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private func clearUnsavableActiveJournalIfNeeded(reason: String) -> Bool",
@@ -1390,12 +1390,12 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
     def test_phone_motion_remains_adjunct_to_whoop_primary_data(self):
-        sessions = source(ROOT / "WhoopApp" / "WhoopApp" / "Sessions.swift")
-        ble = source(ROOT / "WhoopApp" / "WhoopApp" / "WhoopBLEManager.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         pull = source(ROOT / "pull_atria_state.sh")
 
         for needle in [
-            "WHOOP HR/RR remains primary, phone motion is adjunct only",
+            "Strap HR/RR remains primary, phone motion is adjunct only",
             "var phoneMotionValidatedValue: Bool { phoneMotionValidated == true }",
             "var phoneStepValidatedValue: Bool { phoneStepValidated == true }",
         ]:

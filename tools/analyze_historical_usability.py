@@ -121,7 +121,7 @@ def extract_historical_frames(log: Path) -> list[HistoricalFrame]:
     frames = extract_frames(log)
     seen_payloads = {frame.payload.hex() for frame in frames}
     for line in log.read_text(errors="ignore").splitlines():
-        tokens = kv_after("WHOOPDBG historicalData", line)
+        tokens = kv_after("ATRIADBG historicalData", line)
         payload_hex = tokens.get("payload")
         if not payload_hex:
             continue
@@ -164,10 +164,10 @@ def clock_report(log: Path) -> dict[str, str]:
     latest: dict[str, str] = {}
     set_responses = 0
     for line in log.read_text(errors="replace").splitlines():
-        if "WHOOPDBG historyClock status=set_clock_response" in line:
+        if "ATRIADBG historyClock status=set_clock_response" in line:
             set_responses += 1
-        if "WHOOPDBG historyClock status=get_clock_response" in line:
-            latest = kv_after("WHOOPDBG historyClock", line)
+        if "ATRIADBG historyClock status=get_clock_response" in line:
+            latest = kv_after("ATRIADBG historyClock", line)
     if not latest:
         return {
             "clock_correlation_present": "0",
@@ -275,7 +275,7 @@ def live_overlap_report_corrected(log: Path, corrected_offset: int | None) -> di
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", type=Path, help="WHOOPDBG live-device log")
+    parser.add_argument("log", type=Path, help="ATRIADBG live-device log")
     parser.add_argument(
         "--sessions-json",
         type=Path,

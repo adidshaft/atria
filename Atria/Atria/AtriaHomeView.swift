@@ -768,7 +768,7 @@ struct AtriaHomeView: View {
 
     private func runCoexistenceSnoozeSelfTestIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
 #if DEBUG
-        guard arguments.contains("--whoop-verify-coexistence-snooze") else { return }
+        guard arguments.contains("--atria-verify-coexistence-snooze") else { return }
         showCoexistenceModal = true
         acknowledgeCoexistenceModal(reason: "debug_launch_arg")
         presentCoexistenceModalIfNeeded(for: .suspected)

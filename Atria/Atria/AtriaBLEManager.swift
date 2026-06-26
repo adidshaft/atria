@@ -1037,10 +1037,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--whoop-reset-capture-defaults") {
+        if arguments.contains("--atria-reset-capture-defaults") {
             resetProductionCaptureDefaultsForDebug()
         }
-        if arguments.contains("--whoop-full-protocol-mode") {
+        if arguments.contains("--atria-full-protocol-mode") {
             UserDefaults.standard.set(false, forKey: LongWearDefaults.enabled)
             UserDefaults.standard.set(false, forKey: RadioDefaults.standardHROnly)
             longWearModeEnabled = false
@@ -1051,15 +1051,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             bootstrapProductionCaptureDefaultsIfNeeded(arguments: arguments)
             migrateAutomaticLongWearDefaultIfNeeded(arguments: arguments)
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
-            if arguments.contains("--whoop-long-wear-mode") {
+            if arguments.contains("--atria-long-wear-mode") {
                 UserDefaults.standard.set(true, forKey: CaptureDefaults.configured)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.userSelected)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.enabled)
                 longWearModeEnabled = true
             }
         }
-        if !arguments.contains("--whoop-full-protocol-mode"),
-           arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") {
+        if !arguments.contains("--atria-full-protocol-mode"),
+           arguments.contains("--atria-standard-hr-only") || arguments.contains("--atria-long-wear-mode") {
             standardHROnlyMode = true
             standardHROnlyEnabled = true
             forceFreshScanOnRestore = true
@@ -1085,10 +1085,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
-        if arguments.contains("--whoop-disable-history-ack") {
+        if arguments.contains("--atria-disable-history-ack") {
             historicalAckDisabled = true
         }
-        if let modeIndex = arguments.firstIndex(of: "--whoop-history-ack-mode"),
+        if let modeIndex = arguments.firstIndex(of: "--atria-history-ack-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
             let mode = arguments[arguments.index(after: modeIndex)]
             let supportedModes = ["trim", "enddata", "index", "unix", "zero", "none"]
@@ -1096,20 +1096,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 historyAckMode = mode
             }
         }
-        if arguments.contains("--whoop-history-clock-handshake") || arguments.contains("--whoop-history-clock-sync") {
+        if arguments.contains("--atria-history-clock-handshake") || arguments.contains("--atria-history-clock-sync") {
             historyClockSyncEnabled = true
         }
-        if arguments.contains("--whoop-history-skip-range") {
+        if arguments.contains("--atria-history-skip-range") {
             historySkipDataRangeRequest = true
         }
-        if let initIndex = arguments.firstIndex(of: "--whoop-history-init-sweep"),
+        if let initIndex = arguments.firstIndex(of: "--atria-history-init-sweep"),
            arguments.indices.contains(arguments.index(after: initIndex)) {
             historyInitSweepCommands = arguments[arguments.index(after: initIndex)]
                 .split(separator: ",")
                 .compactMap { Self.parseHexBytes(String($0)) }
                 .filter { !$0.isEmpty }
         }
-        if let modeIndex = arguments.firstIndex(of: "--whoop-probe-command-mode"),
+        if let modeIndex = arguments.firstIndex(of: "--atria-probe-command-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
             let mode = arguments[arguments.index(after: modeIndex)]
             if mode == CommandWriteMode.withResponse.rawValue {
@@ -1118,7 +1118,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 probeCommandMode = .withoutResponse
             }
         }
-        guard arguments.contains("--whoop-history-only-probe") else { return }
+        guard arguments.contains("--atria-history-only-probe") else { return }
         historyOnlyProbeEnabled = true
         historyOnlyProbeMode = true
         realtimeStartRetries = 0
@@ -1205,7 +1205,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         updateSessionPointCacheMode()
         standardHROnlyMode = true
         standardHROnlyEnabled = true
-        let explicitMode = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 1 : 0
+        let explicitMode = arguments.contains("--atria-standard-hr-only") || arguments.contains("--atria-long-wear-mode") ? 1 : 0
         recordRadioMode("standard_hr_only", reason: "protected_default")
         AtriaDebugLog("ATRIADBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
               explicitMode)
@@ -1213,7 +1213,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func migrateAutomaticLongWearDefaultIfNeeded(arguments: [String]) {
         let defaults = UserDefaults.standard
-        guard !arguments.contains("--whoop-full-protocol-mode") else { return }
+        guard !arguments.contains("--atria-full-protocol-mode") else { return }
         guard defaults.bool(forKey: CaptureDefaults.configured) else { return }
         guard !defaults.bool(forKey: LongWearDefaults.userSelected) else { return }
         guard !defaults.bool(forKey: CaptureDefaults.protectedLongWearMigrated) else { return }
@@ -1231,7 +1231,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
-        guard !arguments.contains("--whoop-full-protocol-mode") else { return }
+        guard !arguments.contains("--atria-full-protocol-mode") else { return }
         guard UserDefaults.standard.object(forKey: OfflineSyncDefaults.enabled) == nil else { return }
         UserDefaults.standard.set(true, forKey: OfflineSyncDefaults.enabled)
         AtriaDebugLog("ATRIADBG offline_sync status=migrated_default action=enabled reason=stored_session_backfill_default")
@@ -2056,7 +2056,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func resetLinkDiagnosticsForDebugLaunch(arguments: [String]) {
-        guard arguments.contains("--whoop-reset-link-diagnostics") else { return }
+        guard arguments.contains("--atria-reset-link-diagnostics") else { return }
         let defaults = UserDefaults.standard
         [
             LinkDefaults.attempts,
@@ -2076,7 +2076,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func resetSampleDiagnosticsForDebugLaunch(arguments: [String]) {
-        guard arguments.contains("--whoop-reset-sample-diagnostics") else { return }
+        guard arguments.contains("--atria-reset-sample-diagnostics") else { return }
         let defaults = UserDefaults.standard
         sampleDiagnosticsFlushTask?.cancel()
         sampleDiagnosticsFlushTask = nil
@@ -2151,7 +2151,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protocolLastPacketType = "none"
         protocolLastPacketKind = "none"
         protocolLastPacketLength = 0
-        guard arguments.contains("--whoop-reset-protocol-diagnostics") else { return }
+        guard arguments.contains("--atria-reset-protocol-diagnostics") else { return }
         let defaults = UserDefaults.standard
         [
             ProtocolDefaults.packets,
@@ -2167,15 +2167,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func logActiveMotionIMUCheckPlanIfRequested(arguments: [String]) {
-        guard arguments.contains("--whoop-active-motion-imu-check") else { return }
+        guard arguments.contains("--atria-active-motion-imu-check") else { return }
         let delay = doubleValue(
-            after: "--whoop-active-motion-result-after",
+            after: "--atria-active-motion-result-after",
             in: arguments,
-            default: doubleValue(after: "--whoop-log-gate-status-after", in: arguments, default: 150, range: 30...300),
+            default: doubleValue(after: "--atria-log-gate-status-after", in: arguments, default: 150, range: 30...300),
             range: 30...300
         )
         AtriaDebugLog("ATRIADBG active_motion_imu_check status=armed full_protocol=1 reset_protocol_counters=%d metric_promotions=0 script=30s_still_then_30s_wrist_rotations_taps_then_30s_still_then_30s_walking_arm_swing success_signal=protocol_imu_frames_gt_0_or_imu_candidate_or_sleep_motion_hint_count_gt_0 failure_signal=protocol_imu_frames_0_and_sleep_motion_hint_count_0 action=keep_sleep_motion_learning_until_validated",
-              arguments.contains("--whoop-reset-protocol-diagnostics") ? 1 : 0)
+              arguments.contains("--atria-reset-protocol-diagnostics") ? 1 : 0)
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
@@ -2692,7 +2692,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.label)
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.source)
 
-        if arguments.contains("--whoop-full-protocol-mode") {
+        if arguments.contains("--atria-full-protocol-mode") {
             UserDefaults.standard.set(false, forKey: LongWearDefaults.enabled)
             longWearModeEnabled = false
             updateSessionPointCacheMode()
@@ -2701,110 +2701,110 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             updatePhoneMotionAuditState(reason: "full_protocol_launch_arg")
             applyStandardHROnly(enabled: false, persist: true, reconnect: true, reason: "full_protocol_launch_arg")
             AtriaDebugLog("ATRIADBG full_protocol_mode request=launch_arg action=disable_long_wear_and_low_radio")
-        } else if arguments.contains("--whoop-long-wear-mode") {
+        } else if arguments.contains("--atria-long-wear-mode") {
             UserDefaults.standard.set(true, forKey: LongWearDefaults.enabled)
             longWearModeEnabled = true
             updateSessionPointCacheMode()
             updatePhoneMotionAuditState(reason: "long_wear_launch_arg")
             AtriaDebugLog("ATRIADBG long_wear_mode request=launch_arg action=enable_persisted")
         }
-        if let retriesIndex = arguments.firstIndex(of: "--whoop-realtime-start-retries"),
+        if let retriesIndex = arguments.firstIndex(of: "--atria-realtime-start-retries"),
            arguments.indices.contains(arguments.index(after: retriesIndex)),
            let retries = Int(arguments[arguments.index(after: retriesIndex)]) {
             realtimeStartRetries = max(0, min(retries, 12))
             AtriaDebugLog("ATRIADBG realtimeConfig start_retries=%d", realtimeStartRetries)
         }
-        if arguments.contains("--whoop-log-hr-consistency") {
+        if arguments.contains("--atria-log-hr-consistency") {
             hrConsistencyEnabled = true
             AtriaDebugLog("ATRIADBG hr_consistency_config enabled=1 max_pair_age_s=5.0 recent_window=20 ready_recent_pairs=10 recent_max_delta_ready=2 recent_mean_delta_ready=1.0")
         }
-        if arguments.contains("--whoop-log-live-packets") {
+        if arguments.contains("--atria-log-live-packets") {
             livePacketSummaryLoggingEnabled = true
             AtriaDebugLog("ATRIADBG live_packet_logging enabled=1 mode=summary")
         }
-        if arguments.contains("--whoop-log-ble-frames") {
+        if arguments.contains("--atria-log-ble-frames") {
             verboseBLEFrameLogging = true
             storeProprietaryFrames = true
             storeProprietaryFramesMode = true
             AtriaDebugLog("ATRIADBG ble_frame_logging enabled=1 reason=launch_arg")
         }
-        if arguments.contains("--whoop-store-ble-frames") {
+        if arguments.contains("--atria-store-ble-frames") {
             storeProprietaryFrames = true
             storeProprietaryFramesMode = true
             AtriaDebugLog("ATRIADBG ble_frame_history enabled=1 reason=launch_arg")
         }
         protocolDiagnosticsPersistenceEnabled =
-            arguments.contains("--whoop-active-motion-imu-check")
-            || arguments.contains("--whoop-reset-protocol-diagnostics")
+            arguments.contains("--atria-active-motion-imu-check")
+            || arguments.contains("--atria-reset-protocol-diagnostics")
             || verboseBLEFrameLogging
-        if arguments.contains("--whoop-standard-hr-only") {
+        if arguments.contains("--atria-standard-hr-only") {
             applyStandardHROnly(enabled: true, persist: false, reconnect: false, reason: "launch_arg")
             AtriaDebugLog("ATRIADBG standard_hr_only enabled=1 realtime_start=skipped custom_notify=skipped history_ack=disabled")
         }
-        if arguments.contains("--whoop-log-hr-artifact-policy") {
+        if arguments.contains("--atria-log-hr-artifact-policy") {
             logHRArtifactPolicySelfTest()
         }
-        if let flushIndex = arguments.firstIndex(of: "--whoop-flush-active-journal-after"),
+        if let flushIndex = arguments.firstIndex(of: "--atria-flush-active-journal-after"),
            arguments.indices.contains(arguments.index(after: flushIndex)),
            let seconds = Double(arguments[arguments.index(after: flushIndex)]) {
             scheduleDebugActiveJournalFlush(after: max(1, min(seconds, 300)))
         }
-        if let watchdogIndex = arguments.firstIndex(of: "--whoop-force-no-data-watchdog-after"),
+        if let watchdogIndex = arguments.firstIndex(of: "--atria-force-no-data-watchdog-after"),
            arguments.indices.contains(arguments.index(after: watchdogIndex)),
            let seconds = Double(arguments[arguments.index(after: watchdogIndex)]) {
             scheduleDebugNoDataWatchdog(after: max(1, min(seconds, 300)))
         }
-        if let watchdogIndex = arguments.firstIndex(of: "--whoop-force-accepted-hr-watchdog-after"),
+        if let watchdogIndex = arguments.firstIndex(of: "--atria-force-accepted-hr-watchdog-after"),
            arguments.indices.contains(arguments.index(after: watchdogIndex)),
            let seconds = Double(arguments[arguments.index(after: watchdogIndex)]) {
             scheduleDebugAcceptedHRWatchdog(after: max(1, min(seconds, 300)))
         }
-        if let watchdogIndex = arguments.firstIndex(of: "--whoop-force-hr-continuity-watchdog-after"),
+        if let watchdogIndex = arguments.firstIndex(of: "--atria-force-hr-continuity-watchdog-after"),
            arguments.indices.contains(arguments.index(after: watchdogIndex)),
            let seconds = Double(arguments[arguments.index(after: watchdogIndex)]) {
             scheduleDebugHRContinuityWatchdog(after: max(0, min(seconds, 300)))
         }
-        if let watchdogIndex = arguments.firstIndex(of: "--whoop-force-rr-presence-watchdog-after"),
+        if let watchdogIndex = arguments.firstIndex(of: "--atria-force-rr-presence-watchdog-after"),
            arguments.indices.contains(arguments.index(after: watchdogIndex)),
            let seconds = Double(arguments[arguments.index(after: watchdogIndex)]) {
             scheduleDebugRRPresenceWatchdog(after: max(0, min(seconds, 300)))
         }
-        if let missingIndex = arguments.firstIndex(of: "--whoop-force-missing-2a37-after"),
+        if let missingIndex = arguments.firstIndex(of: "--atria-force-missing-2a37-after"),
            arguments.indices.contains(arguments.index(after: missingIndex)),
            let seconds = Double(arguments[arguments.index(after: missingIndex)]) {
             armDebugMissingHeartRateCharacteristic(after: max(0, min(seconds, 300)))
         }
-        if arguments.contains("--whoop-log-hr-continuity-watchdog-state") {
+        if arguments.contains("--atria-log-hr-continuity-watchdog-state") {
             logHRContinuityWatchdogState(reason: "launch_arg")
         }
-        if let restartIndex = arguments.firstIndex(of: "--whoop-realtime-restart-zero-rr-seconds"),
+        if let restartIndex = arguments.firstIndex(of: "--atria-realtime-restart-zero-rr-seconds"),
            arguments.indices.contains(arguments.index(after: restartIndex)),
            let seconds = Double(arguments[arguments.index(after: restartIndex)]) {
             realtimeRestartAfterZeroRRSeconds = max(0, min(seconds, 300))
             AtriaDebugLog("ATRIADBG realtimeConfig restart_zero_rr_s=%.1f", realtimeRestartAfterZeroRRSeconds)
         }
-        if let reassertIndex = arguments.firstIndex(of: "--whoop-realtime-reassert-zero-rr-seconds"),
+        if let reassertIndex = arguments.firstIndex(of: "--atria-realtime-reassert-zero-rr-seconds"),
            arguments.indices.contains(arguments.index(after: reassertIndex)),
            let seconds = Double(arguments[arguments.index(after: reassertIndex)]) {
             realtimeReassertStartAfterZeroRRSeconds = max(0, min(seconds, 300))
             AtriaDebugLog("ATRIADBG realtimeConfig reassert_zero_rr_s=%.1f", realtimeReassertStartAfterZeroRRSeconds)
         }
-        if let modeIndex = arguments.firstIndex(of: "--whoop-probe-command-mode"),
+        if let modeIndex = arguments.firstIndex(of: "--atria-probe-command-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
             let rawMode = arguments[arguments.index(after: modeIndex)].lowercased()
             probeCommandMode = rawMode == CommandWriteMode.withResponse.rawValue ? .withResponse : .withoutResponse
         }
-        if let delayIndex = arguments.firstIndex(of: "--whoop-probe-command-delay"),
+        if let delayIndex = arguments.firstIndex(of: "--atria-probe-command-delay"),
            arguments.indices.contains(arguments.index(after: delayIndex)),
            let seconds = Double(arguments[arguments.index(after: delayIndex)]) {
             probeCommandDelaySeconds = max(0, min(seconds, 300))
         }
-        if let intervalIndex = arguments.firstIndex(of: "--whoop-probe-sweep-interval"),
+        if let intervalIndex = arguments.firstIndex(of: "--atria-probe-sweep-interval"),
            arguments.indices.contains(arguments.index(after: intervalIndex)),
            let seconds = Double(arguments[arguments.index(after: intervalIndex)]) {
             probeSweepIntervalSeconds = max(5, min(seconds, 300))
         }
-        if let commandIndex = arguments.firstIndex(of: "--whoop-probe-command"),
+        if let commandIndex = arguments.firstIndex(of: "--atria-probe-command"),
            arguments.indices.contains(arguments.index(after: commandIndex)) {
             let rawHex = arguments[arguments.index(after: commandIndex)]
             probeCommand = Self.parseHexBytes(rawHex)
@@ -2816,7 +2816,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 AtriaDebugLog("ATRIADBG realtimeConfig probe_cmd_invalid=%@", rawHex)
             }
         }
-        if let sweepIndex = arguments.firstIndex(of: "--whoop-probe-sweep"),
+        if let sweepIndex = arguments.firstIndex(of: "--atria-probe-sweep"),
            arguments.indices.contains(arguments.index(after: sweepIndex)) {
             let rawSweep = arguments[arguments.index(after: sweepIndex)]
             probeSweepCommands = rawSweep
@@ -2829,11 +2829,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG realtimeConfig probe_sweep=%@ interval_s=%.1f",
                   labels, probeSweepIntervalSeconds)
         }
-        if arguments.contains("--whoop-disable-history-ack") {
+        if arguments.contains("--atria-disable-history-ack") {
             historicalAckDisabled = true
             AtriaDebugLog("ATRIADBG realtimeConfig history_ack=disabled")
         }
-        if let modeIndex = arguments.firstIndex(of: "--whoop-history-ack-mode"),
+        if let modeIndex = arguments.firstIndex(of: "--atria-history-ack-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
             let mode = arguments[arguments.index(after: modeIndex)]
             let supportedModes = ["trim", "enddata", "index", "unix", "zero", "none"]
@@ -2842,9 +2842,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             AtriaDebugLog("ATRIADBG realtimeConfig history_ack_mode=%@", historyAckMode)
         }
-        if arguments.contains("--whoop-history-recent-sweep") {
+        if arguments.contains("--atria-history-recent-sweep") {
             historyRecentSweepEnabled = true
-            if let offsetsIndex = arguments.firstIndex(of: "--whoop-history-recent-offsets"),
+            if let offsetsIndex = arguments.firstIndex(of: "--atria-history-recent-offsets"),
                arguments.indices.contains(arguments.index(after: offsetsIndex)) {
                 let rawOffsets = arguments[arguments.index(after: offsetsIndex)]
                 let parsed = rawOffsets
@@ -2858,13 +2858,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG realtimeConfig history_recent_sweep=1 offsets=%@",
                   historyRecentSweepOffsets.map(String.init).joined(separator: ","))
         }
-        if arguments.contains("--whoop-history-clock-handshake") || arguments.contains("--whoop-history-clock-sync") {
+        if arguments.contains("--atria-history-clock-handshake") || arguments.contains("--atria-history-clock-sync") {
             historyClockSyncEnabled = true
             AtriaDebugLog("ATRIADBG realtimeConfig history_clock_handshake=1 set_clock_forms=8,9 get_clock_payloads=empty,00")
         }
-        if arguments.contains("--whoop-history-selector-sweep") {
+        if arguments.contains("--atria-history-selector-sweep") {
             historySelectorSweepEnabled = true
-            if let modeIndex = arguments.firstIndex(of: "--whoop-history-selector-mode"),
+            if let modeIndex = arguments.firstIndex(of: "--atria-history-selector-mode"),
                arguments.indices.contains(arguments.index(after: modeIndex)) {
                 let mode = arguments[arguments.index(after: modeIndex)]
                 let supportedModes = [
@@ -2883,17 +2883,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             AtriaDebugLog("ATRIADBG realtimeConfig history_selector_sweep=1 mode=%@", historySelectorMode)
         }
-        if value(after: "--whoop-history-selector-range-index", in: arguments) != nil {
-            let index = intValue(after: "--whoop-history-selector-range-index",
+        if value(after: "--atria-history-selector-range-index", in: arguments) != nil {
+            let index = intValue(after: "--atria-history-selector-range-index",
                                  in: arguments,
                                  default: 0,
                                  range: 0...255)
             historySelectorRangeIndex = index
             AtriaDebugLog("ATRIADBG realtimeConfig history_selector_range_index=%d", index)
         }
-        if arguments.contains("--whoop-history-range-sweep") {
+        if arguments.contains("--atria-history-range-sweep") {
             historyDataRangeSweepEnabled = true
-            if let payloadsIndex = arguments.firstIndex(of: "--whoop-history-range-payloads"),
+            if let payloadsIndex = arguments.firstIndex(of: "--atria-history-range-payloads"),
                arguments.indices.contains(arguments.index(after: payloadsIndex)) {
                 let rawPayloads = arguments[arguments.index(after: payloadsIndex)]
                 let parsed = rawPayloads
@@ -2909,7 +2909,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }.joined(separator: ",")
             AtriaDebugLog("ATRIADBG realtimeConfig history_range_sweep=1 payloads=%@", labels)
         }
-        if let initIndex = arguments.firstIndex(of: "--whoop-history-init-sweep"),
+        if let initIndex = arguments.firstIndex(of: "--atria-history-init-sweep"),
            arguments.indices.contains(arguments.index(after: initIndex)) {
             let rawSweep = arguments[arguments.index(after: initIndex)]
             historyInitSweepCommands = rawSweep
@@ -2921,11 +2921,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }.joined(separator: ",")
             AtriaDebugLog("ATRIADBG realtimeConfig history_init_sweep=%@", labels)
         }
-        if arguments.contains("--whoop-history-skip-range") {
+        if arguments.contains("--atria-history-skip-range") {
             historySkipDataRangeRequest = true
             AtriaDebugLog("ATRIADBG realtimeConfig history_skip_range=1")
         }
-        if arguments.contains("--whoop-history-only-probe") {
+        if arguments.contains("--atria-history-only-probe") {
             historyOnlyProbeEnabled = true
             historyOnlyProbeMode = true
             realtimeStartRetries = 0
@@ -2936,35 +2936,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   historySelectorSweepEnabled ? 1 : 0,
                   historySelectorMode)
         }
-        if let label = value(after: "--whoop-capture-label", in: arguments),
+        if let label = value(after: "--atria-capture-label", in: arguments),
            !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             captureLabel = label
         }
-        if arguments.contains("--whoop-morning-hrv-force") {
+        if arguments.contains("--atria-morning-hrv-force") {
             morningHRVForce = true
         }
         let hasExplicitSessionPersistence =
-            arguments.contains("--whoop-auto-save-session-after") ||
-            arguments.contains("--whoop-auto-save-session-every") ||
-            arguments.contains("--whoop-checkpoint-session-every")
-        if let saveIndex = arguments.firstIndex(of: "--whoop-auto-save-session-after"),
+            arguments.contains("--atria-auto-save-session-after") ||
+            arguments.contains("--atria-auto-save-session-every") ||
+            arguments.contains("--atria-checkpoint-session-every")
+        if let saveIndex = arguments.firstIndex(of: "--atria-auto-save-session-after"),
            arguments.indices.contains(arguments.index(after: saveIndex)),
            let seconds = Double(arguments[arguments.index(after: saveIndex)]) {
             scheduleDelayedSessionSave(after: max(1, min(seconds, 86_400)))
         }
-        if let saveEveryIndex = arguments.firstIndex(of: "--whoop-auto-save-session-every"),
+        if let saveEveryIndex = arguments.firstIndex(of: "--atria-auto-save-session-every"),
            arguments.indices.contains(arguments.index(after: saveEveryIndex)),
            let seconds = Double(arguments[arguments.index(after: saveEveryIndex)]) {
             schedulePeriodicSessionSave(every: max(10, min(seconds, 86_400)))
         }
-        if let checkpointEveryIndex = arguments.firstIndex(of: "--whoop-checkpoint-session-every"),
+        if let checkpointEveryIndex = arguments.firstIndex(of: "--atria-checkpoint-session-every"),
            arguments.indices.contains(arguments.index(after: checkpointEveryIndex)),
            let seconds = Double(arguments[arguments.index(after: checkpointEveryIndex)]) {
             scheduleSessionCheckpoint(every: max(10, min(seconds, 86_400)),
                                       fallbackLabel: "Checkpoint",
                                       source: "launch_arg")
         }
-        if let manualCheckpointIndex = arguments.firstIndex(of: "--whoop-manual-checkpoint-after"),
+        if let manualCheckpointIndex = arguments.firstIndex(of: "--atria-manual-checkpoint-after"),
            arguments.indices.contains(arguments.index(after: manualCheckpointIndex)),
            let seconds = Double(arguments[arguments.index(after: manualCheckpointIndex)]) {
             scheduleDebugManualCheckpoint(after: max(1, min(seconds, 3_600)))
@@ -2974,56 +2974,56 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                       fallbackLabel: "Unattended checkpoint",
                                       source: "default_foreground")
         }
-        if arguments.contains("--whoop-morning-hrv-check") {
+        if arguments.contains("--atria-morning-hrv-check") {
             configureMorningHRVCapture(arguments: arguments)
             return
         }
-        guard arguments.contains("--whoop-auto-capture") else { return }
-        if let labelIndex = arguments.firstIndex(of: "--whoop-capture-label"),
+        guard arguments.contains("--atria-auto-capture") else { return }
+        if let labelIndex = arguments.firstIndex(of: "--atria-capture-label"),
            arguments.indices.contains(arguments.index(after: labelIndex)) {
             captureLabel = arguments[arguments.index(after: labelIndex)]
         }
         if captureLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             captureLabel = "gate-b-auto"
         }
-        strictLiveRRCapture = arguments.contains("--whoop-strict-live-rr-capture")
-        autoStopCaptureWhenReady = arguments.contains("--whoop-stop-when-ready")
-        if let delayIndex = arguments.firstIndex(of: "--whoop-auto-capture-delay"),
+        strictLiveRRCapture = arguments.contains("--atria-strict-live-rr-capture")
+        autoStopCaptureWhenReady = arguments.contains("--atria-stop-when-ready")
+        if let delayIndex = arguments.firstIndex(of: "--atria-auto-capture-delay"),
            arguments.indices.contains(arguments.index(after: delayIndex)),
            let seconds = Double(arguments[arguments.index(after: delayIndex)]) {
             autoCaptureDelaySeconds = max(0, min(seconds, 3_600))
         }
-        if let thresholdIndex = arguments.firstIndex(of: "--whoop-auto-capture-when-rr"),
+        if let thresholdIndex = arguments.firstIndex(of: "--atria-auto-capture-when-rr"),
            arguments.indices.contains(arguments.index(after: thresholdIndex)),
            let threshold = Double(arguments[arguments.index(after: thresholdIndex)]) {
             autoCaptureRRThreshold = max(0, min(threshold, 1))
         }
-        if let windowIndex = arguments.firstIndex(of: "--whoop-auto-capture-rr-window"),
+        if let windowIndex = arguments.firstIndex(of: "--atria-auto-capture-rr-window"),
            arguments.indices.contains(arguments.index(after: windowIndex)),
            let seconds = Double(arguments[arguments.index(after: windowIndex)]) {
             autoCaptureRRWindowSeconds = max(1, min(seconds, 300))
         }
-        if let minFramesIndex = arguments.firstIndex(of: "--whoop-auto-capture-rr-min-frames"),
+        if let minFramesIndex = arguments.firstIndex(of: "--atria-auto-capture-rr-min-frames"),
            arguments.indices.contains(arguments.index(after: minFramesIndex)),
            let frames = Int(arguments[arguments.index(after: minFramesIndex)]) {
             autoCaptureRRMinFrames = max(1, min(frames, 1_000))
         }
-        if let maxGapIndex = arguments.firstIndex(of: "--whoop-auto-capture-max-rr-gap"),
+        if let maxGapIndex = arguments.firstIndex(of: "--atria-auto-capture-max-rr-gap"),
            arguments.indices.contains(arguments.index(after: maxGapIndex)),
            let seconds = Double(arguments[arguments.index(after: maxGapIndex)]) {
             autoCaptureMaxRRGapSeconds = max(0, min(seconds, 60))
         }
-        if let timeoutIndex = arguments.firstIndex(of: "--whoop-auto-capture-rr-timeout"),
+        if let timeoutIndex = arguments.firstIndex(of: "--atria-auto-capture-rr-timeout"),
            arguments.indices.contains(arguments.index(after: timeoutIndex)),
            let seconds = Double(arguments[arguments.index(after: timeoutIndex)]) {
             autoCaptureRRTimeoutSeconds = max(0, min(seconds, 3_600))
         }
-        if let attemptsIndex = arguments.firstIndex(of: "--whoop-auto-capture-max-attempts"),
+        if let attemptsIndex = arguments.firstIndex(of: "--atria-auto-capture-max-attempts"),
            arguments.indices.contains(arguments.index(after: attemptsIndex)),
            let attempts = Int(arguments[arguments.index(after: attemptsIndex)]) {
             autoCaptureMaxAttempts = max(1, min(attempts, 50))
         }
-        if let stopIndex = arguments.firstIndex(of: "--whoop-auto-stop-after"),
+        if let stopIndex = arguments.firstIndex(of: "--atria-auto-stop-after"),
            arguments.indices.contains(arguments.index(after: stopIndex)),
            let seconds = Double(arguments[arguments.index(after: stopIndex)]) {
             autoStopCaptureAfterSeconds = max(0, min(seconds, 3_600))
@@ -3034,7 +3034,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func scheduleLiveWorkoutDiagnosticsIfRequested(rest: Int, maxHR: Int, arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard let raw = value(after: "--whoop-log-live-workout-every", in: arguments),
+        guard let raw = value(after: "--atria-log-live-workout-every", in: arguments),
               let requestedSeconds = Double(raw) else { return }
         let seconds = max(5, min(requestedSeconds, 3_600))
         let label = captureLabel.isEmpty ? "Live workout" : captureLabel
@@ -3100,7 +3100,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func scheduleWorkoutAutoSaveIfRequested(rest: Int, maxHR: Int, arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard let raw = value(after: "--whoop-auto-save-workout-when-ready", in: arguments),
+        guard let raw = value(after: "--atria-auto-save-workout-when-ready", in: arguments),
               let requestedSeconds = Double(raw) else { return }
         let seconds = max(5, min(requestedSeconds, 300))
         let label = captureLabel.isEmpty ? "Auto workout" : captureLabel
@@ -4354,15 +4354,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason = "outside_morning_window"
         }
 
-        captureLabel = value(after: "--whoop-capture-label", in: arguments) ?? "morning-hrv"
-        autoCaptureDelaySeconds = doubleValue(after: "--whoop-auto-capture-delay", in: arguments, default: 20, range: 0...3_600)
-        autoCaptureRRThreshold = doubleValue(after: "--whoop-auto-capture-when-rr", in: arguments, default: 0.90, range: 0...1)
-        autoCaptureRRWindowSeconds = doubleValue(after: "--whoop-auto-capture-rr-window", in: arguments, default: 30, range: 1...300)
-        autoCaptureRRMinFrames = intValue(after: "--whoop-auto-capture-rr-min-frames", in: arguments, default: 20, range: 1...1_000)
-        autoCaptureMaxRRGapSeconds = doubleValue(after: "--whoop-auto-capture-max-rr-gap", in: arguments, default: 3, range: 0...60)
-        autoCaptureRRTimeoutSeconds = doubleValue(after: "--whoop-auto-capture-rr-timeout", in: arguments, default: 180, range: 0...3_600)
-        autoCaptureMaxAttempts = intValue(after: "--whoop-auto-capture-max-attempts", in: arguments, default: 3, range: 1...50)
-        autoStopCaptureAfterSeconds = doubleValue(after: "--whoop-auto-stop-after", in: arguments, default: 305, range: 0...3_600)
+        captureLabel = value(after: "--atria-capture-label", in: arguments) ?? "morning-hrv"
+        autoCaptureDelaySeconds = doubleValue(after: "--atria-auto-capture-delay", in: arguments, default: 20, range: 0...3_600)
+        autoCaptureRRThreshold = doubleValue(after: "--atria-auto-capture-when-rr", in: arguments, default: 0.90, range: 0...1)
+        autoCaptureRRWindowSeconds = doubleValue(after: "--atria-auto-capture-rr-window", in: arguments, default: 30, range: 1...300)
+        autoCaptureRRMinFrames = intValue(after: "--atria-auto-capture-rr-min-frames", in: arguments, default: 20, range: 1...1_000)
+        autoCaptureMaxRRGapSeconds = doubleValue(after: "--atria-auto-capture-max-rr-gap", in: arguments, default: 3, range: 0...60)
+        autoCaptureRRTimeoutSeconds = doubleValue(after: "--atria-auto-capture-rr-timeout", in: arguments, default: 180, range: 0...3_600)
+        autoCaptureMaxAttempts = intValue(after: "--atria-auto-capture-max-attempts", in: arguments, default: 3, range: 1...50)
+        autoStopCaptureAfterSeconds = doubleValue(after: "--atria-auto-stop-after", in: arguments, default: 305, range: 0...3_600)
         autoStopCaptureWhenReady = true
 
         AtriaDebugLog("ATRIADBG morning_hrv_check eligible=%d reason=%@ local_time=%02d:%02d label=%@ rr_threshold=%.2f rr_window_s=%.1f rr_min_frames=%d rr_max_gap_s=%.1f timeout_s=%.1f stop_after_s=%.1f still_source=rr_continuity motion_source=unavailable hrv_state=learning_until_ready",
@@ -8554,7 +8554,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func updatePhoneMotionAuditState(reason: String) {
         let arguments = ProcessInfo.processInfo.arguments
-        let needsAudit = arguments.contains("--whoop-active-motion-imu-check")
+        let needsAudit = arguments.contains("--atria-active-motion-imu-check")
         if needsAudit {
             startPhoneMotionAudit()
         } else {
@@ -8697,7 +8697,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func applyCoexistenceRiskForDebugLaunch(arguments: [String]) {
 #if DEBUG
-        guard let riskIndex = arguments.firstIndex(of: "--whoop-force-coexistence-risk"),
+        guard let riskIndex = arguments.firstIndex(of: "--atria-force-coexistence-risk"),
               arguments.indices.contains(arguments.index(after: riskIndex)) else { return }
         let value = arguments[arguments.index(after: riskIndex)]
         guard let risk = OfficialAppCoexistenceRisk(rawValue: value) else {
@@ -8711,8 +8711,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func applyOfflineSyncForDebugLaunch(arguments: [String]) {
 #if DEBUG
-        guard arguments.contains("--whoop-force-offline-sync") else { return }
-        let reason = value(after: "--whoop-force-offline-sync-reason",
+        guard arguments.contains("--atria-force-offline-sync") else { return }
+        let reason = value(after: "--atria-force-offline-sync-reason",
                            in: arguments) ?? "debug_launch_arg"
         let started = requestOfflineHistoricalSyncIfNeeded(reason: reason, force: true)
         AtriaDebugLog("ATRIADBG offline_sync_debug status=%@ reason=%@",

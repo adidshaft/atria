@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 TOKEN_RE = re.compile(r"([A-Za-z0-9_]+)=([^ ]*)")
-FRAME_RE = re.compile(r"WHOOPDBG frame ch=([0-9A-Fa-f-]+) len=(\d+) hex=([0-9A-Fa-f]+)")
+FRAME_RE = re.compile(r"ATRIADBG frame ch=([0-9A-Fa-f-]+) len=(\d+) hex=([0-9A-Fa-f]+)")
 
 
 def parse_tokens(line: str) -> dict[str, str]:
@@ -98,7 +98,7 @@ def analyze(path: Path) -> dict[str, str]:
                             metadata_explicit_model_tokens += 1
                         metadata_printable[run] += 1
 
-        if "WHOOPDBG sensor_research_probe " not in line:
+        if "ATRIADBG sensor_research_probe " not in line:
             continue
         rows += 1
         tokens = parse_tokens(line)
@@ -140,7 +140,7 @@ def format_counter(counter: Counter[str], limit: int = 12) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Summarize Atria sensor research probe rows from a WHOOPDBG log.")
+    parser = argparse.ArgumentParser(description="Summarize Atria sensor research probe rows from a ATRIADBG log.")
     parser.add_argument("log", type=Path)
     args = parser.parse_args()
 

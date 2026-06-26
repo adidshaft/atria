@@ -545,9 +545,9 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
                 state_pull=state,
             ))
             write_state_preferences(summary_path, {
-                "whoop.link.lastAutoSaveStatus": "checkpointed_continuity",
-                "whoop.link.lastAutoSaveSamples": 8160,
-                "whoop.link.lastAutoSaveDuration": 7857,
+                "atria.link.lastAutoSaveStatus": "checkpointed_continuity",
+                "atria.link.lastAutoSaveSamples": 8160,
+                "atria.link.lastAutoSaveDuration": 7857,
             })
 
             report = audit.evaluate(root)

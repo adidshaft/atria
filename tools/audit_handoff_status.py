@@ -22,10 +22,10 @@ LOCAL_CHECK_FILES = [
 ]
 
 REQUIRED_SOURCE_FILES = [
-    Path("WhoopApp/WhoopApp/AtriaEntitlements.swift"),
-    Path("WhoopApp/WhoopApp/WhoopBLEManager.swift"),
-    Path("WhoopApp/WhoopApp/HealthKitExporter.swift"),
-    Path("WhoopApp/Info.plist"),
+    Path("Atria/Atria/AtriaEntitlements.swift"),
+    Path("Atria/Atria/AtriaBLEManager.swift"),
+    Path("Atria/Atria/HealthKitExporter.swift"),
+    Path("Atria/Info.plist"),
 ]
 
 ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [

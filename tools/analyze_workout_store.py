@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize WhoopApp saved sessions for Gate D/E workout evidence."""
+"""Summarize Atria saved sessions for Gate D/E workout evidence."""
 
 from __future__ import annotations
 
