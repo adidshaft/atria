@@ -1512,9 +1512,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "VO2MaxEstimateSummary(value: nil",
             "let rawEstimate = 15.3 * Double(maxHR) / Double(rest)",
             "let confidence = \"rough estimate\"",
+            "let trend = vo2MaxTrendText(currentEstimate: boundedEstimate, maxHR: maxHR)",
+            "trendText: trend.text",
+            "trendDetail: trend.detail",
         ]:
             assert_contains(self, body, needle)
         self.assertGreater(body.find("let rawEstimate = 15.3"), body.find("guard profile.maxHRSource == .measured else"))
+        assert_contains(self, sessions, "private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String)")
+        assert_contains(self, sessions, "let rests = restingTrend14.filter { $0 > 0 }")
+        assert_contains(self, sessions, "guard rests.count >= 2, let oldestRest = rests.first else")
+        assert_contains(self, sessions, "let previousEstimate = min(max(15.3 * Double(maxHR) / Double(oldestRest), 20), 80)")
 
         for needle in [
             "profile.maxHRSource == .measured",
@@ -1530,6 +1537,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"VO2max\"",
             "state: vo2MaxEstimate.value == nil ? .learning : .estimate",
             "footnote: vo2MaxEstimate.confidence",
+            "AtriaMetricTile(label: \"VO2 trend\"",
+            "value: vo2MaxEstimate.trendText",
+            "footnote: vo2MaxEstimate.trendDetail",
         ]:
             assert_contains(self, vitals, needle)
         assert_not_contains(self, vitals, "AtriaInlineQuickStat(label: \"VO2max\"")
