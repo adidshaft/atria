@@ -673,6 +673,10 @@ class HandoffStaticChecks(unittest.TestCase):
             'source: "morning_journal"',
             "struct AtriaOverviewMorningJournalCard: View, Equatable",
             'AtriaPanelSectionHeader(title: "Morning journal", subtitle: "")',
+            "AtriaMetricTile(label: \"Sleep eff\"",
+            "value: latestNight?.sleepEfficiencyText ?? \"--\"",
+            "state: latestNight?.sleepEfficiency == nil ? .learning : .research",
+            "footnote: \"Duration vs span\"",
             'Label("Confirm sleep", systemImage: "checkmark.circle")',
             '"Tags stay on device and power local insights."',
         ]:
