@@ -1488,6 +1488,11 @@ private struct AtriaProfileCard: View, Equatable {
                                 state: vo2MaxEstimate.value == nil ? .learning : .estimate,
                                 tint: .orange,
                                 footnote: vo2MaxEstimate.confidence)
+                AtriaMetricTile(label: "VO2 trend",
+                                value: vo2MaxEstimate.trendText,
+                                state: vo2MaxEstimate.value == nil || vo2MaxEstimate.trendText == "Learning" ? .learning : .estimate,
+                                tint: .orange,
+                                footnote: vo2MaxEstimate.trendDetail)
             }
 
             Text(vo2MaxEstimate.narrative)
