@@ -360,6 +360,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
             "ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV))",
+            "private func canHideTodayMetric(_ metric: AtriaTodayMetric,",
+            "AtriaTodayMetric.defaultGlanceOrder.filter { !activeHidden.contains($0.rawValue) }.count > 1",
+            ".disabled(todayBinding(metric).wrappedValue && !canHideTodayMetric(metric))",
             "AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)",
             "AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)",
             "Choose and reorder the cards shown at a glance.",
