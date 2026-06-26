@@ -397,13 +397,28 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, ble, needle)
 
     def test_handoff_21_historical_backfill_status_is_visible_and_fail_closed(self):
+        archive = source(ROOT / "Atria" / "Atria" / "HistoricalArchive.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "static let didUpdateNotification = Notification.Name(\"AtriaHistoricalArchiveDidUpdate\")",
+            "NotificationCenter.default.post(name: didUpdateNotification, object: nil)",
+        ]:
+            assert_contains(self, archive, needle)
 
         for needle in [
             "struct HistoricalArchiveStatus: Equatable",
             "@Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty",
             "func refreshHistoricalArchiveStatus(reason: String = \"manual\")",
+            "private var historicalArchiveStatusObserver: NSObjectProtocol?",
+            "private var pendingHistoricalArchiveStatusRefresh: Task<Void, Never>?",
+            "NotificationCenter.default.addObserver(forName: HistoricalArchive.didUpdateNotification",
+            "scheduleHistoricalArchiveStatusRefresh(reason: \"archive_did_update\")",
+            "pendingHistoricalArchiveStatusRefresh?.cancel()",
+            "try? await Task.sleep(nanoseconds: 500_000_000)",
+            "refreshHistoricalArchiveStatus(reason: reason)",
+            "NotificationCenter.default.removeObserver(historicalArchiveStatusObserver)",
             "DispatchQueue.global(qos: .utility).async",
             "HistoricalArchive.diagnostics()",
             "return \"Saved · metrics gated\"",

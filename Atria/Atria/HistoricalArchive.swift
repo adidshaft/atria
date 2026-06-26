@@ -1,6 +1,7 @@
 import Foundation
 
 enum HistoricalArchive {
+    static let didUpdateNotification = Notification.Name("AtriaHistoricalArchiveDidUpdate")
     static let schema = 3
     static let layoutVersion = "strap4_v24_hr_rr_gravity_clock_diagnostic"
     static let relativePath = "Documents/atria-historical/historical-archive.jsonl"
@@ -390,6 +391,7 @@ enum HistoricalArchive {
         } else {
             try line.write(to: url, options: .atomic)
         }
+        NotificationCenter.default.post(name: didUpdateNotification, object: nil)
         return url
     }
 
