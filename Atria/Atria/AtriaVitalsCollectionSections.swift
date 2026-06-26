@@ -11,31 +11,53 @@ struct AtriaVitalsTabContent: View {
     let store: SessionStore
     let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
+    @AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = ""
 
     var body: some View {
+        let sections = AtriaVitalsSection.ordered(from: sectionOrderCSV)
         Group {
             if horizontalSizeClass == .regular {
                 HStack(alignment: .top, spacing: 18) {
                     LazyVStack(spacing: 18) {
-                        pulseCard
-                        hrvCard
+                        ForEach(sections.enumeratedColumn(0)) { section in
+                            sectionCard(section)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
 
                     LazyVStack(spacing: 18) {
-                        recoveryStrainCard
-                        profileCard
+                        ForEach(sections.enumeratedColumn(1)) { section in
+                            sectionCard(section)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
             } else {
                 LazyVStack(spacing: 18) {
-                    pulseCard
-                    hrvCard
-                    recoveryStrainCard
-                    profileCard
+                    ForEach(sections) { section in
+                        sectionCard(section)
+                    }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionCard(_ section: AtriaVitalsSection) -> some View {
+        Group {
+            switch section {
+            case .pulse: pulseCard
+            case .hrv: hrvCard
+            case .recoveryStrain: recoveryStrainCard
+            case .profile: profileCard
+            }
+        }
+        .draggable(section.rawValue)
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first,
+                  let dragged = AtriaVitalsSection(rawValue: raw) else { return false }
+            sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
+            return true
         }
     }
 
@@ -60,6 +82,42 @@ struct AtriaVitalsTabContent: View {
                                    profileStore: profileStore,
                                    profileMetricsStore: profileMetricsStore,
                                    onUpdateProfile: store.updateProfile)
+    }
+}
+
+enum AtriaVitalsSection: String, CaseIterable, Identifiable {
+    case pulse, hrv, recoveryStrain, profile
+
+    var id: String { rawValue }
+
+    static let orderStorageKey = "atria.vitals.sectionOrderCSV"
+
+    static func ordered(from csv: String) -> [AtriaVitalsSection] {
+        let decoded = csv.split(separator: ",").compactMap { AtriaVitalsSection(rawValue: String($0)) }
+        var result: [AtriaVitalsSection] = []
+        var seen = Set<AtriaVitalsSection>()
+        for section in decoded + allCases {
+            guard !seen.contains(section) else { continue }
+            result.append(section)
+            seen.insert(section)
+        }
+        return result
+    }
+
+    static func moving(_ dragged: AtriaVitalsSection, before target: AtriaVitalsSection, in csv: String) -> String {
+        guard dragged != target else { return ordered(from: csv).map(\.rawValue).joined(separator: ",") }
+        var order = ordered(from: csv).filter { $0 != dragged }
+        let insertIndex = order.firstIndex(of: target) ?? order.endIndex
+        order.insert(dragged, at: insertIndex)
+        return order.map(\.rawValue).joined(separator: ",")
+    }
+}
+
+private extension Array where Element == AtriaVitalsSection {
+    func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection] {
+        enumerated().compactMap { index, section in
+            index % 2 == column ? section : nil
+        }
     }
 }
 

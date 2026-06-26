@@ -31,6 +31,24 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-27 progress
+
+- **Part A started:** Overview glance cards now use a persisted
+  `atria.overview.glanceOrderCSV` order on top of the existing
+  `AtriaTodayMetric` visibility model. The rendered cards support drag/drop
+  reordering by stable enum IDs, and Settings -> Today exposes the same order with
+  glass up/down controls for precise fallback editing. Vitals now has a separate
+  persisted `atria.vitals.sectionOrderCSV` and drag/drop for the large sections
+  only: Pulse, HRV, Recovery/Strain, and Profile.
+- **Part C started:** Today now shows a calm inline `AtriaConnectionDiagnosis`
+  banner for ground-truth actionable states: Bluetooth off, connected/no pulse,
+  searching/connecting, disconnected, low strap battery, and official WHOOP app
+  coexistence when `whoop://` is actually installed. No modal or polling was
+  added.
+- **Verification:** `python3 test_handoff_static_checks.py` is green (45), and a
+  generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
+  pin the handoff-21 ordering and diagnosis behavior.
+
 ---
 
 ## PART A — Drag-and-drop customizable layout

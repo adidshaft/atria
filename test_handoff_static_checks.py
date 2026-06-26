@@ -140,6 +140,59 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, home, needle)
 
+    def test_handoff_21_customizable_layout_is_persisted_and_reorderable(self):
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "static let orderStorageKey = \"atria.overview.glanceOrderCSV\"",
+            "static var defaultGlanceOrder: [AtriaTodayMetric]",
+            "static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric]",
+            "static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String",
+            ".draggable(metric.rawValue)",
+            ".dropDestination(for: String.self)",
+            "onMoveMetric(dragged, metric)",
+        ]:
+            assert_contains(self, overview, needle)
+
+        for needle in [
+            "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
+            "ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV))",
+            "AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)",
+            "AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)",
+            "Choose and reorder the cards shown at a glance.",
+        ]:
+            assert_contains(self, settings, needle)
+
+        for needle in [
+            "@AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
+            "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
+            "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
+            ".draggable(section.rawValue)",
+            "AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)",
+            "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
+        ]:
+            assert_contains(self, vitals, needle)
+
+    def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+
+        for needle in [
+            "private struct AtriaConnectionDiagnosis: Equatable",
+            "AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state",
+            "AtriaConnectionDiagnosisBanner(diagnosis: diagnosis)",
+            "Turn on Bluetooth in Settings.",
+            "Tighten the strap fit or wet the sensor.",
+            "Bring your strap closer and keep it on your wrist.",
+            "Charge your strap before a workout or overnight wear.",
+            "Close or uninstall WHOOP if it keeps reclaiming the strap.",
+            "forget it in Bluetooth and reconnect",
+        ]:
+            assert_contains(self, home, needle)
+
+        assert_not_contains(self, home, "showConnectionDiagnosisModal")
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)

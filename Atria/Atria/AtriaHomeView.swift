@@ -620,6 +620,13 @@ struct AtriaHomeView: View {
                 }
             }
 
+            if let diagnosis = connectionDiagnosis {
+                AtriaConnectionDiagnosisBanner(diagnosis: diagnosis) {
+                    connectionGuideSnoozedUntil = nil
+                    showConnectionGuide = true
+                }
+            }
+
             AtriaOverviewTabContent(statusStore: model.statusStore,
                                     liveStore: model.coreLiveStore,
                                     heroStore: model.heroStore,
@@ -657,6 +664,12 @@ struct AtriaHomeView: View {
                                         }
                                     })
         }
+    }
+
+    private var connectionDiagnosis: AtriaConnectionDiagnosis? {
+        AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state,
+                                        pulse: model.pulseLiveStore.state,
+                                        officialAppInstalled: officialAppInstalled)
     }
 
     private var shouldShowMissedDataBanner: Bool {
@@ -2652,5 +2665,104 @@ private struct AtriaTopStatusChip: View {
         case .poweredOff: return Color(red: 1.00, green: 0.72, blue: 0.72)
         case .disconnected: return Color(red: 0.74, green: 0.84, blue: 1.00)
         }
+    }
+}
+
+private struct AtriaConnectionDiagnosis: Equatable {
+    let title: String
+    let action: String
+    let systemImage: String
+    let tint: Color
+
+    static func == (lhs: AtriaConnectionDiagnosis, rhs: AtriaConnectionDiagnosis) -> Bool {
+        lhs.title == rhs.title
+            && lhs.action == rhs.action
+            && lhs.systemImage == rhs.systemImage
+    }
+
+    static func derive(live: AtriaHomeModel.CoreLiveState,
+                       pulse: AtriaHomeModel.PulseLiveState,
+                       officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
+        if live.batteryLevel >= 0, live.batteryLevel <= 15, !live.batteryIsCharging {
+            return AtriaConnectionDiagnosis(title: "Strap battery low",
+                                            action: "Charge your strap before a workout or overnight wear.",
+                                            systemImage: "battery.25percent",
+                                            tint: .yellow)
+        }
+
+        switch live.status {
+        case .poweredOff:
+            return AtriaConnectionDiagnosis(title: "Bluetooth is off",
+                                            action: "Turn on Bluetooth in Settings.",
+                                            systemImage: "bolt.slash.fill",
+                                            tint: .red)
+        case .connected where !pulse.hasContact:
+            return AtriaConnectionDiagnosis(title: "Connected, no pulse",
+                                            action: "Tighten the strap fit or wet the sensor.",
+                                            systemImage: "heart.slash",
+                                            tint: .orange)
+        case .scanning, .connecting:
+            return AtriaConnectionDiagnosis(title: "Looking for your strap",
+                                            action: "Bring your strap closer and keep it on your wrist.",
+                                            systemImage: "dot.radiowaves.left.and.right",
+                                            tint: .cyan)
+        case .disconnected:
+            if officialAppInstalled {
+                return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
+                                                action: "Close or uninstall WHOOP if it keeps reclaiming the strap.",
+                                                systemImage: "exclamationmark.triangle.fill",
+                                                tint: .orange)
+            }
+            return AtriaConnectionDiagnosis(title: "Strap disconnected",
+                                            action: "Bring it closer. If it keeps failing, forget it in Bluetooth and reconnect.",
+                                            systemImage: "bolt.horizontal.circle",
+                                            tint: .blue)
+        case .connected:
+            return nil
+        }
+    }
+}
+
+private struct AtriaConnectionDiagnosisBanner: View, Equatable {
+    let diagnosis: AtriaConnectionDiagnosis
+    let onHelp: () -> Void
+
+    static func == (lhs: AtriaConnectionDiagnosisBanner, rhs: AtriaConnectionDiagnosisBanner) -> Bool {
+        lhs.diagnosis == rhs.diagnosis
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: diagnosis.systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(diagnosis.tint)
+                .frame(width: 32, height: 32)
+                .background(AtriaIconTileBackground(cornerRadius: 11, tint: diagnosis.tint))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(diagnosis.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                Text(diagnosis.action)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onHelp) {
+                Image(systemName: "questionmark.circle")
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("Connection help")
+        }
+        .padding(14)
+        .atriaCard(emphasis: .soft)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(diagnosis.title). \(diagnosis.action)")
     }
 }
