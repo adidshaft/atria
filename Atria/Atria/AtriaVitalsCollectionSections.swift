@@ -880,7 +880,7 @@ private struct AtriaCollectionStatusCardHost: View {
                         value: store.historicalArchiveStatus.valueText,
                         state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning),
                         tint: .cyan,
-                        footnote: store.historicalArchiveStatus.detailText)
+                        footnote: store.historicalArchiveStatus.userFootnoteText)
     }
 
     private var coexistenceValue: String {
