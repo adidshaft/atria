@@ -1213,35 +1213,38 @@ struct AtriaOverviewCollectionSection: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "internaldrive.fill")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(.blue)
-                .frame(width: 38, height: 38)
-                .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Local backup")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "internaldrive.fill")
                     .font(.headline.weight(.semibold))
-                Text(backupDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.blue)
+                    .frame(width: 38, height: 38)
+                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Local backup")
+                        .font(.headline.weight(.semibold))
+                    Text(backupDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
-            Spacer(minLength: 0)
+            HStack(alignment: .center, spacing: 10) {
+                AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
-                .frame(maxWidth: 118)
-
-            Button(action: onOpenCollection) {
-                Label("Data", systemImage: "arrow.right.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 32, height: 32)
+                Button(action: onOpenCollection) {
+                    Label("Data", systemImage: "arrow.right.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .labelStyle(.titleAndIcon)
+                        .frame(minWidth: 88)
+                }
+                .atriaCardAction(tint: .blue)
+                .accessibilityLabel("Open Data")
             }
-            .atriaCardAction(tint: .blue)
-            .accessibilityLabel("Open Data")
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
@@ -1453,7 +1456,7 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
                     Text(item)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .minimumScaleFactor(0.78)
                         .fixedSize(horizontal: false, vertical: true)
                 }

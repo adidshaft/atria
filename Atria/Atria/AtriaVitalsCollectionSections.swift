@@ -954,7 +954,7 @@ private struct AtriaCollectionCoexistenceWarning: View, Equatable {
             }
         }
         .padding(12)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaInsetCard(tint: tint)
     }
 }
 
@@ -1003,10 +1003,10 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                 }
             }
             .padding(6)
-            .atriaRaisedCard(emphasis: .soft)
+            .atriaInsetCard(tint: .purple)
         }
         .padding(14)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaInsetCard(tint: .purple)
     }
 }
 
@@ -1141,7 +1141,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             metricContent
         }
         .padding(18)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -1227,7 +1227,7 @@ private struct AtriaProfileCard: View, Equatable {
                 }
             }
             .padding(8)
-            .atriaRaisedCard(emphasis: .soft)
+            .atriaInsetCard(tint: .purple)
 
             VStack(spacing: 12) {
                 profileStepperTiles
@@ -1255,7 +1255,7 @@ private struct AtriaProfileCard: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder

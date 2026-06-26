@@ -37,7 +37,7 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   `atria.overview.glanceOrderCSV` order on top of the existing
   `AtriaTodayMetric` visibility model. The rendered cards support drag/drop
   reordering by stable enum IDs, and Settings -> Today exposes the same order with
-  glass up/down controls for precise fallback editing. Vitals now has a separate
+  scroll-safe up/down controls for precise fallback editing. Vitals now has a separate
   persisted `atria.vitals.sectionOrderCSV` and drag/drop for the large sections
   only: Pulse, HRV, Recovery/Strain, and Profile.
 - **Part C started:** Today now shows a calm inline `AtriaConnectionDiagnosis`
@@ -63,6 +63,10 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   controls. Card-body actions now use a shared `AtriaCardActionButtonStyle`
   instead of repeated `.glass/.glassProminent`, including Data export/import/share,
   probe markers, overview CTAs, Settings reorder controls, and inline banners.
+  The Overview backup/Data card now uses a two-row layout so text, HRV-window
+  status, and the Data action do not squeeze each other, reconnect checklist rows
+  can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy
+  instead of nested raised cards.
 - **Verification:** `python3 test_handoff_static_checks.py` is green (46), and a
   generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
   pin the handoff-21 ordering and diagnosis behavior.
