@@ -5872,11 +5872,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard shouldPublish else { return }
         lastLiveHeartDisplayPublishAt = sampleTime
         assignIfChanged(\.heartRate, displayRate)
-        // Live HR streaming proves the link is up. Heal a status that is stuck on
-        // .connecting/.scanning — e.g. a reconnect/didConnect callback that never
-        // arrived after state restoration, so the UI showed "Connecting" until a
-        // full relaunch even though data was flowing.
-        if displayRate > 0, status == .connecting || status == .scanning {
+        // Live HR streaming proves the link is up. Heal ANY non-connected status —
+        // including .disconnected after CoreBluetooth state restoration
+        // (`ble_restore reuse_restored`), where notifications resume but no
+        // didConnect arrives, so the UI showed "Disconnected" while HR/RR data was
+        // actively flowing. If we're decoding the strap's HR, we are connected.
+        if displayRate > 0, status != .connected {
             assignIfChanged(\.status, .connected)
         }
         rebuildLiveHeartWindow()
