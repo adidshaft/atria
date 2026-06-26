@@ -506,11 +506,11 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .recovery: return "heart.fill"
-        case .strain: return "bolt.fill"
+        case .strain: return "bolt.heart.fill"
         case .hrv: return "waveform.path.ecg"
-        case .sleep: return "bed.double.fill"
-        case .rhr: return "heart.fill"
-        case .steps: return "figure.walk"
+        case .sleep: return "moon.zzz.fill"
+        case .rhr: return "heart.text.square.fill"
+        case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
         case .trend: return "chart.xyaxis.line"
         case .insights: return "chart.line.uptrend.xyaxis"
@@ -766,7 +766,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 }
 
 private struct AtriaGlanceMetricCard: View, Equatable {
-    static let cardHeight: CGFloat = 134
+    static let cardHeight: CGFloat = 154
+    private static let markerSize: CGFloat = 42
+    private static let footerHeight: CGFloat = 34
 
     let title: String
     let value: String
@@ -776,7 +778,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     var ringFraction: Double? = nil
     var sparklineValues: [Int]? = nil
 
-    private var showsRing: Bool {
+    private var usesProgressRing: Bool {
         title == "Recovery" || title == "Strain"
     }
 
@@ -816,14 +818,9 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                 Spacer(minLength: 0)
             }
 
-            if let sparklineValues {
-                Sparkline(values: sparklineValues)
-                    .frame(height: 32)
-                    .opacity(sparklineValues.count > 1 ? 1 : 0.28)
-                    .accessibilityLabel("\(title) sparkline")
-            }
+            footer
         }
-        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)
@@ -831,43 +828,71 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     @ViewBuilder
+    private var footer: some View {
+        if let sparklineValues {
+            Sparkline(values: sparklineValues)
+                .frame(height: Self.footerHeight)
+                .opacity(sparklineValues.count > 1 ? 1 : 0.28)
+                .accessibilityLabel("\(title) sparkline")
+        } else if usesProgressRing, let ringFraction {
+            HStack(spacing: 6) {
+                ProgressView(value: min(max(ringFraction, 0), 1))
+                    .tint(tint)
+                    .controlSize(.mini)
+                Text("\(Int((min(max(ringFraction, 0), 1) * 100).rounded()))%")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(tint.opacity(0.9))
+            }
+            .frame(height: Self.footerHeight, alignment: .center)
+            .accessibilityHidden(true)
+        } else {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.caption2.weight(.bold))
+                Text(detail)
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .foregroundStyle(tint.opacity(0.72))
+            .frame(height: Self.footerHeight, alignment: .center)
+            .accessibilityHidden(true)
+        }
+    }
+
     private var marker: some View {
-        if showsRing {
-            ZStack {
+        ZStack {
+            Circle()
+                .fill(tint.opacity(0.14))
+                .overlay {
+                    Circle()
+                        .stroke(tint.opacity(0.22), lineWidth: 1)
+                }
+
+            if usesProgressRing {
                 Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 5)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 4)
 
                 if let ringFraction {
                     Circle()
                         .trim(from: 0, to: min(max(ringFraction, 0), 1))
                         .stroke(tint.gradient,
-                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                                style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                 } else {
                     Circle()
                         .stroke(Color.secondary.opacity(0.35),
-                                style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [3, 6]))
+                                style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [3, 6]))
                 }
-
-                Image(systemName: systemImage)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
             }
-            .frame(width: 42, height: 42)
-        } else {
+
             Image(systemName: systemImage)
                 .font(.callout.weight(.bold))
                 .foregroundStyle(tint)
-                .frame(width: 42, height: 42)
-                .background {
-                    Circle()
-                        .fill(tint.opacity(0.14))
-                        .overlay {
-                            Circle()
-                                .stroke(tint.opacity(0.22), lineWidth: 1)
-                        }
-                }
+                .symbolRenderingMode(.hierarchical)
         }
+        .frame(width: Self.markerSize, height: Self.markerSize)
+        .accessibilityHidden(true)
     }
 }
 
