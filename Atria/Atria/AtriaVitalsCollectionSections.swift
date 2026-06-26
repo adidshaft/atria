@@ -232,7 +232,8 @@ struct AtriaCollectionTabContent: View {
         AtriaCollectionStatusCardHost(coreLiveStore: coreLiveStore,
                                       collectionLiveStore: collectionLiveStore,
                                       homeStatsStore: homeStatsStore,
-                                      snapshotStore: snapshotStore)
+                                      snapshotStore: snapshotStore,
+                                      store: store)
     }
 }
 
@@ -825,6 +826,7 @@ private struct AtriaCollectionStatusCardHost: View {
     @ObservedObject var collectionLiveStore: AtriaHomeModel.CollectionLiveStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    @ObservedObject var store: SessionStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -846,6 +848,9 @@ private struct AtriaCollectionStatusCardHost: View {
         }
         .padding(18)
         .atriaCard()
+        .task {
+            store.refreshHistoricalArchiveStatus(reason: "data_status_appear")
+        }
     }
 
     @ViewBuilder
@@ -866,6 +871,11 @@ private struct AtriaCollectionStatusCardHost: View {
                         value: collectionLiveStore.state.modeLabel,
                         state: collectionLiveStore.state.longWearModeEnabled ? .live : .local,
                         tint: .purple)
+        AtriaMetricTile(label: "Backfill",
+                        value: store.historicalArchiveStatus.valueText,
+                        state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning),
+                        tint: .cyan,
+                        footnote: store.historicalArchiveStatus.detailText)
     }
 
     private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]

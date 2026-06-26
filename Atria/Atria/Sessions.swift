@@ -2175,6 +2175,69 @@ final class SessionStore: ObservableObject {
         let sessionsCount: Int
     }
 
+    struct HistoricalArchiveStatus: Equatable {
+        let exists: Bool
+        let parseOK: Bool
+        let rows: Int
+        let metricUsableRows: Int
+        let currentSessionUsableRows: Int
+        let reason: String
+
+        static let empty = HistoricalArchiveStatus(exists: false,
+                                                   parseOK: true,
+                                                   rows: 0,
+                                                   metricUsableRows: 0,
+                                                   currentSessionUsableRows: 0,
+                                                   reason: "missing_archive")
+
+        init(exists: Bool,
+             parseOK: Bool,
+             rows: Int,
+             metricUsableRows: Int,
+             currentSessionUsableRows: Int,
+             reason: String) {
+            self.exists = exists
+            self.parseOK = parseOK
+            self.rows = rows
+            self.metricUsableRows = metricUsableRows
+            self.currentSessionUsableRows = currentSessionUsableRows
+            self.reason = reason
+        }
+
+        init(diagnostics: HistoricalArchive.Diagnostics) {
+            self.init(exists: diagnostics.exists,
+                      parseOK: diagnostics.parseOK,
+                      rows: diagnostics.rows,
+                      metricUsableRows: diagnostics.metricUsableRows,
+                      currentSessionUsableRows: diagnostics.currentSessionUsableRows,
+                      reason: diagnostics.reason)
+        }
+
+        var valueText: String {
+            if !exists { return "None" }
+            if !parseOK { return "Repair" }
+            if rows <= 0 { return "Empty" }
+            if metricReady { return "Ready" }
+            return "\(rows)"
+        }
+
+        var detailText: String {
+            if !exists { return "Waiting for reconnect" }
+            if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
+            if rows <= 0 { return "No backfill rows yet" }
+            if metricReady { return "\(metricUsableRows) metric rows" }
+            return "Saved · metrics gated"
+        }
+
+        var metricReady: Bool {
+            metricUsableRows > 0 && currentSessionUsableRows > 0
+        }
+
+        var hasArchiveRows: Bool {
+            exists && parseOK && rows > 0
+        }
+    }
+
     private struct DeferredLoadPreparation {
         let latestReferenceValidatedHRV: Int?
         let canonicalSessions: [SavedSession]
@@ -2218,6 +2281,9 @@ final class SessionStore: ObservableObject {
     /// Overview trends are prepared outside SwiftUI render paths; the chart reads
     /// this O(1) array instead of filtering/sorting sessions or computing TRIMP.
     @Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []
+    /// Historical archive status is read by Data as an O(1) fail-closed snapshot;
+    /// disk diagnostics refresh on startup/Data appearance, never in SwiftUI body.
+    @Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2310,6 +2376,25 @@ final class SessionStore: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, revision == self.overviewTrendPointsRevision else { return }
                 self.overviewTrendPoints = points
+            }
+        }
+    }
+
+    func refreshHistoricalArchiveStatus(reason: String = "manual") {
+        DispatchQueue.global(qos: .utility).async {
+            let diagnostics = HistoricalArchive.diagnostics()
+            let status = HistoricalArchiveStatus(diagnostics: diagnostics)
+            DispatchQueue.main.async { [weak self] in
+                self?.historicalArchiveStatus = status
+                AtriaDebugLog("ATRIADBG historical_archive_status reason=%@ exists=%d parse_ok=%d rows=%d metric_usable=%d current_usable=%d status=%@ detail=%@",
+                              reason,
+                              diagnostics.exists ? 1 : 0,
+                              diagnostics.parseOK ? 1 : 0,
+                              diagnostics.rows,
+                              diagnostics.metricUsableRows,
+                              diagnostics.currentSessionUsableRows,
+                              status.valueText,
+                              status.detailText)
             }
         }
     }
@@ -2440,6 +2525,7 @@ final class SessionStore: ObservableObject {
         recomputeCollectionResearchSummaries()
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
                                                     confirmedSleeps: cachedConfirmedSleeps)
+        refreshHistoricalArchiveStatus(reason: "session_store_init")
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
     }
