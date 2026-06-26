@@ -7,15 +7,17 @@ enum LocalNotificationScheduler {
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
+        static let bluetoothOff = "atria.bluetooth.off"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
         static let legacyBattery = "atria.battery.low"
+        static let legacyBluetoothOff = "atria.bluetooth.off"
         static let legacyDiagnostic = "atria.diagnostic.delivery"
 
-        static let active = [recovery, strain, battery]
+        static let active = [recovery, strain, battery, bluetoothOff]
         static let diagnosticOnly = [diagnostic]
-        static let legacy = [legacyRecovery, legacyStrain, legacyBattery, legacyDiagnostic]
+        static let legacy = [legacyRecovery, legacyStrain, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
         static let removable = active + diagnosticOnly + legacy
     }
 
@@ -195,7 +197,7 @@ enum LocalNotificationScheduler {
                 kind: "battery",
                 identifier: Identifier.battery,
                 title: "Strap battery low",
-                body: "Strap battery is \(battery.level)%.",
+                body: "Charge your strap. Battery is \(battery.level)%.",
                 reason: "battery_\(battery.level)_source_\(battery.source)",
                 shouldSchedule: true,
                 delay: 9
@@ -215,7 +217,32 @@ enum LocalNotificationScheduler {
             )
         }
 
-        return [recoveryDecision, strainDecision, batteryDecision]
+        let bluetoothDecision: NotificationDecision
+        if ble.status == .poweredOff {
+            bluetoothDecision = NotificationDecision(
+                kind: "bluetooth_off",
+                identifier: Identifier.bluetoothOff,
+                title: "Bluetooth is off",
+                body: ble.bluetoothPermissionDenied
+                    ? "Allow Bluetooth for Atria in Settings."
+                    : "Turn on Bluetooth in Settings so Atria can read your strap.",
+                reason: ble.bluetoothPermissionDenied ? "bluetooth_permission_denied" : "bluetooth_powered_off",
+                shouldSchedule: true,
+                delay: 11
+            )
+        } else {
+            bluetoothDecision = NotificationDecision(
+                kind: "bluetooth_off",
+                identifier: Identifier.bluetoothOff,
+                title: "",
+                body: "",
+                reason: "status_\(ble.status.rawValue.replacingOccurrences(of: " ", with: "_"))",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        return [recoveryDecision, strainDecision, batteryDecision, bluetoothDecision]
     }
 
     private static func batterySnapshot(liveLevel: Int) -> (level: Int, source: String, age: TimeInterval, usable: Bool) {
@@ -273,13 +300,15 @@ enum LocalNotificationScheduler {
         let recovery = requests.filter { [Identifier.recovery, Identifier.legacyRecovery].contains($0.identifier) }.count
         let strain = requests.filter { [Identifier.strain, Identifier.legacyStrain].contains($0.identifier) }.count
         let battery = requests.filter { [Identifier.battery, Identifier.legacyBattery].contains($0.identifier) }.count
+        let bluetoothOff = requests.filter { [Identifier.bluetoothOff, Identifier.legacyBluetoothOff].contains($0.identifier) }.count
         let diagnostic = requests.filter { [Identifier.diagnostic, Identifier.legacyDiagnostic].contains($0.identifier) }.count
-        let known = recovery + strain + battery + diagnostic
-        AtriaDebugLog("ATRIADBG notification_pending total=%d recovery=%d strain=%d battery=%d diagnostic=%d unknown=%d",
+        let known = recovery + strain + battery + bluetoothOff + diagnostic
+        AtriaDebugLog("ATRIADBG notification_pending total=%d recovery=%d strain=%d battery=%d bluetooth_off=%d diagnostic=%d unknown=%d",
               requests.count,
               recovery,
               strain,
               battery,
+              bluetoothOff,
               diagnostic,
               max(0, requests.count - known))
     }
@@ -330,10 +359,12 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
+        static let bluetoothOff = "atria.bluetooth.off"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
         static let legacyBattery = "atria.battery.low"
+        static let legacyBluetoothOff = "atria.bluetooth.off"
         static let legacyDiagnostic = "atria.diagnostic.delivery"
     }
 
@@ -360,6 +391,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
         case Identifier.recovery, Identifier.legacyRecovery: return "recovery"
         case Identifier.strain, Identifier.legacyStrain: return "strain"
         case Identifier.battery, Identifier.legacyBattery: return "battery"
+        case Identifier.bluetoothOff, Identifier.legacyBluetoothOff: return "bluetooth_off"
         case Identifier.diagnostic, Identifier.legacyDiagnostic: return "diagnostic"
         default: return "unknown"
         }

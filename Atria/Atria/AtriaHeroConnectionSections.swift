@@ -195,19 +195,29 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
     let status: AtriaBLEManager.Status
     let displayDeviceName: String
     let heartRateText: String
+    let hasPulseSignal: Bool
 
     static func == (lhs: AtriaHeroStatusCardHost, rhs: AtriaHeroStatusCardHost) -> Bool {
         lhs.status == rhs.status
             && lhs.displayDeviceName == rhs.displayDeviceName
             && lhs.heartRateText == rhs.heartRateText
+            && lhs.hasPulseSignal == rhs.hasPulseSignal
     }
 
     var body: some View {
         switch status {
         case .connected:
-            AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName,
-                                          heartRateText: heartRateText)
+            if hasPulseSignal {
+                AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName,
+                                              heartRateText: heartRateText)
+                    .equatable()
+            } else {
+                AtriaHeroStatusTile(title: "Connected, no pulse",
+                                    detail: "Tighten the strap fit or wet the sensor.",
+                                    systemImage: "heart.slash",
+                                    tint: .orange)
                 .equatable()
+            }
         case .connecting, .scanning:
             AtriaHeroStatusTile(title: status == .connecting ? "Joining strap" : "Finding strap",
                                 detail: "Starting live data as soon as the strap is nearby.",
@@ -238,7 +248,8 @@ private struct AtriaHeroStatusCardLiveHost: View {
     var body: some View {
         AtriaHeroStatusCardHost(status: statusStore.state.status,
                                 displayDeviceName: liveStore.state.displayDeviceName,
-                                heartRateText: pulseStore.state.heartRateText)
+                                heartRateText: pulseStore.state.heartRateText,
+                                hasPulseSignal: pulseStore.state.hasPulseSignal)
             .equatable()
     }
 }

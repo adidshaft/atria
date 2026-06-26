@@ -286,6 +286,7 @@ enum AtriaMetricState: Equatable {
     case personalBaseline
     case validated
     case noContact
+    case conflict
     case local
     case estimate
     case research
@@ -301,6 +302,8 @@ enum AtriaMetricState: Equatable {
             return .green
         case .noContact:
             return .red
+        case .conflict:
+            return .orange
         case .local:
             return .purple
         case .estimate:
@@ -320,6 +323,8 @@ enum AtriaMetricState: Equatable {
             return "checkmark.seal.fill"
         case .noContact:
             return "heart.slash.fill"
+        case .conflict:
+            return "exclamationmark.triangle.fill"
         case .local:
             return "iphone"
         case .estimate:
@@ -341,6 +346,8 @@ enum AtriaMetricState: Equatable {
             return "Validated"
         case .noContact:
             return "No contact"
+        case .conflict:
+            return "App conflict"
         case .local:
             return "Local"
         case .estimate:

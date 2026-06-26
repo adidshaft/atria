@@ -537,14 +537,34 @@ struct AtriaHomeView: View {
                 }
                 .frame(maxWidth: contentWidth)
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.top, 84)
                 .padding(.bottom, 40)
                 .frame(maxWidth: .infinity)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .navigationTitle(title)
-            .toolbar {
-                toolbarContent
+            .toolbar(.hidden, for: .navigationBar)
+            .overlay(alignment: .top) {
+                AtriaHomeTopChrome(statusStore: model.statusStore,
+                                   pulseLiveStore: model.pulseLiveStore,
+                                   store: store,
+                                   showWorkout: model.statusStore.state.status == .connected,
+                                   showHelp: model.statusStore.state.status != .connected,
+                                   onStartWorkout: {
+                                       workoutSession = AtriaWorkoutSession(start: Date())
+                                   },
+                                   onShowHelp: {
+                                       connectionGuideSnoozedUntil = nil
+                                       showConnectionGuide = true
+                                   },
+                                   onShowSettings: {
+                                       showSettings = true
+                                   },
+                                   onTapStatusWhenNotConnected: {
+                                       ble.startScan(reason: "home_status_chip")
+                                   })
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
         }
     }
@@ -554,57 +574,6 @@ struct AtriaHomeView: View {
                            liveStore: model.coreLiveStore,
                            heroStore: model.heroStore,
                            pulseStore: model.heroPulseStore)
-    }
-
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        // Single connection-status indicator for the whole screen, colored by
-        // state and tappable to scan when not connected.
-        ToolbarItem(placement: .topBarLeading) {
-            // Dedicated subview so it OBSERVES both the status store and the pulse
-            // store — the "No signal" (connected but no contact) state must update
-            // the instant contact is lost, even without a status change.
-            AtriaTopStatusChip(statusStore: model.statusStore,
-                               pulseLiveStore: model.pulseLiveStore,
-                               onTapWhenNotConnected: { ble.startScan(reason: "home_status_chip") })
-        }
-
-        ToolbarItem(placement: .topBarTrailing) {
-            HStack(spacing: 5) {
-                if model.statusStore.state.status == .connected {
-                    Button {
-                        workoutSession = AtriaWorkoutSession(start: Date())
-                    } label: {
-                        AtriaToolbarIcon(symbol: "figure.run")
-                    }
-                    .accessibilityLabel("Start workout")
-                }
-
-                if model.statusStore.state.status != .connected {
-                    Button {
-                        connectionGuideSnoozedUntil = nil
-                        showConnectionGuide = true
-                    } label: {
-                        AtriaToolbarIcon(symbol: "questionmark.circle")
-                    }
-                    .accessibilityLabel("Connection help")
-                }
-
-                NavigationLink {
-                    HistoryView(store: store)
-                } label: {
-                    AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
-                }
-                .accessibilityLabel("History")
-
-                Button {
-                    showSettings = true
-                } label: {
-                    AtriaToolbarIcon(symbol: "gearshape")
-                }
-                .accessibilityLabel("Settings")
-            }
-        }
     }
 
 
@@ -1269,10 +1238,19 @@ final class AtriaHomeModel {
         var heartRate: Int
 
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
+        var hasPulseSignal: Bool { heartRate > 0 }
     }
 
     struct PulseSparklineState: Equatable {
         var values: [Int]
+        var chartPoints: [HeartRateChartPoint]
+    }
+
+    struct HeartRateChartPoint: Identifiable, Equatable {
+        let t: Date
+        let bpm: Int
+
+        var id: TimeInterval { t.timeIntervalSinceReferenceDate }
     }
 
     struct CollectionLiveState: Equatable {
@@ -1724,7 +1702,7 @@ final class AtriaHomeModel {
 
         throttledPulseLiveChanges
             .sink { [weak self] _ in
-                guard let self, self.prefersPulseSparklineUpdates else { return }
+                guard let self else { return }
                 self.publishPulseLive()
             }
             .store(in: &cancellables)
@@ -1799,9 +1777,9 @@ final class AtriaHomeModel {
                 self.refreshSavedAggregate()
                 self.publishCoreLive()
                 self.publishHeroPulse()
+                self.publishPulseLive()
                 self.publishProfileMetrics()
                 if self.prefersPulseSparklineUpdates {
-                    self.publishPulseLive()
                     self.publishPulseSparkline()
                 }
                 self.coreRefreshSubject.send(())
@@ -2020,7 +1998,20 @@ final class AtriaHomeModel {
     }
 
     private static func makePulseSparklineState(ble: AtriaBLEManager) -> PulseSparklineState {
-        PulseSparklineState(values: ble.liveHeartWindow.sparkline)
+        PulseSparklineState(values: ble.liveHeartWindow.sparkline,
+                            chartPoints: compactHeartChartPoints(Array(ble.session.suffix(900))))
+    }
+
+    private static func compactHeartChartPoints(_ samples: [HRSample], targetCount: Int = 120) -> [HeartRateChartPoint] {
+        let valid = samples.filter { $0.bpm > 0 }
+        guard valid.count > targetCount else {
+            return valid.map { HeartRateChartPoint(t: $0.t, bpm: $0.bpm) }
+        }
+        let stride = Double(valid.count - 1) / Double(targetCount - 1)
+        return (0..<targetCount).map { index in
+            let sample = valid[Int((Double(index) * stride).rounded())]
+            return HeartRateChartPoint(t: sample.t, bpm: sample.bpm)
+        }
     }
 
     private static func makeCollectionLiveState(ble: AtriaBLEManager) -> CollectionLiveState {
@@ -2601,6 +2592,58 @@ private struct AtriaToolbarIcon: View, Equatable {
     }
 }
 
+private struct AtriaHomeTopChrome: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
+    let store: SessionStore
+    let showWorkout: Bool
+    let showHelp: Bool
+    let onStartWorkout: () -> Void
+    let onShowHelp: () -> Void
+    let onShowSettings: () -> Void
+    let onTapStatusWhenNotConnected: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            AtriaTopStatusChip(statusStore: statusStore,
+                               pulseLiveStore: pulseLiveStore,
+                               onTapWhenNotConnected: onTapStatusWhenNotConnected)
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 7) {
+                if showWorkout {
+                    Button(action: onStartWorkout) {
+                        AtriaToolbarIcon(symbol: "figure.run")
+                    }
+                    .accessibilityLabel("Start workout")
+                }
+
+                if showHelp {
+                    Button(action: onShowHelp) {
+                        AtriaToolbarIcon(symbol: "questionmark.circle")
+                    }
+                    .accessibilityLabel("Connection help")
+                }
+
+                NavigationLink {
+                    HistoryView(store: store)
+                } label: {
+                    AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
+                }
+                .accessibilityLabel("History")
+
+                Button(action: onShowSettings) {
+                    AtriaToolbarIcon(symbol: "gearshape")
+                }
+                .accessibilityLabel("Settings")
+            }
+            .fixedSize()
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 /// The top-left connection chip. A dedicated subview so it OBSERVES both stores —
 /// status changes AND contact changes (so "No signal" appears the instant the
 /// strap loses contact, even while the BLE link stays up).
@@ -2623,8 +2666,8 @@ private struct AtriaTopStatusChip: View {
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 18)
+        .frame(minWidth: 132, minHeight: 44)
         .glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)
         .fixedSize()
         .contentShape(.capsule)
