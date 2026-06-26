@@ -378,7 +378,7 @@ struct AtriaMetricTile: View, Equatable {
     static let gridMinimumWidth: CGFloat = 142
     static let gridColumns = [GridItem(.adaptive(minimum: gridMinimumWidth), spacing: gridSpacing)]
 
-    private static let compactHeight: CGFloat = 104
+    private static let compactHeight: CGFloat = 122
     private static let sparklineHeight: CGFloat = 132
 
     let label: String
@@ -432,8 +432,9 @@ struct AtriaMetricTile: View, Equatable {
                 Text(footnote)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity,
