@@ -1340,11 +1340,13 @@ final class AtriaHomeModel {
     struct PulseLiveState: Equatable {
         var heartRate: Int
         var hasContact: Bool
+        var sensorHasContact: Bool
         var averageHeartRate: Int?
         var peakHeartRate: Int?
 
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
         var hasPulseSignal: Bool { heartRate > 0 || hasContact }
+        var needsContactCoach: Bool { !sensorHasContact }
         var contactText: String { hasPulseSignal ? "Live" : "No contact" }
         var averageHeartRateText: String { averageHeartRate.map(String.init) ?? "--" }
         var peakHeartRateText: String { peakHeartRate.map(String.init) ?? "--" }
@@ -2109,9 +2111,10 @@ final class AtriaHomeModel {
     private static func makePulseLiveState(ble: AtriaBLEManager) -> PulseLiveState {
         let reconciledHeartRate = liveHeartRate(ble: ble)
         return PulseLiveState(heartRate: reconciledHeartRate,
-                       hasContact: ble.hasContact || reconciledHeartRate > 0,
-                       averageHeartRate: ble.liveHeartWindow.average,
-                       peakHeartRate: ble.liveHeartWindow.peak)
+                              hasContact: ble.hasContact || reconciledHeartRate > 0,
+                              sensorHasContact: ble.hasContact,
+                              averageHeartRate: ble.liveHeartWindow.average,
+                              peakHeartRate: ble.liveHeartWindow.peak)
     }
 
     private static func makeHeroPulseState(ble: AtriaBLEManager) -> HeroPulseState {
@@ -2922,8 +2925,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red)
-        case .connected where !pulse.hasPulseSignal:
-            return AtriaConnectionDiagnosis(title: "Connected, no pulse",
+        case .connected where pulse.needsContactCoach:
+            return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Fit check needed" : "Connected, no pulse",
                                             action: "Tighten the strap fit or wet the sensor.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
