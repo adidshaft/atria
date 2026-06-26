@@ -182,7 +182,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaConnectionDiagnosis: Equatable",
             "AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state",
             "AtriaConnectionDiagnosisBanner(diagnosis: diagnosis)",
+            "var bluetoothPermissionDenied: Bool",
+            "ble.$bluetoothPermissionDenied.removeDuplicates()",
+            "live.bluetoothPermissionDenied",
             "Turn on Bluetooth in Settings.",
+            "Allow Bluetooth for Atria in Settings.",
             "Tighten the strap fit or wet the sensor.",
             "Bring your strap closer and keep it on your wrist.",
             "Charge your strap before a workout or overnight wear.",
@@ -190,6 +194,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "forget it in Bluetooth and reconnect",
         ]:
             assert_contains(self, home, needle)
+
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        for needle in [
+            "@Published private(set) var bluetoothPermissionDenied = false",
+            "case .unauthorized:",
+            "assignIfChanged(\\.bluetoothPermissionDenied, true)",
+            "recomputeConnectionStatus(reason: \"central_unauthorized\")",
+        ]:
+            assert_contains(self, ble, needle)
 
         assert_not_contains(self, home, "showConnectionDiagnosisModal")
 
@@ -549,8 +562,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "researchManeuverCard",
+            "let summary = ResearchManeuverProbeCorrelationSummary(markers: store.researchManeuverMarkers",
             "AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers",
-            "sessions: store.sessions",
+            "correlationSummary: summary",
             "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
             "private struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
@@ -567,6 +581,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research only; timestamps stay on device for probe correlation.",
         ]:
             assert_contains(self, collection, needle)
+
+        assert_not_contains(
+            self,
+            collection,
+            "private var correlationSummary: ResearchManeuverProbeCorrelationSummary",
+        )
 
         for forbidden in [
             "markResearchManeuver",

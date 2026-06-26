@@ -1220,6 +1220,7 @@ final class AtriaHomeModel {
 
     struct CoreLiveState: Equatable {
         var status: AtriaBLEManager.Status
+        var bluetoothPermissionDenied: Bool
         var deviceName: String
         var batteryLevel: Int
         var batteryIsCharging: Bool
@@ -1671,6 +1672,7 @@ final class AtriaHomeModel {
             .store(in: &cancellables)
 
         let throttledCoreLiveChanges = Publishers.MergeMany([
+            ble.$bluetoothPermissionDenied.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -1989,6 +1991,7 @@ final class AtriaHomeModel {
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
         return CoreLiveState(status: ble.status,
+                             bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
                              deviceName: ble.resolvedDeviceName,
                              batteryLevel: ble.batteryLevel,
                              batteryIsCharging: ble.batteryIsCharging,
@@ -2692,6 +2695,12 @@ private struct AtriaConnectionDiagnosis: Equatable {
 
         switch live.status {
         case .poweredOff:
+            if live.bluetoothPermissionDenied {
+                return AtriaConnectionDiagnosis(title: "Bluetooth permission needed",
+                                                action: "Allow Bluetooth for Atria in Settings.",
+                                                systemImage: "hand.raised.fill",
+                                                tint: .red)
+            }
             return AtriaConnectionDiagnosis(title: "Bluetooth is off",
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",

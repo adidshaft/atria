@@ -41,10 +41,13 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   persisted `atria.vitals.sectionOrderCSV` and drag/drop for the large sections
   only: Pulse, HRV, Recovery/Strain, and Profile.
 - **Part C started:** Today now shows a calm inline `AtriaConnectionDiagnosis`
-  banner for ground-truth actionable states: Bluetooth off, connected/no pulse,
-  searching/connecting, disconnected, low strap battery, and official WHOOP app
-  coexistence when `whoop://` is actually installed. No modal or polling was
-  added.
+  banner for ground-truth actionable states: Bluetooth off, Bluetooth permission
+  denied, connected/no pulse, searching/connecting, disconnected, low strap
+  battery, and official WHOOP app coexistence when `whoop://` is actually
+  installed. No modal or polling was added.
+- **Perf cleanup:** the research maneuver marker card now receives its probe
+  correlation summary from the parent render path instead of rebuilding it inside
+  the card body/equality checks.
 - **Verification:** `python3 test_handoff_static_checks.py` is green (45), and a
   generic iOS Debug build for `Atria/Atria.xcodeproj` succeeds. Static guards now
   pin the handoff-21 ordering and diagnosis behavior.
