@@ -196,12 +196,14 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
     let displayDeviceName: String
     let heartRateText: String
     let hasPulseSignal: Bool
+    let needsContactCoach: Bool
 
     static func == (lhs: AtriaHeroStatusCardHost, rhs: AtriaHeroStatusCardHost) -> Bool {
         lhs.status == rhs.status
             && lhs.displayDeviceName == rhs.displayDeviceName
             && lhs.heartRateText == rhs.heartRateText
             && lhs.hasPulseSignal == rhs.hasPulseSignal
+            && lhs.needsContactCoach == rhs.needsContactCoach
     }
 
     var body: some View {
@@ -212,8 +214,8 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                                               heartRateText: heartRateText)
                     .equatable()
             } else {
-                AtriaHeroStatusTile(title: "Connected, no pulse",
-                                    detail: "Tighten the strap fit or wet the sensor.",
+                AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Connected, no pulse",
+                                    detail: needsContactCoach ? "Strap is connected; tighten fit or wet the sensor for a stable reading." : "Waiting for the next live heart-rate sample.",
                                     systemImage: "heart.slash",
                                     tint: .orange)
                 .equatable()
@@ -249,7 +251,8 @@ private struct AtriaHeroStatusCardLiveHost: View {
         AtriaHeroStatusCardHost(status: statusStore.state.status,
                                 displayDeviceName: liveStore.state.displayDeviceName,
                                 heartRateText: pulseStore.state.heartRateText,
-                                hasPulseSignal: pulseStore.state.hasPulseSignal)
+                                hasPulseSignal: pulseStore.state.hasPulseSignal,
+                                needsContactCoach: pulseStore.state.needsContactCoach)
             .equatable()
     }
 }

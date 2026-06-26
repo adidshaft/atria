@@ -1365,9 +1365,12 @@ final class AtriaHomeModel {
 
     struct HeroPulseState: Equatable {
         var heartRate: Int
+        var hasContact: Bool
+        var sensorHasContact: Bool
 
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
-        var hasPulseSignal: Bool { heartRate > 0 }
+        var hasPulseSignal: Bool { heartRate > 0 || hasContact }
+        var needsContactCoach: Bool { !sensorHasContact }
     }
 
     struct PulseSparklineState: Equatable {
@@ -2129,7 +2132,10 @@ final class AtriaHomeModel {
     }
 
     private static func makeHeroPulseState(ble: AtriaBLEManager) -> HeroPulseState {
-        HeroPulseState(heartRate: liveHeartRate(ble: ble))
+        let reconciledHeartRate = liveHeartRate(ble: ble)
+        return HeroPulseState(heartRate: reconciledHeartRate,
+                              hasContact: ble.hasContact || reconciledHeartRate > 0,
+                              sensorHasContact: ble.hasContact)
     }
 
     private static func makePulseSparklineState(ble: AtriaBLEManager) -> PulseSparklineState {
