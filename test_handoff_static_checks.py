@@ -223,7 +223,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, shared, 'return "App conflict"')
         assert_contains(self, vitals, "officialAppCoexistenceRisk == .suspected ? .conflict : .local")
         assert_contains(self, hero, "let hasPulseSignal: Bool")
-        assert_contains(self, hero, 'AtriaHeroStatusTile(title: "Connected, no pulse"')
+        assert_contains(self, hero, "let needsContactCoach: Bool")
+        assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Connected, no pulse"')
+        assert_contains(self, hero, "Strap is connected; tighten fit or wet the sensor for a stable reading.")
+        assert_contains(self, hero, "Waiting for the next live heart-rate sample.")
+        assert_contains(self, hero, "needsContactCoach: pulseStore.state.needsContactCoach")
+        assert_contains(self, home, "struct HeroPulseState: Equatable")
+        assert_contains(self, home, "var hasPulseSignal: Bool { heartRate > 0 || hasContact }")
+        assert_contains(self, home, "return HeroPulseState(heartRate: reconciledHeartRate,")
         assert_not_contains(self, vitals, "isConnected && live.hasPulseSignal")
 
     def test_settings_appearance_switcher_uses_shared_scroll_safe_chrome(self):
