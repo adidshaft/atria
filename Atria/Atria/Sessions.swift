@@ -2205,6 +2205,9 @@ final class SessionStore: ObservableObject {
     /// marker changes so SwiftUI renders read O(1) values.
     @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
     @Published private(set) var researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: [], sessions: [])
+    /// History opens with this cached snapshot instead of recomputing activity
+    /// detection, trend summaries, and daily rollups on the navigation path.
+    @Published private(set) var historySnapshot = HistorySnapshot.empty
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
@@ -2226,6 +2229,7 @@ final class SessionStore: ObservableObject {
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
+    private var historySnapshotRevision = 0
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
 
     /// CHEAP: 14-point resting-HR trend from raw `sessions` (current inside the
@@ -2253,6 +2257,31 @@ final class SessionStore: ObservableObject {
         imuAuditSummary = IMUAuditSummary(sessions: sessions)
         researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers,
                                                                                           sessions: sessions)
+    }
+
+    private func refreshHistorySnapshotCache(deferred: Bool = true) {
+        historySnapshotRevision &+= 1
+        let revision = historySnapshotRevision
+        historySnapshot = HistorySnapshot.sessionsOnly(sessions)
+        if deferred {
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                self?.publishFullHistorySnapshotIfCurrent(revision: revision)
+            }
+        } else {
+            publishFullHistorySnapshotIfCurrent(revision: revision)
+        }
+    }
+
+    private func publishFullHistorySnapshotIfCurrent(revision: Int) {
+        guard revision == historySnapshotRevision else { return }
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        historySnapshot = HistorySnapshot(sessions: sessions,
+                                          detections: detectedActivities(rest: rest, maxHR: maxHR),
+                                          trends: trendSummaries(rest: rest, maxHR: maxHR),
+                                          rollups: dailyRollups(rest: rest, maxHR: maxHR))
     }
 
     /// EXPENSIVE: behavior insights via dailyRollups → the canonical-session cache.
@@ -2360,6 +2389,7 @@ final class SessionStore: ObservableObject {
         loadPersistedSessionsDeferred()
         refreshSessionDerivedCaches()
         recomputeCollectionResearchSummaries()
+        refreshHistorySnapshotCache(deferred: true)
     }
 
     var latestReferenceValidatedHRV: Int? {
@@ -2972,6 +3002,7 @@ final class SessionStore: ObservableObject {
         // A finalized session can change behavior correlations; recompute now that
         // the canonical cache + baseline are consistent (NOT in the checkpoint path).
         recomputeBehaviorInsights()
+        refreshHistorySnapshotCache(deferred: true)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
             AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
@@ -3011,6 +3042,7 @@ final class SessionStore: ObservableObject {
                        at: session.end)
         baseline.save()
         refreshHomeDashboardDiagnosticsCache()
+        refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
@@ -3049,6 +3081,7 @@ final class SessionStore: ObservableObject {
         } else {
             cachedHomeDashboardDiagnostics = nil
         }
+        refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
@@ -3089,6 +3122,7 @@ final class SessionStore: ObservableObject {
         refreshSessionDerivedCaches()
         invalidateHomeDashboardDiagnosticsCache()
         recomputeBehaviorInsights()
+        refreshHistorySnapshotCache(deferred: true)
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
     }
@@ -3106,6 +3140,7 @@ final class SessionStore: ObservableObject {
         profile = next
         profile.save()
         invalidateHomeDashboardDiagnosticsCache()
+        refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
@@ -3118,6 +3153,7 @@ final class SessionStore: ObservableObject {
         self.profile = next
         self.profile.save()
         invalidateHomeDashboardDiagnosticsCache()
+        refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
@@ -4880,6 +4916,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedWorkoutDefaults.key)
         cachedConfirmedWorkouts = sorted
+        refreshHistorySnapshotCache(deferred: true)
     }
 
     private func confirmedWorkoutID(start: Date, end: Date, source: String) -> String {
@@ -4983,6 +5020,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
         cachedConfirmedSleeps = sorted
+        refreshHistorySnapshotCache(deferred: true)
     }
 
     func behaviorJournalEntry(for day: Date = Date(), calendar: Calendar = .current) -> BehaviorJournalEntry {
@@ -8781,6 +8819,7 @@ final class SessionStore: ObservableObject {
             }
         }
         cachedHomeDashboardDiagnostics = nil
+        refreshHistorySnapshotCache(deferred: true)
         publishDashboardRevision()
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
@@ -8857,11 +8896,9 @@ final class SessionStore: ObservableObject {
 
 struct HistoryView: View {
     @ObservedObject var store: SessionStore
-    @State private var snapshot: HistorySnapshot
 
-    init(store: SessionStore) {
-        _store = ObservedObject(wrappedValue: store)
-        _snapshot = State(initialValue: HistorySnapshot(store: store))
+    private var snapshot: HistorySnapshot {
+        store.historySnapshot
     }
 
     var body: some View {
@@ -8940,13 +8977,6 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: refreshSnapshot)
-        .onChange(of: store.dashboardRevision) { _, _ in
-            refreshSnapshot()
-        }
-        .onChange(of: store.profile) { _, _ in
-            refreshSnapshot()
-        }
     }
 
     private var historyHeroCard: some View {
@@ -9041,26 +9071,28 @@ struct HistoryView: View {
         .padding(.vertical, 10)
         .background(HistoryPillBackground(tint: tint))
     }
-
-    private func refreshSnapshot() {
-        snapshot = HistorySnapshot(store: store)
-    }
 }
 
-@MainActor
-private struct HistorySnapshot {
+struct HistorySnapshot {
     let sessions: [SavedSession]
     let detections: [ActivityDetection]
     let trends: [TrendSummary]
     let rollups: [DailyRollup]
 
-    init(store: SessionStore) {
-        let rest = store.baseline.restingInt ?? 60
-        let maxHR = store.profile.maxHR
-        self.sessions = store.sessions
-        self.detections = store.detectedActivities(rest: rest, maxHR: maxHR)
-        self.trends = store.trendSummaries(rest: rest, maxHR: maxHR)
-        self.rollups = store.dailyRollups(rest: rest, maxHR: maxHR)
+    static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [])
+
+    static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot {
+        HistorySnapshot(sessions: sessions, detections: [], trends: [], rollups: [])
+    }
+
+    init(sessions: [SavedSession],
+         detections: [ActivityDetection],
+         trends: [TrendSummary],
+         rollups: [DailyRollup]) {
+        self.sessions = sessions
+        self.detections = detections
+        self.trends = trends
+        self.rollups = rollups
     }
 }
 

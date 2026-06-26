@@ -51,7 +51,10 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   `SessionDetail` now downsamples chart points once at init instead of recomputing
   the downsampled series on every render. The connected pulse status card now
   receives a precomputed display name from core live state, avoiding string parsing
-  during live HR updates.
+  during live HR updates. History now opens from a `SessionStore` snapshot cache:
+  saved sessions render immediately, while activity detections, trend summaries,
+  and daily rollups fill after the first render instead of running on the
+  navigation path.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
@@ -71,7 +74,7 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   status, and the Data action do not squeeze each other, reconnect checklist rows
   can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy
   instead of nested raised cards.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (49), and
+- **Verification:** `python3 test_handoff_static_checks.py` is green (50), and
   Release builds have been installed on the cabled iPhone. Static guards now pin
   the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path
   cache behavior.
