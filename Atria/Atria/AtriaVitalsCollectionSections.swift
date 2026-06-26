@@ -1346,6 +1346,11 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
                                     state: snapshot.latest?.restingHR == nil ? .learning : .personalBaseline,
                                     tint: .red)
+                    AtriaMetricTile(label: "Efficiency",
+                                    value: snapshot.latest?.sleepEfficiencyText ?? "--",
+                                    state: snapshot.latest?.sleepEfficiency == nil ? .learning : .research,
+                                    tint: .cyan,
+                                    footnote: "Duration vs sleep span")
                     AtriaMetricTile(label: "Sleep HRV",
                                     value: snapshot.latest?.hrvText ?? "--",
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
@@ -1415,7 +1420,7 @@ private struct AtriaSleepNightRow: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 Text(night.day, format: .dateTime.weekday(.abbreviated).month().day())
                     .font(.caption.weight(.semibold))
-                Text("\(night.durationText) · RHR \(night.restingHRText) · HRV \(night.hrvText) · Resp \(night.respiratoryRateText) · \(night.confidenceText)")
+                Text("\(night.durationText) · Eff \(night.sleepEfficiencyText) · RHR \(night.restingHRText) · HRV \(night.hrvText) · Resp \(night.respiratoryRateText) · \(night.confidenceText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

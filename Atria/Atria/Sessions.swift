@@ -391,6 +391,8 @@ struct DailyRollup {
     let sleepReady: Int
     let sleepCandidates: Int
     let duration: TimeInterval
+    let sleepDuration: TimeInterval?
+    let sleepSpan: TimeInterval?
     let strain: Double
     let avgHRV: Int?
     let restingHR: Int?
@@ -5903,6 +5905,9 @@ final class SessionStore: ObservableObject {
             let aggregateSleep = aggregateSleeps[day]
             let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
+            let singleSessionSleepDuration = detections
+                .filter { $0.kind == .sleepCandidate }
+                .reduce(0) { $0 + $1.duration }
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -5923,6 +5928,8 @@ final class SessionStore: ObservableObject {
                                sleepReady: aggregateSleepReady,
                                sleepCandidates: sleepCandidates,
                                duration: duration,
+                               sleepDuration: aggregateSleep?.duration ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
+                               sleepSpan: aggregateSleep?.span ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
                                restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min(),
@@ -9200,6 +9207,7 @@ struct SleepHistorySnapshot: Equatable {
         let restingHR: Int?
         let hrv: Int?
         let respiratoryRate: Double?
+        let sleepEfficiency: Double?
         let confidence: String
         let source: String
         let confirmed: Bool
@@ -9222,6 +9230,10 @@ struct SleepHistorySnapshot: Equatable {
 
         var respiratoryRateText: String {
             respiratoryRate.map { String(format: "%.1f", $0) } ?? "--"
+        }
+
+        var sleepEfficiencyText: String {
+            sleepEfficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "--"
         }
 
         var confidenceText: String {
@@ -9251,6 +9263,7 @@ struct SleepHistorySnapshot: Equatable {
                                      restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
                                      hrv: nil,
                                      respiratoryRate: nil,
+                                     sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span),
                                      confidence: sleep.confidence,
                                      source: sleep.source,
                                      confirmed: true)
@@ -9261,13 +9274,14 @@ struct SleepHistorySnapshot: Equatable {
             if let existing = nightsByDay[day], existing.confirmed {
                 continue
             }
-            let sleepDuration = rollup.sleepReady > 0 ? rollup.duration : min(rollup.duration, 10 * 60 * 60)
+            let sleepDuration = rollup.sleepDuration ?? (rollup.sleepReady > 0 ? rollup.duration : min(rollup.duration, 10 * 60 * 60))
             nightsByDay[day] = Night(id: "sleep-history-\(Int(day.timeIntervalSince1970))",
                                      day: day,
                                      duration: sleepDuration,
                                      restingHR: rollup.restingHR,
                                      hrv: rollup.avgHRV,
                                      respiratoryRate: rollup.avgRespiratoryRate,
+                                     sleepEfficiency: Self.efficiency(duration: sleepDuration, span: rollup.sleepSpan),
                                      confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
                                      source: rollup.sleepReady > 0 ? "validated_sleep_window" : "sleep_candidate",
                                      confirmed: false)
@@ -9287,6 +9301,11 @@ struct SleepHistorySnapshot: Equatable {
         guard !nights.isEmpty else { return "--" }
         let average = nights.reduce(0) { $0 + $1.duration } / Double(nights.count)
         return Self.formatDuration(average)
+    }
+
+    private static func efficiency(duration: TimeInterval, span: TimeInterval?) -> Double? {
+        guard let span, span > 0, duration > 0 else { return nil }
+        return min(max(duration / span, 0), 1)
     }
 
     var stateText: String {
