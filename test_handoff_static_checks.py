@@ -274,7 +274,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "static let wide = AtriaGlanceGridSize(rows: 1, columns: 2)",
             "var isWide: Bool { columns == 2 }",
             "fileprivate var glanceGridSize: AtriaGlanceGridSize",
-            "case .trend:\n            return .wide",
+            "case .trend, .insights:\n            return .wide",
             "var glanceColumnSpan: Int { glanceGridSize.columns }",
             "fileprivate var isWideGlanceCard: Bool { glanceGridSize.isWide }",
             "private static let glanceGridSpacing: CGFloat = 10",
@@ -302,6 +302,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .sleep: return \"moon.zzz.fill\"",
             "case .rhr: return \"heart.text.square.fill\"",
             "case .steps: return \"shoeprints.fill\"",
+            "[.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]",
+            "insights: store.behaviorInsights",
+            "taggedDays: store.behaviorJournalEntries.count",
+            "let insights: [AtriaInsight]",
+            "let taggedDays: Int",
+            "&& lhs.insights == rhs.insights",
+            "private var insightsCard: some View",
+            "AtriaGlanceMetricCard(title: \"Insights\"",
+            "detail: topInsight?.tagLabel ?? (taggedDays > 0 ? \"Learning patterns\" : \"Tag today\")",
             ".draggable(metric.rawValue)",
             ".dropDestination(for: String.self)",
             "onMoveMetric(dragged, metric)",
@@ -318,6 +327,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Choose and reorder the cards shown at a glance.",
         ]:
             assert_contains(self, settings, needle)
+        assert_not_contains(self, overview, "AtriaInsightsCardHost(store: store)")
 
         for needle in [
             "@AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
