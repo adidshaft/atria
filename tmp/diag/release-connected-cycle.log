@@ -1,0 +1,21 @@
+2026-06-26 13:37:08.289 Atria[1849:215724] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 13:37:08.474 Atria[1849:215724] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 13:37:33.971 Atria[1849:215724] ATRIADIAG autocycle_begin ble_status=disconnected
+2026-06-26 13:37:37.063 Atria[1849:215724] ATRIADIAG autocycle_switch to=vitals ble_status=disconnected
+2026-06-26 13:37:37.334 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=313 tab=vitals
+2026-06-26 13:37:40.096 Atria[1849:215724] ATRIADIAG autocycle_switch to=collection ble_status=disconnected
+2026-06-26 13:37:40.432 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=411 tab=collection
+2026-06-26 13:37:43.107 Atria[1849:215724] ATRIADIAG autocycle_switch to=overview ble_status=disconnected
+2026-06-26 13:37:43.355 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=334 tab=overview
+2026-06-26 13:37:46.124 Atria[1849:215724] ATRIADIAG autocycle_switch to=vitals ble_status=disconnected
+2026-06-26 13:37:49.166 Atria[1849:215724] ATRIADIAG autocycle_switch to=collection ble_status=disconnected
+2026-06-26 13:37:49.408 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=287 tab=collection
+2026-06-26 13:37:52.261 Atria[1849:215724] ATRIADIAG autocycle_switch to=overview ble_status=disconnected
+2026-06-26 13:37:55.305 Atria[1849:215724] ATRIADIAG autocycle_switch to=vitals ble_status=disconnected
+2026-06-26 13:37:55.548 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=327 tab=vitals
+2026-06-26 13:37:58.335 Atria[1849:215724] ATRIADIAG autocycle_switch to=collection ble_status=disconnected
+2026-06-26 13:37:58.575 Atria[1849:215724] ATRIADIAG mainthread_stall gap_ms=254 tab=collection
+2026-06-26 13:38:01.360 Atria[1849:215724] ATRIADIAG autocycle_done ble_status=disconnected
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.

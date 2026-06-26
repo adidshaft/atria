@@ -1,0 +1,28 @@
+{
+  "acceptedHRGaps": 0,
+  "acceptedHRSamples": 1,
+  "batteryLevel": -1,
+  "cadenceMultiplier": 2.5,
+  "droppedArtifacts": 0,
+  "heldArtifacts": 0,
+  "id": "A0A2963A-328E-4564-99E9-AF33AA037487",
+  "label": "Long wear",
+  "lowPowerMode": false,
+  "maxAcceptedHRGap": 0,
+  "maxRawHRGap": 0,
+  "powerMode": "serious",
+  "rawHRGaps": 0,
+  "rawHRNotifications": 1,
+  "rrSamples": [],
+  "samples": [
+    {
+      "bpm": 77,
+      "t": 803892685.815794
+    }
+  ],
+  "schema": 1,
+  "startedAt": 803892685.815794,
+  "thermalState": "serious",
+  "updatedAt": 803892688.697295,
+  "zeroHRSamples": 0
+}

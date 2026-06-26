@@ -1,0 +1,18 @@
+2026-06-26 13:28:19.495 Atria[1738:207641] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 13:28:19.676 Atria[1738:207641] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 13:28:23.622 Atria[1738:207641] ATRIADIAG autocycle_switch to=vitals ble_status=disconnected
+2026-06-26 13:28:23.891 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=361 tab=vitals
+2026-06-26 13:28:27.727 Atria[1738:207641] ATRIADIAG autocycle_switch to=collection ble_status=disconnected
+2026-06-26 13:28:28.059 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=429 tab=collection
+2026-06-26 13:28:31.742 Atria[1738:207641] ATRIADIAG autocycle_switch to=overview ble_status=disconnected
+2026-06-26 13:28:31.991 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=261 tab=overview
+2026-06-26 13:28:35.965 Atria[1738:207641] ATRIADIAG autocycle_switch to=vitals ble_status=disconnected
+2026-06-26 13:28:36.206 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=276 tab=vitals
+2026-06-26 13:28:40.158 Atria[1738:207641] ATRIADIAG autocycle_switch to=collection ble_status=disconnected
+2026-06-26 13:28:40.396 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=267 tab=collection
+2026-06-26 13:28:44.229 Atria[1738:207641] ATRIADIAG autocycle_switch to=overview ble_status=disconnected
+2026-06-26 13:28:44.477 Atria[1738:207641] ATRIADIAG mainthread_stall gap_ms=346 tab=overview
+2026-06-26 13:28:47.237 Atria[1738:207641] ATRIADIAG autocycle_done ble_status=disconnected
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.

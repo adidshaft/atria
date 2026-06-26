@@ -1,0 +1,5 @@
+2026-06-26 13:13:27.792 Atria[1636:196199] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 13:13:28.009 Atria[1636:196199] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.
