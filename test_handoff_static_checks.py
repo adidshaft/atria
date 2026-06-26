@@ -497,12 +497,18 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, connection, ".buttonStyle(.glassProminent")
 
         for needle in [
+            "struct AtriaMetricTile: View, Equatable",
+            "private static let compactHeight: CGFloat = 104",
+            "private static let sparklineHeight: CGFloat = 132",
+            "private var tileHeight: CGFloat",
+            "maxHeight: tileHeight",
             ".frame(maxWidth: .infinity, minHeight: 30)",
             ".atriaCardAction(prominent: false, tint: .secondary)",
             ".accessibilityLabel(\"Decrease \\(title)\")",
             ".accessibilityLabel(\"Increase \\(title)\")",
         ]:
             assert_contains(self, shared_ui, needle)
+        assert_not_contains(self, shared_ui, "minHeight: sparklineValues == nil ? 100 : 130")
         assert_not_contains(self, shared_ui, ".buttonStyle(.glass")
 
         assert_contains(self, content, "Text(primaryButtonTitle)\n                            .frame(maxWidth: .infinity)")

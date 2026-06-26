@@ -374,6 +374,9 @@ struct AtriaStateBadge: View, Equatable {
 }
 
 struct AtriaMetricTile: View, Equatable {
+    private static let compactHeight: CGFloat = 104
+    private static let sparklineHeight: CGFloat = 132
+
     let label: String
     let value: String
     var unit: String? = nil
@@ -429,11 +432,18 @@ struct AtriaMetricTile: View, Equatable {
                     .minimumScaleFactor(0.72)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: sparklineValues == nil ? 100 : 130, alignment: .leading)
+        .frame(maxWidth: .infinity,
+               minHeight: tileHeight,
+               maxHeight: tileHeight,
+               alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label) \(value)")
+    }
+
+    private var tileHeight: CGFloat {
+        sparklineValues == nil ? Self.compactHeight : Self.sparklineHeight
     }
 }
 
