@@ -2225,16 +2225,16 @@ final class SessionStore: ObservableObject {
             if !exists { return "Waiting for reconnect" }
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
-            if metricReady { return "\(metricUsableRows) metric rows" }
-            return "Saved · metrics gated"
+            if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
+            return "\(rows) saved · metrics gated"
         }
 
         var userFootnoteText: String {
             if !exists { return "Reconnect fills gaps." }
             if !parseOK { return "Archive needs repair." }
             if rows <= 0 { return "Waiting for missed data." }
-            if metricReady { return "\(metricUsableRows) rows ready." }
-            return "Saved locally; RR validation gates metrics."
+            if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
+            return "\(rows) saved locally; RR validation gates metrics."
         }
 
         var metricReady: Bool {
