@@ -621,6 +621,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaSleepHistoryCard(snapshot: sleepHistory)",
             "Chart(chartNights)",
             "Wear the strap overnight.",
+            "AtriaMetricTile(label: \"Sleep resp\"",
+            "value: snapshot.latest?.respiratoryRateText ?? \"--\"",
+            "state: snapshot.latest?.respiratoryRate == nil ? .learning : .research",
+            "footnote: \"RR-derived research\"",
+            "Resp \\(night.respiratoryRateText)",
         ]:
             assert_contains(self, sessions + vitals, needle)
 
