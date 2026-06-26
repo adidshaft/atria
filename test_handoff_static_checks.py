@@ -444,6 +444,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: store.historicalArchiveStatus.valueText",
             "state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning)",
             "footnote: store.historicalArchiveStatus.detailText",
+            "AtriaMetricTile(label: \"App\"",
+            "value: coexistenceValue",
+            "state: coexistenceState",
+            "tint: coexistenceTint",
+            "footnote: coexistenceFootnote",
+            "private var coexistenceValue: String",
+            "case .suspected:\n            return \"Conflict\"",
+            "private var coexistenceState: AtriaMetricState",
+            "return .conflict",
+            "private var coexistenceFootnote: String",
+            "return \"Official app may interfere.\"",
         ]:
             assert_contains(self, collection, needle)
 

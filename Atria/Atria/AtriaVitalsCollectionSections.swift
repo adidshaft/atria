@@ -871,11 +871,60 @@ private struct AtriaCollectionStatusCardHost: View {
                         value: collectionLiveStore.state.modeLabel,
                         state: collectionLiveStore.state.longWearModeEnabled ? .live : .local,
                         tint: .purple)
+        AtriaMetricTile(label: "App",
+                        value: coexistenceValue,
+                        state: coexistenceState,
+                        tint: coexistenceTint,
+                        footnote: coexistenceFootnote)
         AtriaMetricTile(label: "Backfill",
                         value: store.historicalArchiveStatus.valueText,
                         state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning),
                         tint: .cyan,
                         footnote: store.historicalArchiveStatus.detailText)
+    }
+
+    private var coexistenceValue: String {
+        switch collectionLiveStore.state.officialAppCoexistenceRisk {
+        case .cleared:
+            return "Clear"
+        case .advisory:
+            return "Watch"
+        case .suspected:
+            return "Conflict"
+        }
+    }
+
+    private var coexistenceState: AtriaMetricState {
+        switch collectionLiveStore.state.officialAppCoexistenceRisk {
+        case .cleared:
+            return .local
+        case .advisory:
+            return .research
+        case .suspected:
+            return .conflict
+        }
+    }
+
+    private var coexistenceTint: Color {
+        switch collectionLiveStore.state.officialAppCoexistenceRisk {
+        case .cleared:
+            return .green
+        case .advisory:
+            return .orange
+        case .suspected:
+            return .red
+        }
+    }
+
+    private var coexistenceFootnote: String {
+        switch collectionLiveStore.state.officialAppCoexistenceRisk {
+        case .cleared:
+            return "Atria has the strap."
+        case .advisory:
+            return "Remove WHOOP if drops return."
+        case .suspected:
+            return "Official app may interfere."
+        }
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
