@@ -164,7 +164,7 @@ private struct AtriaDisconnectedOverviewHost: View {
     let onOpenCollection: () -> Void
 
     private var hasTrendHistory: Bool {
-        store.sessions.filter { $0.points.count >= 8 }.count >= 2
+        store.overviewTrendPoints.count >= 2
     }
 
     /// Returning users have saved sessions on device. Gate on real saved data —
@@ -199,7 +199,7 @@ private struct AtriaDisconnectedOverviewHost: View {
 
                 // Trends are local history — show them even while the strap is away.
                 if hasTrendHistory {
-                    AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
+                    AtriaOverviewTrendChartHost(store: store)
                 }
             }
         }
@@ -442,7 +442,7 @@ struct AtriaOverviewLeadingSection: View {
 
             if segment == .trends && hasUnlockedSecondarySections {
                 if snapshotStore.diagnosticsReady {
-                    AtriaOverviewTrendChartHost(store: store, maxHR: store.profile.maxHR)
+                    AtriaOverviewTrendChartHost(store: store)
                 } else {
                     AtriaLoadingPanel(title: "Preparing trends",
                                       subtitle: "Saved trends stay off the launch path and load after the first screen is stable.")

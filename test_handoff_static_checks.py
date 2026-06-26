@@ -376,6 +376,43 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, history_snapshot_source, forbidden)
 
+    def test_overview_trend_chart_points_are_cached_off_render_path(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        trend_chart = source(ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+
+        for needle in [
+            "@Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []",
+            "private var overviewTrendPointsRevision = 0",
+            "private func refreshOverviewTrendPointsCache(deferred: Bool = true)",
+            "DispatchQueue.global(qos: .utility).async",
+            "Self.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)",
+            "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
+            "Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "AtriaTrendChartCard(points: store.overviewTrendPoints,",
+            "baselineRestingHR: store.baseline.restingInt",
+        ]:
+            assert_contains(self, trend_chart, needle)
+
+        for forbidden in [
+            "private var trendPoints",
+            "store.sessions.filter",
+            "meaningful.sorted",
+            "Metrics.strain(fromTRIMP:",
+            "session.trimp(rest:",
+            "let maxHR",
+        ]:
+            assert_not_contains(self, trend_chart, forbidden)
+
+        assert_contains(self, overview, "AtriaOverviewTrendChartHost(store: store)")
+        assert_contains(self, overview, "store.overviewTrendPoints.count >= 2")
+        assert_not_contains(self, overview, "AtriaOverviewTrendChartHost(store: store, maxHR:")
+        assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
+
     def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")

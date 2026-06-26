@@ -142,40 +142,14 @@ struct AtriaTrendChartCard: View {
     }
 }
 
-/// Builds the trend points from saved sessions on the store side and renders the
-/// chart. Caps to the most recent 30 sessions with enough samples to be a real
-/// session (skips the tiny auto-saved fragments) so the graph stays meaningful
-/// and cheap to redraw.
+/// Renders cached trend points from the store. Session filtering, sorting, and
+/// TRIMP work stay out of SwiftUI render paths.
 struct AtriaOverviewTrendChartHost: View {
     @ObservedObject var store: SessionStore
-    let maxHR: Int
 
     var body: some View {
-        AtriaTrendChartCard(points: trendPoints,
+        AtriaTrendChartCard(points: store.overviewTrendPoints,
                             baselineRestingHR: store.baseline.restingInt)
-    }
-
-    private var trendPoints: [AtriaTrendPoint] {
-        let rest: Int = store.baseline.restingInt ?? 60
-        let cutoff = Date().addingTimeInterval(-92 * 86_400)
-        let meaningful: [SavedSession] = store.sessions.filter { $0.points.count >= 8 && $0.start >= cutoff }
-        let ordered: [SavedSession] = meaningful.sorted { $0.start < $1.start }
-        let recent: [SavedSession] = Array(ordered.suffix(200))
-        var result: [AtriaTrendPoint] = []
-        result.reserveCapacity(recent.count)
-        for session in recent {
-            let strainValue: Double = Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))
-            result.append(
-                AtriaTrendPoint(
-                    id: session.id,
-                    date: session.start,
-                    restingHR: session.restingStable,
-                    strain: strainValue,
-                    hrv: session.hrv
-                )
-            )
-        }
-        return result
     }
 }
 

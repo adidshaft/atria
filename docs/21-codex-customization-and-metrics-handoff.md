@@ -54,7 +54,10 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   during live HR updates. History now opens from a `SessionStore` snapshot cache:
   saved sessions render immediately, while activity detections, trend summaries,
   and daily rollups fill after the first render instead of running on the
-  navigation path.
+  navigation path. The Overview trend chart now reads cached
+  `store.overviewTrendPoints`; session filtering, sorting, and TRIMP calculation
+  run on a utility queue and publish back to the store instead of running in the
+  chart host.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
@@ -74,7 +77,7 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   status, and the Data action do not squeeze each other, reconnect checklist rows
   can wrap, and Vitals/Data profile/coexistence panels use inset/card hierarchy
   instead of nested raised cards.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (50), and
+- **Verification:** `python3 test_handoff_static_checks.py` is green (51), and
   Release builds have been installed on the cabled iPhone. Static guards now pin
   the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path
   cache behavior.
