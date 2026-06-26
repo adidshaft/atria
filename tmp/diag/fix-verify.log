@@ -1,0 +1,50 @@
+2026-06-26 14:21:42.566 Atria[2132:251118] WHOOPDBG ble_restore peripherals=1
+2026-06-26 14:21:42.590 Atria[2132:251105] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 14:21:42.618 Atria[2132:251105] WHOOPDBG phone_steps status=started reason=today_home_appear source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only
+2026-06-26 14:21:42.620 Atria[2132:251105] WHOOPDBG home_launch_timing event=primary_ready elapsed_ms=3 status=disconnected tab=overview
+2026-06-26 14:21:42.620 Atria[2132:251105] WHOOPDBG launch_timing event=on_appear elapsed_ms=72 scene=inactive
+2026-06-26 14:21:42.686 Atria[2132:251105] WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=1
+2026-06-26 14:21:42.686 Atria[2132:251105] WHOOPDBG ble_restore status=connected name=ADIDSHAFT'S WHO
+2026-06-26 14:21:42.688 Atria[2132:251105] WHOOPDBG phone_steps_today status=ready reason=home_appear steps=26 distance_m=18.600 source=CMPedometer validated=1
+2026-06-26 14:21:42.692 Atria[2132:251105] WHOOPDBG launch_timing event=fast_launch_begin elapsed_ms=144 scene=inactive
+2026-06-26 14:21:42.692 Atria[2132:251105] WHOOPDBG ble_notify_reassert status=discover_services reason=scene_active source=foreground_return action=keep_connection
+2026-06-26 14:21:42.692 Atria[2132:251105] WHOOPDBG launch_timing event=fast_launch_complete elapsed_ms=145 scene=inactive
+2026-06-26 14:21:42.692 Atria[2132:251105] WHOOPDBG model_gate status=assume_4_class reason=proprietary_service service=61080001-8D6D-82B8-614A-1C8CB0F8DCC6
+2026-06-26 14:21:42.693 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=8 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.693 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=9 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.693 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=10 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.694 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=11 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.694 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=12 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.694 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=12 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.695 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=13 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.696 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=14 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.696 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=15 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.696 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=16 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:42.739 Atria[2132:251105] WHOOPDBG widget_snapshot status=ok reason=scene_active schema=2 recovery=learning confidence=learning hrv=learning strain=0.0 rhr=59 max_hr=189 bytes=321 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-06-26 14:21:42.739 Atria[2132:251105] WHOOPDBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-06-26 14:21:42.740 Atria[2132:251105] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 14:21:42.741 Atria[2132:251105] WHOOPDBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-06-26 14:21:42.747 Atria[2132:251105] WHOOPDBG phone_steps_today status=ready reason=scene_active steps=26 distance_m=18.600 source=CMPedometer validated=1
+2026-06-26 14:21:42.885 Atria[2132:251105] WHOOPDBG home_launch_timing event=secondary_ready elapsed_ms=268 status=connected tab=overview
+2026-06-26 14:21:42.997 Atria[2132:251105] WHOOPDBG rr_quality source=2a37 state=learning fraction=1.000 rr_frames=1 total_frames=1 max_rr_gap_s=0.0 frame_max_rr_gap_s=0.0 beat_timeline=0 window_s=0 hrv_state=learning rr_source_2a37_values=1 rr_source_0x28_decoded_values=0 rr_source_0x28_used_values=0
+2026-06-26 14:21:43.029 Atria[2132:251105] WHOOPDBG session_store_load status=ok sessions=15 baseline_rebuilt=0 elapsed_ms=472
+2026-06-26 14:21:44.992 Atria[2132:251111] WHOOPDBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 14:21:47.985 Atria[2132:251124] WHOOPDBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 14:21:49.981 Atria[2132:251105] WHOOPDBG battery level=91 source=2A19 bytes=5b persisted=1
+2026-06-26 14:21:50.979 Atria[2132:251117] WHOOPDBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 14:21:53.971 Atria[2132:251122] WHOOPDBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 14:21:56.965 Atria[2132:251105] WHOOPDBG battery level=91 source=2A19 bytes=5b persisted=1
+2026-06-26 14:21:58.957 Atria[2132:251117] WHOOPDBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 14:21:58.961 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=16 custom_notify_enabled=0 tx_skipped=5 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:58.964 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=17 custom_notify_enabled=0 tx_skipped=5 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:58.966 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=18 custom_notify_enabled=0 tx_skipped=5 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:58.968 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=19 custom_notify_enabled=0 tx_skipped=5 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:21:58.970 Atria[2132:251105] WHOOPDBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=20 custom_notify_enabled=0 tx_skipped=5 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 14:22:00.952 Atria[2132:251117] WHOOPDBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 14:22:05.940 Atria[2132:251118] WHOOPDBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 14:22:07.939 Atria[2132:251105] WHOOPDBG battery level=91 source=2A19 bytes=5b persisted=1
+2026-06-26 14:22:40.860 Atria[2132:251105] WHOOPDBG rr_quality source=2a37 state=learning fraction=1.000 rr_frames=21 total_frames=21 max_rr_gap_s=36.9 frame_max_rr_gap_s=36.9 beat_timeline=1 window_s=58 hrv_state=learning rr_source_2a37_values=26 rr_source_0x28_decoded_values=0 rr_source_0x28_used_values=0
+2026-06-26 14:22:42.893 Atria[2132:251105] WHOOPDBG hrv raw=15 kept=2 rejected_out_of_range=0 rejected_delta_over_20_percent=7 rejected_hr_mismatch=6 interpolated=0 conf=13 window=47 max_rr_gap_s=36.9 ready=0 reason=window rmssd=learning sdnn=learning pnn50=learning lnrmssd=learning resp=learning
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.
