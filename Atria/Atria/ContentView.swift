@@ -43,6 +43,8 @@ private struct DailyEvidenceCard: View {
     @State private var lastLogKey = ""
     @State private var confirmationStatus = ""
     @State private var sleepConfirmationStatus = ""
+    @State private var summary = Summary.empty
+    @State private var summaryRevision = 0
     let restFallback: Int
 
     private struct Summary {
@@ -71,10 +73,33 @@ private struct DailyEvidenceCard: View {
         var activitySignals: Int {
             activityCandidates + (workoutSignalPresent && workouts == 0 ? 1 : 0)
         }
+
+        static let empty = Summary(
+            sessionsToday: 0,
+            savedMinutes: 0,
+            rrSaved: 0,
+            detections: [],
+            savedWorkout: .empty,
+            confirmedWorkouts: 0,
+            sleepEvidence: SleepEvidenceStatus(ready: false,
+                                               state: "learning",
+                                               blocker: "sleep_learning",
+                                               confidence: "none",
+                                               candidates: 0,
+                                               readyCandidates: 0,
+                                               motionSource: "unavailable",
+                                               motionValidated: false,
+                                               fallbackAvailable: false,
+                                               fallbackSource: "none",
+                                               fallbackReason: "none",
+                                               fallbackDuration: 0,
+                                               fallbackSpan: 0,
+                                               fallbackSessions: 0),
+            confirmedSleeps: 0
+        )
     }
 
     var body: some View {
-        let summary = makeSummary()
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Label("Detected locally", systemImage: "list.bullet.clipboard.fill")
@@ -128,33 +153,63 @@ private struct DailyEvidenceCard: View {
         }
         .padding()
         .atriaCard(cornerRadius: 22, emphasis: .soft)
-        .onAppear { log(summary: summary, reason: "appear") }
-        .onReceive(store.$sessions) { _ in log(summary: makeSummary(), reason: "sessions_changed") }
+        .onAppear { refreshSummary(reason: "appear") }
+        .onReceive(store.$sessions) { _ in refreshSummary(reason: "sessions_changed") }
     }
 
-    private func makeSummary() -> Summary {
-        let calendar = Calendar.current
+    private func refreshSummary(reason: String) {
+        summaryRevision += 1
+        let revision = summaryRevision
         let rest = store.baseline.restingInt ?? restFallback
+        let maxHR = store.profile.maxHR
+        let sessions = store.sessions
+        let workout = store.savedWorkoutAttemptStatusFast(rest: rest, maxHR: maxHR)
+        let sleep = store.sleepEvidenceStatusFast(rest: rest, calendar: .current)
+        let confirmedWorkouts = store.confirmedWorkouts.count
+        let confirmedSleeps = store.confirmedSleeps.count
+
+        DispatchQueue.global(qos: .utility).async {
+            let next = Self.makeSummary(sessions: sessions,
+                                        rest: rest,
+                                        maxHR: maxHR,
+                                        savedWorkout: workout,
+                                        sleepEvidence: sleep,
+                                        confirmedWorkouts: confirmedWorkouts,
+                                        confirmedSleeps: confirmedSleeps)
+            DispatchQueue.main.async {
+                guard revision == summaryRevision else { return }
+                summary = next
+                log(summary: next, reason: reason)
+            }
+        }
+    }
+
+    private static func makeSummary(sessions: [SavedSession],
+                                    rest: Int,
+                                    maxHR: Int,
+                                    savedWorkout: SavedWorkoutAttemptStatus,
+                                    sleepEvidence: SleepEvidenceStatus,
+                                    confirmedWorkouts: Int,
+                                    confirmedSleeps: Int) -> Summary {
+        let calendar = Calendar.current
         let cutoff = Date().addingTimeInterval(-36 * 60 * 60)
-        let today = store.sessions.filter { calendar.isDateInToday($0.start) }
-        let recentHistory = store.sessions
+        let today = sessions.filter { calendar.isDateInToday($0.start) }
+        let recentHistory = sessions
             .filter { $0.end >= cutoff && !calendar.isDateInToday($0.start) }
             .sorted { $0.start > $1.start }
             .prefix(40)
         let detectionSource = today + recentHistory
         let detections = detectionSource
-            .compactMap { $0.detectedActivity(rest: rest, maxHR: store.profile.maxHR) }
+            .compactMap { $0.detectedActivity(rest: rest, maxHR: maxHR) }
             .sorted { $0.start > $1.start }
-        let workout = store.savedWorkoutAttemptStatusFast(rest: rest, maxHR: store.profile.maxHR)
-        let sleep = store.sleepEvidenceStatus(rest: rest, calendar: calendar)
         return Summary(sessionsToday: today.count,
                        savedMinutes: Int(today.reduce(0) { $0 + $1.duration } / 60),
                        rrSaved: today.reduce(0) { $0 + $1.rrSampleCount },
                        detections: detections,
-                       savedWorkout: workout,
-                       confirmedWorkouts: store.confirmedWorkouts.count,
-                       sleepEvidence: sleep,
-                       confirmedSleeps: store.confirmedSleeps.count)
+                       savedWorkout: savedWorkout,
+                       confirmedWorkouts: confirmedWorkouts,
+                       sleepEvidence: sleepEvidence,
+                       confirmedSleeps: confirmedSleeps)
     }
 
     private func miniMetric(_ title: String,
