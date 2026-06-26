@@ -1228,7 +1228,7 @@ final class AtriaHomeModel {
         var peakHeartRate: Int?
 
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
-        var hasPulseSignal: Bool { hasContact || heartRate > 0 }
+        var hasPulseSignal: Bool { heartRate > 0 || hasContact }
         var contactText: String { hasPulseSignal ? "Live" : "No contact" }
         var averageHeartRateText: String { averageHeartRate.map(String.init) ?? "--" }
         var peakHeartRateText: String { peakHeartRate.map(String.init) ?? "--" }
@@ -1712,8 +1712,12 @@ final class AtriaHomeModel {
             .removeDuplicates()
             .throttle(for: .milliseconds(1500), scheduler: RunLoop.main, latest: true)
             .sink { [weak self] (_: [Int]) in
-                guard let self, self.prefersPulseSparklineUpdates else { return }
-                self.publishPulseSparkline()
+                guard let self else { return }
+                self.publishPulseLive()
+                self.publishHeroPulse()
+                if self.prefersPulseSparklineUpdates {
+                    self.publishPulseSparkline()
+                }
             }
             .store(in: &cancellables)
 
@@ -1987,19 +1991,29 @@ final class AtriaHomeModel {
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager) -> PulseLiveState {
-        PulseLiveState(heartRate: ble.heartRate,
-                       hasContact: ble.hasContact,
+        let reconciledHeartRate = liveHeartRate(ble: ble)
+        return PulseLiveState(heartRate: reconciledHeartRate,
+                       hasContact: ble.hasContact || reconciledHeartRate > 0,
                        averageHeartRate: ble.liveHeartWindow.average,
                        peakHeartRate: ble.liveHeartWindow.peak)
     }
 
     private static func makeHeroPulseState(ble: AtriaBLEManager) -> HeroPulseState {
-        HeroPulseState(heartRate: ble.heartRate)
+        HeroPulseState(heartRate: liveHeartRate(ble: ble))
     }
 
     private static func makePulseSparklineState(ble: AtriaBLEManager) -> PulseSparklineState {
         PulseSparklineState(values: ble.liveHeartWindow.sparkline,
                             chartPoints: compactHeartChartPoints(Array(ble.session.suffix(900))))
+    }
+
+    private static func liveHeartRate(ble: AtriaBLEManager) -> Int {
+        if ble.heartRate > 0 { return ble.heartRate }
+        guard let latest = ble.session.last, latest.bpm > 0,
+              Date().timeIntervalSince(latest.t) <= 75 else {
+            return 0
+        }
+        return latest.bpm
     }
 
     private static func compactHeartChartPoints(_ samples: [HRSample], targetCount: Int = 120) -> [HeartRateChartPoint] {
@@ -2581,13 +2595,27 @@ final class AtriaHomeModel {
 
 private struct AtriaToolbarIcon: View, Equatable {
     let symbol: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    static func == (lhs: AtriaToolbarIcon, rhs: AtriaToolbarIcon) -> Bool {
+        lhs.symbol == rhs.symbol
+    }
 
     var body: some View {
         Image(systemName: symbol)
             .font(.callout.weight(.semibold))
             .imageScale(.small)
-            .frame(width: 30, height: 30)
-            .glassEffect(.regular.interactive(), in: .circle)
+            .foregroundStyle(.primary)
+            .frame(width: 34, height: 34)
+            .background {
+                Circle()
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.84))
+                    .overlay {
+                        Circle()
+                            .stroke(colorScheme == .dark ? Color.white.opacity(0.11) : Color.black.opacity(0.13), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.07), radius: 10, y: 5)
+            }
             .contentShape(.circle)
     }
 }
@@ -2666,10 +2694,17 @@ private struct AtriaTopStatusChip: View {
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 22)
         .frame(minWidth: 132, minHeight: 44)
-        .glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)
-        .fixedSize()
+        .background {
+            Capsule()
+                .fill(tint.opacity(colorScheme == .light ? 0.28 : 0.22))
+                .overlay {
+                    Capsule()
+                        .stroke(tint.opacity(colorScheme == .light ? 0.45 : 0.35), lineWidth: 1)
+                }
+                .shadow(color: tint.opacity(colorScheme == .light ? 0.18 : 0.12), radius: 10, y: 5)
+        }
         .contentShape(.capsule)
         .onTapGesture {
             if status != .connected { onTapWhenNotConnected() }
