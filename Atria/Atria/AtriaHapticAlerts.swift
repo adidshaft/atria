@@ -159,7 +159,7 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
             }
         }
         .padding(14)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaInsetCard(tint: .purple)
     }
 
     private func hapticToggle(_ title: String,
