@@ -260,6 +260,10 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_handoff_21_uniform_cards_avoid_clipping_and_nested_raised_chrome(self):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        shared_ui = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        connection = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        live_workout = source(ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift")
 
         for needle in [
             "struct AtriaOverviewCollectionSection: View, Equatable",
@@ -284,6 +288,31 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaCard(emphasis: .soft)",
         ]:
             assert_contains(self, vitals, needle)
+
+        for needle in [
+            "Text(\"I’ll handle it\")\n                        .frame(maxWidth: .infinity)",
+            ".atriaCardAction(tint: .orange)",
+            "Text(primaryButtonTitle)\n                                    .frame(maxWidth: .infinity)",
+            ".atriaCardAction(tint: .blue)",
+            "Text(\"Retry scan now\")\n                                    .frame(maxWidth: .infinity)",
+            ".atriaCardAction(prominent: false, tint: .gray)",
+        ]:
+            assert_contains(self, connection, needle)
+        assert_not_contains(self, connection, ".buttonStyle(.glass")
+        assert_not_contains(self, connection, ".buttonStyle(.glassProminent")
+
+        for needle in [
+            ".frame(maxWidth: .infinity, minHeight: 30)",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
+            ".accessibilityLabel(\"Decrease \\(title)\")",
+            ".accessibilityLabel(\"Increase \\(title)\")",
+        ]:
+            assert_contains(self, shared_ui, needle)
+        assert_not_contains(self, shared_ui, ".buttonStyle(.glass")
+
+        assert_contains(self, content, "Text(primaryButtonTitle)\n                            .frame(maxWidth: .infinity)")
+        assert_contains(self, content, ".atriaCardAction(tint: .blue)")
+        assert_contains(self, live_workout, ".atriaCardAction(tint: .red)")
 
     def test_session_detail_downsamples_once_for_render_perf(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
@@ -1208,6 +1237,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, card, "does not send metrics until a reviewed")
         assert_contains(self, card, "Enable local mode for an offline summary")
         assert_contains(self, card, ".privacySensitive()")
+        assert_contains(self, card, ".atriaCardAction(tint: .indigo)")
+        assert_contains(self, card, ".atriaCardAction(prominent: false, tint: .gray)")
+        assert_not_contains(self, card, ".buttonStyle(.glass")
+        assert_not_contains(self, card, ".buttonStyle(.glassProminent")
         assert_not_contains(self, card, "sends selected local metrics")
         assert_not_contains(self, card, ".textContentType(.password)")
 

@@ -86,20 +86,24 @@ struct AtriaAICoachCard: View, Equatable {
                 .atriaInsetCard(cornerRadius: 14, tint: .indigo)
 
             HStack(spacing: 8) {
-                Button("Save key") {
+                Button {
                     onSaveAPIKey(apiKeyDraft)
                     apiKeyDraft = ""
+                } label: {
+                    Text("Save key")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassProminent)
-        .tint(.indigo)
+                .atriaCardAction(tint: .indigo)
 
                 if hasAPIKey {
-                    Button("Remove key") {
+                    Button {
                         apiKeyDraft = ""
                         onDeleteAPIKey()
+                    } label: {
+                        Text("Remove key")
+                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glassProminent)
-        .tint(.gray)
+                    .atriaCardAction(prominent: false, tint: .gray)
                 }
             }
 
