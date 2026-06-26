@@ -435,6 +435,10 @@ struct AtriaOverviewLeadingSection: View {
                 // setup checklist, no strain-target maths — kept direct.
                 AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
 
+                AtriaOverviewMorningJournalHost(heroStore: heroStore,
+                                                snapshotStore: snapshotStore,
+                                                store: store)
+
                 if !AtriaTodayMetric.hidden(from: hiddenCSV).contains(AtriaTodayMetric.insights.rawValue) {
                     AtriaInsightsCardHost(store: store)
                 }
@@ -906,6 +910,155 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
 
     static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
         lhs.hero == rhs.hero
+    }
+}
+
+struct AtriaOverviewMorningJournalHost: View {
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        AtriaOverviewMorningJournalCard(hero: heroStore.state,
+                                        snapshot: snapshotStore.state,
+                                        sleepHistory: store.sleepHistorySnapshot,
+                                        todayEntry: store.behaviorJournalEntry(),
+                                        taggedDays: store.behaviorJournalEntries.count,
+                                        onToggleTag: { tag in
+                                            store.toggleBehaviorTag(tag)
+                                        },
+                                        onConfirmSleep: {
+                                            _ = store.confirmBestSleepCandidateForUI(rest: store.baseline.restingInt ?? 60,
+                                                                                    source: "morning_journal")
+                                        })
+            .equatable()
+    }
+}
+
+struct AtriaOverviewMorningJournalCard: View, Equatable {
+    let hero: AtriaHomeModel.HeroSnapshot
+    let snapshot: AtriaHomeModel.Snapshot
+    let sleepHistory: SleepHistorySnapshot
+    let todayEntry: BehaviorJournalEntry
+    let taggedDays: Int
+    let onToggleTag: (BehaviorJournalEntry.Tag) -> Void
+    let onConfirmSleep: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaOverviewMorningJournalCard, rhs: AtriaOverviewMorningJournalCard) -> Bool {
+        lhs.hero.recoveryValue == rhs.hero.recoveryValue
+            && lhs.hero.hrvValue == rhs.hero.hrvValue
+            && lhs.hero.hrvDetail == rhs.hero.hrvDetail
+            && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
+            && lhs.snapshot.sleepDetail == rhs.snapshot.sleepDetail
+            && lhs.sleepHistory == rhs.sleepHistory
+            && lhs.todayEntry == rhs.todayEntry
+            && lhs.taggedDays == rhs.taggedDays
+    }
+
+    private var latestNight: SleepHistorySnapshot.Night? {
+        sleepHistory.latest
+    }
+
+    private var shouldShowConfirmSleep: Bool {
+        guard let latestNight else { return false }
+        return !latestNight.confirmed && sleepHistory.candidateCount > 0
+    }
+
+    private var sleepStatusText: String {
+        if let latestNight {
+            return "\(latestNight.durationText) · \(latestNight.confidenceText)"
+        }
+        return snapshot.sleepDetail
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Morning journal", subtitle: "")
+
+                Spacer(minLength: 0)
+
+                AtriaStateBadge(state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning))
+            }
+
+            LazyVGrid(columns: Self.metricColumns, spacing: 10) {
+                AtriaMetricTile(label: "Sleep",
+                                value: latestNight?.durationText ?? metricDisplayValue(snapshot.sleepValue),
+                                state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning),
+                                tint: .cyan,
+                                footnote: sleepStatusText)
+                AtriaMetricTile(label: "Recovery",
+                                value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
+                                unit: hero.recoveryEstimate.percent == nil ? nil : "%",
+                                state: hero.recoveryEstimate.percent == nil ? .learning : .validated,
+                                tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange)
+                AtriaMetricTile(label: "HRV",
+                                value: metricDisplayValue(hero.hrvValue),
+                                state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning,
+                                tint: .pink)
+            }
+
+            LazyVGrid(columns: Self.tagColumns, spacing: 8) {
+                ForEach(BehaviorJournalEntry.Tag.allCases) { tag in
+                    Button {
+                        if reduceMotion {
+                            onToggleTag(tag)
+                        } else {
+                            withAnimation(.snappy(duration: 0.2)) {
+                                onToggleTag(tag)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: todayEntry.tags.contains(tag) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(todayEntry.tags.contains(tag) ? .purple : .secondary)
+                            Text(tag.label)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.76)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .atriaGlassSelectable(selected: todayEntry.tags.contains(tag))
+                }
+            }
+
+            HStack(spacing: 10) {
+                if shouldShowConfirmSleep {
+                    Button(action: onConfirmSleep) {
+                        Label("Confirm sleep", systemImage: "checkmark.circle")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: .cyan)
+                }
+
+                Text(taggedDays > 0
+                     ? "\(taggedDays) journal days saved locally"
+                     : "Tags stay on device and power local insights.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private static let metricColumns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
+    private static let tagColumns = [GridItem(.adaptive(minimum: 118), spacing: 8)]
+
+    private func metricDisplayValue(_ value: String) -> String {
+        value.localizedCaseInsensitiveContains("learning")
+            || value.localizedCaseInsensitiveContains("prepar")
+            || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "--"
+            : value
     }
 }
 
