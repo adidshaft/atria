@@ -21,6 +21,32 @@ def all_swift_source():
     return "\n".join(source(path) for path in swift_files())
 
 
+def swift_var_body_blocks(text):
+    blocks = []
+    needle = "var body: some View"
+    start = 0
+    while True:
+        index = text.find(needle, start)
+        if index == -1:
+            return blocks
+        brace = text.find("{", index)
+        if brace == -1:
+            return blocks
+        depth = 0
+        for pos in range(brace, len(text)):
+            char = text[pos]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append((index, text[index:pos + 1]))
+                    start = pos + 1
+                    break
+        else:
+            return blocks
+
+
 def assert_contains(testcase, haystack, needle):
     testcase.assertTrue(needle in haystack, f"missing required source token: {needle}")
 
@@ -473,6 +499,53 @@ class HandoffStaticChecks(unittest.TestCase):
             sessions,
             "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
         )
+
+    def test_swiftui_body_blocks_do_not_run_session_derivations(self):
+        forbidden = [
+            ".sorted(",
+            ".reduce(",
+            ".compactMap(",
+            "dailyRollups(",
+            "detectedActivity(",
+        ]
+        checked = 0
+        for rel in [
+            ROOT / "Atria" / "Atria" / "ContentView.swift",
+            ROOT / "Atria" / "Atria" / "AtriaHomeView.swift",
+            ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift",
+            ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift",
+            ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift",
+        ]:
+            for start, body in swift_var_body_blocks(source(rel)):
+                checked += 1
+                for needle in forbidden:
+                    self.assertNotIn(needle, body, f"{rel}:{start} keeps {needle} in var body")
+        self.assertGreater(checked, 20)
+
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        for needle in [
+            "@State private var summary = Summary.empty",
+            "@State private var summaryRevision = 0",
+            ".onAppear { refreshSummary(reason: \"appear\") }",
+            ".onReceive(store.$sessions) { _ in refreshSummary(reason: \"sessions_changed\") }",
+            "DispatchQueue.global(qos: .utility).async",
+            "private static func makeSummary(sessions: [SavedSession],",
+            "store.sleepEvidenceStatusFast(rest: rest, calendar: .current)",
+        ]:
+            assert_contains(self, content, needle)
+
+        daily_card = content[content.index("private struct DailyEvidenceCard"):content.index("private struct CollectionReliabilityCard")]
+        body_start = daily_card.index("var body: some View")
+        body_end = daily_card.index("private func refreshSummary")
+        daily_body = daily_card[body_start:body_end]
+        for forbidden_body_token in [
+            "makeSummary(",
+            "detectedActivity(",
+            ".compactMap(",
+            ".reduce(",
+            ".sorted(",
+        ]:
+            assert_not_contains(self, daily_body, forbidden_body_token)
 
     def test_history_snapshot_is_cached_off_navigation_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
