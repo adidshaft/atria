@@ -333,6 +333,49 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
         )
 
+    def test_history_snapshot_is_cached_off_navigation_path(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            "@Published private(set) var historySnapshot = HistorySnapshot.empty",
+            "private var historySnapshotRevision = 0",
+            "private func refreshHistorySnapshotCache(deferred: Bool = true)",
+            "historySnapshot = HistorySnapshot.sessionsOnly(sessions)",
+            "await Task.yield()",
+            "try? await Task.sleep(nanoseconds: 120_000_000)",
+            "private func publishFullHistorySnapshotIfCurrent(revision: Int)",
+            "historySnapshot = HistorySnapshot(sessions: sessions,",
+            "private var snapshot: HistorySnapshot {\n        store.historySnapshot\n    }",
+            "struct HistorySnapshot",
+            "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [])",
+            "static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        history_view_start = sessions.index("struct HistoryView: View")
+        history_view_end = sessions.index("struct HistorySnapshot")
+        history_view_source = sessions[history_view_start:history_view_end]
+        for forbidden in [
+            "@State private var snapshot",
+            "HistorySnapshot(store: store)",
+            "refreshSnapshot()",
+            "detectedActivities(rest:",
+            "trendSummaries(rest:",
+            "dailyRollups(rest:",
+        ]:
+            assert_not_contains(self, history_view_source, forbidden)
+
+        history_snapshot_start = sessions.index("struct HistorySnapshot")
+        history_snapshot_end = sessions.index("private struct HistoryQuickStat")
+        history_snapshot_source = sessions[history_snapshot_start:history_snapshot_end]
+        for forbidden in [
+            "init(store: SessionStore)",
+            "detectedActivities(rest:",
+            "trendSummaries(rest:",
+            "dailyRollups(rest:",
+        ]:
+            assert_not_contains(self, history_snapshot_source, forbidden)
+
     def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
