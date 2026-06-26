@@ -9,7 +9,7 @@ struct AtriaVitalsTabContent: View {
     let profileStore: AtriaHomeModel.ProfileStore
     let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let store: SessionStore
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
 
     var body: some View {
@@ -70,7 +70,7 @@ struct AtriaCollectionTabContent: View {
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let profileStore: AtriaHomeModel.ProfileStore
     let store: SessionStore
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
     @Binding var showRRImporter: Bool
     @Binding var showHRImporter: Bool
@@ -221,7 +221,7 @@ private struct AtriaVitalsProfileCardHost: View {
 
 private struct AtriaCollectionCaptureCardHost: View {
     @ObservedObject var collectionLiveStore: AtriaHomeModel.CollectionLiveStore
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     @Binding var captureShareURL: URL?
     @State private var showDetails = false
 
@@ -759,7 +759,7 @@ private struct AtriaCollectionControlsCardHost: View {
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
     let store: SessionStore
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     @Binding var hapticSettings: AtriaHapticAlertSettings
     let developerModeEnabled: Bool
 
@@ -844,11 +844,11 @@ private struct AtriaCollectionStatusCardHost: View {
 
                 Spacer(minLength: 0)
 
-                AtriaStateBadge(state: collectionLiveStore.state.officialWhoopCoexistenceRisk == .suspected ? .noContact : .local)
+                AtriaStateBadge(state: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .noContact : .local)
             }
 
-            if collectionLiveStore.state.officialWhoopCoexistenceRisk != .cleared {
-                AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialWhoopCoexistenceRisk)
+            if collectionLiveStore.state.officialAppCoexistenceRisk != .cleared {
+                AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialAppCoexistenceRisk)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
@@ -883,16 +883,16 @@ private struct AtriaCollectionStatusCardHost: View {
 }
 
 private struct AtriaCollectionCoexistenceWarning: View, Equatable {
-    let risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
+    let risk: AtriaBLEManager.OfficialAppCoexistenceRisk
 
     private var title: String {
-        risk == .suspected ? "WHOOP conflict" : "WHOOP check"
+        risk == .suspected ? "App conflict" : "Strap check"
     }
 
     private var detail: String {
         risk == .suspected
-            ? "Remove WHOOP, then reconnect."
-            : "Remove WHOOP if drops return."
+            ? "Remove the official strap app, then reconnect."
+            : "Remove the official strap app if drops return."
     }
 
     private var tint: Color {
@@ -922,8 +922,8 @@ private struct AtriaCollectionCoexistenceWarning: View, Equatable {
 }
 
 private struct AtriaCollectionProfilePicker: View, Equatable {
-    let selected: WhoopBLEManager.CollectionProfile
-    let onSelect: (WhoopBLEManager.CollectionProfile) -> Void
+    let selected: AtriaBLEManager.CollectionProfile
+    let onSelect: (AtriaBLEManager.CollectionProfile) -> Void
 
     static func == (lhs: AtriaCollectionProfilePicker, rhs: AtriaCollectionProfilePicker) -> Bool {
         lhs.selected == rhs.selected
@@ -950,7 +950,7 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
             }
 
             HStack(spacing: 8) {
-                ForEach(WhoopBLEManager.CollectionProfile.allCases) { profile in
+                ForEach(AtriaBLEManager.CollectionProfile.allCases) { profile in
                     Button {
                         onSelect(profile)
                     } label: {

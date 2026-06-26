@@ -211,7 +211,7 @@ private struct AtriaDisconnectedOverviewHost: View {
 }
 
 private struct AtriaDisconnectedOverviewPanel: View, Equatable {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let stats: AtriaHomeModel.HomeStatsState
     let snapshot: AtriaHomeModel.Snapshot
     let context: AtriaConnectionGuideContext
@@ -285,8 +285,8 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     }
 
     private var setupDetail: String {
-        if context.officialWhoopCoexistenceRisk == .suspected {
-            return "Remove WHOOP first."
+        if context.officialAppCoexistenceRisk == .suspected {
+            return "Remove the official strap app first."
         }
         switch status {
         case .connecting:
@@ -296,7 +296,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
         case .poweredOff:
             return "Bluetooth required."
         case .disconnected:
-            return "Free strap from WHOOP."
+            return "Free strap from the official app."
         case .connected:
             return "Reconnects automatically."
         }
@@ -304,11 +304,11 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
 
     private var setupItems: [String] {
         var items = [
-            "Remove WHOOP app",
+            "Remove the official strap app",
             "Keep strap nearby",
             "Let Atria scan"
         ]
-        if context.officialWhoopCoexistenceRisk == .suspected {
+        if context.officialAppCoexistenceRisk == .suspected {
             items[2] = "Reconnect in Atria"
         }
         return items
@@ -342,7 +342,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
                                                        context: context,
                                                        onShowConnectionGuide: onShowConnectionGuide)
 
-                AtriaDisconnectedOverviewChecklistCard(title: context.isFirstHandoff ? "Do once before Atria takes over" : "Only if WHOOP grabs the strap again",
+                AtriaDisconnectedOverviewChecklistCard(title: context.isFirstHandoff ? "Do once before Atria takes over" : "Only if another app grabs the strap again",
                                                        items: setupItems,
                                                        tint: .orange)
 
@@ -1301,7 +1301,7 @@ struct AtriaOverviewBackupSection: View, Equatable {
 }
 
 private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
-    let status: WhoopBLEManager.Status
+    let status: AtriaBLEManager.Status
     let tint: Color
     let setupDetail: String
     let context: AtriaConnectionGuideContext
@@ -1352,7 +1352,7 @@ private struct AtriaDisconnectedOverviewCoexistenceCard: View, Equatable {
     let context: AtriaConnectionGuideContext
 
     private var tint: Color {
-        context.officialWhoopCoexistenceRisk == .suspected ? .red : .orange
+        context.officialAppCoexistenceRisk == .suspected ? .red : .orange
     }
 
     var body: some View {

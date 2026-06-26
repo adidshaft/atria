@@ -29,7 +29,7 @@ struct AtriaHapticAlertSettings: Codable, Equatable {
 @MainActor
 final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     struct Snapshot {
-        let status: WhoopBLEManager.Status
+        let status: AtriaBLEManager.Status
         let isRecording: Bool
         let heartRate: Int
         let maxHR: Int
@@ -74,7 +74,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
             let isRinging = !call.hasConnected && !call.hasEnded
             guard settings.incomingCalls, activeCollection, isRinging else { return }
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
-            WHOOPDebugLog("WHOOPDBG haptic_alert kind=incoming_call active_collection=1 phone_side=1 strap_write=0")
+            AtriaDebugLog("ATRIADBG haptic_alert kind=incoming_call active_collection=1 phone_side=1 strap_write=0")
         }
     }
 
@@ -87,7 +87,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         defer { lastZone = zone }
         guard let lastZone, lastZone != zone else { return }
         UIImpactFeedbackGenerator(style: zone.rawValue > lastZone.rawValue ? .medium : .light).impactOccurred()
-        WHOOPDebugLog("WHOOPDBG haptic_alert kind=hr_zone from=%@ to=%@ bpm=%d max_hr=%d phone_side=1 strap_write=0",
+        AtriaDebugLog("ATRIADBG haptic_alert kind=hr_zone from=%@ to=%@ bpm=%d max_hr=%d phone_side=1 strap_write=0",
               lastZone.name,
               zone.name,
               heartRate,
@@ -99,7 +99,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         defer { lastBatteryLow = isLow }
         guard settings.lowBattery, activeCollection, isLow, !lastBatteryLow else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
-        WHOOPDebugLog("WHOOPDBG haptic_alert kind=low_battery level=%d phone_side=1 strap_write=0", level)
+        AtriaDebugLog("ATRIADBG haptic_alert kind=low_battery level=%d phone_side=1 strap_write=0", level)
     }
 
     private func updateRecoveryReady(percent: Int?, settings: AtriaHapticAlertSettings) {
@@ -107,7 +107,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         defer { recoveryWasReady = ready }
         guard settings.recoveryReady, ready, !recoveryWasReady else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        WHOOPDebugLog("WHOOPDBG haptic_alert kind=recovery_ready phone_side=1 strap_write=0")
+        AtriaDebugLog("ATRIADBG haptic_alert kind=recovery_ready phone_side=1 strap_write=0")
     }
 
     private func updateStrainTarget(strain: Double,
@@ -117,7 +117,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         defer { strainWasAtTarget = atTarget }
         guard settings.strainTarget, activeCollection, atTarget, !strainWasAtTarget else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        WHOOPDebugLog("WHOOPDBG haptic_alert kind=strain_target strain=%.1f target=%.1f phone_side=1 strap_write=0",
+        AtriaDebugLog("ATRIADBG haptic_alert kind=strain_target strain=%.1f target=%.1f phone_side=1 strap_write=0",
               strain,
               target ?? 0)
     }

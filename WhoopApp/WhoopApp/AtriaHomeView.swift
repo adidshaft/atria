@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import UIKit
 
 struct AtriaHomeContainer: View, Equatable {
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     let store: SessionStore
 
     static func == (lhs: AtriaHomeContainer, rhs: AtriaHomeContainer) -> Bool {
@@ -42,7 +42,7 @@ struct AtriaHomeView: View {
         }
     }
 
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     let store: SessionStore
 
     @Environment(\.colorScheme) private var colorScheme
@@ -66,7 +66,7 @@ struct AtriaHomeView: View {
     @State private var showSettings = false
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var showCoexistenceModal = false
-    @State private var whoopAppInstalled: Bool = {
+    @State private var officialAppInstalled: Bool = {
         guard let url = URL(string: "whoop://") else { return false }
         return UIApplication.shared.canOpenURL(url)
     }()
@@ -95,7 +95,7 @@ struct AtriaHomeView: View {
     @State private var missedDataBannerDismissedUntil: Date?
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
 
-    init(ble: WhoopBLEManager, store: SessionStore) {
+    init(ble: AtriaBLEManager, store: SessionStore) {
         self.ble = ble
         self.store = store
         _model = State(initialValue: AtriaHomeModel(ble: ble, store: store))
@@ -187,7 +187,7 @@ struct AtriaHomeView: View {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
                               strapName: ble.resolvedDeviceName,
-                              strapModel: ble.whoopModelLabel,
+                              strapModel: ble.strapModelLabel,
                               strapFirmware: ble.firmwareRevision,
                               onRenameStrap: { ble.setCustomDeviceName($0) },
                               onUpdateProfile: store.updateProfile,
@@ -208,13 +208,13 @@ struct AtriaHomeView: View {
                                  onStop: { workoutSession = nil })
         }
         .sheet(isPresented: $showCoexistenceModal) {
-            AtriaWhoopCoexistenceModal(context: connectionGuideContext) {
+            AtriaCoexistenceModal(context: connectionGuideContext) {
                 acknowledgeCoexistenceModal(reason: "button")
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
-        .onReceive(ble.$officialWhoopCoexistenceRisk.removeDuplicates()) { risk in
+        .onReceive(ble.$officialAppCoexistenceRisk.removeDuplicates()) { risk in
             presentCoexistenceModalIfNeeded(for: risk)
         }
         .onAppear {
@@ -223,7 +223,7 @@ struct AtriaHomeView: View {
                ProcessInfo.processInfo.arguments.contains("--atria-show-workout") {
                 workoutSession = AtriaWorkoutSession(start: Date())
             }
-            presentCoexistenceModalIfNeeded(for: ble.officialWhoopCoexistenceRisk)
+            presentCoexistenceModalIfNeeded(for: ble.officialAppCoexistenceRisk)
             guard !hasUnlockedPrimaryContent else { return }
             UIDevice.current.isBatteryMonitoringEnabled = true
             batteryState = UIDevice.current.batteryState
@@ -290,7 +290,7 @@ struct AtriaHomeView: View {
             ble.refreshPhoneStepsToday(reason: "scene_active")
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "scene_active")
             if let url = URL(string: "whoop://") {
-                whoopAppInstalled = UIApplication.shared.canOpenURL(url)
+                officialAppInstalled = UIApplication.shared.canOpenURL(url)
             }
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
@@ -360,7 +360,7 @@ struct AtriaHomeView: View {
         }
     }
 
-    private func secondaryUnlockDelayNanoseconds(for status: WhoopBLEManager.Status) -> UInt64 {
+    private func secondaryUnlockDelayNanoseconds(for status: AtriaBLEManager.Status) -> UInt64 {
         switch status {
         case .connected:
             return 300_000_000
@@ -745,12 +745,12 @@ struct AtriaHomeView: View {
         }
     }
 
-    private func presentCoexistenceModalIfNeeded(for risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk) {
+    private func presentCoexistenceModalIfNeeded(for risk: AtriaBLEManager.OfficialAppCoexistenceRisk) {
         guard risk == .suspected else { return }
-        // Never auto-interrupt the user when WHOOP isn't even installed — those
+        // Never auto-interrupt the user when the official strap app isn't even installed — those
         // drops are battery/range and are handled silently by auto-reconnect. The
         // recovery steps stay available on demand via the "?" connection guide.
-        guard whoopAppInstalled else { return }
+        guard officialAppInstalled else { return }
         Task { @MainActor in
             await Task.yield()
             let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
@@ -785,9 +785,9 @@ struct AtriaHomeView: View {
     private func recordCoexistenceSnoozeVerification(status: String, reason: String) {
 #if DEBUG
         let defaults = UserDefaults.standard
-        defaults.set(status, forKey: "whoop.link.coexistenceSnoozeVerificationStatus")
-        defaults.set(reason, forKey: "whoop.link.coexistenceSnoozeVerificationReason")
-        defaults.set(Date().timeIntervalSince1970, forKey: "whoop.link.coexistenceSnoozeVerificationAt")
+        defaults.set(status, forKey: "atria.link.coexistenceSnoozeVerificationStatus")
+        defaults.set(reason, forKey: "atria.link.coexistenceSnoozeVerificationReason")
+        defaults.set(Date().timeIntervalSince1970, forKey: "atria.link.coexistenceSnoozeVerificationAt")
 #endif
     }
 
@@ -876,9 +876,9 @@ struct AtriaHomeView: View {
         connectionGuidePresentationTask?.cancel()
         connectionGuidePresentationTask = nil
         let defaults = UserDefaults.standard
-        let successes = defaults.integer(forKey: WhoopBLEManager.LinkDefaults.successes)
-        let attempts = defaults.integer(forKey: WhoopBLEManager.LinkDefaults.attempts)
-        let failures = defaults.integer(forKey: WhoopBLEManager.LinkDefaults.failures)
+        let successes = defaults.integer(forKey: AtriaBLEManager.LinkDefaults.successes)
+        let attempts = defaults.integer(forKey: AtriaBLEManager.LinkDefaults.attempts)
+        let failures = defaults.integer(forKey: AtriaBLEManager.LinkDefaults.failures)
         guard store.profile.hasCompletedOnboarding,
               successes == 0,
               !isConnectionGuideSnoozed,
@@ -905,7 +905,7 @@ struct AtriaHomeView: View {
             guard !Task.isCancelled else { return }
             guard connectionGuidePresentationToken == token,
                   store.profile.hasCompletedOnboarding,
-                  UserDefaults.standard.integer(forKey: WhoopBLEManager.LinkDefaults.successes) == 0,
+                  UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) == 0,
                   !isConnectionGuideSnoozed,
                   model.coreLiveStore.state.status != .connected else { return }
             showConnectionGuide = true
@@ -923,7 +923,7 @@ struct AtriaHomeView: View {
             guard model.coreLiveStore.state.status == .disconnected else { return }
             let now = Date()
             let minimumSpacing: TimeInterval =
-                UserDefaults.standard.integer(forKey: WhoopBLEManager.LinkDefaults.successes) == 0 ? 2.2 : 4.5
+                UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) == 0 ? 2.2 : 4.5
             if let lastAutomaticConnectionSetupAt,
                now.timeIntervalSince(lastAutomaticConnectionSetupAt) < minimumSpacing {
                 return
@@ -933,7 +933,7 @@ struct AtriaHomeView: View {
         }
     }
 
-    private func handleStatusChange(_ status: WhoopBLEManager.Status) {
+    private func handleStatusChange(_ status: AtriaBLEManager.Status) {
         updateMediaRefreshLoop()
         if status == .connected {
             automaticConnectionSetupTask?.cancel()
@@ -970,13 +970,13 @@ struct AtriaHomeView: View {
     private var connectionGuideContext: AtriaConnectionGuideContext {
         let defaults = UserDefaults.standard
         return AtriaConnectionGuideContext(
-            hasEverConnected: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.successes) > 0,
-            attempts: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.attempts),
-            failures: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.failures),
-            lastStatus: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastStatus) ?? "idle",
-            lastReason: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastReason) ?? "waiting",
-            officialWhoopCoexistenceRisk: model.statusStore.state.officialWhoopCoexistenceRisk,
-            whoopAppInstalled: whoopAppInstalled
+            hasEverConnected: defaults.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0,
+            attempts: defaults.integer(forKey: AtriaBLEManager.LinkDefaults.attempts),
+            failures: defaults.integer(forKey: AtriaBLEManager.LinkDefaults.failures),
+            lastStatus: defaults.string(forKey: AtriaBLEManager.LinkDefaults.lastStatus) ?? "idle",
+            lastReason: defaults.string(forKey: AtriaBLEManager.LinkDefaults.lastReason) ?? "waiting",
+            officialAppCoexistenceRisk: model.statusStore.state.officialAppCoexistenceRisk,
+            officialAppInstalled: officialAppInstalled
         )
     }
 
@@ -998,9 +998,9 @@ struct AtriaHomeView: View {
         logHomeTiming(event: "diagnostics_ready", status: model.coreLiveStore.state.status)
     }
 
-    private func logHomeTiming(event: String, status: WhoopBLEManager.Status) {
+    private func logHomeTiming(event: String, status: AtriaBLEManager.Status) {
         let elapsedMS = Int((Date().timeIntervalSince(homeAppearedAt ?? Date())) * 1000)
-        WHOOPDebugLog("WHOOPDBG home_launch_timing event=%@ elapsed_ms=%d status=%@ tab=%@",
+        AtriaDebugLog("ATRIADBG home_launch_timing event=%@ elapsed_ms=%d status=%@ tab=%@",
                       event,
                       elapsedMS,
                       status.logToken,
@@ -1268,12 +1268,12 @@ private struct AtriaStandByMetric: View {
 @MainActor
 final class AtriaHomeModel {
     struct StatusState: Equatable {
-        var status: WhoopBLEManager.Status
-        var officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
+        var status: AtriaBLEManager.Status
+        var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
     }
 
     struct CoreLiveState: Equatable {
-        var status: WhoopBLEManager.Status
+        var status: AtriaBLEManager.Status
         var deviceName: String
         var batteryLevel: Int
         var batteryIsCharging: Bool
@@ -1335,15 +1335,15 @@ final class AtriaHomeModel {
         var standardHROnlyEnabled: Bool
         var longWearModeEnabled: Bool
         var rangeLossBackfillPending: Bool
-        var collectionProfile: WhoopBLEManager.CollectionProfile
-        var officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
+        var collectionProfile: AtriaBLEManager.CollectionProfile
+        var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
 
         var recordingState: String { isRecording ? "Recording" : (captureWasValidationReady ? "Ready" : "Idle") }
         var captureFileLabel: String { lastCaptureFile.isEmpty ? "None" : "Saved" }
         var modeLabel: String {
             longWearModeEnabled ? "Long wear" : collectionProfile.label
         }
-        var coexistenceStatusText: String { officialWhoopCoexistenceRisk.label }
+        var coexistenceStatusText: String { officialAppCoexistenceRisk.label }
     }
 
     struct HeroSnapshot: Equatable {
@@ -1552,7 +1552,7 @@ final class AtriaHomeModel {
     let profileStore: ProfileStore
     let profileMetricsStore: ProfileMetricsStore
 
-    private let ble: WhoopBLEManager
+    private let ble: AtriaBLEManager
     private let store: SessionStore
     private var cancellables = Set<AnyCancellable>()
     private let coreRefreshSubject = PassthroughSubject<Void, Never>()
@@ -1623,7 +1623,7 @@ final class AtriaHomeModel {
         let peakHeartRate: Int?
     }
 
-    init(ble: WhoopBLEManager, store: SessionStore) {
+    init(ble: AtriaBLEManager, store: SessionStore) {
         self.ble = ble
         self.store = store
         self.savedAggregate = Self.makeSavedAggregate(store: store)
@@ -1632,7 +1632,7 @@ final class AtriaHomeModel {
                                                                     maxHR: store.profile.maxHR,
                                                                     profile: store.profile)
         let initialStatus = StatusState(status: ble.status,
-                                        officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
+                                        officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble, liveSessionDerived: initialLiveSessionDerived)
         let initialHeroPulse = Self.makeHeroPulseState(ble: ble)
         let initialPulseLive = Self.makePulseLiveState(ble: ble)
@@ -1687,7 +1687,7 @@ final class AtriaHomeModel {
     func loadDeferredDiagnosticsIfNeeded(reason: String) {
         if !diagnosticsRequested {
             diagnosticsRequested = true
-            WHOOPDebugLog("WHOOPDBG home_diagnostics status=requested reason=%@", reason)
+            AtriaDebugLog("ATRIADBG home_diagnostics status=requested reason=%@", reason)
         }
         diagnosticsRefreshSubject.send(())
     }
@@ -1706,7 +1706,7 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
-        ble.$officialWhoopCoexistenceRisk
+        ble.$officialAppCoexistenceRisk
             .removeDuplicates()
             .map { _ in () }
             .sink { [weak self] _ in
@@ -1809,7 +1809,7 @@ final class AtriaHomeModel {
             ble.$longWearModeEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$collectionProfile.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$officialWhoopCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -1891,7 +1891,7 @@ final class AtriaHomeModel {
 
     private func publishStatus() {
         let next = StatusState(status: ble.status,
-                               officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
+                               officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
         guard next != statusStore.state else { return }
         statusStore.state = next
     }
@@ -1973,7 +1973,7 @@ final class AtriaHomeModel {
 
     private func scheduleDeferredDiagnosticsRefresh() {
         guard !diagnosticsWorkInFlight else {
-            WHOOPDebugLog("WHOOPDBG home_diagnostics status=skipped reason=refresh_in_flight")
+            AtriaDebugLog("ATRIADBG home_diagnostics status=skipped reason=refresh_in_flight")
             return
         }
         diagnosticsWorkItem?.cancel()
@@ -2036,11 +2036,11 @@ final class AtriaHomeModel {
                                                          profile: profile)
     }
 
-    private static func currentRestingHeartRate(ble: WhoopBLEManager, store: SessionStore) -> Int {
+    private static func currentRestingHeartRate(ble: AtriaBLEManager, store: SessionStore) -> Int {
         store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
     }
 
-    private static func makeCoreLiveState(ble: WhoopBLEManager,
+    private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
         return CoreLiveState(status: ble.status,
                              deviceName: ble.resolvedDeviceName,
@@ -2055,22 +2055,22 @@ final class AtriaHomeModel {
                              phoneFloorsToday: ble.phoneFloorsToday)
     }
 
-    private static func makePulseLiveState(ble: WhoopBLEManager) -> PulseLiveState {
+    private static func makePulseLiveState(ble: AtriaBLEManager) -> PulseLiveState {
         PulseLiveState(heartRate: ble.heartRate,
                        hasContact: ble.hasContact,
                        averageHeartRate: ble.liveHeartWindow.average,
                        peakHeartRate: ble.liveHeartWindow.peak)
     }
 
-    private static func makeHeroPulseState(ble: WhoopBLEManager) -> HeroPulseState {
+    private static func makeHeroPulseState(ble: AtriaBLEManager) -> HeroPulseState {
         HeroPulseState(heartRate: ble.heartRate)
     }
 
-    private static func makePulseSparklineState(ble: WhoopBLEManager) -> PulseSparklineState {
+    private static func makePulseSparklineState(ble: AtriaBLEManager) -> PulseSparklineState {
         PulseSparklineState(values: ble.liveHeartWindow.sparkline)
     }
 
-    private static func makeCollectionLiveState(ble: WhoopBLEManager) -> CollectionLiveState {
+    private static func makeCollectionLiveState(ble: AtriaBLEManager) -> CollectionLiveState {
         return CollectionLiveState(isRecording: ble.isRecording,
                                    capturedRows: ble.capturedRows,
                                    captureSummary: ble.captureSummary,
@@ -2080,10 +2080,10 @@ final class AtriaHomeModel {
                                    longWearModeEnabled: ble.longWearModeEnabled,
                                    rangeLossBackfillPending: ble.rangeLossBackfillPending,
                                    collectionProfile: ble.collectionProfile,
-                                   officialWhoopCoexistenceRisk: ble.officialWhoopCoexistenceRisk)
+                                   officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
     }
 
-    private static func makeHeroSnapshot(ble: WhoopBLEManager,
+    private static func makeHeroSnapshot(ble: AtriaBLEManager,
                                          store: SessionStore,
                                          live: CoreLiveState,
                                          savedAggregate: SavedAggregate,
@@ -2163,7 +2163,7 @@ final class AtriaHomeModel {
         let narrative: String
     }
 
-    private static func stressState(ble: WhoopBLEManager, baseline: PersonalBaseline) -> StressState {
+    private static func stressState(ble: AtriaBLEManager, baseline: PersonalBaseline) -> StressState {
         guard let snapshot = ble.hrvSnapshot else {
             return StressState(value: "Learning",
                                detail: "RR window",
@@ -2198,7 +2198,7 @@ final class AtriaHomeModel {
                            narrative: String(format: "Live lnRMSSD is %.1f SD from your baseline.", z))
     }
 
-    private static func fallbackHeroHRVState(ble: WhoopBLEManager,
+    private static func fallbackHeroHRVState(ble: AtriaBLEManager,
                                              store: SessionStore) -> FallbackHeroHRVState {
         let value: String
         if let validated = store.latestReferenceValidatedHRV {
@@ -2250,14 +2250,14 @@ final class AtriaHomeModel {
                                     packageText: packageText)
     }
 
-    private static func defaultHeroHeadline(status: WhoopBLEManager.Status) -> String {
+    private static func defaultHeroHeadline(status: AtriaBLEManager.Status) -> String {
         if status == .connected {
             return "Live connection is active."
         }
         return "A lighter dashboard that gets to your signal faster."
     }
 
-    private static func defaultHeroNextAction(status: WhoopBLEManager.Status) -> String {
+    private static func defaultHeroNextAction(status: AtriaBLEManager.Status) -> String {
         if status != .connected {
             return "Keep the phone near the strap until Atria reconnects."
         }
@@ -2387,7 +2387,7 @@ final class AtriaHomeModel {
                               confirmedSleeps: store.confirmedSleeps.count)
     }
 
-    private static func makeDeferredDetails(ble: WhoopBLEManager, store: SessionStore) -> DeferredDetails {
+    private static func makeDeferredDetails(ble: AtriaBLEManager, store: SessionStore) -> DeferredDetails {
         let diagnostics = store.homeDashboardDiagnostics()
         let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,

@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// WHOOP-style headline metrics computed locally from strap data.
+/// Industry-style headline metrics computed locally from strap data.
 ///
-/// These are honest approximations of WHOOP's proprietary scores:
+/// These are honest approximations of the proprietary scores:
 /// - **Strain** uses Banister's TRIMP (training impulse) mapped to the 0–21 scale.
 /// - **Recovery** uses the user's own ready RR/HRV data once enough personal
 ///   baseline exists, and labels the result honestly until reference validated.
@@ -183,7 +183,7 @@ enum Metrics {
         return Int(Swift.min(Swift.max(75 - delta * 5, 1), 99).rounded())
     }
 
-    /// HRV-driven recovery (WHOOP's primary signal), blended with resting HR.
+    /// HRV-driven recovery (the primary signal), blended with resting HR.
     /// HRV above your norm → high recovery; elevated resting HR penalizes it.
     static func recovery(hrvNow: Int, hrvBaseline: Int, restingNow: Int, restingBaseline: Int) -> Int {
         guard hrvNow > 0, hrvBaseline > 0 else {

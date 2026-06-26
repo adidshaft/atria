@@ -85,11 +85,11 @@ private final class PowerThermalGovernor {
     }
 }
 
-/// Connects to a WHOOP strap over BLE and publishes the reliable, relevant data:
+/// Connects to the strap over BLE and publishes the reliable, relevant data:
 /// live heart rate, battery level, connection state — plus a raw log of the
 /// proprietary stream for later protocol decoding.
 @MainActor
-final class WhoopBLEManager: NSObject, ObservableObject {
+final class AtriaBLEManager: NSObject, ObservableObject {
     struct LiveHeartWindow: Equatable {
         var sparkline: [Int]
         var average: Int?
@@ -186,7 +186,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private enum ParsedProprietaryUpdate {
         case realtime(ParsedRealtimePacket)
-        case commandResponse(WhoopFrame)
+        case commandResponse(AtriaFrame)
         case historyMetadata([UInt8])
         case historical([UInt8])
         case unknown(payload: [UInt8], fullFrame: [UInt8])
@@ -267,7 +267,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let errorDescription: String?
     }
 
-    private func assignIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<WhoopBLEManager, Value>,
+    private func assignIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<AtriaBLEManager, Value>,
                                                    _ newValue: Value) {
         if self[keyPath: keyPath] != newValue {
             self[keyPath: keyPath] = newValue
@@ -287,31 +287,31 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let firmwareRevision   = CBUUID(string: "2A26")
         static let hardwareRevision   = CBUUID(string: "2A27")
 
-        // WHOOP proprietary service + characteristics
-        static let whoopService = CBUUID(string: "61080001-8d6d-82b8-614a-1c8cb0f8dcc6")
-        static let whoopTX      = CBUUID(string: "61080002-8d6d-82b8-614a-1c8cb0f8dcc6") // write (commands)
-        static let whoopRX      = CBUUID(string: "61080003-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (responses)
-        static let whoopStream4 = CBUUID(string: "61080004-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
-        static let whoopStream5 = CBUUID(string: "61080005-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
-        static let whoopStream7 = CBUUID(string: "61080007-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
+        // strap proprietary service + characteristics
+        static let strapService = CBUUID(string: "61080001-8d6d-82b8-614a-1c8cb0f8dcc6")
+        static let strapTX      = CBUUID(string: "61080002-8d6d-82b8-614a-1c8cb0f8dcc6") // write (commands)
+        static let strapRX      = CBUUID(string: "61080003-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (responses)
+        static let strapStream4 = CBUUID(string: "61080004-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
+        static let strapStream5 = CBUUID(string: "61080005-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
+        static let strapStream7 = CBUUID(string: "61080007-8d6d-82b8-614a-1c8cb0f8dcc6") // notify (data)
 
-        static let allNotify = [whoopRX, whoopStream4, whoopStream5, whoopStream7]
-        static let scanServices = [whoopService, heartRateService]
-        static let discoveryServices = [heartRateService, batteryService, deviceInfoService, whoopService]
+        static let allNotify = [strapRX, strapStream4, strapStream5, strapStream7]
+        static let scanServices = [strapService, heartRateService]
+        static let discoveryServices = [heartRateService, batteryService, deviceInfoService, strapService]
     }
 
     // MARK: Published state for the UI
     enum Status: String { case poweredOff = "Bluetooth off", scanning = "Scanning…",
         connecting = "Connecting…", connected = "Connected", disconnected = "Disconnected" }
 
-    enum OfficialWhoopCoexistenceRisk: String {
+    enum OfficialAppCoexistenceRisk: String {
         case advisory
         case suspected
         case cleared
 
-        fileprivate static func load(defaults: UserDefaults = .standard) -> OfficialWhoopCoexistenceRisk {
-            guard let raw = defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk),
-                  let value = OfficialWhoopCoexistenceRisk(rawValue: raw) else {
+        fileprivate static func load(defaults: UserDefaults = .standard) -> OfficialAppCoexistenceRisk {
+            guard let raw = defaults.string(forKey: LinkDefaults.officialAppCoexistenceRisk),
+                  let value = OfficialAppCoexistenceRisk(rawValue: raw) else {
                 return .advisory
             }
             return value
@@ -320,48 +320,48 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         var label: String {
             switch self {
             case .advisory:
-                return "WHOOP check"
+                return "Strap check"
             case .suspected:
-                return "WHOOP may interfere"
+                return "Another app may interfere"
             case .cleared:
                 return "Atria owns strap"
             }
         }
     }
 
-    enum WhoopModel: String {
+    enum AtriaStrapModel: String {
         case unknown
-        case whoop3
-        case whoop4
-        case whoop4Class
-        case whoop5
-        case whoopMG
+        case strap3
+        case strap4
+        case strap4Class
+        case strap5
+        case strapMG
 
         var supportsSpO2: Bool {
             switch self {
-            case .whoop4, .whoop4Class, .whoop5, .whoopMG: return true
-            case .unknown, .whoop3: return false
+            case .strap4, .strap4Class, .strap5, .strapMG: return true
+            case .unknown, .strap3: return false
             }
         }
 
         var supportsSkinTemp: Bool {
             switch self {
-            case .whoop4, .whoop4Class, .whoop5, .whoopMG: return true
-            case .unknown, .whoop3: return false
+            case .strap4, .strap4Class, .strap5, .strapMG: return true
+            case .unknown, .strap3: return false
             }
         }
 
-        var supportsECG: Bool { self == .whoopMG }
-        var supportsBloodPressure: Bool { self == .whoopMG }
+        var supportsECG: Bool { self == .strapMG }
+        var supportsBloodPressure: Bool { self == .strapMG }
     }
 
     @Published var status: Status = .disconnected
-    @Published private(set) var officialWhoopCoexistenceRisk: OfficialWhoopCoexistenceRisk = OfficialWhoopCoexistenceRisk.load()
+    @Published private(set) var officialAppCoexistenceRisk: OfficialAppCoexistenceRisk = OfficialAppCoexistenceRisk.load()
     @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
-    /// Best-effort: WHOOP exposes only a level (2A19), no charge flag. We infer
+    /// Best-effort: The strap exposes only a level (2A19), no charge flag. We infer
     /// charging when the level rises between readings, and clear it when it falls.
     @Published var batteryIsCharging: Bool = false
     @Published private(set) var phoneStepsToday: Int = 0
@@ -369,53 +369,53 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     @Published private(set) var phoneFloorsToday: Int?
     private(set) var manufacturer: String = "—"
     // Device Information (0x180A) identity, read on connect. Raw strings as the
-    // strap reports them; `whoopModelLabel` maps known values to a friendly name
+    // strap reports them; `strapModelLabel` maps known values to a friendly name
     // and falls back to the raw model string (never a guess).
     @Published private(set) var modelNumber: String = ""
     @Published private(set) var firmwareRevision: String = ""
     @Published private(set) var hardwareRevision: String = ""
-    @Published private(set) var whoopModel: WhoopModel = .unknown
+    @Published private(set) var strapModel: AtriaStrapModel = .unknown
 
-    /// Best-effort friendly model name. WHOOP straps do not populate the standard
+    /// Best-effort friendly model name. These straps do not populate the standard
     /// Device Information model string, so this usually falls back; the generation
     /// decode lives in the proprietary metadata frame (see docs/18).
-    var whoopModelLabel: String {
-        switch whoopModel {
-        case .whoopMG: return "WHOOP MG"
-        case .whoop5: return "WHOOP 5.0"
-        case .whoop4: return "WHOOP 4.0"
-        case .whoop4Class: return "WHOOP strap"
-        case .whoop3: return "WHOOP 3.0"
+    var strapModelLabel: String {
+        switch strapModel {
+        case .strapMG: return "Strap MG"
+        case .strap5: return "Strap 5.0"
+        case .strap4: return "Strap 4.0"
+        case .strap4Class: return "Strap"
+        case .strap3: return "Strap 3.0"
         case .unknown: break
         }
         let haystack = "\(modelNumber) \(hardwareRevision)".lowercased()
         if haystack.contains("mg") { return "WHOOP MG" }
-        if haystack.contains("5") && haystack.contains("4") == false { return "WHOOP 5.0" }
-        if haystack.contains("4") { return "WHOOP 4.0" }
-        if haystack.contains("3") { return "WHOOP 3.0" }
+        if haystack.contains("5") && haystack.contains("4") == false { return "Strap 5.0" }
+        if haystack.contains("4") { return "Strap 4.0" }
+        if haystack.contains("3") { return "Strap 3.0" }
         let model = modelNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        return model.isEmpty ? "WHOOP strap" : model
+        return model.isEmpty ? "Strap" : model
     }
 
-    var supportsSpO2Probe: Bool { whoopModel.supportsSpO2 }
-    var supportsSkinTempProbe: Bool { whoopModel.supportsSkinTemp }
-    var supportsECG: Bool { whoopModel.supportsECG }
-    var supportsBloodPressure: Bool { whoopModel.supportsBloodPressure }
+    var supportsSpO2Probe: Bool { strapModel.supportsSpO2 }
+    var supportsSkinTempProbe: Bool { strapModel.supportsSkinTemp }
+    var supportsECG: Bool { strapModel.supportsECG }
+    var supportsBloodPressure: Bool { strapModel.supportsBloodPressure }
 
     // User-set strap name, persisted locally. Takes precedence over the BLE
-    // peripheral name (which WHOOP seeds from the owner's account, e.g.
+    // peripheral name (which the strap seeds from the owner's account, e.g.
     // "Adidshaft's WHOOP"). Empty == use the peripheral name.
     @Published var customDeviceName: String =
         UserDefaults.standard.string(forKey: "atriaCustomDeviceName") ?? ""
 
     /// The name to show everywhere: custom name if set, else the strap's own BLE
-    /// name, else a generic fallback. Never collapses a real name to "WHOOP strap".
+    /// name, else a generic fallback. Never collapses a real name to "Strap".
     var resolvedDeviceName: String {
         let custom = customDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !custom.isEmpty { return custom }
         let ble = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !ble.isEmpty && ble != "—" { return ble }
-        return "WHOOP strap"
+        return "Strap"
     }
 
     func setCustomDeviceName(_ name: String) {
@@ -428,7 +428,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(trimmed, forKey: "atriaCustomDeviceName")
         }
     }
-    private(set) var frames: [WhoopFrame] = []        // decoded proprietary frames (append-only ring buffer)
+    private(set) var frames: [AtriaFrame] = []        // decoded proprietary frames (append-only ring buffer)
     private(set) var lastHeartRates: [Int] = []       // small rolling window for a sparkline
     @Published private(set) var liveHeartWindow = LiveHeartWindow.empty
     private var lastHeartRatesTotal = 0
@@ -551,56 +551,56 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     nonisolated private static let realtimePacketBatchSize = 12
     private var liveSessionID = UUID()
     enum CheckpointDefaults {
-        static let armed = "whoop.checkpoint.armed"
-        static let interval = "whoop.checkpoint.interval"
-        static let label = "whoop.checkpoint.label"
-        static let source = "whoop.checkpoint.source"
-        static let lastStatus = "whoop.checkpoint.lastStatus"
-        static let lastIndex = "whoop.checkpoint.lastIndex"
-        static let lastSamples = "whoop.checkpoint.lastSamples"
-        static let lastDuration = "whoop.checkpoint.lastDuration"
+        static let armed = "atria.checkpoint.armed"
+        static let interval = "atria.checkpoint.interval"
+        static let label = "atria.checkpoint.label"
+        static let source = "atria.checkpoint.source"
+        static let lastStatus = "atria.checkpoint.lastStatus"
+        static let lastIndex = "atria.checkpoint.lastIndex"
+        static let lastSamples = "atria.checkpoint.lastSamples"
+        static let lastDuration = "atria.checkpoint.lastDuration"
     }
     enum LinkDefaults {
-        static let attempts = "whoop.link.attempts"
-        static let disconnects = "whoop.link.disconnects"
-        static let successes = "whoop.link.successes"
-        static let failures = "whoop.link.failures"
-        static let lastStatus = "whoop.link.lastStatus"
-        static let lastReason = "whoop.link.lastReason"
-        static let lastError = "whoop.link.lastError"
-        static let lastAutoSaveStatus = "whoop.link.lastAutoSaveStatus"
-        static let lastAutoSaveSamples = "whoop.link.lastAutoSaveSamples"
-        static let lastAutoSaveDuration = "whoop.link.lastAutoSaveDuration"
-        static let officialWhoopCoexistenceRisk = "whoop.link.officialWhoopCoexistenceRisk"
-        static let officialWhoopCoexistenceReason = "whoop.link.officialWhoopCoexistenceReason"
+        static let attempts = "atria.link.attempts"
+        static let disconnects = "atria.link.disconnects"
+        static let successes = "atria.link.successes"
+        static let failures = "atria.link.failures"
+        static let lastStatus = "atria.link.lastStatus"
+        static let lastReason = "atria.link.lastReason"
+        static let lastError = "atria.link.lastError"
+        static let lastAutoSaveStatus = "atria.link.lastAutoSaveStatus"
+        static let lastAutoSaveSamples = "atria.link.lastAutoSaveSamples"
+        static let lastAutoSaveDuration = "atria.link.lastAutoSaveDuration"
+        static let officialAppCoexistenceRisk = "atria.link.officialAppCoexistenceRisk"
+        static let officialAppCoexistenceReason = "atria.link.officialAppCoexistenceReason"
     }
 
-    static func officialWhoopCoexistenceRisk(defaults: UserDefaults = .standard) -> OfficialWhoopCoexistenceRisk {
-        OfficialWhoopCoexistenceRisk.load(defaults: defaults)
+    static func officialAppCoexistenceRisk(defaults: UserDefaults = .standard) -> OfficialAppCoexistenceRisk {
+        OfficialAppCoexistenceRisk.load(defaults: defaults)
     }
     enum SampleDefaults {
-        static let rawNotifications = "whoop.sample.rawNotifications"
-        static let acceptedSamples = "whoop.sample.acceptedSamples"
-        static let zeroSamples = "whoop.sample.zeroSamples"
-        static let heldArtifacts = "whoop.sample.heldArtifacts"
-        static let droppedArtifacts = "whoop.sample.droppedArtifacts"
-        static let rawGaps = "whoop.sample.rawGaps"
-        static let acceptedGaps = "whoop.sample.acceptedGaps"
-        static let maxRawGap = "whoop.sample.maxRawGap"
-        static let maxAcceptedGap = "whoop.sample.maxAcceptedGap"
-        static let lastStatus = "whoop.sample.lastStatus"
-        static let lastReason = "whoop.sample.lastReason"
+        static let rawNotifications = "atria.sample.rawNotifications"
+        static let acceptedSamples = "atria.sample.acceptedSamples"
+        static let zeroSamples = "atria.sample.zeroSamples"
+        static let heldArtifacts = "atria.sample.heldArtifacts"
+        static let droppedArtifacts = "atria.sample.droppedArtifacts"
+        static let rawGaps = "atria.sample.rawGaps"
+        static let acceptedGaps = "atria.sample.acceptedGaps"
+        static let maxRawGap = "atria.sample.maxRawGap"
+        static let maxAcceptedGap = "atria.sample.maxAcceptedGap"
+        static let lastStatus = "atria.sample.lastStatus"
+        static let lastReason = "atria.sample.lastReason"
     }
     enum HRContinuityDefaults {
-        static let status = "whoop.hrContinuity.status"
-        static let action = "whoop.hrContinuity.action"
-        static let rawGap = "whoop.hrContinuity.rawGap"
-        static let acceptedGap = "whoop.hrContinuity.acceptedGap"
-        static let timeout = "whoop.hrContinuity.timeout"
-        static let samples = "whoop.hrContinuity.samples"
-        static let label = "whoop.hrContinuity.label"
-        static let notifying = "whoop.hrContinuity.notifying"
-        static let at = "whoop.hrContinuity.at"
+        static let status = "atria.hrContinuity.status"
+        static let action = "atria.hrContinuity.action"
+        static let rawGap = "atria.hrContinuity.rawGap"
+        static let acceptedGap = "atria.hrContinuity.acceptedGap"
+        static let timeout = "atria.hrContinuity.timeout"
+        static let samples = "atria.hrContinuity.samples"
+        static let label = "atria.hrContinuity.label"
+        static let notifying = "atria.hrContinuity.notifying"
+        static let at = "atria.hrContinuity.at"
     }
     enum RRPresenceDefaults {
         static let status = "atria.rrPresence.status"
@@ -615,23 +615,23 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let at = "atria.rrPresence.at"
     }
     enum WatchdogRecoveryDefaults {
-        static let noDataCount = "whoop.watchdog.noDataCount"
-        static let hrContinuityCount = "whoop.watchdog.hrContinuityCount"
-        static let acceptedHRCount = "whoop.watchdog.acceptedHRCount"
+        static let noDataCount = "atria.watchdog.noDataCount"
+        static let hrContinuityCount = "atria.watchdog.hrContinuityCount"
+        static let acceptedHRCount = "atria.watchdog.acceptedHRCount"
         static let rrPresenceCount = "atria.watchdog.rrPresenceCount"
-        static let lastStatus = "whoop.watchdog.lastStatus"
-        static let lastSource = "whoop.watchdog.lastSource"
-        static let lastAction = "whoop.watchdog.lastAction"
-        static let lastRawGap = "whoop.watchdog.lastRawGap"
-        static let lastAcceptedGap = "whoop.watchdog.lastAcceptedGap"
-        static let lastSamples = "whoop.watchdog.lastSamples"
-        static let lastCheckpoint = "whoop.watchdog.lastCheckpoint"
-        static let lastAt = "whoop.watchdog.lastAt"
+        static let lastStatus = "atria.watchdog.lastStatus"
+        static let lastSource = "atria.watchdog.lastSource"
+        static let lastAction = "atria.watchdog.lastAction"
+        static let lastRawGap = "atria.watchdog.lastRawGap"
+        static let lastAcceptedGap = "atria.watchdog.lastAcceptedGap"
+        static let lastSamples = "atria.watchdog.lastSamples"
+        static let lastCheckpoint = "atria.watchdog.lastCheckpoint"
+        static let lastAt = "atria.watchdog.lastAt"
     }
     enum BatteryDefaults {
-        static let level = "whoop.battery.level"
-        static let at = "whoop.battery.at"
-        static let source = "whoop.battery.source"
+        static let level = "atria.battery.level"
+        static let at = "atria.battery.at"
+        static let source = "atria.battery.source"
     }
     private struct WorkoutCaptureEvidence {
         let diagnosis: String
@@ -639,47 +639,47 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let sampleFields: String
     }
     enum RadioDefaults {
-        static let standardHROnly = "whoop.radio.standardHROnly"
-        static let mode = "whoop.radio.mode"
-        static let customNotifySkipped = "whoop.radio.customNotifySkipped"
-        static let customNotifyEnabled = "whoop.radio.customNotifyEnabled"
-        static let txSkipped = "whoop.radio.txSkipped"
-        static let realtimeStartSkipped = "whoop.radio.realtimeStartSkipped"
-        static let lastReason = "whoop.radio.lastReason"
+        static let standardHROnly = "atria.radio.standardHROnly"
+        static let mode = "atria.radio.mode"
+        static let customNotifySkipped = "atria.radio.customNotifySkipped"
+        static let customNotifyEnabled = "atria.radio.customNotifyEnabled"
+        static let txSkipped = "atria.radio.txSkipped"
+        static let realtimeStartSkipped = "atria.radio.realtimeStartSkipped"
+        static let lastReason = "atria.radio.lastReason"
     }
     enum CaptureDefaults {
-        static let configured = "whoop.capture.defaultsConfigured"
-        static let protectedLongWearMigrated = "whoop.capture.protectedLongWearMigrated"
+        static let configured = "atria.capture.defaultsConfigured"
+        static let protectedLongWearMigrated = "atria.capture.protectedLongWearMigrated"
     }
     enum LongWearDefaults {
-        static let enabled = "whoop.longWear.enabled"
-        static let userSelected = "whoop.longWear.userSelected"
-        static let checkpointInterval = "whoop.longWear.checkpointInterval"
-        static let diagnosticInterval = "whoop.longWear.diagnosticInterval"
-        static let workoutAutoSaveInterval = "whoop.longWear.workoutAutoSaveInterval"
-        static let noDataTimeout = "whoop.longWear.noDataTimeout"
-        static let noDataCheckInterval = "whoop.longWear.noDataCheckInterval"
-        static let acceptedHRTimeout = "whoop.longWear.acceptedHRTimeout"
-        static let label = "whoop.longWear.label"
+        static let enabled = "atria.longWear.enabled"
+        static let userSelected = "atria.longWear.userSelected"
+        static let checkpointInterval = "atria.longWear.checkpointInterval"
+        static let diagnosticInterval = "atria.longWear.diagnosticInterval"
+        static let workoutAutoSaveInterval = "atria.longWear.workoutAutoSaveInterval"
+        static let noDataTimeout = "atria.longWear.noDataTimeout"
+        static let noDataCheckInterval = "atria.longWear.noDataCheckInterval"
+        static let acceptedHRTimeout = "atria.longWear.acceptedHRTimeout"
+        static let label = "atria.longWear.label"
     }
     enum OfflineSyncDefaults {
-        static let enabled = "whoop.offlineSync.enabled"
-        static let lastAttemptAt = "whoop.offlineSync.lastAttemptAt"
-        static let lastStatus = "whoop.offlineSync.lastStatus"
-        static let lastReason = "whoop.offlineSync.lastReason"
-        static let attempts = "whoop.offlineSync.attempts"
-        static let rangeLossBackfillPending = "whoop.offlineSync.rangeLossBackfillPending"
-        static let rangeLossBackfillRequestedAt = "whoop.offlineSync.rangeLossBackfillRequestedAt"
-        static let rangeLossBackfillStartedAt = "whoop.offlineSync.rangeLossBackfillStartedAt"
-        static let rangeLossBackfillReason = "whoop.offlineSync.rangeLossBackfillReason"
+        static let enabled = "atria.offlineSync.enabled"
+        static let lastAttemptAt = "atria.offlineSync.lastAttemptAt"
+        static let lastStatus = "atria.offlineSync.lastStatus"
+        static let lastReason = "atria.offlineSync.lastReason"
+        static let attempts = "atria.offlineSync.attempts"
+        static let rangeLossBackfillPending = "atria.offlineSync.rangeLossBackfillPending"
+        static let rangeLossBackfillRequestedAt = "atria.offlineSync.rangeLossBackfillRequestedAt"
+        static let rangeLossBackfillStartedAt = "atria.offlineSync.rangeLossBackfillStartedAt"
+        static let rangeLossBackfillReason = "atria.offlineSync.rangeLossBackfillReason"
     }
     enum KeepaliveDefaults {
-        static let armed = "whoop.keepalive.armed"
-        static let lastStatus = "whoop.keepalive.lastStatus"
-        static let lastReason = "whoop.keepalive.lastReason"
-        static let lastAction = "whoop.keepalive.lastAction"
-        static let lastSilence = "whoop.keepalive.lastSilence"
-        static let ticks = "whoop.keepalive.ticks"
+        static let armed = "atria.keepalive.armed"
+        static let lastStatus = "atria.keepalive.lastStatus"
+        static let lastReason = "atria.keepalive.lastReason"
+        static let lastAction = "atria.keepalive.lastAction"
+        static let lastSilence = "atria.keepalive.lastSilence"
+        static let ticks = "atria.keepalive.ticks"
     }
     enum CollectionProfileDefaults {
         static let profile = "atria.collection.profile"
@@ -693,14 +693,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         static let imu: UInt8 = 0x33
     }
     enum ProtocolDefaults {
-        static let packets = "whoop.protocol.packets"
-        static let imuFrames = "whoop.protocol.imuFrames"
-        static let diagnosticFrames = "whoop.protocol.diagnosticFrames"
-        static let eventFrames = "whoop.protocol.eventFrames"
-        static let unknownFrames = "whoop.protocol.unknownFrames"
-        static let lastPacketType = "whoop.protocol.lastPacketType"
-        static let lastPacketKind = "whoop.protocol.lastPacketKind"
-        static let lastPacketLength = "whoop.protocol.lastPacketLength"
+        static let packets = "atria.protocol.packets"
+        static let imuFrames = "atria.protocol.imuFrames"
+        static let diagnosticFrames = "atria.protocol.diagnosticFrames"
+        static let eventFrames = "atria.protocol.eventFrames"
+        static let unknownFrames = "atria.protocol.unknownFrames"
+        static let lastPacketType = "atria.protocol.lastPacketType"
+        static let lastPacketKind = "atria.protocol.lastPacketKind"
+        static let lastPacketLength = "atria.protocol.lastPacketLength"
     }
     enum Cmd {
         static let toggleRealtimeHR: UInt8 = 0x03
@@ -1012,8 +1012,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         case UUIDs.deviceInfoService:
             return [UUIDs.manufacturerName, UUIDs.modelNumber,
                     UUIDs.firmwareRevision, UUIDs.hardwareRevision]
-        case UUIDs.whoopService:
-            return [UUIDs.whoopTX] + UUIDs.allNotify
+        case UUIDs.strapService:
+            return [UUIDs.strapTX] + UUIDs.allNotify
         default:
             return nil
         }
@@ -1070,7 +1070,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         updatePhoneMotionAuditState(reason: "init")
         powerThermalGovernor.onChange = { [weak self] mode in
             guard let self else { return }
-            WHOOPDebugLog("WHOOPDBG power_thermal_governor mode=%@ multiplier=%.1f low_power=%d thermal=%@",
+            AtriaDebugLog("ATRIADBG power_thermal_governor mode=%@ multiplier=%.1f low_power=%d thermal=%@",
                   mode.rawValue,
                   self.powerThermalGovernor.cadenceMultiplier,
                   ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0,
@@ -1125,7 +1125,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if !historyInitSweepCommands.isEmpty {
             historySkipDataRangeRequest = true
         }
-        WHOOPDebugLog("WHOOPDBG realtimeConfig history_only_probe=1 phase=early realtime_start=skipped cmd22=%d init_sweep=%d mode=%@",
+        AtriaDebugLog("ATRIADBG realtimeConfig history_only_probe=1 phase=early realtime_start=skipped cmd22=%d init_sweep=%d mode=%@",
               historySkipDataRangeRequest ? 0 : 1,
               historyInitSweepCommands.isEmpty ? 0 : 1,
               probeCommandMode.rawValue)
@@ -1165,7 +1165,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         updateSessionPointCacheMode()
         standardHROnlyMode = false
         standardHROnlyEnabled = false
-        WHOOPDebugLog("WHOOPDBG capture_defaults status=reset reason=debug_launch_arg scope=radio_and_long_wear_only")
+        AtriaDebugLog("ATRIADBG capture_defaults status=reset reason=debug_launch_arg scope=radio_and_long_wear_only")
     }
 
     private func bootstrapProductionCaptureDefaultsIfNeeded(arguments: [String]) {
@@ -1207,7 +1207,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         standardHROnlyEnabled = true
         let explicitMode = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 1 : 0
         recordRadioMode("standard_hr_only", reason: "protected_default")
-        WHOOPDebugLog("WHOOPDBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
+        AtriaDebugLog("ATRIADBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
               explicitMode)
     }
 
@@ -1227,14 +1227,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         standardHROnlyEnabled = true
         forceFreshScanOnRestore = true
         recordRadioMode("standard_hr_only", reason: "protected_default_migration")
-        WHOOPDebugLog("WHOOPDBG long_wear_mode status=migrated_default action=enabled reason=protected_background_collection_default")
+        AtriaDebugLog("ATRIADBG long_wear_mode status=migrated_default action=enabled reason=protected_background_collection_default")
     }
 
     private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
         guard !arguments.contains("--whoop-full-protocol-mode") else { return }
         guard UserDefaults.standard.object(forKey: OfflineSyncDefaults.enabled) == nil else { return }
         UserDefaults.standard.set(true, forKey: OfflineSyncDefaults.enabled)
-        WHOOPDebugLog("WHOOPDBG offline_sync status=migrated_default action=enabled reason=stored_session_backfill_default")
+        AtriaDebugLog("ATRIADBG offline_sync status=migrated_default action=enabled reason=stored_session_backfill_default")
     }
 
     func setStandardHROnlyEnabled(_ enabled: Bool) {
@@ -1261,7 +1261,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard profile != collectionProfile else { return }
         UserDefaults.standard.set(profile.rawValue, forKey: CollectionProfileDefaults.profile)
         collectionProfile = profile
-        WHOOPDebugLog("WHOOPDBG collection_profile status=selected profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f",
+        AtriaDebugLog("ATRIADBG collection_profile status=selected profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f",
                       profile.rawValue,
                       profile.cadenceMultiplier,
                       profile.staleTimeoutMultiplier)
@@ -1318,7 +1318,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         )
         scheduleLongWearSupervisor(config: config)
         ensureForegroundKeepaliveWatchdog(reason: reason)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
               reason,
               standardHROnlyMode ? "standard_hr_only" : "full_protocol",
               profile.rawValue,
@@ -1343,7 +1343,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
         UserDefaults.standard.set("long_wear_stopped", forKey: CheckpointDefaults.lastStatus)
         updatePhoneMotionAuditState(reason: "stop_long_wear")
-        WHOOPDebugLog("WHOOPDBG long_wear_mode enabled=0 reason=%@ checkpoint_cancelled=1 live_workout_cancelled=1 workout_autosave_cancelled=1 no_data_watchdog_cancelled=1 hr_continuity_watchdog_cancelled=1 accepted_hr_watchdog_cancelled=1",
+        AtriaDebugLog("ATRIADBG long_wear_mode enabled=0 reason=%@ checkpoint_cancelled=1 live_workout_cancelled=1 workout_autosave_cancelled=1 no_data_watchdog_cancelled=1 hr_continuity_watchdog_cancelled=1 accepted_hr_watchdog_cancelled=1",
               reason)
     }
 
@@ -1362,7 +1362,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         debugRRPresenceWatchdogTask?.cancel()
         longWearSupervisorTask = nil
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode paused=1 reason=%@ foreground_interactive=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode paused=1 reason=%@ foreground_interactive=%d",
               reason,
               foregroundInteractiveMode ? 1 : 0)
     }
@@ -1385,7 +1385,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         pauseLongWearAutomation(reason: "scene_active")
         updatePhoneMotionAuditState(reason: "scene_active")
-        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=1 action=defer_automation_keepalive_armed rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=1 action=defer_automation_keepalive_armed rest_hr=%d max_hr=%d",
               rest,
               maxHR)
     }
@@ -1399,13 +1399,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             if characteristic.properties.contains(.read) {
                 peripheral.readValue(for: characteristic)
             }
-            WHOOPDebugLog("WHOOPDBG ble_notify_reassert status=requested reason=%@ source=foreground_return action=keep_connection",
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=requested reason=%@ source=foreground_return action=keep_connection",
                           reason)
             return
         }
         guard peripheral.state == .connected else { return }
         peripheral.discoverServices([UUIDs.heartRateService])
-        WHOOPDebugLog("WHOOPDBG ble_notify_reassert status=discover_services reason=%@ source=foreground_return action=keep_connection",
+        AtriaDebugLog("ATRIADBG ble_notify_reassert status=discover_services reason=%@ source=foreground_return action=keep_connection",
                       reason)
     }
 
@@ -1438,7 +1438,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(reason, forKey: KeepaliveDefaults.lastReason)
         defaults.set("observe", forKey: KeepaliveDefaults.lastAction)
         defaults.set(0.0, forKey: KeepaliveDefaults.lastSilence)
-        WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=1 reason=%@ silence_timeout_s=%.0f check_interval_s=%.0f",
+        AtriaDebugLog("ATRIADBG foreground_keepalive armed=1 reason=%@ silence_timeout_s=%.0f check_interval_s=%.0f",
               reason, silenceTimeout, checkInterval)
         foregroundKeepaliveTask = Task { @MainActor in
             var nextSleep = initialSilenceTimeout
@@ -1491,7 +1491,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     }
                     defaults.set("silent", forKey: KeepaliveDefaults.lastStatus)
                     defaults.set("reassert_notify", forKey: KeepaliveDefaults.lastAction)
-                    WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=reassert_notify",
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=silent silence_s=%.0f action=reassert_notify",
                           silence)
                     continue
                 }
@@ -1503,7 +1503,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 preserveLongWearRangeLossRecovery(reason: "foreground_keepalive")
                 defaults.set("silent", forKey: KeepaliveDefaults.lastStatus)
                 defaults.set("fresh_scan_reconnect", forKey: KeepaliveDefaults.lastAction)
-                WHOOPDebugLog("WHOOPDBG foreground_keepalive status=silent silence_s=%.0f action=fresh_scan_reconnect",
+                AtriaDebugLog("ATRIADBG foreground_keepalive status=silent silence_s=%.0f action=fresh_scan_reconnect",
                       silence)
                 requestFreshScanReconnect(peripheral: peripheral, reason: "foreground_keepalive")
             }
@@ -1519,7 +1519,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set("stopped", forKey: KeepaliveDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: KeepaliveDefaults.lastReason)
         UserDefaults.standard.set("stop", forKey: KeepaliveDefaults.lastAction)
-        WHOOPDebugLog("WHOOPDBG foreground_keepalive armed=0 reason=%@", reason)
+        AtriaDebugLog("ATRIADBG foreground_keepalive armed=0 reason=%@", reason)
     }
 
     func setForegroundHighFrequencyDisplayMode(_ enabled: Bool) {
@@ -1532,7 +1532,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             phoneStepsToday = 0
             phoneDistanceTodayMeters = nil
             phoneFloorsToday = nil
-            WHOOPDebugLog("WHOOPDBG phone_steps_today status=unavailable reason=%@ source=CMPedometer", reason)
+            AtriaDebugLog("ATRIADBG phone_steps_today status=unavailable reason=%@ source=CMPedometer", reason)
             return
         }
         let start = Calendar.current.startOfDay(for: Date())
@@ -1541,12 +1541,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if let error {
-                    WHOOPDebugLog("WHOOPDBG phone_steps_today status=error reason=%@ error=%@ source=CMPedometer", reason, String(describing: error))
+                    AtriaDebugLog("ATRIADBG phone_steps_today status=error reason=%@ error=%@ source=CMPedometer", reason, String(describing: error))
                     return
                 }
                 guard let data else { return }
                 self.recordPhoneStepsToday(data)
-                WHOOPDebugLog("WHOOPDBG phone_steps_today status=ready reason=%@ steps=%d distance_m=%@ source=CMPedometer validated=1",
+                AtriaDebugLog("ATRIADBG phone_steps_today status=ready reason=%@ steps=%d distance_m=%@ source=CMPedometer validated=1",
                               reason,
                               self.phoneStepsToday,
                               Self.formatDouble(self.phoneDistanceTodayMeters))
@@ -1573,7 +1573,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         updatePhoneMotionAuditState(reason: reason)
         ensureForegroundKeepaliveWatchdog(reason: reason)
         startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=resume_automation reason=%@ rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=0 action=resume_automation reason=%@ rest_hr=%d max_hr=%d",
               reason,
               rest,
               maxHR)
@@ -1589,7 +1589,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             ensureForegroundKeepaliveWatchdog(reason: reason)
         }
         reassertHeartRateNotificationsIfConnected(reason: reason)
-        WHOOPDebugLog("WHOOPDBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
               reason,
               status == .connected ? 1 : 0)
     }
@@ -1600,21 +1600,21 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else {
             defaults.set("disabled", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            WHOOPDebugLog("WHOOPDBG offline_sync status=skipped reason=%@ detail=disabled", reason)
+            AtriaDebugLog("ATRIADBG offline_sync status=skipped reason=%@ detail=disabled", reason)
             return false
         }
         guard !offlineHistoricalSyncInProgress else {
             pendingOfflineHistoricalSyncReason = reason
             defaults.set("coalesced", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            WHOOPDebugLog("WHOOPDBG offline_sync status=coalesced reason=%@", reason)
+            AtriaDebugLog("ATRIADBG offline_sync status=coalesced reason=%@", reason)
             return false
         }
         if !force, longWearModeEnabled, let peripheral, peripheral.state == .connected {
             pendingOfflineHistoricalSyncReason = reason
             defaults.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            WHOOPDebugLog("WHOOPDBG offline_sync status=deferred reason=%@ detail=live_link_connected action=keep_ble_stream",
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_link_connected action=keep_ble_stream",
                   reason)
             return false
         }
@@ -1623,7 +1623,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < offlineHistoricalSyncMinimumInterval {
             defaults.set("throttled", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            WHOOPDebugLog("WHOOPDBG offline_sync status=skipped reason=%@ detail=throttled age_s=%.0f min_s=%.0f",
+            AtriaDebugLog("ATRIADBG offline_sync status=skipped reason=%@ detail=throttled age_s=%.0f min_s=%.0f",
                   reason,
                   now.timeIntervalSince(lastAttempt),
                   offlineHistoricalSyncMinimumInterval)
@@ -1666,7 +1666,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         realtimeOn = false
         UserDefaults.standard.set("armed", forKey: OfflineSyncDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        WHOOPDebugLog("WHOOPDBG offline_sync status=armed reason=%@ mode=noop_backfill init_sweep=1400,6000,1600 ack_mode=enddata live_realtime=skipped metrics_fail_closed=1",
+        AtriaDebugLog("ATRIADBG offline_sync status=armed reason=%@ mode=noop_backfill init_sweep=1400,6000,1600 ack_mode=enddata live_realtime=skipped metrics_fail_closed=1",
               reason)
 
         if let peripheral {
@@ -1682,7 +1682,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 pendingOfflineHistoricalSyncReason = reason
                 UserDefaults.standard.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
                 UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-                WHOOPDebugLog("WHOOPDBG offline_sync status=deferred reason=%@ detail=live_link_connected_late action=keep_ble_stream",
+                AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_link_connected_late action=keep_ble_stream",
                       reason)
                 return
             }
@@ -1710,7 +1710,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncInProgress = false
         UserDefaults.standard.set(rows > 0 ? "archived" : "no_rows", forKey: OfflineSyncDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        WHOOPDebugLog("WHOOPDBG offline_sync status=%@ reason=%@ rows=%d failures=%d action=return_standard_hr metrics_fail_closed=1",
+        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d failures=%d action=return_standard_hr metrics_fail_closed=1",
               rows > 0 ? "archived" : "no_rows",
               reason,
               rows,
@@ -1732,14 +1732,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(reason, forKey: OfflineSyncDefaults.rangeLossBackfillReason)
         assignIfChanged(\.rangeLossBackfillPending, true)
         pendingOfflineHistoricalSyncReason = reason
-        WHOOPDebugLog("WHOOPDBG offline_sync status=pending_range_loss_backfill reason=%@ action=sync_after_reconnect",
+        AtriaDebugLog("ATRIADBG offline_sync status=pending_range_loss_backfill reason=%@ action=sync_after_reconnect",
               reason)
     }
 
     private func preserveLongWearRangeLossRecovery(reason: String) {
         guard longWearModeEnabled else { return }
         guard !offlineHistoricalSyncInProgress else {
-            WHOOPDebugLog("WHOOPDBG offline_sync status=skip_range_loss_mark reason=%@ detail=sync_in_progress",
+            AtriaDebugLog("ATRIADBG offline_sync status=skip_range_loss_mark reason=%@ detail=sync_in_progress",
                           reason)
             return
         }
@@ -1762,7 +1762,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             guard UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
             guard status == .connected else { return }
             let backfillReason = UserDefaults.standard.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? reason
-            WHOOPDebugLog("WHOOPDBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=defer_if_live_link_connected",
+            AtriaDebugLog("ATRIADBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=defer_if_live_link_connected",
                   backfillReason,
                   reason)
             if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false) {
@@ -1793,7 +1793,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         } else if !historyOnlyProbeEnabled {
             historicalAckDisabled = false
         }
-        WHOOPDebugLog("WHOOPDBG radio_mode mode=%@ persist=%d reconnect=%d reason=%@",
+        AtriaDebugLog("ATRIADBG radio_mode mode=%@ persist=%d reconnect=%d reason=%@",
               enabled ? "standard_hr_only" : "full_protocol",
               persist ? 1 : 0,
               reconnect ? 1 : 0,
@@ -1814,9 +1814,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let reason = evidenceToken(defaults.string(forKey: LinkDefaults.lastReason) ?? "none")
         let error = evidenceToken(defaults.string(forKey: LinkDefaults.lastError) ?? "none")
         let save = evidenceToken(defaults.string(forKey: LinkDefaults.lastAutoSaveStatus) ?? "none")
-        let coexistenceRisk = evidenceToken(defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk) ?? OfficialWhoopCoexistenceRisk.advisory.rawValue)
-        let coexistenceReason = evidenceToken(defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceReason) ?? "onboarding_advisory")
-        return "ble_link_attempts=\(defaults.integer(forKey: LinkDefaults.attempts)); ble_link_disconnects=\(defaults.integer(forKey: LinkDefaults.disconnects)); ble_link_successes=\(defaults.integer(forKey: LinkDefaults.successes)); ble_link_failures=\(defaults.integer(forKey: LinkDefaults.failures)); ble_link_last_status=\(status); ble_link_last_reason=\(reason); ble_link_last_error=\(error); ble_link_last_autosave=\(save); ble_link_last_autosave_samples=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveSamples)); ble_link_last_autosave_duration_s=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveDuration)); official_whoop_coexistence_risk=\(coexistenceRisk); official_whoop_coexistence_reason=\(coexistenceReason)"
+        let coexistenceRisk = evidenceToken(defaults.string(forKey: LinkDefaults.officialAppCoexistenceRisk) ?? OfficialAppCoexistenceRisk.advisory.rawValue)
+        let coexistenceReason = evidenceToken(defaults.string(forKey: LinkDefaults.officialAppCoexistenceReason) ?? "onboarding_advisory")
+        return "ble_link_attempts=\(defaults.integer(forKey: LinkDefaults.attempts)); ble_link_disconnects=\(defaults.integer(forKey: LinkDefaults.disconnects)); ble_link_successes=\(defaults.integer(forKey: LinkDefaults.successes)); ble_link_failures=\(defaults.integer(forKey: LinkDefaults.failures)); ble_link_last_status=\(status); ble_link_last_reason=\(reason); ble_link_last_error=\(error); ble_link_last_autosave=\(save); ble_link_last_autosave_samples=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveSamples)); ble_link_last_autosave_duration_s=\(defaults.integer(forKey: LinkDefaults.lastAutoSaveDuration)); official_app_coexistence_risk=\(coexistenceRisk); official_app_coexistence_reason=\(coexistenceReason)"
     }
 
     static func sampleGapEvidence() -> String {
@@ -2009,8 +2009,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(attempts, forKey: LinkDefaults.attempts)
         defaults.set("connecting", forKey: LinkDefaults.lastStatus)
         defaults.set(reason, forKey: LinkDefaults.lastReason)
-        refreshOfficialWhoopCoexistenceRisk(reason: "link_attempt")
-        WHOOPDebugLog("WHOOPDBG ble_link status=connecting reason=%@ attempts=%d disconnects=%d failures=%d name=%@",
+        refreshOfficialAppCoexistenceRisk(reason: "link_attempt")
+        AtriaDebugLog("ATRIADBG ble_link status=connecting reason=%@ attempts=%d disconnects=%d failures=%d name=%@",
               reason,
               attempts,
               defaults.integer(forKey: LinkDefaults.disconnects),
@@ -2026,8 +2026,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
         defaults.set("did_connect", forKey: LinkDefaults.lastReason)
         defaults.set("none", forKey: LinkDefaults.lastError)
-        persistOfficialWhoopCoexistenceRisk(.cleared, reason: "atria_connected")
-        WHOOPDebugLog("WHOOPDBG ble_link status=connected successes=%d attempts=%d disconnects=%d failures=%d mtu=%d name=%@",
+        persistOfficialAppCoexistenceRisk(.cleared, reason: "atria_connected")
+        AtriaDebugLog("ATRIADBG ble_link status=connected successes=%d attempts=%d disconnects=%d failures=%d mtu=%d name=%@",
               successes,
               defaults.integer(forKey: LinkDefaults.attempts),
               defaults.integer(forKey: LinkDefaults.disconnects),
@@ -2045,8 +2045,8 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
         defaults.set(reason, forKey: LinkDefaults.lastReason)
         defaults.set("none", forKey: LinkDefaults.lastError)
-        persistOfficialWhoopCoexistenceRisk(.cleared, reason: "atria_observed_connected")
-        WHOOPDebugLog("WHOOPDBG ble_link status=connected reason=%@ successes=%d attempts=%d disconnects=%d failures=%d name=%@",
+        persistOfficialAppCoexistenceRisk(.cleared, reason: "atria_observed_connected")
+        AtriaDebugLog("ATRIADBG ble_link status=connected reason=%@ successes=%d attempts=%d disconnects=%d failures=%d name=%@",
               reason,
               successes,
               defaults.integer(forKey: LinkDefaults.attempts),
@@ -2069,10 +2069,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             LinkDefaults.lastAutoSaveStatus,
             LinkDefaults.lastAutoSaveSamples,
             LinkDefaults.lastAutoSaveDuration,
-            LinkDefaults.officialWhoopCoexistenceRisk,
-            LinkDefaults.officialWhoopCoexistenceReason
+            LinkDefaults.officialAppCoexistenceRisk,
+            LinkDefaults.officialAppCoexistenceReason
         ].forEach { defaults.removeObject(forKey: $0) }
-        WHOOPDebugLog("WHOOPDBG ble_link reset=1 reason=launch_arg")
+        AtriaDebugLog("ATRIADBG ble_link reset=1 reason=launch_arg")
     }
 
     private func resetSampleDiagnosticsForDebugLaunch(arguments: [String]) {
@@ -2126,7 +2126,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             RRPresenceDefaults.at
         ].forEach { defaults.removeObject(forKey: $0) }
         resetSessionSampleDiagnostics()
-        WHOOPDebugLog("WHOOPDBG hr_sample reset=1 watchdog_recovery_reset=1 reason=launch_arg")
+        AtriaDebugLog("ATRIADBG hr_sample reset=1 watchdog_recovery_reset=1 reason=launch_arg")
     }
 
     private func resetRadioDiagnosticsForLaunch() {
@@ -2163,7 +2163,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             ProtocolDefaults.lastPacketKind,
             ProtocolDefaults.lastPacketLength
         ].forEach { defaults.removeObject(forKey: $0) }
-        WHOOPDebugLog("WHOOPDBG protocol_diagnostics reset=1 reason=launch_arg")
+        AtriaDebugLog("ATRIADBG protocol_diagnostics reset=1 reason=launch_arg")
     }
 
     private func logActiveMotionIMUCheckPlanIfRequested(arguments: [String]) {
@@ -2174,7 +2174,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             default: doubleValue(after: "--whoop-log-gate-status-after", in: arguments, default: 150, range: 30...300),
             range: 30...300
         )
-        WHOOPDebugLog("WHOOPDBG active_motion_imu_check status=armed full_protocol=1 reset_protocol_counters=%d metric_promotions=0 script=30s_still_then_30s_wrist_rotations_taps_then_30s_still_then_30s_walking_arm_swing success_signal=protocol_imu_frames_gt_0_or_imu_candidate_or_sleep_motion_hint_count_gt_0 failure_signal=protocol_imu_frames_0_and_sleep_motion_hint_count_0 action=keep_sleep_motion_learning_until_validated",
+        AtriaDebugLog("ATRIADBG active_motion_imu_check status=armed full_protocol=1 reset_protocol_counters=%d metric_promotions=0 script=30s_still_then_30s_wrist_rotations_taps_then_30s_still_then_30s_walking_arm_swing success_signal=protocol_imu_frames_gt_0_or_imu_candidate_or_sleep_motion_hint_count_gt_0 failure_signal=protocol_imu_frames_0_and_sleep_motion_hint_count_0 action=keep_sleep_motion_learning_until_validated",
               arguments.contains("--whoop-reset-protocol-diagnostics") ? 1 : 0)
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
@@ -2190,7 +2190,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let eventFrames = protocolEventFrameCount
         let unknownFrames = protocolUnknownFrameCount
         let signalSeen = imuFrames > 0 || diagnosticFrames > 0 || sleepMotionHintCount > 0
-        WHOOPDebugLog("WHOOPDBG active_motion_imu_check status=%@ delay_s=%.0f protocol_packets=%d protocol_imu_frames=%d protocol_diagnostic_frames=%d protocol_event_frames=%d protocol_unknown_frames=%d protocol_last_type=%@ protocol_last_kind=%@ sleep_motion_hint_count=%d sleep_motion_hint_kinds=%@ phone_motion_samples=%d phone_motion_over_still_threshold=%d phone_motion_validated=0 wrist_motion_validated=0 metric_promotions=0 action=%@",
+        AtriaDebugLog("ATRIADBG active_motion_imu_check status=%@ delay_s=%.0f protocol_packets=%d protocol_imu_frames=%d protocol_diagnostic_frames=%d protocol_event_frames=%d protocol_unknown_frames=%d protocol_last_type=%@ protocol_last_kind=%@ sleep_motion_hint_count=%d sleep_motion_hint_kinds=%@ phone_motion_samples=%d phone_motion_over_still_threshold=%d phone_motion_validated=0 wrist_motion_validated=0 metric_promotions=0 action=%@",
               signalSeen ? "signal_seen" : "no_strap_motion_signal",
               delay,
               packets,
@@ -2225,7 +2225,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             || key == RadioDefaults.txSkipped
             || key == RadioDefaults.realtimeStartSkipped
             || key == RadioDefaults.customNotifyEnabled {
-            WHOOPDebugLog("WHOOPDBG radio_low_traffic status=%@ mode=%@ custom_notify_skipped=%d custom_notify_enabled=%d tx_skipped=%d realtime_start_skipped=%d reason=%@",
+            AtriaDebugLog("ATRIADBG radio_low_traffic status=%@ mode=%@ custom_notify_skipped=%d custom_notify_enabled=%d tx_skipped=%d realtime_start_skipped=%d reason=%@",
                   enabled == 0 && (skipped > 0 || txSkipped > 0 || realtimeSkipped > 0) ? "ready" : "learning",
                   standardHROnlyMode ? "standard_hr_only" : "full_protocol",
                   skipped,
@@ -2239,23 +2239,23 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func restoreActiveSessionJournalIfNeeded(reason: String) {
         guard longWearModeEnabled else { return }
         guard session.isEmpty else {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=restore_skipped reason=live_session_active samples=%d", session.count)
+            AtriaDebugLog("ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=%d", session.count)
             return
         }
         guard let record = ActiveSessionJournal.load() else {
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=absent reason=%@", reason)
+            AtriaDebugLog("ATRIADBG active_session_journal status=absent reason=%@", reason)
             return
         }
         guard record.schema == ActiveSessionJournal.schema else {
             ActiveSessionJournal.clear()
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=schema_mismatch schema=%d", record.schema)
+            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=schema_mismatch schema=%d", record.schema)
             return
         }
         let now = Date()
         let age = now.timeIntervalSince(record.updatedAt)
         guard age <= activeJournalMaxAge else {
             ActiveSessionJournal.clear()
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=stale age_s=%.0f max_age_s=%.0f samples=%d",
+            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=stale age_s=%.0f max_age_s=%.0f samples=%d",
                   age, activeJournalMaxAge, record.samples.count)
             return
         }
@@ -2266,7 +2266,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             .filter { now.timeIntervalSince($0.t) <= activeJournalMaxAge }
         guard let first = samples.first, let last = samples.last, samples.count > 1 else {
             ActiveSessionJournal.clear()
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=insufficient_samples samples=%d", record.samples.count)
+            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=insufficient_samples samples=%d", record.samples.count)
             return
         }
 
@@ -2303,7 +2303,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                      hrMaxAcceptedGap: record.maxAcceptedHRGap)
             let persisted = persistFinishedSession(saved, reason: "stale_journal_restore")
             resetLiveSessionState(start: now)
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=%@ reason=stale_restore age_s=%.0f threshold_s=%.1f samples=%d rr_values=%d duration_s=%.0f action=%@",
+            AtriaDebugLog("ATRIADBG active_session_journal status=%@ reason=stale_restore age_s=%.0f threshold_s=%.1f samples=%d rr_values=%d duration_s=%.0f action=%@",
                   persisted ? "closed" : "close_failed",
                   age,
                   activeJournalSegmentGapLimit,
@@ -2364,7 +2364,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             captureLabel = record.label
         }
         let duration = last.t.timeIntervalSince(first.t)
-        WHOOPDebugLog("WHOOPDBG active_session_journal status=restored reason=%@ samples=%d rr_values=%d duration_s=%.0f age_s=%.0f label=%@",
+        AtriaDebugLog("ATRIADBG active_session_journal status=restored reason=%@ samples=%d rr_values=%d duration_s=%.0f age_s=%.0f label=%@",
               reason, session.count, rrArchive.count, duration, age, captureLabel)
     }
 
@@ -2472,7 +2472,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     self.lastActiveJournalSaveAt = now
                     self.lastActiveJournalSavedSessionSampleCount = sessionSnapshot.count
                     self.lastActiveJournalSavedRRArchiveCount = rrArchiveSnapshot.count
-                    WHOOPDebugLog("WHOOPDBG active_session_journal status=saved reason=%@ samples=%d rr_values=%d duration_s=%.0f dirty=0 label=%@",
+                    AtriaDebugLog("ATRIADBG active_session_journal status=saved reason=%@ samples=%d rr_values=%d duration_s=%.0f dirty=0 label=%@",
                           reason, record.samples.count, record.rrSamples?.count ?? 0, duration, record.label)
                     if self.activeJournalPendingSave {
                         self.activeJournalPendingSave = false
@@ -2484,7 +2484,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.activeJournalSaveInFlight = false
                     self.activeJournalDirtySamples = max(self.activeJournalDirtySamples, flushSampleInterval)
-                    WHOOPDebugLog("WHOOPDBG active_session_journal status=save_failed reason=%@ samples=%d error=%@",
+                    AtriaDebugLog("ATRIADBG active_session_journal status=save_failed reason=%@ samples=%d error=%@",
                           reason, sessionSnapshot.count, error.localizedDescription)
                     if self.activeJournalPendingSave {
                         self.activeJournalPendingSave = false
@@ -2538,7 +2538,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     func flushLifecycleRealtimeState(reason: String) {
         flushSampleDiagnostics()
         flushActiveSessionJournal(reason: reason)
-        WHOOPDebugLog("WHOOPDBG lifecycle_realtime_flush status=ok reason=%@ raw=%d accepted=%d",
+        AtriaDebugLog("ATRIADBG lifecycle_realtime_flush status=ok reason=%@ raw=%d accepted=%d",
                       reason,
                       sampleDiagnostics.rawNotifications,
                       sampleDiagnostics.acceptedSamples)
@@ -2546,7 +2546,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDebugActiveJournalFlush(after seconds: TimeInterval) {
         debugActiveJournalFlushTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG active_session_journal debug_flush_schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG active_session_journal debug_flush_schedule delay_s=%.1f", seconds)
         debugActiveJournalFlushTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             if Task.isCancelled { return }
@@ -2563,9 +2563,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         defaults.set(reason, forKey: LinkDefaults.lastReason)
         defaults.set(errorText, forKey: LinkDefaults.lastError)
         if failures >= 2 || defaults.integer(forKey: LinkDefaults.successes) == 0 {
-            persistOfficialWhoopCoexistenceRisk(.suspected, reason: "connect_failure_\(reason)")
+            persistOfficialAppCoexistenceRisk(.suspected, reason: "connect_failure_\(reason)")
         }
-        WHOOPDebugLog("WHOOPDBG ble_link status=failed reason=%@ error=%@ attempts=%d disconnects=%d failures=%d action=fresh_scan",
+        AtriaDebugLog("ATRIADBG ble_link status=failed reason=%@ error=%@ attempts=%d disconnects=%d failures=%d action=fresh_scan",
               reason,
               errorText,
               defaults.integer(forKey: LinkDefaults.attempts),
@@ -2573,24 +2573,24 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               failures)
     }
 
-    private func refreshOfficialWhoopCoexistenceRisk(reason: String) {
+    private func refreshOfficialAppCoexistenceRisk(reason: String) {
         let defaults = UserDefaults.standard
-        if defaults.string(forKey: LinkDefaults.officialWhoopCoexistenceRisk) == nil {
-            persistOfficialWhoopCoexistenceRisk(.advisory, reason: reason)
+        if defaults.string(forKey: LinkDefaults.officialAppCoexistenceRisk) == nil {
+            persistOfficialAppCoexistenceRisk(.advisory, reason: reason)
         } else {
-            assignIfChanged(\.officialWhoopCoexistenceRisk, Self.officialWhoopCoexistenceRisk(defaults: defaults))
+            assignIfChanged(\.officialAppCoexistenceRisk, Self.officialAppCoexistenceRisk(defaults: defaults))
         }
     }
 
-    private func persistOfficialWhoopCoexistenceRisk(_ risk: OfficialWhoopCoexistenceRisk,
+    private func persistOfficialAppCoexistenceRisk(_ risk: OfficialAppCoexistenceRisk,
                                                     reason: String) {
         let defaults = UserDefaults.standard
-        let previous = Self.officialWhoopCoexistenceRisk(defaults: defaults)
-        defaults.set(risk.rawValue, forKey: LinkDefaults.officialWhoopCoexistenceRisk)
-        defaults.set(reason, forKey: LinkDefaults.officialWhoopCoexistenceReason)
-        assignIfChanged(\.officialWhoopCoexistenceRisk, risk)
+        let previous = Self.officialAppCoexistenceRisk(defaults: defaults)
+        defaults.set(risk.rawValue, forKey: LinkDefaults.officialAppCoexistenceRisk)
+        defaults.set(reason, forKey: LinkDefaults.officialAppCoexistenceReason)
+        assignIfChanged(\.officialAppCoexistenceRisk, risk)
         guard previous != risk else { return }
-        WHOOPDebugLog("WHOOPDBG official_whoop_coexistence status=%@ reason=%@ action=%@",
+        AtriaDebugLog("ATRIADBG official_app_coexistence status=%@ reason=%@ action=%@",
                       risk.rawValue,
                       reason,
                       risk == .suspected ? "show_user_uninstall_guidance" : "continue")
@@ -2599,7 +2599,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func requestFreshScanReconnect(peripheral target: CBPeripheral, reason: String) {
         pendingRecoveryReconnectReason = reason
         if freshScanFallbackTask != nil {
-            WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_coalesced reason=%@ pending_reason=%@ attempt=%d action=wait_existing_backoff",
+            AtriaDebugLog("ATRIADBG ble_link status=reconnect_coalesced reason=%@ pending_reason=%@ attempt=%d action=wait_existing_backoff",
                   reason,
                   pendingRecoveryReconnectReason ?? "unknown",
                   recoveryReconnectAttempt)
@@ -2607,7 +2607,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         recoveryReconnectAttempt += 1
         let delay = recoveryReconnectDelay(attempt: recoveryReconnectAttempt)
-        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_request reason=%@ attempt=%d delay_s=%.2f action=backoff_connect_known_then_scan",
+        AtriaDebugLog("ATRIADBG ble_link status=reconnect_request reason=%@ attempt=%d delay_s=%.2f action=backoff_connect_known_then_scan",
               reason,
               recoveryReconnectAttempt,
               delay)
@@ -2618,7 +2618,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             self.pendingRecoveryReconnectReason = nil
             self.freshScanFallbackTask = nil
             guard self.status != .connecting else {
-                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_skipped reason=%@ current_status=connecting",
+                AtriaDebugLog("ATRIADBG ble_link status=reconnect_skipped reason=%@ current_status=connecting",
                       scheduledReason)
                 return
             }
@@ -2632,7 +2632,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 self.assignIfChanged(\.status, .connecting)
                 self.central.connect(target, options: nil)
                 self.startReconnectWatchdog(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
-                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=connect_known_peripheral",
+                AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=connect_known_peripheral",
                       scheduledReason,
                       self.recoveryReconnectAttempt)
                 return
@@ -2647,7 +2647,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 if self.status != .connected { self.assignIfChanged(\.status, .connected) }
                 target.discoverServices(Self.UUIDs.discoveryServices)
                 self.resetRecoveryReconnectBackoff(reason: "\(scheduledReason)_live_link")
-                WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_skipped reason=%@ action=reassert_live_link",
+                AtriaDebugLog("ATRIADBG ble_link status=reconnect_skipped reason=%@ action=reassert_live_link",
                       scheduledReason)
                 return
             }
@@ -2657,7 +2657,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 self.peripheral = nil
             }
             self.assignIfChanged(\.status, .disconnected)
-            WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=fresh_scan_fallback",
+            AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=fresh_scan_fallback",
                   scheduledReason,
                   self.recoveryReconnectAttempt)
             self.startScan(reason: "\(scheduledReason)_fallback")
@@ -2675,7 +2675,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard recoveryReconnectAttempt > 0 || pendingRecoveryReconnectReason != nil else { return }
         recoveryReconnectAttempt = 0
         pendingRecoveryReconnectReason = nil
-        WHOOPDebugLog("WHOOPDBG ble_link status=reconnect_backoff_reset reason=%@", reason)
+        AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff_reset reason=%@", reason)
     }
 
     func applyLaunchAutomation(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -2700,38 +2700,38 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             stopLongWearMode(reason: "full_protocol_launch_arg")
             updatePhoneMotionAuditState(reason: "full_protocol_launch_arg")
             applyStandardHROnly(enabled: false, persist: true, reconnect: true, reason: "full_protocol_launch_arg")
-            WHOOPDebugLog("WHOOPDBG full_protocol_mode request=launch_arg action=disable_long_wear_and_low_radio")
+            AtriaDebugLog("ATRIADBG full_protocol_mode request=launch_arg action=disable_long_wear_and_low_radio")
         } else if arguments.contains("--whoop-long-wear-mode") {
             UserDefaults.standard.set(true, forKey: LongWearDefaults.enabled)
             longWearModeEnabled = true
             updateSessionPointCacheMode()
             updatePhoneMotionAuditState(reason: "long_wear_launch_arg")
-            WHOOPDebugLog("WHOOPDBG long_wear_mode request=launch_arg action=enable_persisted")
+            AtriaDebugLog("ATRIADBG long_wear_mode request=launch_arg action=enable_persisted")
         }
         if let retriesIndex = arguments.firstIndex(of: "--whoop-realtime-start-retries"),
            arguments.indices.contains(arguments.index(after: retriesIndex)),
            let retries = Int(arguments[arguments.index(after: retriesIndex)]) {
             realtimeStartRetries = max(0, min(retries, 12))
-            WHOOPDebugLog("WHOOPDBG realtimeConfig start_retries=%d", realtimeStartRetries)
+            AtriaDebugLog("ATRIADBG realtimeConfig start_retries=%d", realtimeStartRetries)
         }
         if arguments.contains("--whoop-log-hr-consistency") {
             hrConsistencyEnabled = true
-            WHOOPDebugLog("WHOOPDBG hr_consistency_config enabled=1 max_pair_age_s=5.0 recent_window=20 ready_recent_pairs=10 recent_max_delta_ready=2 recent_mean_delta_ready=1.0")
+            AtriaDebugLog("ATRIADBG hr_consistency_config enabled=1 max_pair_age_s=5.0 recent_window=20 ready_recent_pairs=10 recent_max_delta_ready=2 recent_mean_delta_ready=1.0")
         }
         if arguments.contains("--whoop-log-live-packets") {
             livePacketSummaryLoggingEnabled = true
-            WHOOPDebugLog("WHOOPDBG live_packet_logging enabled=1 mode=summary")
+            AtriaDebugLog("ATRIADBG live_packet_logging enabled=1 mode=summary")
         }
         if arguments.contains("--whoop-log-ble-frames") {
             verboseBLEFrameLogging = true
             storeProprietaryFrames = true
             storeProprietaryFramesMode = true
-            WHOOPDebugLog("WHOOPDBG ble_frame_logging enabled=1 reason=launch_arg")
+            AtriaDebugLog("ATRIADBG ble_frame_logging enabled=1 reason=launch_arg")
         }
         if arguments.contains("--whoop-store-ble-frames") {
             storeProprietaryFrames = true
             storeProprietaryFramesMode = true
-            WHOOPDebugLog("WHOOPDBG ble_frame_history enabled=1 reason=launch_arg")
+            AtriaDebugLog("ATRIADBG ble_frame_history enabled=1 reason=launch_arg")
         }
         protocolDiagnosticsPersistenceEnabled =
             arguments.contains("--whoop-active-motion-imu-check")
@@ -2739,7 +2739,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             || verboseBLEFrameLogging
         if arguments.contains("--whoop-standard-hr-only") {
             applyStandardHROnly(enabled: true, persist: false, reconnect: false, reason: "launch_arg")
-            WHOOPDebugLog("WHOOPDBG standard_hr_only enabled=1 realtime_start=skipped custom_notify=skipped history_ack=disabled")
+            AtriaDebugLog("ATRIADBG standard_hr_only enabled=1 realtime_start=skipped custom_notify=skipped history_ack=disabled")
         }
         if arguments.contains("--whoop-log-hr-artifact-policy") {
             logHRArtifactPolicySelfTest()
@@ -2781,13 +2781,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
            arguments.indices.contains(arguments.index(after: restartIndex)),
            let seconds = Double(arguments[arguments.index(after: restartIndex)]) {
             realtimeRestartAfterZeroRRSeconds = max(0, min(seconds, 300))
-            WHOOPDebugLog("WHOOPDBG realtimeConfig restart_zero_rr_s=%.1f", realtimeRestartAfterZeroRRSeconds)
+            AtriaDebugLog("ATRIADBG realtimeConfig restart_zero_rr_s=%.1f", realtimeRestartAfterZeroRRSeconds)
         }
         if let reassertIndex = arguments.firstIndex(of: "--whoop-realtime-reassert-zero-rr-seconds"),
            arguments.indices.contains(arguments.index(after: reassertIndex)),
            let seconds = Double(arguments[arguments.index(after: reassertIndex)]) {
             realtimeReassertStartAfterZeroRRSeconds = max(0, min(seconds, 300))
-            WHOOPDebugLog("WHOOPDBG realtimeConfig reassert_zero_rr_s=%.1f", realtimeReassertStartAfterZeroRRSeconds)
+            AtriaDebugLog("ATRIADBG realtimeConfig reassert_zero_rr_s=%.1f", realtimeReassertStartAfterZeroRRSeconds)
         }
         if let modeIndex = arguments.firstIndex(of: "--whoop-probe-command-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
@@ -2810,10 +2810,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             probeCommand = Self.parseHexBytes(rawHex)
             if let probeCommand, let first = probeCommand.first {
                 let data = probeCommand.dropFirst().map { String(format: "%02x", $0) }.joined()
-                WHOOPDebugLog("WHOOPDBG realtimeConfig probe_cmd=%02x data=%@ delay_s=%.1f mode=%@",
+                AtriaDebugLog("ATRIADBG realtimeConfig probe_cmd=%02x data=%@ delay_s=%.1f mode=%@",
                       first, data, probeCommandDelaySeconds, probeCommandMode.rawValue)
             } else {
-                WHOOPDebugLog("WHOOPDBG realtimeConfig probe_cmd_invalid=%@", rawHex)
+                AtriaDebugLog("ATRIADBG realtimeConfig probe_cmd_invalid=%@", rawHex)
             }
         }
         if let sweepIndex = arguments.firstIndex(of: "--whoop-probe-sweep"),
@@ -2826,12 +2826,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let labels = probeSweepCommands.enumerated().map { index, command in
                 "\(index):\(Self.hex(command))"
             }.joined(separator: ",")
-            WHOOPDebugLog("WHOOPDBG realtimeConfig probe_sweep=%@ interval_s=%.1f",
+            AtriaDebugLog("ATRIADBG realtimeConfig probe_sweep=%@ interval_s=%.1f",
                   labels, probeSweepIntervalSeconds)
         }
         if arguments.contains("--whoop-disable-history-ack") {
             historicalAckDisabled = true
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_ack=disabled")
+            AtriaDebugLog("ATRIADBG realtimeConfig history_ack=disabled")
         }
         if let modeIndex = arguments.firstIndex(of: "--whoop-history-ack-mode"),
            arguments.indices.contains(arguments.index(after: modeIndex)) {
@@ -2840,7 +2840,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             if supportedModes.contains(mode) {
                 historyAckMode = mode
             }
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_ack_mode=%@", historyAckMode)
+            AtriaDebugLog("ATRIADBG realtimeConfig history_ack_mode=%@", historyAckMode)
         }
         if arguments.contains("--whoop-history-recent-sweep") {
             historyRecentSweepEnabled = true
@@ -2855,12 +2855,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     historyRecentSweepOffsets = parsed
                 }
             }
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_recent_sweep=1 offsets=%@",
+            AtriaDebugLog("ATRIADBG realtimeConfig history_recent_sweep=1 offsets=%@",
                   historyRecentSweepOffsets.map(String.init).joined(separator: ","))
         }
         if arguments.contains("--whoop-history-clock-handshake") || arguments.contains("--whoop-history-clock-sync") {
             historyClockSyncEnabled = true
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_clock_handshake=1 set_clock_forms=8,9 get_clock_payloads=empty,00")
+            AtriaDebugLog("ATRIADBG realtimeConfig history_clock_handshake=1 set_clock_forms=8,9 get_clock_payloads=empty,00")
         }
         if arguments.contains("--whoop-history-selector-sweep") {
             historySelectorSweepEnabled = true
@@ -2881,7 +2881,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     historySelectorMode = mode
                 }
             }
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_selector_sweep=1 mode=%@", historySelectorMode)
+            AtriaDebugLog("ATRIADBG realtimeConfig history_selector_sweep=1 mode=%@", historySelectorMode)
         }
         if value(after: "--whoop-history-selector-range-index", in: arguments) != nil {
             let index = intValue(after: "--whoop-history-selector-range-index",
@@ -2889,7 +2889,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                  default: 0,
                                  range: 0...255)
             historySelectorRangeIndex = index
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_selector_range_index=%d", index)
+            AtriaDebugLog("ATRIADBG realtimeConfig history_selector_range_index=%d", index)
         }
         if arguments.contains("--whoop-history-range-sweep") {
             historyDataRangeSweepEnabled = true
@@ -2907,7 +2907,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let labels = historyDataRangeSweepPayloads.enumerated().map { index, payload in
                 "\(index):\(Self.hex(payload))"
             }.joined(separator: ",")
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_range_sweep=1 payloads=%@", labels)
+            AtriaDebugLog("ATRIADBG realtimeConfig history_range_sweep=1 payloads=%@", labels)
         }
         if let initIndex = arguments.firstIndex(of: "--whoop-history-init-sweep"),
            arguments.indices.contains(arguments.index(after: initIndex)) {
@@ -2919,17 +2919,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let labels = historyInitSweepCommands.enumerated().map { index, command in
                 "\(index):\(Self.hex(command))"
             }.joined(separator: ",")
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_init_sweep=%@", labels)
+            AtriaDebugLog("ATRIADBG realtimeConfig history_init_sweep=%@", labels)
         }
         if arguments.contains("--whoop-history-skip-range") {
             historySkipDataRangeRequest = true
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_skip_range=1")
+            AtriaDebugLog("ATRIADBG realtimeConfig history_skip_range=1")
         }
         if arguments.contains("--whoop-history-only-probe") {
             historyOnlyProbeEnabled = true
             historyOnlyProbeMode = true
             realtimeStartRetries = 0
-            WHOOPDebugLog("WHOOPDBG realtimeConfig history_only_probe=1 realtime_start=skipped cmd22=%d init_sweep=%d range_sweep=%d selector_sweep=%d mode=%@",
+            AtriaDebugLog("ATRIADBG realtimeConfig history_only_probe=1 realtime_start=skipped cmd22=%d init_sweep=%d range_sweep=%d selector_sweep=%d mode=%@",
                   historySkipDataRangeRequest ? 0 : 1,
                   historyInitSweepCommands.isEmpty ? 0 : 1,
                   historyDataRangeSweepEnabled ? 1 : 0,
@@ -3040,7 +3040,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let label = captureLabel.isEmpty ? "Live workout" : captureLabel
         let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
         liveWorkoutDiagnosticTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG live_workout schedule interval_s=%.1f rest_hr=%d max_hr=%d threshold_hr=%d label=%@",
+        AtriaDebugLog("ATRIADBG live_workout schedule interval_s=%.1f rest_hr=%d max_hr=%d threshold_hr=%d label=%@",
               seconds, rest, maxHR, threshold, label)
         liveWorkoutDiagnosticTask = Task { @MainActor in
             var index = 1
@@ -3048,13 +3048,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(for: .seconds(seconds))
                 if Task.isCancelled { break }
                 guard session.count >= autoSaveMinSamples else {
-                    WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
+                    AtriaDebugLog("ATRIADBG live_workout status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
                           session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
                     index += 1
                     continue
                 }
                 guard let saved = snapshotSession(label: label) else {
-                    WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
+                    AtriaDebugLog("ATRIADBG live_workout status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
                           session.count, rest, maxHR, threshold, index, label)
                     index += 1
                     continue
@@ -3062,7 +3062,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 persistActiveSessionJournalIfNeeded(reason: "live_workout_diagnostic", force: true)
                 let readiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
                 let capture = workoutCaptureEvidence(for: saved, readiness: readiness)
-                WHOOPDebugLog("WHOOPDBG live_workout tick=%d status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.3f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ ready=%d capture_diagnosis=%@ capture_action=%@ %@ label=%@",
+                AtriaDebugLog("ATRIADBG live_workout tick=%d status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d avg_over_rest=%d peak_over_rest=%d elevated_s=%.0f elevated_fraction=%.3f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ ready=%d capture_diagnosis=%@ capture_action=%@ %@ label=%@",
                       index,
                       readiness.status,
                       readiness.reason,
@@ -3106,7 +3106,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let label = captureLabel.isEmpty ? "Auto workout" : captureLabel
         let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
         workoutAutoSaveTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG workout_auto_save schedule interval_s=%.1f rest_hr=%d max_hr=%d threshold_hr=%d label=%@",
+        AtriaDebugLog("ATRIADBG workout_auto_save schedule interval_s=%.1f rest_hr=%d max_hr=%d threshold_hr=%d label=%@",
               seconds, rest, maxHR, threshold, label)
         workoutAutoSaveTask = Task { @MainActor in
             var index = 1
@@ -3114,13 +3114,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(for: .seconds(seconds))
                 if Task.isCancelled { break }
                 guard session.count >= autoSaveMinSamples else {
-                    WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
+                    AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
                           session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
                     index += 1
                     continue
                 }
                 guard let snapshot = snapshotSession(label: label) else {
-                    WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
+                    AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@",
                           session.count, rest, maxHR, threshold, index, label)
                     index += 1
                     continue
@@ -3129,7 +3129,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 let readiness = snapshot.workoutReadiness(rest: rest, maxHR: maxHR)
                 guard readiness.ready else {
                     let capture = workoutCaptureEvidence(for: snapshot, readiness: readiness)
-                    WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ label=%@",
+                    AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ label=%@",
                           readiness.reason,
                           readiness.primaryBlocker,
                           readiness.streamCoveragePercent,
@@ -3160,14 +3160,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     continue
                 }
                 guard let saved = finishSession(label: label) else {
-                    WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=finish_failed samples=%d label=%@", session.count, label)
+                    AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=finish_failed samples=%d label=%@", session.count, label)
                     index += 1
                     continue
                 }
                 let persisted = persistFinishedSession(saved, reason: "workout_auto_save")
                 let savedReadiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
                 let capture = workoutCaptureEvidence(for: saved, readiness: savedReadiness)
-                WHOOPDebugLog("WHOOPDBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ hrv=%@ label=%@",
+                AtriaDebugLog("ATRIADBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f observed_duration_s=%.0f dropped_gap_s=%.0f max_gap_s=%.1f gap_count=%d avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d threshold_gap_bpm=%d elevated_s=%.0f required_elevated_s=%.0f longest_bout_s=%.0f required_bout_s=%.0f hr_distribution_below_workout_band=%d next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ hrv=%@ label=%@",
                       persisted ? "saved" : "store_failed",
                       savedReadiness.reason,
                       savedReadiness.primaryBlocker,
@@ -3207,7 +3207,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(config.checkpointInterval, forKey: CheckpointDefaults.interval)
         UserDefaults.standard.set(config.label, forKey: CheckpointDefaults.label)
         UserDefaults.standard.set("long_wear_supervisor", forKey: CheckpointDefaults.source)
-        WHOOPDebugLog("WHOOPDBG long_wear_supervisor schedule base_tick_s=%.1f checkpoint_s=%.1f diagnostic_s=%.1f auto_save_s=%.1f no_data_timeout_s=%.1f hr_continuity_timeout_s=%.1f rr_presence_timeout_s=%.1f accepted_hr_timeout_s=%.1f label=%@",
+        AtriaDebugLog("ATRIADBG long_wear_supervisor schedule base_tick_s=%.1f checkpoint_s=%.1f diagnostic_s=%.1f auto_save_s=%.1f no_data_timeout_s=%.1f hr_continuity_timeout_s=%.1f rr_presence_timeout_s=%.1f accepted_hr_timeout_s=%.1f label=%@",
               config.baseTickInterval,
               config.checkpointInterval,
               config.diagnosticInterval,
@@ -3243,7 +3243,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                         persistActiveSessionJournalIfNeeded(reason: "thermal_critical_minimal_checkpoint", force: true)
                         if lastThermalCheckpointDeferralLogAt.map({ now.timeIntervalSince($0) >= 300 }) ?? true {
                             lastThermalCheckpointDeferralLogAt = now
-                            WHOOPDebugLog("WHOOPDBG long_wear_supervisor thermal_checkpoint_deferral status=minimal_journal_only mode=%@ multiplier=%.1f samples=%d label=%@",
+                            AtriaDebugLog("ATRIADBG long_wear_supervisor thermal_checkpoint_deferral status=minimal_journal_only mode=%@ multiplier=%.1f samples=%d label=%@",
                                   powerThermalGovernor.mode.rawValue,
                                   cadenceMultiplier,
                                   session.count,
@@ -3260,7 +3260,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 if deferSessionAnalysis,
                    (lastThermalAnalysisDeferralLogAt.map { now.timeIntervalSince($0) >= 300 } ?? true) {
                     lastThermalAnalysisDeferralLogAt = now
-                    WHOOPDebugLog("WHOOPDBG long_wear_supervisor thermal_analysis_deferral status=deferred mode=%@ multiplier=%.1f low_power=%d thermal=%@ samples=%d label=%@",
+                    AtriaDebugLog("ATRIADBG long_wear_supervisor thermal_analysis_deferral status=deferred mode=%@ multiplier=%.1f low_power=%d thermal=%@ samples=%d label=%@",
                           powerThermalGovernor.mode.rawValue,
                           cadenceMultiplier,
                           ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0,
@@ -3325,7 +3325,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                         if let rawGap,
                            rawGap < config.acceptedHRTimeout,
                            contactStatus.contains(sampleDiagnostics.lastStatus) || contactStatus.contains(sampleDiagnostics.lastReason) {
-                            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact source=supervisor",
+                            AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact source=supervisor",
                                   acceptedGap,
                                   rawGap,
                                   config.acceptedHRTimeout,
@@ -3381,7 +3381,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
             UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
             UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
                   session.count, autoSaveMinSamples, label, index)
             return
         }
@@ -3390,7 +3390,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
             UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
             UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ checkpoint_index=%d source=long_wear_supervisor",
                   session.count, label, index)
             return
         }
@@ -3400,7 +3400,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
         UserDefaults.standard.set(saved.points.count, forKey: CheckpointDefaults.lastSamples)
         UserDefaults.standard.set(Int(saved.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-        WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ samples=%d rr_samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d hrv=%@ label=%@ checkpoint_index=%d mode=upsert source=long_wear_supervisor",
+        AtriaDebugLog("ATRIADBG session_checkpoint status=%@ samples=%d rr_samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d hrv=%@ label=%@ checkpoint_index=%d mode=upsert source=long_wear_supervisor",
               checkpointPersisted ? "saved" : "store_failed",
               saved.points.count,
               saved.rrSampleCount,
@@ -3415,19 +3415,19 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func runLongWearSupervisorDiagnostic(index: Int, label: String, rest: Int, maxHR: Int) {
         let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
         guard session.count >= autoSaveMinSamples else {
-            WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG live_workout status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
                   session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
             return
         }
         guard let saved = snapshotSession(label: label) else {
-            WHOOPDebugLog("WHOOPDBG live_workout status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG live_workout status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
                   session.count, rest, maxHR, threshold, index, label)
             return
         }
         persistActiveSessionJournalIfNeeded(reason: "live_workout_diagnostic_supervisor", force: true)
         let readiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
         let capture = workoutCaptureEvidence(for: saved, readiness: readiness)
-        WHOOPDebugLog("WHOOPDBG live_workout tick=%d status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ ready=%d capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
+        AtriaDebugLog("ATRIADBG live_workout tick=%d status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ ready=%d capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
               index,
               readiness.status,
               readiness.reason,
@@ -3453,12 +3453,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func runLongWearSupervisorAutoSave(index: Int, label: String, rest: Int, maxHR: Int) -> Bool {
         let threshold = SavedSession.workoutElevatedThreshold(rest: rest, maxHR: maxHR)
         guard session.count >= autoSaveMinSamples else {
-            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=insufficient_samples samples=%d min_samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
                   session.count, autoSaveMinSamples, rest, maxHR, threshold, index, label)
             return false
         }
         guard let snapshot = snapshotSession(label: label) else {
-            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=snapshot_failed samples=%d rest_hr=%d max_hr=%d threshold_hr=%d tick=%d label=%@ source=long_wear_supervisor",
                   session.count, rest, maxHR, threshold, index, label)
             return false
         }
@@ -3466,7 +3466,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let readiness = snapshot.workoutReadiness(rest: rest, maxHR: maxHR)
         guard readiness.ready else {
             let capture = workoutCaptureEvidence(for: snapshot, readiness: readiness)
-            WHOOPDebugLog("WHOOPDBG workout_auto_save status=learning reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
+            AtriaDebugLog("ATRIADBG workout_auto_save status=learning reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d elevated_s=%.0f required_elevated_s=%.0f next_action=%@ capture_diagnosis=%@ capture_action=%@ %@ label=%@ source=long_wear_supervisor",
                   readiness.reason,
                   readiness.primaryBlocker,
                   readiness.streamCoveragePercent,
@@ -3491,7 +3491,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let persisted = persistFinishedSession(saved, reason: "workout_auto_save_supervisor")
         let savedReadiness = saved.workoutReadiness(rest: rest, maxHR: maxHR)
         persistActiveSessionJournalIfNeeded(reason: "workout_auto_save_snapshot_supervisor", force: true)
-        WHOOPDebugLog("WHOOPDBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d hrv=%@ label=%@ source=long_wear_supervisor mode=snapshot_keep_live",
+        AtriaDebugLog("ATRIADBG workout_auto_save status=%@ reason=%@ primary_blocker=%@ stream_coverage_percent=%d tick=%d samples=%d duration_s=%.0f avg_hr=%d peak_hr=%d rest_hr=%d max_hr=%d threshold_hr=%d hrv=%@ label=%@ source=long_wear_supervisor mode=snapshot_keep_live",
               persisted ? "saved" : "store_failed",
               savedReadiness.reason,
               savedReadiness.primaryBlocker,
@@ -3513,7 +3513,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                 interval: TimeInterval,
                                                 label: String) {
         noDataWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG no_data_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@",
+        AtriaDebugLog("ATRIADBG no_data_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@",
               timeout, interval, label)
         noDataWatchdogTask = Task { @MainActor in
             while !Task.isCancelled {
@@ -3536,7 +3536,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDebugNoDataWatchdog(after seconds: TimeInterval) {
         debugNoDataWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG no_data_watchdog debug_force_schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG no_data_watchdog debug_force_schedule delay_s=%.1f", seconds)
         debugNoDataWatchdogTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -3554,7 +3554,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                        gap: TimeInterval,
                                        timeout: TimeInterval) {
         if historyOnlyProbeMode {
-            WHOOPDebugLog("WHOOPDBG no_data_watchdog status=%@ gap_s=%.1f timeout_s=%.1f samples=%d checkpoint=skipped action=suppressed_history_only_probe",
+            AtriaDebugLog("ATRIADBG no_data_watchdog status=%@ gap_s=%.1f timeout_s=%.1f samples=%d checkpoint=skipped action=suppressed_history_only_probe",
                   recoveryStatus,
                   gap,
                   timeout,
@@ -3568,7 +3568,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(checkpointPersisted ? "saved_no_data_watchdog" : "store_failed_no_data_watchdog", forKey: CheckpointDefaults.lastStatus)
             UserDefaults.standard.set(snapshot.points.count, forKey: CheckpointDefaults.lastSamples)
             UserDefaults.standard.set(Int(snapshot.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ reason=no_data_watchdog samples=%d rr_samples=%d duration_s=%.0f label=%@ source=watchdog",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=%@ reason=no_data_watchdog samples=%d rr_samples=%d duration_s=%.0f label=%@ source=watchdog",
                   checkpointPersisted ? "saved" : "store_failed",
                   snapshot.points.count,
                   snapshot.rrSampleCount,
@@ -3584,7 +3584,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                 acceptedGap: nil,
                                 samples: session.count,
                                 checkpoint: snapshot == nil ? "skipped" : "saved")
-        WHOOPDebugLog("WHOOPDBG no_data_watchdog status=%@ gap_s=%.1f timeout_s=%.1f samples=%d checkpoint=%@ action=fresh_scan_reconnect",
+        AtriaDebugLog("ATRIADBG no_data_watchdog status=%@ gap_s=%.1f timeout_s=%.1f samples=%d checkpoint=%@ action=fresh_scan_reconnect",
               recoveryStatus,
               gap,
               timeout,
@@ -3612,7 +3612,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                     acceptedGap: nil,
                                     samples: session.count,
                                     checkpoint: "skipped")
-            WHOOPDebugLog("WHOOPDBG no_data_watchdog status=%@ gap_s=%.1f action=reassert_keep_connection samples=%d",
+            AtriaDebugLog("ATRIADBG no_data_watchdog status=%@ gap_s=%.1f action=reassert_keep_connection samples=%d",
                   recoveryStatus, gap, session.count)
             return
         }
@@ -3623,7 +3623,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                       interval: TimeInterval,
                                                       label: String) {
         hrContinuityWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@ source=2A37 action=read_or_reassert_notify",
+        AtriaDebugLog("ATRIADBG hr_continuity_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@ source=2A37 action=read_or_reassert_notify",
               timeout, interval, label)
         hrContinuityWatchdogTask = Task { @MainActor in
             var lastNudgeAt: Date?
@@ -3652,7 +3652,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDebugHRContinuityWatchdog(after seconds: TimeInterval) {
         debugHRContinuityWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog debug_force_schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG hr_continuity_watchdog debug_force_schedule delay_s=%.1f", seconds)
         debugHRContinuityWatchdogTask = Task { @MainActor in
             if seconds > 0 {
                 try? await Task.sleep(for: .seconds(seconds))
@@ -3673,7 +3673,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard !debugMissingHeartRateCharacteristicFired else { return }
         debugMissingHeartRateCharacteristicFired = true
         debugMissingHeartRateCharacteristicTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG missing_2a37_debug schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG missing_2a37_debug schedule delay_s=%.1f", seconds)
         debugMissingHeartRateCharacteristicTask = Task { @MainActor in
             if seconds > 0 {
                 try? await Task.sleep(for: .seconds(seconds))
@@ -3684,7 +3684,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let now = Date()
             let rawGap = (lastRawHRNotificationAt ?? connectedAt).map { now.timeIntervalSince($0) } ?? 0
             let acceptedGap = lastAcceptedHRAt.map { now.timeIntervalSince($0) }
-            WHOOPDebugLog("WHOOPDBG missing_2a37_debug status=forced had_characteristic=%d peripheral_state=%@ raw_gap_s=%.1f accepted_gap_s=%@",
+            AtriaDebugLog("ATRIADBG missing_2a37_debug status=forced had_characteristic=%d peripheral_state=%@ raw_gap_s=%.1f accepted_gap_s=%@",
                   hadCharacteristic ? 1 : 0,
                   peripheral.map { String(describing: $0.state.rawValue) } ?? "missing",
                   rawGap,
@@ -3699,7 +3699,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func armDebugMissingHeartRateCharacteristic(after seconds: TimeInterval) {
         debugMissingHeartRateCharacteristicAfterDiscovery = seconds
-        WHOOPDebugLog("WHOOPDBG missing_2a37_debug armed delay_after_discovery_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG missing_2a37_debug armed delay_after_discovery_s=%.1f", seconds)
         if heartRateCharacteristic != nil {
             scheduleDebugMissingHeartRateCharacteristic(after: min(seconds, 3))
         }
@@ -3713,7 +3713,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDebugRRPresenceWatchdog(after seconds: TimeInterval) {
         debugRRPresenceWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG rr_presence_watchdog debug_force_schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG rr_presence_watchdog debug_force_schedule delay_s=%.1f", seconds)
         debugRRPresenceWatchdogTask = Task { @MainActor in
             if seconds > 0 {
                 try? await Task.sleep(for: .seconds(seconds))
@@ -3749,7 +3749,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                               samples: session.count,
                                               label: label,
                                               notifying: heartRateCharacteristic?.isNotifying)
-            WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=suppressed_history_only_probe notifying=%@ label=%@",
+            AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=suppressed_history_only_probe notifying=%@ label=%@",
                   actionStatus,
                   rawGap,
                   acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3768,7 +3768,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                               samples: session.count,
                                               label: label,
                                               notifying: nil)
-            WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=wait_missing_peripheral label=%@",
+            AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=wait_missing_peripheral label=%@",
                   actionStatus,
                   rawGap,
                   acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3809,7 +3809,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                               samples: session.count,
                                               label: label,
                                               notifying: nil)
-            WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ label=%@",
+            AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ label=%@",
                   actionStatus,
                   rawGap,
                   acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3851,7 +3851,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                     acceptedGap: acceptedGap,
                                     samples: session.count,
                                     checkpoint: "journal_saved")
-            WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ notifying=%d label=%@",
+            AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ notifying=%d label=%@",
                   actionStatus,
                   rawGap,
                   acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3895,7 +3895,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                 acceptedGap: acceptedGap,
                                 samples: session.count,
                                 checkpoint: "not_applicable")
-        WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ notifying=%d label=%@",
+        AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=%@ notifying=%d label=%@",
               actionStatus,
               rawGap,
               acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3946,7 +3946,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let notifying = defaults.object(forKey: HRContinuityDefaults.notifying) as? Bool
         let at = defaults.object(forKey: HRContinuityDefaults.at) as? Double
         let age = at.map { Date().timeIntervalSince1970 - $0 }
-        WHOOPDebugLog("WHOOPDBG hr_continuity_watchdog persisted=1 reason=%@ status=%@ raw_gap_s=%@ accepted_gap_s=%@ timeout_s=%@ samples=%d action=%@ notifying=%@ age_s=%@ label=%@",
+        AtriaDebugLog("ATRIADBG hr_continuity_watchdog persisted=1 reason=%@ status=%@ raw_gap_s=%@ accepted_gap_s=%@ timeout_s=%@ samples=%d action=%@ notifying=%@ age_s=%@ label=%@",
               reason,
               status,
               rawGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -3963,7 +3963,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                     interval: TimeInterval,
                                                     label: String) {
         rrPresenceWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG rr_presence_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@ source=2A37 action=hold_hr_connection_reassert_2a37 hrv_policy=learning_only",
+        AtriaDebugLog("ATRIADBG rr_presence_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@ source=2A37 action=hold_hr_connection_reassert_2a37 hrv_policy=learning_only",
               timeout, interval, label)
         rrPresenceWatchdogTask = Task { @MainActor in
             var consecutive = 0
@@ -4026,7 +4026,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                             rrValues: rrArchive.count,
                                             consecutive: consecutive,
                                             label: label)
-            WHOOPDebugLog("WHOOPDBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=suppressed_history_only_probe hrv_policy=learning_only label=%@",
+            AtriaDebugLog("ATRIADBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=suppressed_history_only_probe hrv_policy=learning_only label=%@",
                   recoveryStatus,
                   rrGap,
                   acceptedGap,
@@ -4056,7 +4056,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                             rrValues: rrArchive.count,
                                             consecutive: consecutive,
                                             label: label)
-            WHOOPDebugLog("WHOOPDBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=%@ hrv_policy=learning_only label=%@",
+            AtriaDebugLog("ATRIADBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=%@ hrv_policy=learning_only label=%@",
                   recoveryStatus,
                   rrGap,
                   acceptedGap,
@@ -4093,7 +4093,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                         rrValues: rrArchive.count,
                                         consecutive: consecutive,
                                         label: label)
-        WHOOPDebugLog("WHOOPDBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=%@ notifying=%d hrv_policy=learning_only label=%@",
+        AtriaDebugLog("ATRIADBG rr_presence_watchdog status=%@ rr_gap_s=%.1f accepted_gap_s=%.1f timeout_s=%.1f samples=%d rr_values=%d consecutive=%d action=%@ notifying=%d hrv_policy=learning_only label=%@",
               recoveryStatus,
               rrGap,
               acceptedGap,
@@ -4154,7 +4154,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                     interval: TimeInterval,
                                                     label: String) {
         acceptedHRWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@",
+        AtriaDebugLog("ATRIADBG accepted_hr_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@",
               timeout, interval, label)
         acceptedHRWatchdogTask = Task { @MainActor in
             while !Task.isCancelled {
@@ -4174,7 +4174,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                    rawGap < timeout,
                    ["zero_contact", "hr_zero"].contains(lastSampleStatus)
                     || ["zero_contact", "hr_zero"].contains(lastSampleReason) {
-                    WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact",
+                    AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact",
                           acceptedGap,
                           rawGap,
                           timeout,
@@ -4193,7 +4193,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDebugAcceptedHRWatchdog(after seconds: TimeInterval) {
         debugAcceptedHRWatchdogTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog debug_force_schedule delay_s=%.1f", seconds)
+        AtriaDebugLog("ATRIADBG accepted_hr_watchdog debug_force_schedule delay_s=%.1f", seconds)
         debugAcceptedHRWatchdogTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -4214,7 +4214,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                            rawGap: TimeInterval?,
                                            timeout: TimeInterval) {
         if historyOnlyProbeMode {
-            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=skipped action=suppressed_history_only_probe",
+            AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=skipped action=suppressed_history_only_probe",
                   recoveryStatus,
                   acceptedGap,
                   rawGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -4229,7 +4229,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(checkpointPersisted ? "saved_accepted_hr_watchdog" : "store_failed_accepted_hr_watchdog", forKey: CheckpointDefaults.lastStatus)
             UserDefaults.standard.set(snapshot.points.count, forKey: CheckpointDefaults.lastSamples)
             UserDefaults.standard.set(Int(snapshot.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ reason=accepted_hr_watchdog samples=%d rr_samples=%d duration_s=%.0f label=%@ source=watchdog",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=%@ reason=accepted_hr_watchdog samples=%d rr_samples=%d duration_s=%.0f label=%@ source=watchdog",
                   checkpointPersisted ? "saved" : "store_failed",
                   snapshot.points.count,
                   snapshot.rrSampleCount,
@@ -4246,7 +4246,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                     acceptedGap: acceptedGap,
                                     samples: session.count,
                                     checkpoint: snapshot == nil ? "skipped" : "saved")
-            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=wait_missing_peripheral",
+            AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=wait_missing_peripheral",
                   recoveryStatus,
                   acceptedGap,
                   rawGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -4276,7 +4276,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                     acceptedGap: acceptedGap,
                                     samples: session.count,
                                     checkpoint: snapshot == nil ? "skipped" : "saved")
-            WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=reassert_keep_connection",
+            AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=reassert_keep_connection",
                   recoveryStatus,
                   acceptedGap,
                   rawGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -4293,7 +4293,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                 acceptedGap: acceptedGap,
                                 samples: session.count,
                                 checkpoint: snapshot == nil ? "skipped" : "saved")
-        WHOOPDebugLog("WHOOPDBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=fresh_scan_reconnect",
+        AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=%@ accepted_gap_s=%.1f raw_gap_s=%@ timeout_s=%.1f samples=%d checkpoint=%@ action=fresh_scan_reconnect",
               recoveryStatus,
               acceptedGap,
               rawGap.map { String(format: "%.1f", $0) } ?? "missing",
@@ -4365,14 +4365,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         autoStopCaptureAfterSeconds = doubleValue(after: "--whoop-auto-stop-after", in: arguments, default: 305, range: 0...3_600)
         autoStopCaptureWhenReady = true
 
-        WHOOPDebugLog("WHOOPDBG morning_hrv_check eligible=%d reason=%@ local_time=%02d:%02d label=%@ rr_threshold=%.2f rr_window_s=%.1f rr_min_frames=%d rr_max_gap_s=%.1f timeout_s=%.1f stop_after_s=%.1f still_source=rr_continuity motion_source=unavailable hrv_state=learning_until_ready",
+        AtriaDebugLog("ATRIADBG morning_hrv_check eligible=%d reason=%@ local_time=%02d:%02d label=%@ rr_threshold=%.2f rr_window_s=%.1f rr_min_frames=%d rr_max_gap_s=%.1f timeout_s=%.1f stop_after_s=%.1f still_source=rr_continuity motion_source=unavailable hrv_state=learning_until_ready",
               eligible ? 1 : 0, reason, hour, minute, captureLabel,
               autoCaptureRRThreshold, autoCaptureRRWindowSeconds,
               autoCaptureRRMinFrames, autoCaptureMaxRRGapSeconds,
               autoCaptureRRTimeoutSeconds, autoStopCaptureAfterSeconds)
 
         guard eligible else {
-            WHOOPDebugLog("WHOOPDBG morning_hrv_skip reason=%@ hrv_state=learning", reason)
+            AtriaDebugLog("ATRIADBG morning_hrv_skip reason=%@ hrv_state=learning", reason)
             return
         }
         scheduleAutoCapture()
@@ -4401,22 +4401,22 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func scheduleDelayedSessionSave(after seconds: TimeInterval) {
         delayedSessionSaveTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG session_auto_save schedule delay_s=%.1f label=%@", seconds, captureLabel.isEmpty ? "Auto-saved" : captureLabel)
+        AtriaDebugLog("ATRIADBG session_auto_save schedule delay_s=%.1f label=%@", seconds, captureLabel.isEmpty ? "Auto-saved" : captureLabel)
         delayedSessionSaveTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             let label = captureLabel.isEmpty ? "Auto-saved" : captureLabel
             guard session.count >= autoSaveMinSamples else {
-                WHOOPDebugLog("WHOOPDBG session_auto_save status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@",
+                AtriaDebugLog("ATRIADBG session_auto_save status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@",
                       session.count, autoSaveMinSamples, label)
                 return
             }
             guard let saved = finishSession(label: label) else {
-                WHOOPDebugLog("WHOOPDBG session_auto_save status=skipped reason=finish_failed samples=%d label=%@",
+                AtriaDebugLog("ATRIADBG session_auto_save status=skipped reason=finish_failed samples=%d label=%@",
                       session.count, label)
                 return
             }
             let persisted = persistFinishedSession(saved, reason: "session_auto_save")
-            WHOOPDebugLog("WHOOPDBG session_auto_save status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@",
+            AtriaDebugLog("ATRIADBG session_auto_save status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@",
                   persisted ? "saved" : "store_failed",
                   saved.points.count,
                   saved.rrSampleCount,
@@ -4448,7 +4448,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func schedulePeriodicSessionSave(every seconds: TimeInterval) {
         delayedSessionSaveTask?.cancel()
         let label = captureLabel.isEmpty ? "Auto-saved" : captureLabel
-        WHOOPDebugLog("WHOOPDBG session_auto_save schedule interval_s=%.1f label=%@", seconds, label)
+        AtriaDebugLog("ATRIADBG session_auto_save schedule interval_s=%.1f label=%@", seconds, label)
         delayedSessionSaveTask = Task { @MainActor in
             var index = 1
             while !Task.isCancelled {
@@ -4456,17 +4456,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 if Task.isCancelled { break }
                 let chunkLabel = "\(label) chunk \(index)"
                 guard session.count >= autoSaveMinSamples else {
-                    WHOOPDebugLog("WHOOPDBG session_auto_save status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ interval_index=%d",
+                    AtriaDebugLog("ATRIADBG session_auto_save status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ interval_index=%d",
                           session.count, autoSaveMinSamples, chunkLabel, index)
                     continue
                 }
                 guard let saved = finishSession(label: chunkLabel) else {
-                    WHOOPDebugLog("WHOOPDBG session_auto_save status=skipped reason=finish_failed samples=%d label=%@ interval_index=%d",
+                    AtriaDebugLog("ATRIADBG session_auto_save status=skipped reason=finish_failed samples=%d label=%@ interval_index=%d",
                           session.count, chunkLabel, index)
                     continue
                 }
                 let persisted = persistFinishedSession(saved, reason: "session_auto_save_periodic")
-                WHOOPDebugLog("WHOOPDBG session_auto_save status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ interval_index=%d mode=periodic",
+                AtriaDebugLog("ATRIADBG session_auto_save status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ interval_index=%d mode=periodic",
                       persisted ? "saved" : "store_failed",
                       saved.points.count,
                       saved.rrSampleCount,
@@ -4507,7 +4507,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(seconds, forKey: CheckpointDefaults.interval)
         UserDefaults.standard.set(label, forKey: CheckpointDefaults.label)
         UserDefaults.standard.set(source, forKey: CheckpointDefaults.source)
-        WHOOPDebugLog("WHOOPDBG session_checkpoint schedule interval_s=%.1f label=%@ source=%@", seconds, label, source)
+        AtriaDebugLog("ATRIADBG session_checkpoint schedule interval_s=%.1f label=%@ source=%@", seconds, label, source)
         delayedSessionSaveTask = Task { @MainActor in
             var index = 1
             while !Task.isCancelled {
@@ -4518,7 +4518,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
                     UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
                     UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-                    WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ checkpoint_index=%d source=%@",
+                    AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ checkpoint_index=%d source=%@",
                           session.count, autoSaveMinSamples, label, index, source)
                     continue
                 }
@@ -4527,7 +4527,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
                     UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
                     UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-                    WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ checkpoint_index=%d source=%@",
+                    AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ checkpoint_index=%d source=%@",
                           session.count, label, index, source)
                     continue
                 }
@@ -4537,7 +4537,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 UserDefaults.standard.set(index, forKey: CheckpointDefaults.lastIndex)
                 UserDefaults.standard.set(saved.points.count, forKey: CheckpointDefaults.lastSamples)
                 UserDefaults.standard.set(Int(saved.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-                WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ checkpoint_index=%d mode=upsert source=%@",
+                AtriaDebugLog("ATRIADBG session_checkpoint status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ checkpoint_index=%d mode=upsert source=%@",
                       checkpointPersisted ? "saved" : "store_failed",
                       saved.points.count,
                       saved.rrSampleCount,
@@ -4582,7 +4582,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func scheduleDebugManualCheckpoint(after seconds: TimeInterval) {
         debugManualCheckpointTask?.cancel()
         let label = captureLabel.isEmpty ? "Manual checkpoint" : captureLabel
-        WHOOPDebugLog("WHOOPDBG manual_checkpoint schedule delay_s=%.1f label=%@ source=launch_arg", seconds, label)
+        AtriaDebugLog("ATRIADBG manual_checkpoint schedule delay_s=%.1f label=%@ source=launch_arg", seconds, label)
         debugManualCheckpointTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             if Task.isCancelled { return }
@@ -4590,7 +4590,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 UserDefaults.standard.set("skipped_manual_insufficient_samples", forKey: CheckpointDefaults.lastStatus)
                 UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
                 UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-                WHOOPDebugLog("WHOOPDBG manual_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ source=launch_arg",
+                AtriaDebugLog("ATRIADBG manual_checkpoint status=skipped reason=insufficient_samples samples=%d min_samples=%d label=%@ source=launch_arg",
                       session.count,
                       autoSaveMinSamples,
                       label)
@@ -4600,7 +4600,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 UserDefaults.standard.set("skipped_manual_snapshot_failed", forKey: CheckpointDefaults.lastStatus)
                 UserDefaults.standard.set(session.count, forKey: CheckpointDefaults.lastSamples)
                 UserDefaults.standard.set(0, forKey: CheckpointDefaults.lastDuration)
-                WHOOPDebugLog("WHOOPDBG manual_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ source=launch_arg",
+                AtriaDebugLog("ATRIADBG manual_checkpoint status=skipped reason=snapshot_failed samples=%d label=%@ source=launch_arg",
                       session.count,
                       label)
                 return
@@ -4610,7 +4610,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set(checkpointPersisted ? "saved_manual" : "store_failed_manual", forKey: CheckpointDefaults.lastStatus)
             UserDefaults.standard.set(saved.points.count, forKey: CheckpointDefaults.lastSamples)
             UserDefaults.standard.set(Int(saved.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-            WHOOPDebugLog("WHOOPDBG manual_checkpoint status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ mode=upsert source=launch_arg reset_live_session=0",
+            AtriaDebugLog("ATRIADBG manual_checkpoint status=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d resting_hr=%d hrv=%@ label=%@ mode=upsert source=launch_arg reset_live_session=0",
                   checkpointPersisted ? "saved" : "store_failed",
                   saved.points.count,
                   saved.rrSampleCount,
@@ -4658,7 +4658,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         autoCapturePending = true
         resetRRAvailabilityWindow(&autoCaptureRRWindow, head: &autoCaptureRRWindowHead)
         lastAutoCaptureRRGateLogAt = nil
-        WHOOPDebugLog("WHOOPDBG autoCapture schedule label=%@ reason=%@ attempt_next=%d max_attempts=%d delay_s=%.1f rr_threshold=%.2f rr_window_s=%.1f rr_min_frames=%d rr_max_gap_s=%.1f rr_timeout_s=%.1f stop_when_ready=%d stop_after_s=%.1f strict_live_rr=%d",
+        AtriaDebugLog("ATRIADBG autoCapture schedule label=%@ reason=%@ attempt_next=%d max_attempts=%d delay_s=%.1f rr_threshold=%.2f rr_window_s=%.1f rr_min_frames=%d rr_max_gap_s=%.1f rr_timeout_s=%.1f stop_when_ready=%d stop_after_s=%.1f strict_live_rr=%d",
               captureLabel, reason, autoCaptureAttempt + 1, autoCaptureMaxAttempts,
               autoCaptureDelaySeconds, autoCaptureRRThreshold,
               autoCaptureRRWindowSeconds, autoCaptureRRMinFrames,
@@ -4689,7 +4689,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             autoCapturePending = false
             autoCaptureTimeoutTask?.cancel()
             autoCaptureTimeoutTask = nil
-            WHOOPDebugLog("WHOOPDBG autoCapture exhausted label=%@ attempts=%d max_attempts=%d reason=%@",
+            AtriaDebugLog("ATRIADBG autoCapture exhausted label=%@ attempts=%d max_attempts=%d reason=%@",
                   captureLabel, autoCaptureAttempt, autoCaptureMaxAttempts, reason)
             return
         }
@@ -4697,7 +4697,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         autoCapturePending = false
         autoCaptureTimeoutTask?.cancel()
         autoCaptureTimeoutTask = nil
-        WHOOPDebugLog("WHOOPDBG autoCapture start label=%@ attempt=%d max_attempts=%d reason=%@ delay_s=%.1f rr_threshold=%.2f stop_when_ready=%d stop_after_s=%.1f",
+        AtriaDebugLog("ATRIADBG autoCapture start label=%@ attempt=%d max_attempts=%d reason=%@ delay_s=%.1f rr_threshold=%.2f stop_when_ready=%d stop_after_s=%.1f",
               captureLabel, autoCaptureAttempt, autoCaptureMaxAttempts,
               reason, autoCaptureDelaySeconds, autoCaptureRRThreshold,
               autoStopCaptureWhenReady ? 1 : 0, autoStopCaptureAfterSeconds)
@@ -4707,7 +4707,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func rearmAutoCaptureAfterAbort(reason: String) {
         guard autoCaptureRRThreshold > 0 else { return }
         guard autoCaptureAttempt < autoCaptureMaxAttempts else {
-            WHOOPDebugLog("WHOOPDBG autoCapture exhausted label=%@ attempts=%d max_attempts=%d reason=%@",
+            AtriaDebugLog("ATRIADBG autoCapture exhausted label=%@ attempts=%d max_attempts=%d reason=%@",
                   captureLabel, autoCaptureAttempt, autoCaptureMaxAttempts, reason)
             return
         }
@@ -4756,7 +4756,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         if gateEligible, shouldLogGate {
             lastAutoCaptureRRGateLogAt = now
-            WHOOPDebugLog("WHOOPDBG autoCapture rr_gate source=%@ elapsed_s=%.1f fraction=%.3f rr_frames=%d total_frames=%d threshold=%.3f max_rr_gap_s=%.1f frame_max_rr_gap_s=%.1f beat_timeline=%d max_gap_threshold_s=%.1f gap_ok=%d window_s=%.1f min_frames=%d",
+            AtriaDebugLog("ATRIADBG autoCapture rr_gate source=%@ elapsed_s=%.1f fraction=%.3f rr_frames=%d total_frames=%d threshold=%.3f max_rr_gap_s=%.1f frame_max_rr_gap_s=%.1f beat_timeline=%d max_gap_threshold_s=%.1f gap_ok=%d window_s=%.1f min_frames=%d",
                   sourceLabel,
                   elapsed, fraction, rrFrames, totalFrames, autoCaptureRRThreshold,
                   maxRRGap, frameMaxRRGap, beatMaxRRGap == nil ? 0 : 1,
@@ -4939,7 +4939,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     func startScan(reason: String = "manual") {
         guard central.state == .poweredOn else {
             pendingScanReason = reason
-            WHOOPDebugLog("WHOOPDBG ble_scan status=skipped reason=%@ central_state=%d",
+            AtriaDebugLog("ATRIADBG ble_scan status=skipped reason=%@ central_state=%d",
                   reason,
                   central.state.rawValue)
             return
@@ -4948,7 +4948,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if peripheral == nil,
            let restored = central.retrieveConnectedPeripherals(withServices: UUIDs.scanServices).first {
             attach(to: restored, name: restored.name ?? "Strap")
-            WHOOPDebugLog("WHOOPDBG ble_scan status=short_circuit reason=%@ action=attach_connected_peripheral",
+            AtriaDebugLog("ATRIADBG ble_scan status=short_circuit reason=%@ action=attach_connected_peripheral",
                   reason)
             return
         }
@@ -4965,7 +4965,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
            let lastScanRequestedAt,
            Date().timeIntervalSince(lastScanRequestedAt) < Self.scanRequestDedupWindow,
            lastScanRequestMode == requestedMode {
-            WHOOPDebugLog("WHOOPDBG ble_scan status=coalesced reason=%@ mode=%@ since_last_s=%.2f",
+            AtriaDebugLog("ATRIADBG ble_scan status=coalesced reason=%@ mode=%@ since_last_s=%.2f",
                   reason,
                   requestedMode,
                   Date().timeIntervalSince(lastScanRequestedAt))
@@ -4976,9 +4976,9 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         reconnectWatchdogTask?.cancel()
         scanWideningTask?.cancel()
         assignIfChanged(\.status, .scanning)
-        // Prefer a staged fresh scan: start with the expected WHOOP/heart-rate
+        // Prefer a staged fresh scan: start with the expected strap/heart-rate
         // services for faster discovery, then broaden only if nothing appears.
-        WHOOPDebugLog("WHOOPDBG ble_scan status=started reason=%@ standard_hr_only=%d retry=%d mode=%@ broad_allowed=%d",
+        AtriaDebugLog("ATRIADBG ble_scan status=started reason=%@ standard_hr_only=%d retry=%d mode=%@ broad_allowed=%d",
               reason,
               standardHROnlyMode ? 1 : 0,
               scanRetryCount,
@@ -5032,7 +5032,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             try? await Task.sleep(for: scanWideningDelay(for: reason))
             if Task.isCancelled { return }
             guard self.status == .scanning, self.peripheral == nil else { return }
-            WHOOPDebugLog("WHOOPDBG ble_scan status=widen reason=%@ action=restart_scan_broad", reason)
+            AtriaDebugLog("ATRIADBG ble_scan status=widen reason=%@ action=restart_scan_broad", reason)
             self.central.stopScan()
             self.startScan(reason: "\(reason)_broad")
         }
@@ -5046,7 +5046,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             if Task.isCancelled { return }
             guard self.status == .scanning, self.peripheral == nil else { return }
             self.scanRetryCount += 1
-            WHOOPDebugLog("WHOOPDBG ble_scan status=retry reason=%@ retry=%d max=%d action=restart_scan",
+            AtriaDebugLog("ATRIADBG ble_scan status=retry reason=%@ retry=%d max=%d action=restart_scan",
                   reason,
                   self.scanRetryCount,
                   self.maxScanRetries)
@@ -5107,7 +5107,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             self.dbgTxReady = false
             self.peripheral = nil
             central.cancelPeripheralConnection(peripheral)
-            WHOOPDebugLog("WHOOPDBG ble_link watchdog reason=%@ timeout_s=%.0f action=fresh_scan",
+            AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ timeout_s=%.0f action=fresh_scan",
                   reason,
                   reconnectWatchdogSeconds)
             self.startScan(reason: "\(reason)_watchdog_recovery")
@@ -5176,13 +5176,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                        self.autoStopCaptureWhenReady,
                        !self.autoStoppedReadyCapture {
                         self.autoStoppedReadyCapture = true
-                        WHOOPDebugLog("WHOOPDBG autoCapture stop reason=ready_timer")
+                        AtriaDebugLog("ATRIADBG autoCapture stop reason=ready_timer")
                         self.finishRecording(stopReason: "ready_timer")
                         return
                     }
                     if self.autoStopCaptureAfterSeconds > 0,
                        cleanElapsed >= self.autoStopCaptureAfterSeconds {
-                        WHOOPDebugLog("WHOOPDBG autoCapture stop reason=timeout elapsed=%.1f clean_elapsed=%.1f",
+                        AtriaDebugLog("ATRIADBG autoCapture stop reason=timeout elapsed=%.1f clean_elapsed=%.1f",
                               self.captureElapsedSeconds, cleanElapsed)
                         self.finishRecording(stopReason: "timeout")
                     }
@@ -5279,7 +5279,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                self.autoStopCaptureWhenReady,
                !self.autoStoppedReadyCapture {
                 self.autoStoppedReadyCapture = true
-                WHOOPDebugLog("WHOOPDBG autoCapture stop reason=ready")
+                AtriaDebugLog("ATRIADBG autoCapture stop reason=ready")
                 self.finishRecording()
             }
             if let pending = self.pendingLiveHRVRefreshRequest {
@@ -5331,7 +5331,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                              snapshot.readinessReason,
                              metricFields))
         if shouldLogConsole {
-            WHOOPDebugLog("WHOOPDBG hrv raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d rejected_hr_mismatch=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f ready=%d reason=%@ %@",
+            AtriaDebugLog("ATRIADBG hrv raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d rejected_hr_mismatch=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f ready=%d reason=%@ %@",
                   snapshot.raw, snapshot.kept,
                   snapshot.rejectedOutOfRange,
                   snapshot.rejectedDeltaOver20Percent,
@@ -5404,15 +5404,15 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             logRow(kind: "capture_summary", source: "app", opcode: "", len: "",
                    value: summaryLogValue)
         }
-        WHOOPDebugLog("WHOOPDBG capture_summary %@", summaryLogValue)
+        AtriaDebugLog("ATRIADBG capture_summary %@", summaryLogValue)
         assignIfChanged(\.captureWasValidationReady, ready)
         if let saved = saveCaptureCSV(directory: .documentDirectory) {
             assignIfChanged(\.lastCaptureFile, saved.relativePath)
-            WHOOPDebugLog("WHOOPDBG capture_file path=%@ rows=%d ready=%d",
+            AtriaDebugLog("ATRIADBG capture_file path=%@ rows=%d ready=%d",
                   saved.relativePath, currentCapturedRowCount, ready ? 1 : 0)
         } else {
             assignIfChanged(\.lastCaptureFile, "")
-            WHOOPDebugLog("WHOOPDBG capture_file_error rows=%d ready=%d",
+            AtriaDebugLog("ATRIADBG capture_file_error rows=%d ready=%d",
                   currentCapturedRowCount, ready ? 1 : 0)
         }
         assignIfChanged(\.captureSummary, summary)
@@ -5436,7 +5436,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                value: String(format: "reason=%@ reset=%d fraction=%.3f rr_frames=%d total_frames=%d max_rr_gap_s=%.1f window_s=%.0f action=reset_hrv_keep_recording",
                              reason, captureQualityResetCount, fraction, rrFrames,
                              totalFrames, maxGap, windowSeconds))
-        WHOOPDebugLog("WHOOPDBG capture_quality_reset reason=%@ reset=%d fraction=%.3f rr_frames=%d total_frames=%d max_rr_gap_s=%.1f window_s=%.0f action=reset_hrv_keep_recording",
+        AtriaDebugLog("ATRIADBG capture_quality_reset reason=%@ reset=%d fraction=%.3f rr_frames=%d total_frames=%d max_rr_gap_s=%.1f window_s=%.0f action=reset_hrv_keep_recording",
               reason, captureQualityResetCount, fraction, rrFrames, totalFrames,
               maxGap, windowSeconds)
         checkpointCurrentSession(reason: "rr_quality_reset")
@@ -5449,12 +5449,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func checkpointCurrentSession(reason: String) {
         guard let saved = snapshotSession(label: captureLabel.isEmpty ? "RR checkpoint" : captureLabel) else {
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=%@ samples=%d rr_samples=%d source=rr_quality",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=%@ samples=%d rr_samples=%d source=rr_quality",
                   reason, session.count, rrArchive.count)
             return
         }
         let checkpointPersisted = onSessionCheckpoint?(saved) == true
-        WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ reason=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f hrv=%@ label=%@ source=rr_quality",
+        AtriaDebugLog("ATRIADBG session_checkpoint status=%@ reason=%@ samples=%d rr_samples=%d motion_hints=%d motion_hint_kinds=%@ motion_source=%@ motion_validated=%d phone_motion_source=%@ phone_motion_validated=%d phone_motion_wrist_validated=0 phone_motion_samples=%d phone_motion_mean_delta_g=%@ phone_motion_max_delta_g=%@ phone_motion_over_still_threshold=%d phone_motion_still_threshold_g=%.3f hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f hrv=%@ label=%@ source=rr_quality",
               checkpointPersisted ? "saved" : "store_failed",
               reason,
               saved.points.count,
@@ -5500,7 +5500,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if powerThermalGovernor.shouldSuspendNonEssentialWork {
             lastEventDrivenCheckpointAt = now
             persistActiveSessionJournalIfNeeded(reason: "thermal_critical_ble_event_checkpoint", force: true)
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=deferred reason=thermal_critical_minimal_journal samples=%d rr_samples=%d source=ble_event mode=%@ interval_s=%.0f",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=deferred reason=thermal_critical_minimal_journal samples=%d rr_samples=%d source=ble_event mode=%@ interval_s=%.0f",
                   session.count,
                   rrArchive.count,
                   powerThermalGovernor.mode.rawValue,
@@ -5509,7 +5509,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
         let label = captureLabel.isEmpty ? "Unattended workout checkpoint" : captureLabel
         guard let saved = snapshotSession(label: label) else {
-            WHOOPDebugLog("WHOOPDBG session_checkpoint status=skipped reason=event_snapshot_failed samples=%d rr_samples=%d source=ble_event",
+            AtriaDebugLog("ATRIADBG session_checkpoint status=skipped reason=event_snapshot_failed samples=%d rr_samples=%d source=ble_event",
                   session.count, rrArchive.count)
             return
         }
@@ -5535,7 +5535,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(checkpointPersisted ? "saved" : "store_failed", forKey: CheckpointDefaults.lastStatus)
         UserDefaults.standard.set(saved.points.count, forKey: CheckpointDefaults.lastSamples)
         UserDefaults.standard.set(Int(saved.duration.rounded()), forKey: CheckpointDefaults.lastDuration)
-        WHOOPDebugLog("WHOOPDBG session_checkpoint status=%@ samples=%d rr_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d hrv=%@ label=%@ mode=upsert source=ble_event app_state=%@ interval_s=%.0f",
+        AtriaDebugLog("ATRIADBG session_checkpoint status=%@ samples=%d rr_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_zero=%d hr_artifact_held=%d hr_artifact_dropped=%d hr_raw_gaps=%d hr_accepted_gaps=%d hr_max_raw_gap_s=%.1f hr_max_accepted_gap_s=%.1f duration_s=%.0f avg_hr=%d peak_hr=%d hrv=%@ label=%@ mode=upsert source=ble_event app_state=%@ interval_s=%.0f",
               checkpointPersisted ? "saved" : "store_failed",
               saved.points.count,
               saved.rrSampleCount,
@@ -5686,7 +5686,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 sampleDiagnostics.rawGaps += 1
                 sampleDiagnostics.maxRawGap = max(sampleDiagnostics.maxRawGap, gap)
                 setSampleDiagnosticsStatus("raw_2a37", reason: "raw_gap")
-                WHOOPDebugLog("WHOOPDBG hr_sample_gap kind=raw_2a37 gap_s=%.1f threshold_s=%.1f raw_notifications=%d accepted=%d action=missing_notification",
+                AtriaDebugLog("ATRIADBG hr_sample_gap kind=raw_2a37 gap_s=%.1f threshold_s=%.1f raw_notifications=%d accepted=%d action=missing_notification",
                       gap,
                       SavedSession.workoutContinuityGapLimit,
                       rawCount,
@@ -5709,7 +5709,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 sampleDiagnostics.acceptedGaps += 1
                 sampleDiagnostics.maxAcceptedGap = max(sampleDiagnostics.maxAcceptedGap, gap)
                 setSampleDiagnosticsStatus("accepted", reason: "accepted_gap")
-                WHOOPDebugLog("WHOOPDBG hr_sample_gap kind=accepted_hr gap_s=%.1f threshold_s=%.1f accepted=%d raw_notifications=%d rate=%d action=coverage_gap",
+                AtriaDebugLog("ATRIADBG hr_sample_gap kind=accepted_hr gap_s=%.1f threshold_s=%.1f accepted=%d raw_notifications=%d rate=%d action=coverage_gap",
                       gap,
                       SavedSession.workoutContinuityGapLimit,
                       acceptedCount,
@@ -5761,13 +5761,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                        acceptedGap: gap)
             if decision.reason == "stale_median_after_gap" {
                 pendingHRJump = nil
-                WHOOPDebugLog("WHOOPDBG hr_artifact action=accept reason=stale_median_after_gap rate=%d median=%d gap_s=%.1f", rate, med, gap)
+                AtriaDebugLog("ATRIADBG hr_artifact action=accept reason=stale_median_after_gap rate=%d median=%d gap_s=%.1f", rate, med, gap)
                 acceptHeartRate(rate, at: sampleTime)
                 return
             }
             if decision.reason == "confirmed_jump", let pending = pendingHRJump {
                 pendingHRJump = nil
-                WHOOPDebugLog("WHOOPDBG hr_artifact action=accept reason=confirmed_jump previous=%d rate=%d median=%d gap_s=%.1f", pending.rate, rate, med, gap)
+                AtriaDebugLog("ATRIADBG hr_artifact action=accept reason=confirmed_jump previous=%d rate=%d median=%d gap_s=%.1f", pending.rate, rate, med, gap)
                 acceptHeartRate(pending.rate, at: pending.at)
                 acceptHeartRate(rate, at: sampleTime)
                 return
@@ -5776,7 +5776,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             sessionHeldArtifacts += 1
             sampleDiagnostics.heldArtifacts += 1
             setSampleDiagnosticsStatus("artifact_hold", reason: "unconfirmed_jump")
-            WHOOPDebugLog("WHOOPDBG hr_artifact action=hold reason=unconfirmed_jump rate=%d median=%d gap_s=%.1f", rate, med, gap)
+            AtriaDebugLog("ATRIADBG hr_artifact action=hold reason=unconfirmed_jump rate=%d median=%d gap_s=%.1f", rate, med, gap)
             logRow(kind: "hr_artifact", source: "0x2A37", opcode: "", len: "", value: "\(rate)", at: sampleTime)
             return
         }
@@ -5785,7 +5785,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             sessionDroppedArtifacts += 1
             sampleDiagnostics.droppedArtifacts += 1
             setSampleDiagnosticsStatus("artifact_drop", reason: "not_confirmed")
-            WHOOPDebugLog("WHOOPDBG hr_artifact action=drop reason=not_confirmed previous=%d rate=%d", pending.rate, rate)
+            AtriaDebugLog("ATRIADBG hr_artifact action=drop reason=not_confirmed previous=%d rate=%d", pending.rate, rate)
             pendingHRJump = nil
         }
         acceptHeartRate(rate, at: sampleTime)
@@ -5960,7 +5960,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                        pendingRate: item.pending,
                                                        pendingAge: item.pendingAge,
                                                        acceptedGap: item.gap)
-            WHOOPDebugLog("WHOOPDBG hr_artifact_policy case=%@ action=%@ reason=%@ rate=%d median=%d pending=%@ pending_age_s=%@ accepted_gap_s=%.1f",
+            AtriaDebugLog("ATRIADBG hr_artifact_policy case=%@ action=%@ reason=%@ rate=%d median=%d pending=%@ pending_age_s=%@ accepted_gap_s=%.1f",
                   item.name,
                   decision.action,
                   decision.reason,
@@ -5978,7 +5978,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             RRInterval(t: now.addingTimeInterval(-1), ms: 795, expectedHR: 75)
         ]
         if let snapshot = HRVAnalyzer.analyze(rrCases, now: now).0 {
-            WHOOPDebugLog("WHOOPDBG hrv_artifact_policy case=rr_hr_mismatch raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d rejected_hr_mismatch=%d expected_rejected_hr_mismatch=1 confidence=%d ready=%d rule=drop_rr_when_implied_bpm_diff_gt_%d",
+            AtriaDebugLog("ATRIADBG hrv_artifact_policy case=rr_hr_mismatch raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d rejected_hr_mismatch=%d expected_rejected_hr_mismatch=1 confidence=%d ready=%d rule=drop_rr_when_implied_bpm_diff_gt_%d",
                   snapshot.raw,
                   snapshot.kept,
                   snapshot.rejectedOutOfRange,
@@ -5988,7 +5988,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   snapshot.isReady ? 1 : 0,
                   Int(HRVSnapshot.maxRRImpliedHRMismatchBPM.rounded()))
         } else {
-            WHOOPDebugLog("WHOOPDBG hrv_artifact_policy case=rr_hr_mismatch status=failed reason=no_snapshot")
+            AtriaDebugLog("ATRIADBG hrv_artifact_policy case=rr_hr_mismatch status=failed reason=no_snapshot")
         }
     }
 
@@ -6002,7 +6002,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let payloadLogBudget = standardHRPayloadLogBudget(now: frameTime)
         guard let measurement else {
             if let suppressed = payloadLogBudget {
-                WHOOPDebugLog("WHOOPDBG standardHR payload=%@ parse=failed suppressed_since_last=%d",
+                AtriaDebugLog("ATRIADBG standardHR payload=%@ parse=failed suppressed_since_last=%d",
                       Self.hex([UInt8](data)),
                       suppressed)
             }
@@ -6010,7 +6010,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
 
         if let suppressed = payloadLogBudget {
-            WHOOPDebugLog("WHOOPDBG standardHR payload=%@ hr=%d rrnum=%d truncated=%d rr_ms=%@ suppressed_since_last=%d",
+            AtriaDebugLog("ATRIADBG standardHR payload=%@ hr=%d rrnum=%d truncated=%d rr_ms=%@ suppressed_since_last=%d",
                   Self.hex([UInt8](data)), measurement.hr, measurement.rrValues.count,
                   measurement.truncated ? 1 : 0,
                   Self.joinInts(measurement.rrValues),
@@ -6087,7 +6087,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 guard rr > 0 else { return true }
                 return abs((60000.0 / Double(rr)) - Double(measurement.hr)) > 30
             }.count
-            WHOOPDebugLog("WHOOPDBG rr source=0x2A37 hr=%d rrnum=%d decoded=%d total_decoded=%d truncated=%d hr_mismatch=%d implied_bpm=%@ values=%@",
+            AtriaDebugLog("ATRIADBG rr source=0x2A37 hr=%d rrnum=%d decoded=%d total_decoded=%d truncated=%d hr_mismatch=%d implied_bpm=%@ values=%@",
                   measurement.hr, measurement.rrValues.count, measurement.rrValues.count,
                   decodedStandardRRValues, measurement.truncated ? 1 : 0, hrMismatch, impliedBPM,
                   Self.joinInts(measurement.rrValues))
@@ -6385,7 +6385,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 u16Pairs.append("\(offset):\(Self.u16le(body, offset))")
             }
         }
-        WHOOPDebugLog("WHOOPDBG data_range_response validated=0 seq=%d request_index=%d request_data=%@ status_len=%d lead=%@ body_len=%d u32=%@ u16=%@ last_realtime_unix=%@ device_unix=%.0f status=%@",
+        AtriaDebugLog("ATRIADBG data_range_response validated=0 seq=%d request_index=%d request_data=%@ status_len=%d lead=%@ body_len=%d u32=%@ u16=%@ last_realtime_unix=%@ device_unix=%.0f status=%@",
               Int(seq),
               request?.index ?? -1,
               request.map { Self.hex($0.data) } ?? "unknown",
@@ -6422,7 +6422,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             }
             let drift = Int(wall) - Int(device)
             let stale = abs(drift) >= 86_400
-            WHOOPDebugLog("WHOOPDBG historyClock status=get_clock_response seq=%d device=%u wall=%u drift_s=%d stale=%d status_len=%d u32=%@ payload=%@",
+            AtriaDebugLog("ATRIADBG historyClock status=get_clock_response seq=%d device=%u wall=%u drift_s=%d stale=%d status_len=%d u32=%@ payload=%@",
                   Int(seq),
                   device,
                   wall,
@@ -6432,7 +6432,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                   u32Pairs.joined(separator: ","),
                   Self.hex(payload))
         } else {
-            WHOOPDebugLog("WHOOPDBG historyClock status=set_clock_response seq=%d status_len=%d u32=%@ payload=%@",
+            AtriaDebugLog("ATRIADBG historyClock status=set_clock_response seq=%d status_len=%d u32=%@ payload=%@",
                   Int(seq),
                   status.count,
                   u32Pairs.joined(separator: ","),
@@ -6444,7 +6444,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard historySelectorSweepEnabled, !historySelectorSweepSent else { return }
         if let requiredIndex = historySelectorRangeIndex,
            requestIndex != requiredIndex {
-            WHOOPDebugLog("WHOOPDBG historySelector validated=0 status=skip reason=range_index_mismatch required=%d request_index=%d request_data=%@ mode=%@",
+            AtriaDebugLog("ATRIADBG historySelector validated=0 status=skip reason=range_index_mismatch required=%d request_index=%d request_data=%@ mode=%@",
                   requiredIndex,
                   requestIndex ?? -1,
                   requestData.map { Self.hex($0) } ?? "unknown",
@@ -6452,7 +6452,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             return
         }
         guard let target = closestDataRangeUnixCandidate(body: body) else {
-            WHOOPDebugLog("WHOOPDBG historySelector validated=0 status=skip reason=no_live_unix_candidate request_index=%d request_data=%@ mode=%@",
+            AtriaDebugLog("ATRIADBG historySelector validated=0 status=skip reason=no_live_unix_candidate request_index=%d request_data=%@ mode=%@",
                   requestIndex ?? -1,
                   requestData.map { Self.hex($0) } ?? "unknown",
                   historySelectorMode)
@@ -6462,7 +6462,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let live = lastRealtimeUnix
         let delta = live.map { Int64(target.value) - Int64($0) } ?? 0
         let selectors = historySelectors(for: target.value, body: body)
-        WHOOPDebugLog("WHOOPDBG historySelector validated=0 status=scheduled mode=%@ source=cmd22 request_index=%d request_data=%@ offset=%d value=%u live_unix=%@ delta_s=%lld variants=%d",
+        AtriaDebugLog("ATRIADBG historySelector validated=0 status=scheduled mode=%@ source=cmd22 request_index=%d request_data=%@ offset=%d value=%u live_unix=%@ delta_s=%lld variants=%d",
               historySelectorMode,
               requestIndex ?? -1,
               requestData.map { Self.hex($0) } ?? "unknown",
@@ -6473,7 +6473,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
               selectors.count)
         Task { @MainActor in
             for (index, selector) in selectors.enumerated() {
-                WHOOPDebugLog("WHOOPDBG historySelector validated=0 step=%d send cmd=21 label=%@ source=cmd22 offset=%d value=%u data=%@ mode=%@",
+                AtriaDebugLog("ATRIADBG historySelector validated=0 step=%d send cmd=21 label=%@ source=cmd22 offset=%d value=%u data=%@ mode=%@",
                       index,
                       selector.label,
                       target.offset,
@@ -6482,7 +6482,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                       probeCommandMode.rawValue)
                 sendCommand(0x21, selector.data, mode: probeCommandMode)
                 try? await Task.sleep(for: .seconds(5))
-                WHOOPDebugLog("WHOOPDBG historySelector validated=0 step=%d send cmd=16 label=%@ data=00 mode=%@",
+                AtriaDebugLog("ATRIADBG historySelector validated=0 step=%d send cmd=16 label=%@ data=00 mode=%@",
                       index,
                       selector.label,
                       probeCommandMode.rawValue)
@@ -6615,7 +6615,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func sendCommand(_ cmd: UInt8, _ data: [UInt8], mode: CommandWriteMode) {
         guard !standardHROnlyMode || historyOnlyProbeEnabled else {
             incrementRadioCounter(RadioDefaults.realtimeStartSkipped, reason: "standard_hr_only_write_blocked")
-            WHOOPDebugLog("WHOOPDBG writeSkip mode=%@ reason=standard_hr_only_no_strap_writes cmd=%02x",
+            AtriaDebugLog("ATRIADBG writeSkip mode=%@ reason=standard_hr_only_no_strap_writes cmd=%02x",
                   mode.rawValue, cmd)
             dbgWrite = "standard hr only blocked"
             return
@@ -6626,19 +6626,19 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         cmdSeq &+= 1
         let frame = encodeFrame(payload)
         let hex = frame.map { String(format: "%02x", $0) }.joined()
-        WHOOPDebugLog("WHOOPDBG send mode=%@ cmd=%02x seq=%d to=%@ props=%lu frame=%@",
+        AtriaDebugLog("ATRIADBG send mode=%@ cmd=%02x seq=%d to=%@ props=%lu frame=%@",
               mode.rawValue, cmd, Int(seq), tx.uuid.uuidString, tx.properties.rawValue, hex)
         switch mode {
         case .withoutResponse:
             guard tx.properties.contains(.writeWithoutResponse) else {
-                WHOOPDebugLog("WHOOPDBG writeSkip mode=wwr reason=unsupported props=%lu", tx.properties.rawValue)
+                AtriaDebugLog("ATRIADBG writeSkip mode=wwr reason=unsupported props=%lu", tx.properties.rawValue)
                 dbgWrite = "wwr unsupported"
                 return
             }
             p.writeValue(frame, for: tx, type: .withoutResponse)
         case .withResponse:
             guard tx.properties.contains(.write) else {
-                WHOOPDebugLog("WHOOPDBG writeSkip mode=wr reason=unsupported props=%lu", tx.properties.rawValue)
+                AtriaDebugLog("ATRIADBG writeSkip mode=wr reason=unsupported props=%lu", tx.properties.rawValue)
                 dbgWrite = "wr unsupported"
                 return
             }
@@ -6659,7 +6659,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if standardHROnlyMode, !historyOnlyProbeEnabled {
             realtimeOn = false
             incrementRadioCounter(RadioDefaults.realtimeStartSkipped, reason: "standard_hr_only")
-            WHOOPDebugLog("WHOOPDBG realtimeConfig standard_hr_only=1 realtime_start=skipped")
+            AtriaDebugLog("ATRIADBG realtimeConfig standard_hr_only=1 realtime_start=skipped")
             return
         }
         if historyOnlyProbeEnabled {
@@ -6693,7 +6693,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     if delay > 0 {
                         try? await Task.sleep(for: .seconds(delay))
                     }
-                    WHOOPDebugLog("WHOOPDBG probeCommand send cmd=%02x data=%@ delay_s=%.1f mode=%@",
+                    AtriaDebugLog("ATRIADBG probeCommand send cmd=%02x data=%@ delay_s=%.1f mode=%@",
                           command, data.map { String(format: "%02x", $0) }.joined(),
                           delay, probeCommandMode.rawValue)
                     sendCommand(command, data, mode: probeCommandMode)
@@ -6707,7 +6707,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                         try? await Task.sleep(for: .seconds(interval))
                         guard let command = bytes.first else { continue }
                         let data = Array(bytes.dropFirst())
-                        WHOOPDebugLog("WHOOPDBG probeSweep send index=%d raw=%@ cmd=%02x data=%@ interval_s=%.1f mode=%@",
+                        AtriaDebugLog("ATRIADBG probeSweep send index=%d raw=%@ cmd=%02x data=%@ interval_s=%.1f mode=%@",
                               index, Self.hex(bytes), command, Self.hex(data),
                               interval, probeCommandMode.rawValue)
                         sendCommand(command, data, mode: probeCommandMode)
@@ -6717,11 +6717,11 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             for _ in 0..<realtimeStartRetries {
                 try? await Task.sleep(for: .seconds(4))
                 if realtimeStreamIsAlive {
-                    WHOOPDebugLog("WHOOPDBG realtimeRetry status=stopped reason=stream_alive standard_hr_frames=%d realtime_frames=%d standard_rr=%d realtime_rr=%d",
+                    AtriaDebugLog("ATRIADBG realtimeRetry status=stopped reason=stream_alive standard_hr_frames=%d realtime_frames=%d standard_rr=%d realtime_rr=%d",
                           standardHRFrames, dbgRealtimeFrames, decodedStandardRRValues, decodedRealtimeRRValues)
                     break
                 }
-                WHOOPDebugLog("WHOOPDBG realtimeRetry status=send_start reason=no_stream standard_hr_frames=%d realtime_frames=%d standard_rr=%d realtime_rr=%d",
+                AtriaDebugLog("ATRIADBG realtimeRetry status=send_start reason=no_stream standard_hr_frames=%d realtime_frames=%d standard_rr=%d realtime_rr=%d",
                       standardHRFrames, dbgRealtimeFrames, decodedStandardRRValues, decodedRealtimeRRValues)
                 sendCommand(Cmd.toggleRealtimeHR, [0x01], mode: .withoutResponse)
             }
@@ -6741,13 +6741,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         realtimeOn = false
         realtimeRetry?.cancel()
         realtimeRestartTask?.cancel()
-        WHOOPDebugLog("WHOOPDBG historyOnly status=arming realtime_start=skipped")
+        AtriaDebugLog("ATRIADBG historyOnly status=arming realtime_start=skipped")
         Task { @MainActor in
             for _ in 0..<25 where txCharacteristic == nil {
                 try? await Task.sleep(for: .milliseconds(200))
             }
             guard txCharacteristic != nil else {
-                WHOOPDebugLog("WHOOPDBG historyOnly status=blocked reason=tx_missing")
+                AtriaDebugLog("ATRIADBG historyOnly status=blocked reason=tx_missing")
                 return
             }
             try? await Task.sleep(for: .seconds(3))
@@ -6756,13 +6756,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(for: .seconds(2))
             }
             if !historyInitSweepCommands.isEmpty {
-                WHOOPDebugLog("WHOOPDBG historyOnly status=send_init_sweep commands=%d mode=%@",
+                AtriaDebugLog("ATRIADBG historyOnly status=send_init_sweep commands=%d mode=%@",
                       historyInitSweepCommands.count,
                       probeCommandMode.rawValue)
                 for (index, command) in historyInitSweepCommands.enumerated() {
                     guard let cmd = command.first else { continue }
                     let data = Array(command.dropFirst())
-                    WHOOPDebugLog("WHOOPDBG historyInitSweep send index=%d cmd=%02x data=%@ mode=%@",
+                    AtriaDebugLog("ATRIADBG historyInitSweep send index=%d cmd=%02x data=%@ mode=%@",
                           index, cmd, Self.hex(data), probeCommandMode.rawValue)
                     sendCommand(cmd, data, mode: probeCommandMode)
                     if index < historyInitSweepCommands.count - 1 {
@@ -6772,17 +6772,17 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(for: .seconds(3))
             }
             if historySkipDataRangeRequest {
-                WHOOPDebugLog("WHOOPDBG historyOnly status=skip_data_range reason=history_skip_range")
+                AtriaDebugLog("ATRIADBG historyOnly status=skip_data_range reason=history_skip_range")
                 return
             }
             if historyDataRangeSweepEnabled {
                 let payloads = historyDataRangeSweepPayloads
-                WHOOPDebugLog("WHOOPDBG historyOnly status=send_data_range_sweep cmd=22 payloads=%d selector_sweep=%d mode=%@",
+                AtriaDebugLog("ATRIADBG historyOnly status=send_data_range_sweep cmd=22 payloads=%d selector_sweep=%d mode=%@",
                       payloads.count,
                       historySelectorSweepEnabled ? 1 : 0,
                       historySelectorMode)
                 for (index, payload) in payloads.enumerated() {
-                    WHOOPDebugLog("WHOOPDBG historyRangeSweep send index=%d cmd=22 data=%@ mode=%@",
+                    AtriaDebugLog("ATRIADBG historyRangeSweep send index=%d cmd=22 data=%@ mode=%@",
                           index, Self.hex(payload), probeCommandMode.rawValue)
                     sendHistoryDataRange(index: index, data: payload)
                     if index < payloads.count - 1 {
@@ -6790,7 +6790,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     }
                 }
             } else {
-                WHOOPDebugLog("WHOOPDBG historyOnly status=send_data_range cmd=22 data=00 selector_sweep=%d mode=%@",
+                AtriaDebugLog("ATRIADBG historyOnly status=send_data_range cmd=22 data=00 selector_sweep=%d mode=%@",
                       historySelectorSweepEnabled ? 1 : 0,
                       historySelectorMode)
                 sendHistoryDataRange(index: 0, data: [0x00])
@@ -6802,12 +6802,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let set8 = Self.le32(now) + [0x00, 0x00, 0x00, 0x00]
         let set9 = set8 + [0x00]
         historyClockRef = nil
-        WHOOPDebugLog("WHOOPDBG historyClock status=send_set_clock forms=8,9 now=%u iso=%@ mode=wr",
+        AtriaDebugLog("ATRIADBG historyClock status=send_set_clock forms=8,9 now=%u iso=%@ mode=wr",
               now,
               Date(timeIntervalSince1970: TimeInterval(now)).ISO8601Format())
         sendCommand(Cmd.setClock, set8, mode: .withResponse)
         sendCommand(Cmd.setClock, set9, mode: .withResponse)
-        WHOOPDebugLog("WHOOPDBG historyClock status=send_get_clock payload=empty,00 mode=wr")
+        AtriaDebugLog("ATRIADBG historyClock status=send_get_clock payload=empty,00 mode=wr")
         sendCommand(Cmd.getClock, [], mode: .withResponse)
         sendCommand(Cmd.getClock, [0x00], mode: .withResponse)
     }
@@ -6874,10 +6874,10 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard realtimeRestartTask == nil else { return }
         lastRealtimeRestartAt = now
         if restartThreshold > 0 {
-            WHOOPDebugLog("WHOOPDBG realtimeRestart reason=zero_rr gap_s=%.1f threshold_s=%.1f",
+            AtriaDebugLog("ATRIADBG realtimeRestart reason=zero_rr gap_s=%.1f threshold_s=%.1f",
                   zeroRRSeconds, restartThreshold)
         } else {
-            WHOOPDebugLog("WHOOPDBG realtimeReassert reason=zero_rr gap_s=%.1f threshold_s=%.1f",
+            AtriaDebugLog("ATRIADBG realtimeReassert reason=zero_rr gap_s=%.1f threshold_s=%.1f",
                   zeroRRSeconds, reassertThreshold)
         }
         realtimeRestartTask = Task { @MainActor in
@@ -6962,7 +6962,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         if shouldLog {
             lastRRContinuityLogAt = now
             lastRRContinuityLogState = "\(state)-\(sourceLabel)"
-            WHOOPDebugLog("WHOOPDBG rr_quality source=%@ state=%@ fraction=%.3f rr_frames=%d total_frames=%d max_rr_gap_s=%.1f frame_max_rr_gap_s=%.1f beat_timeline=%d window_s=%.0f hrv_state=%@ rr_source_2a37_values=%d rr_source_0x28_decoded_values=%d rr_source_0x28_used_values=%d",
+            AtriaDebugLog("ATRIADBG rr_quality source=%@ state=%@ fraction=%.3f rr_frames=%d total_frames=%d max_rr_gap_s=%.1f frame_max_rr_gap_s=%.1f beat_timeline=%d window_s=%.0f hrv_state=%@ rr_source_2a37_values=%d rr_source_0x28_decoded_values=%d rr_source_0x28_used_values=%d",
                   sourceLabel, state, fraction, rrFrames, frames,
                   maxGap, frameMaxGap, beatMaxGap == nil ? 0 : 1, min(span, 300),
                   hrvSnapshot?.isReady == true ? "ready" : "learning",
@@ -7082,7 +7082,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             | (UInt32(b[len + 2]) << 16)
             | (UInt32(b[len + 3]) << 24)
         guard expectedCRC == actualCRC else {
-            WHOOPDebugLog("WHOOPDBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
+            AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
                   payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
             return
         }
@@ -7113,7 +7113,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let rrBytes = Array(payload[10..<(10 + rrByteCount)])
         let payloadTail = Array(payload.dropFirst(10 + rrByteCount))
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG realtimeFrame hrByte=%d rrnum=%d rrBytes=%@ payloadTail=%@ payload=%@ full=%@",
+            AtriaDebugLog("ATRIADBG realtimeFrame hrByte=%d rrnum=%d rrBytes=%@ payloadTail=%@ payload=%@ full=%@",
                   hr, rrnum, Self.hex(rrBytes), Self.hex(payloadTail), Self.hex(payload), Self.hex(b))
         }
         let frameTime = Date()
@@ -7160,7 +7160,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 return abs((60000.0 / Double(rr)) - Double(hr)) > 30
             }.count
             if verboseBLEFrameLogging {
-                WHOOPDebugLog("WHOOPDBG rr source=0x28 used=%d hr=%d rrnum=%d decoded=%d total_decoded=%d total_used=%d truncated=%d hr_mismatch=%d implied_bpm=%@ values=%@",
+                AtriaDebugLog("ATRIADBG rr source=0x28 used=%d hr=%d rrnum=%d decoded=%d total_decoded=%d total_used=%d truncated=%d hr_mismatch=%d implied_bpm=%@ values=%@",
                       standardRecentlyActive ? 0 : 1,
                       hr, rrnum, decodedRR.count, decodedRealtimeRRValues,
                       usedRealtimeRRValues,
@@ -7191,7 +7191,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             || hrConsistencyLastLogAt.map { now.timeIntervalSince($0) >= 10 } ?? true
         guard shouldLog else { return }
         hrConsistencyLastLogAt = now
-        WHOOPDebugLog("WHOOPDBG hr_consistency source=%@ pairs=%d standard_hr=%d realtime_hr=%d delta=%d mean_delta=%.1f max_delta=%d recent_mean_delta=%.1f recent_max_delta=%d pair_age_s=%.1f ready=%d tolerance_bpm=2",
+        AtriaDebugLog("ATRIADBG hr_consistency source=%@ pairs=%d standard_hr=%d realtime_hr=%d delta=%d mean_delta=%.1f max_delta=%d recent_mean_delta=%.1f recent_max_delta=%d pair_age_s=%.1f ready=%d tolerance_bpm=2",
               source,
               hrConsistencyPairs,
               standard.bpm,
@@ -7218,7 +7218,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             return
         }
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG protocol_packet type=%02x kind=%@ len=%d body=%@ full=%@",
+            AtriaDebugLog("ATRIADBG protocol_packet type=%02x kind=%@ len=%d body=%@ full=%@",
                   type, Self.packetKind(type), payload.count, Self.hex(body), Self.hex(fullFrame))
         }
     }
@@ -7253,7 +7253,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func logDiagnosticPacket(payload: [UInt8], fullFrame: [UInt8]) {
         let text = Self.printableRuns(in: Array(payload.dropFirst())).joined(separator: " | ")
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG diagnostic_text validated=0 len=%d text=%@ payload=%@ full=%@",
+            AtriaDebugLog("ATRIADBG diagnostic_text validated=0 len=%d text=%@ payload=%@ full=%@",
                   payload.count, text.isEmpty ? "none" : text, Self.hex(payload), Self.hex(fullFrame))
         }
         if let hint = Self.diagnosticSleepMotionHint(from: text) {
@@ -7265,7 +7265,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 sleepMotionShortValues.append(motionShort)
             }
             let motionShortStats = sleepMotionShortSummary()
-            WHOOPDebugLog("WHOOPDBG sleep_motion_hint validated=0 source=0x32 kind=%@ motion_short=%@ state_from=%@ state_to=%@ motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_threshold=%.1f text=%@ action=observe_only_until_motion_decode_validated",
+            AtriaDebugLog("ATRIADBG sleep_motion_hint validated=0 source=0x32 kind=%@ motion_short=%@ state_from=%@ state_to=%@ motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_threshold=%.1f text=%@ action=observe_only_until_motion_decode_validated",
                   hint.kind,
                   hint.motionShort,
                   hint.stateFrom,
@@ -7310,7 +7310,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             magnitudes.append(String(format: "%d:%.1f", offset, magnitude))
         }
         if verboseBLEFrameLogging {
-            WHOOPDebugLog("WHOOPDBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f sample_rate_hz=%@ samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d strap_steps_research=%d phone_step_agreement=%@ metric_promotions=0 i16=%@ magnitudes=%@ payload=%@",
+            AtriaDebugLog("ATRIADBG imu_candidate validated=%d validation_state=%@ len=%d offset=%d endian=%@ scale=%.0f sample_rate_hz=%@ samples=%d mean_g=%@ stillness_ratio=%@ movement_intensity=%@ bursts=%d strap_steps_research=%d phone_step_agreement=%@ metric_promotions=0 i16=%@ magnitudes=%@ payload=%@",
                   decoded?.gravityValidated == true ? 1 : 0,
                   decoded?.validationState ?? "decode_failed",
                   payload.count,
@@ -7344,7 +7344,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             researchProbeTemperatureCandidateFrames += 1
         }
         guard summary.hasAnyCandidate || researchProbeFrameCount == 1 || researchProbeFrameCount.isMultiple(of: 50) else { return }
-        WHOOPDebugLog("WHOOPDBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d model_generation=%@ model_evidence=%@ spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
+        AtriaDebugLog("ATRIADBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d model_generation=%@ model_evidence=%@ spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
               summary.source.rawValue,
               summary.payloadLength,
               researchProbeFrameCount,
@@ -7359,22 +7359,22 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     }
 
     private func applyModelMetadataIfExplicit(_ summary: AtriaResearchProbe.Summary) {
-        let mapped: WhoopModel?
+        let mapped: AtriaStrapModel?
         switch summary.modelGeneration {
-        case .whoopMG:
-            mapped = .whoopMG
-        case .whoop5:
-            mapped = .whoop5
-        case .whoop4:
-            mapped = .whoop4
-        case .whoop3:
-            mapped = .whoop3
+        case .strapMG:
+            mapped = .strapMG
+        case .strap5:
+            mapped = .strap5
+        case .strap4:
+            mapped = .strap4
+        case .strap3:
+            mapped = .strap3
         case .unknown:
             mapped = nil
         }
-        guard let mapped, mapped != whoopModel else { return }
-        whoopModel = mapped
-        WHOOPDebugLog("WHOOPDBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
+        guard let mapped, mapped != strapModel else { return }
+        strapModel = mapped
+        AtriaDebugLog("ATRIADBG model_gate status=metadata_explicit model=%@ evidence=%@ source=%@",
               mapped.rawValue,
               summary.modelEvidence.isEmpty ? "none" : summary.modelEvidence,
               summary.source.rawValue)
@@ -7397,7 +7397,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     [0x00] + Self.le32(start) + Self.le32(end),
                 ]
                 for (variant, data) in payloads.enumerated() {
-                    WHOOPDebugLog("WHOOPDBG historyRecentSweep send offset_s=%u start=%u end=%u variant=%d cmd=16 data=%@",
+                    AtriaDebugLog("ATRIADBG historyRecentSweep send offset_s=%u start=%u end=%u variant=%d cmd=16 data=%@",
                           offset, start, end, variant, Self.hex(data))
                     sendCommand(0x16, data, mode: probeCommandMode)
                     try? await Task.sleep(for: .seconds(5))
@@ -7408,7 +7408,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
     private func handleHistoryMetadata(_ payload: [UInt8]) {
         guard payload.count >= 3 else {
-            WHOOPDebugLog("WHOOPDBG historyMeta malformed payload=%@", Self.hex(payload))
+            AtriaDebugLog("ATRIADBG historyMeta malformed payload=%@", Self.hex(payload))
             return
         }
         recordResearchProbeCandidate(payload: payload, source: .metadata)
@@ -7467,12 +7467,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                     ? "\(historyAckMode):\(ackCursor)"
                     : "\(historyAckMode):\(ackCursor):seq\(seq)")
             let acked = ackedHistoryAckKeys.contains(ackKey)
-            WHOOPDebugLog("WHOOPDBG historyMeta seq=%d cmd=%02x kind=%@%@ trim=%u end_data=%@ ack_mode=%@ ack_cursor=%u acked=%d u32=%@ u16=%@ payload=%@",
+            AtriaDebugLog("ATRIADBG historyMeta seq=%d cmd=%02x kind=%@%@ trim=%u end_data=%@ ack_mode=%@ ack_cursor=%u acked=%d u32=%@ u16=%@ payload=%@",
                   Int(seq), cmd, kind, fields, trim, Self.hex(endData),
                   historyAckMode, ackCursor, acked ? 1 : 0, metadataU32, metadataU16,
                   Self.hex(payload))
             if historicalArchiveWriteFailures > 0 {
-                WHOOPDebugLog("WHOOPDBG historyAck skip=archive_persist_failed mode=%@ trim=%u cursor=%u rows=%d rows_since_ack=%d failures=%d archive=%@",
+                AtriaDebugLog("ATRIADBG historyAck skip=archive_persist_failed mode=%@ trim=%u cursor=%u rows=%d rows_since_ack=%d failures=%d archive=%@",
                       historyAckMode,
                       trim,
                       ackCursor,
@@ -7483,12 +7483,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 return
             }
             if historicalAckDisabled || historyAckMode == "none" {
-                WHOOPDebugLog("WHOOPDBG historyAck skip=disabled mode=%@ trim=%u cursor=%u",
+                AtriaDebugLog("ATRIADBG historyAck skip=disabled mode=%@ trim=%u cursor=%u",
                       historyAckMode, trim, ackCursor)
                 return
             }
             if historyAckMode == "enddata", endData.count != 8 {
-                WHOOPDebugLog("WHOOPDBG historyAck skip=malformed_enddata mode=%@ trim=%u end_data_len=%d payload=%@",
+                AtriaDebugLog("ATRIADBG historyAck skip=malformed_enddata mode=%@ trim=%u end_data_len=%d payload=%@",
                       historyAckMode, trim, endData.count, Self.hex(payload))
                 return
             }
@@ -7503,12 +7503,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 ack = [0x01] + Self.le32(ackCursor) + [0x00, 0x00, 0x00, 0x00]
                 writeMode = .withoutResponse
             }
-            WHOOPDebugLog("WHOOPDBG historyAck mode=%@ key=%@ trim=%u cursor=%u end_data=%@ payload=%@ write_mode=%@",
+            AtriaDebugLog("ATRIADBG historyAck mode=%@ key=%@ trim=%u cursor=%u end_data=%@ payload=%@ write_mode=%@",
                   historyAckMode, ackKey, trim, ackCursor, Self.hex(endData), Self.hex(ack), writeMode.rawValue)
             historicalArchiveRowsSinceAck = 0
             sendCommand(Cmd.historicalDataResult, ack, mode: writeMode)
         } else {
-            WHOOPDebugLog("WHOOPDBG historyMeta seq=%d cmd=%02x kind=%@%@ u32=%@ u16=%@ payload=%@",
+            AtriaDebugLog("ATRIADBG historyMeta seq=%d cmd=%02x kind=%@%@ u32=%@ u16=%@ payload=%@",
                   Int(seq), cmd, kind, fields, metadataU32, metadataU16, Self.hex(payload))
         }
     }
@@ -7521,7 +7521,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             let computation = Self.prepareHistoricalArchiveComputation(payload: payload,
                                                                        clock: clock,
                                                                        historyClockSyncEnabled: historyClockSyncEnabled)
-            WHOOPDebugLog("%@", computation.logMessage)
+            AtriaDebugLog("%@", computation.logMessage)
             let persistence = Self.persistHistoricalArchiveComputation(computation)
             Task { @MainActor [weak self] in
                 self?.applyHistoricalArchivePersistenceResult(persistence)
@@ -7535,14 +7535,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             historicalArchiveRowsSinceAck += 1
             lastHistoricalArchivePath = HistoricalArchive.relativePath
             if result.archivedUndecodable {
-                WHOOPDebugLog("WHOOPDBG historicalArchive status=archived_undecodable reason=%@ rows=%d rows_since_ack=%d failures=%d path=%@",
+                AtriaDebugLog("ATRIADBG historicalArchive status=archived_undecodable reason=%@ rows=%d rows_since_ack=%d failures=%d path=%@",
                       result.reason ?? "unknown",
                       historicalArchiveRows,
                       historicalArchiveRowsSinceAck,
                       historicalArchiveWriteFailures,
                       result.persistedPath)
             } else if historicalArchiveRows == 1 || historicalArchiveRows.isMultiple(of: 500) {
-                WHOOPDebugLog("WHOOPDBG historicalArchive status=ok rows=%d rows_since_ack=%d failures=%d layout=%@ metric_usable=0 current_session_usable=0 path=%@",
+                AtriaDebugLog("ATRIADBG historicalArchive status=ok rows=%d rows_since_ack=%d failures=%d layout=%@ metric_usable=0 current_session_usable=0 path=%@",
                       historicalArchiveRows,
                       historicalArchiveRowsSinceAck,
                       historicalArchiveWriteFailures,
@@ -7553,7 +7553,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
 
         historicalArchiveWriteFailures += 1
-        WHOOPDebugLog("WHOOPDBG historicalArchive status=error rows=%d rows_since_ack=%d failures=%d error=%@ action=skip_future_history_ack path=%@",
+        AtriaDebugLog("ATRIADBG historicalArchive status=error rows=%d rows_since_ack=%d failures=%d error=%@ action=skip_future_history_ack path=%@",
               historicalArchiveRows,
               historicalArchiveRowsSinceAck,
               historicalArchiveWriteFailures,
@@ -7566,7 +7566,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                                                         historyClockSyncEnabled: Bool) -> HistoricalArchiveComputation {
         guard payload.count >= 24 else {
             return HistoricalArchiveComputation(
-                logMessage: String(format: "WHOOPDBG historicalData short len=%d payload=%@", payload.count, Self.hex(payload)),
+                logMessage: String(format: "ATRIADBG historicalData short len=%d payload=%@", payload.count, Self.hex(payload)),
                 payload: .undecodable(payload: payload, reason: "short_payload")
             )
         }
@@ -7608,7 +7608,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 
         let payloadHex = Self.hex(payload)
         let logMessage = String(
-            format: "WHOOPDBG historicalData provisional=1 validated=0 seq=%02x cmd=%02x unix7=%u subsec11=%u flash13=%u len=%d whoop4_v24_hr17=%d whoop4_v24_rrnum18=%d whoop4_v24_rr19=%@ k_rr64=%@ noop_gravity_mag=%@ noop_gravity_validated=%d clock_status=%@ clock_device_ref=%@ clock_wall_ref=%@ clock_drift_s=%@ clock_snapped_drift_s=%@ clock_corrected_unix7=%@ candidate_rr=%@ payload=%@",
+            format: "ATRIADBG historicalData provisional=1 validated=0 seq=%02x cmd=%02x unix7=%u subsec11=%u flash13=%u len=%d strap4_v24_hr17=%d strap4_v24_rrnum18=%d strap4_v24_rr19=%@ k_rr64=%@ noop_gravity_mag=%@ noop_gravity_validated=%d clock_status=%@ clock_device_ref=%@ clock_wall_ref=%@ clock_drift_s=%@ clock_snapped_drift_s=%@ clock_corrected_unix7=%@ candidate_rr=%@ payload=%@",
             seq,
             cmd,
             unix,
@@ -7931,7 +7931,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
-    fileprivate func record(frame: WhoopFrame) {
+    fileprivate func record(frame: AtriaFrame) {
         guard storeProprietaryFrames else { return }
         logRow(kind: "frame", source: frame.source,
                opcode: String(format: "%02X", frame.opcode),
@@ -7961,7 +7961,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard let saved = snapshotSession(label: label) else {
             resetLiveSessionState(start: nextSampleTime)
             ActiveSessionJournal.clear()
-            WHOOPDebugLog("WHOOPDBG active_session_rollover status=reset reason=%@ gap_s=%.1f threshold_s=%.1f previous_samples=%d action=start_new_segment",
+            AtriaDebugLog("ATRIADBG active_session_rollover status=reset reason=%@ gap_s=%.1f threshold_s=%.1f previous_samples=%d action=start_new_segment",
                   reason, gap, activeJournalSegmentGapLimit, session.count)
             return
         }
@@ -7971,7 +7971,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             // the on-disk journal. Start the next received sample in a clean segment.
             resetLiveSessionState(start: nextSampleTime)
         }
-        WHOOPDebugLog("WHOOPDBG active_session_rollover status=%@ reason=%@ gap_s=%.1f threshold_s=%.1f saved_samples=%d saved_duration_s=%.0f action=%@",
+        AtriaDebugLog("ATRIADBG active_session_rollover status=%@ reason=%@ gap_s=%.1f threshold_s=%.1f saved_samples=%d saved_duration_s=%.0f action=%@",
               persisted ? "saved" : "store_failed",
               reason,
               gap,
@@ -8065,13 +8065,13 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         }
     }
 
-    var recentFramesNewestFirst: [WhoopFrame] {
+    var recentFramesNewestFirst: [AtriaFrame] {
         Array(frames.suffix(maxFrames).reversed())
     }
 
-    private func maybeHandleCommandResponseFrame(_ frame: WhoopFrame?, uuid: CBUUID) {
+    private func maybeHandleCommandResponseFrame(_ frame: AtriaFrame?, uuid: CBUUID) {
         guard let frame, frame.opcode == 0x24 else { return }
-        WHOOPDebugLog("WHOOPDBG cmdResp ch=%@ payload=%@",
+        AtriaDebugLog("ATRIADBG cmdResp ch=%@ payload=%@",
               uuid.uuidString,
               frame.payload.map { String(format: "%02x", $0) }.joined())
         logClockCommandResponse([UInt8](frame.payload))
@@ -8311,7 +8311,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                              label: saved.label,
                                              samples: saved.points.count,
                                              duration: saved.duration)
-            WHOOPDebugLog("WHOOPDBG active_session_journal status=retained reason=store_failed finish_reason=%@ label=%@ samples=%d",
+            AtriaDebugLog("ATRIADBG active_session_journal status=retained reason=store_failed finish_reason=%@ label=%@ samples=%d",
                   reason,
                   saved.label,
                   saved.points.count)
@@ -8331,7 +8331,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                          samples: saved.points.count,
                                          duration: saved.duration)
         ActiveSessionJournal.clear()
-        WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=%@ label=%@ samples=%d duration_s=%.0f close_recorded=1",
+        AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=%@ label=%@ samples=%d duration_s=%.0f close_recorded=1",
               reason,
               saved.label,
               saved.points.count,
@@ -8352,7 +8352,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                                          samples: session.count,
                                          duration: duration)
         ActiveSessionJournal.clear()
-        WHOOPDebugLog("WHOOPDBG active_session_journal status=cleared reason=%@ label=%@ samples=%d duration_s=%.0f action=drop_unsavable_stale_segment",
+        AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=%@ label=%@ samples=%d duration_s=%.0f action=drop_unsavable_stale_segment",
                       reason,
                       label,
                       session.count,
@@ -8527,7 +8527,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func startPhoneMotionAudit() {
         guard !phoneMotionManager.isAccelerometerActive else { return }
         guard phoneMotionManager.isAccelerometerAvailable else {
-            WHOOPDebugLog("WHOOPDBG phone_motion status=unavailable reason=accelerometer_unavailable source=phone_coremotion validated=0 wrist_motion_validated=0")
+            AtriaDebugLog("ATRIADBG phone_motion status=unavailable reason=accelerometer_unavailable source=phone_coremotion validated=0 wrist_motion_validated=0")
             return
         }
         phoneMotionManager.accelerometerUpdateInterval = 1.0
@@ -8535,21 +8535,21 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         phoneMotionManager.startAccelerometerUpdates(to: .main) { [weak self] data, error in
             guard let self else { return }
             if let error {
-                WHOOPDebugLog("WHOOPDBG phone_motion status=error reason=%@ source=phone_coremotion validated=0 wrist_motion_validated=0", String(describing: error))
+                AtriaDebugLog("ATRIADBG phone_motion status=error reason=%@ source=phone_coremotion validated=0 wrist_motion_validated=0", String(describing: error))
                 self.phoneMotionManager.stopAccelerometerUpdates()
                 return
             }
             guard let acceleration = data?.acceleration else { return }
             self.recordPhoneMotionSample(x: acceleration.x, y: acceleration.y, z: acceleration.z)
         }
-        WHOOPDebugLog("WHOOPDBG phone_motion status=started source=phone_coremotion interval_s=1.0 still_threshold_g=%.3f validated=0 wrist_motion_validated=0 action=corroborate_debug_rig_only",
+        AtriaDebugLog("ATRIADBG phone_motion status=started source=phone_coremotion interval_s=1.0 still_threshold_g=%.3f validated=0 wrist_motion_validated=0 action=corroborate_debug_rig_only",
               phoneMotionStillThresholdG)
     }
 
     private func stopPhoneMotionAudit(reason: String) {
         guard phoneMotionManager.isAccelerometerActive else { return }
         phoneMotionManager.stopAccelerometerUpdates()
-        WHOOPDebugLog("WHOOPDBG phone_motion status=stopped reason=%@ source=phone_coremotion", reason)
+        AtriaDebugLog("ATRIADBG phone_motion status=stopped reason=%@ source=phone_coremotion", reason)
     }
 
     private func updatePhoneMotionAuditState(reason: String) {
@@ -8576,7 +8576,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
             }
             if phoneMotionSamples - phoneMotionLastLoggedSample >= 15 {
                 phoneMotionLastLoggedSample = phoneMotionSamples
-                WHOOPDebugLog("WHOOPDBG phone_motion status=sampled source=phone_coremotion_audit_only samples=%d mean_delta_g=%@ max_delta_g=%@ over_still_threshold=%d still_threshold_g=%.3f validated=0 wrist_motion_validated=0 action=corroborate_debug_rig_only",
+                AtriaDebugLog("ATRIADBG phone_motion status=sampled source=phone_coremotion_audit_only samples=%d mean_delta_g=%@ max_delta_g=%@ over_still_threshold=%d still_threshold_g=%.3f validated=0 wrist_motion_validated=0 action=corroborate_debug_rig_only",
                       phoneMotionSamples,
                       Self.formatDouble(phoneMotionDeltaSum / Double(phoneMotionSamples)),
                       Self.formatDouble(phoneMotionDeltaMax),
@@ -8609,7 +8609,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
     private func startPhoneStepEvidenceIfNeeded(start: Date, reason: String) {
         guard CMPedometer.isStepCountingAvailable() else {
             resetPhoneStepEvidenceStats(start: start)
-            WHOOPDebugLog("WHOOPDBG phone_steps status=unavailable reason=step_counting_unavailable source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only")
+            AtriaDebugLog("ATRIADBG phone_steps status=unavailable reason=step_counting_unavailable source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only")
             return
         }
         guard !phoneStepEvidenceActive else { return }
@@ -8621,14 +8621,14 @@ final class WhoopBLEManager: NSObject, ObservableObject {
                 if let error {
                     self.phoneStepEvidenceActive = false
                     self.phonePedometer.stopUpdates()
-                    WHOOPDebugLog("WHOOPDBG phone_steps status=error reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only", String(describing: error))
+                    AtriaDebugLog("ATRIADBG phone_steps status=error reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only", String(describing: error))
                     return
                 }
                 guard let data else { return }
                 self.recordPhoneStepEvidence(data)
             }
         }
-        WHOOPDebugLog("WHOOPDBG phone_steps status=started reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only",
+        AtriaDebugLog("ATRIADBG phone_steps status=started reason=%@ source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only",
                       reason)
     }
 
@@ -8636,7 +8636,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard phoneStepEvidenceActive else { return }
         phonePedometer.stopUpdates()
         phoneStepEvidenceActive = false
-        WHOOPDebugLog("WHOOPDBG phone_steps status=stopped reason=%@ source=phone_coremotion_pedometer steps=%d distance_m=%@ validated=0 action=activity_adjunct_only",
+        AtriaDebugLog("ATRIADBG phone_steps status=stopped reason=%@ source=phone_coremotion_pedometer steps=%d distance_m=%@ validated=0 action=activity_adjunct_only",
                       reason,
                       phoneStepCount,
                       Self.formatDouble(phoneStepDistanceMeters))
@@ -8650,7 +8650,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         recordPhoneStepsToday(data)
         if phoneStepCount - phoneStepLastLoggedCount >= 100 {
             phoneStepLastLoggedCount = phoneStepCount
-            WHOOPDebugLog("WHOOPDBG phone_steps status=sampled source=phone_coremotion_pedometer steps=%d distance_m=%@ floors_up=%d floors_down=%d validated=0 action=activity_adjunct_only",
+            AtriaDebugLog("ATRIADBG phone_steps status=sampled source=phone_coremotion_pedometer steps=%d distance_m=%@ floors_up=%d floors_down=%d validated=0 action=activity_adjunct_only",
                           phoneStepCount,
                           Self.formatDouble(phoneStepDistanceMeters),
                           phoneStepFloorsAscended ?? 0,
@@ -8700,12 +8700,12 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         guard let riskIndex = arguments.firstIndex(of: "--whoop-force-coexistence-risk"),
               arguments.indices.contains(arguments.index(after: riskIndex)) else { return }
         let value = arguments[arguments.index(after: riskIndex)]
-        guard let risk = OfficialWhoopCoexistenceRisk(rawValue: value) else {
-            WHOOPDebugLog("WHOOPDBG official_whoop_coexistence_debug status=invalid value=%@", value)
+        guard let risk = OfficialAppCoexistenceRisk(rawValue: value) else {
+            AtriaDebugLog("ATRIADBG official_app_coexistence_debug status=invalid value=%@", value)
             return
         }
-        persistOfficialWhoopCoexistenceRisk(risk, reason: "debug_launch_arg")
-        WHOOPDebugLog("WHOOPDBG official_whoop_coexistence_debug status=forced value=%@", value)
+        persistOfficialAppCoexistenceRisk(risk, reason: "debug_launch_arg")
+        AtriaDebugLog("ATRIADBG official_app_coexistence_debug status=forced value=%@", value)
 #endif
     }
 
@@ -8715,7 +8715,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
         let reason = value(after: "--whoop-force-offline-sync-reason",
                            in: arguments) ?? "debug_launch_arg"
         let started = requestOfflineHistoricalSyncIfNeeded(reason: reason, force: true)
-        WHOOPDebugLog("WHOOPDBG offline_sync_debug status=%@ reason=%@",
+        AtriaDebugLog("ATRIADBG offline_sync_debug status=%@ reason=%@",
                       started ? "started" : "not_started",
                       reason)
 #endif
@@ -8723,7 +8723,7 @@ final class WhoopBLEManager: NSObject, ObservableObject {
 }
 
 // MARK: - CBCentralManagerDelegate
-extension WhoopBLEManager: CBCentralManagerDelegate {
+extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
             switch central.state {
@@ -8747,15 +8747,15 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
-        WHOOPDebugLog("WHOOPDBG ble_restore peripherals=%d", restored.count)
+        AtriaDebugLog("ATRIADBG ble_restore peripherals=%d", restored.count)
         guard let restoredPeripheral = restored.first else { return }
         Task { @MainActor in
             if self.forceFreshScanOnRestore {
-                WHOOPDebugLog("WHOOPDBG ble_restore status=reuse_restored reason=fresh_scan_deferred peripherals=%d standard_hr_only=%d",
+                AtriaDebugLog("ATRIADBG ble_restore status=reuse_restored reason=fresh_scan_deferred peripherals=%d standard_hr_only=%d",
                       restored.count,
                       self.standardHROnlyMode ? 1 : 0)
             } else if self.standardHROnlyMode {
-                WHOOPDebugLog("WHOOPDBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=%d",
+                AtriaDebugLog("ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=%d",
                       restored.count)
             }
             restoredPeripheral.delegate = self
@@ -8769,17 +8769,17 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                 self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
                 self.scheduleRangeLossBackfillIfNeeded(reason: "state_restore_connected")
                 restoredPeripheral.discoverServices(Self.UUIDs.discoveryServices)
-                WHOOPDebugLog("WHOOPDBG ble_restore status=connected name=%@", self.deviceName)
+                AtriaDebugLog("ATRIADBG ble_restore status=connected name=%@", self.deviceName)
             case .connecting:
                 self.assignIfChanged(\.status, .connecting)
                 self.startReconnectWatchdog(reason: "state_restore_connecting", peripheral: restoredPeripheral)
-                WHOOPDebugLog("WHOOPDBG ble_restore status=connecting name=%@", self.deviceName)
+                AtriaDebugLog("ATRIADBG ble_restore status=connecting name=%@", self.deviceName)
             default:
                 self.assignIfChanged(\.status, .connecting)
                 self.recordLinkAttempt(reason: "state_restore", peripheral: restoredPeripheral)
                 central.connect(restoredPeripheral, options: nil)
                 self.startReconnectWatchdog(reason: "state_restore", peripheral: restoredPeripheral)
-                WHOOPDebugLog("WHOOPDBG ble_restore status=reconnect name=%@", self.deviceName)
+                AtriaDebugLog("ATRIADBG ble_restore status=reconnect name=%@", self.deviceName)
             }
         }
     }
@@ -8789,15 +8789,15 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let advName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name
         let advServices = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
-        // Unfiltered scan: only attach if this is the WHOOP (by service or name).
-        let isWhoop = advServices.contains(UUIDs.whoopService)
+        // Unfiltered scan: only attach if this is the strap (by service or name).
+        let isStrap = advServices.contains(UUIDs.strapService)
             || advServices.contains(UUIDs.heartRateService)
             || (advName?.uppercased().contains("WHO") ?? false)
-        guard isWhoop else { return }
+        guard isStrap else { return }
         let name = advName ?? "Strap"
         Task { @MainActor in
             guard self.peripheral == nil else { return }   // first match wins
-            WHOOPDebugLog("WHOOPDBG ble_scan status=matched name=%@ rssi=%@ services=%d",
+            AtriaDebugLog("ATRIADBG ble_scan status=matched name=%@ rssi=%@ services=%d",
                   name,
                   RSSI,
                   advServices.count)
@@ -8842,7 +8842,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             forceFreshScanAfterDisconnect = false
             let wasUserRequestedDisconnect = userRequestedDisconnect
             if !wasUserRequestedDisconnect && connectedDuration > 0 && connectedDuration < 90 {
-                persistOfficialWhoopCoexistenceRisk(.suspected, reason: "short_disconnect_after_connect")
+                persistOfficialAppCoexistenceRisk(.suspected, reason: "short_disconnect_after_connect")
             }
             let shouldPreserveLongWearSession = longWearModeEnabled && !wasUserRequestedDisconnect
             userRequestedDisconnect = false
@@ -8878,7 +8878,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
             defaults.set(autoSaveStatus, forKey: LinkDefaults.lastAutoSaveStatus)
             defaults.set(autoSaveSamples, forKey: LinkDefaults.lastAutoSaveSamples)
             defaults.set(autoSaveDuration, forKey: LinkDefaults.lastAutoSaveDuration)
-            WHOOPDebugLog("WHOOPDBG ble_link status=disconnected reason=did_disconnect error=%@ disconnects=%d autosave=%@ samples=%d duration_s=%d action=%@",
+            AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=did_disconnect error=%@ disconnects=%d autosave=%@ samples=%d duration_s=%d action=%@",
                   errorText,
                   disconnects,
                   autoSaveStatus,
@@ -8890,7 +8890,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                     self.peripheral = nil
                 }
                 assignIfChanged(\.status, .disconnected)
-                WHOOPDebugLog("WHOOPDBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
+                AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
                 return
             }
             if useFreshScan {
@@ -8899,7 +8899,7 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
                 }
                 assignIfChanged(\.status, .disconnected)
                 let freshReason = longWearModeEnabled ? "long_wear_disconnect" : "stale_data_recovery"
-                WHOOPDebugLog("WHOOPDBG ble_link status=disconnected reason=%@ action=fresh_scan",
+                AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=%@ action=fresh_scan",
                       freshReason)
                 startScan(reason: freshReason)
                 return
@@ -8936,18 +8936,18 @@ extension WhoopBLEManager: CBCentralManagerDelegate {
 }
 
 // MARK: - CBPeripheralDelegate
-extension WhoopBLEManager: CBPeripheralDelegate {
+extension AtriaBLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
             self.recordLinkObservedConnected(reason: "service_discovery", peripheral: peripheral)
         }
         for service in peripheral.services ?? [] {
             guard let characteristics = Self.discoveryCharacteristics(for: service.uuid) else { continue }
-            if service.uuid == Self.UUIDs.whoopService {
+            if service.uuid == Self.UUIDs.strapService {
                 Task { @MainActor in
-                    if self.whoopModel == .unknown {
-                        self.whoopModel = .whoop4Class
-                        WHOOPDebugLog("WHOOPDBG model_gate status=assume_4_class reason=proprietary_service service=%@", service.uuid.uuidString)
+                    if self.strapModel == .unknown {
+                        self.strapModel = .strap4Class
+                        AtriaDebugLog("ATRIADBG model_gate status=assume_4_class reason=proprietary_service service=%@", service.uuid.uuidString)
                     }
                 }
             }
@@ -8974,7 +8974,7 @@ extension WhoopBLEManager: CBPeripheralDelegate {
             case UUIDs.manufacturerName, UUIDs.modelNumber,
                  UUIDs.firmwareRevision, UUIDs.hardwareRevision:
                 peripheral.readValue(for: ch)
-            case UUIDs.whoopTX:
+            case UUIDs.strapTX:
                 if standardHROnlyMode, !historyOnlyProbeMode {
                     usedStandardHROnly = true
                     radioCounters.append((RadioDefaults.txSkipped, "standard_hr_only"))
@@ -9033,7 +9033,7 @@ extension WhoopBLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral,
                     didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         let msg = error.map { "ERR:\($0.localizedDescription.prefix(18))" } ?? "ok"
-        WHOOPDebugLog("WHOOPDBG writeResult to=%@ -> %@", characteristic.uuid.uuidString, msg)
+        AtriaDebugLog("ATRIADBG writeResult to=%@ -> %@", characteristic.uuid.uuidString, msg)
         Task { @MainActor in self.dbgWrite = msg }
     }
 
@@ -9042,8 +9042,8 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         let short = String(characteristic.uuid.uuidString.prefix(8))
         let notifying = characteristic.isNotifying
         let err = error?.localizedDescription
-        let isData = characteristic.uuid == UUIDs.whoopStream5
-        WHOOPDebugLog("WHOOPDBG notifyState ch=%@ notifying=%d err=%@", characteristic.uuid.uuidString, notifying ? 1 : 0, error?.localizedDescription ?? "nil")
+        let isData = characteristic.uuid == UUIDs.strapStream5
+        AtriaDebugLog("ATRIADBG notifyState ch=%@ notifying=%d err=%@", characteristic.uuid.uuidString, notifying ? 1 : 0, error?.localizedDescription ?? "nil")
         Task { @MainActor in
             if let err { self.dbgLast = "suberr \(short):\(err.prefix(14))" }
             else if notifying {
@@ -9091,7 +9091,7 @@ extension WhoopBLEManager: CBPeripheralDelegate {
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19")
-                WHOOPDebugLog("WHOOPDBG battery level=%d source=2A19 bytes=%@ persisted=1",
+                AtriaDebugLog("ATRIADBG battery level=%d source=2A19 bytes=%@ persisted=1",
                       batteryLevel,
                       Self.hex([UInt8](data)))
             }
@@ -9113,7 +9113,7 @@ extension WhoopBLEManager: CBPeripheralDelegate {
                 case UUIDs.hardwareRevision: assignIfChanged(\.hardwareRevision, text)
                 default: break
                 }
-                WHOOPDebugLog("WHOOPDBG deviceinfo model=%@ hw=%@ fw=%@",
+                AtriaDebugLog("ATRIADBG deviceinfo model=%@ hw=%@ fw=%@",
                               modelNumber, hardwareRevision, firmwareRevision)
             }
             return
@@ -9129,16 +9129,16 @@ extension WhoopBLEManager: CBPeripheralDelegate {
         let parsedProprietaryUpdate = storesProprietaryFrames
             ? nil
             : Self.parseProprietaryUpdate(data, source: frameSource)
-        let parsedStoredFrame = storesProprietaryFrames ? WhoopFrame.parse(data, source: frameSource) : nil
+        let parsedStoredFrame = storesProprietaryFrames ? AtriaFrame.parse(data, source: frameSource) : nil
         Task { @MainActor in
             dbgPropFrames += 1
             if verboseBLEFrameLogging {
-                WHOOPDebugLog("WHOOPDBG frame ch=%@ len=%d hex=%@",
+                AtriaDebugLog("ATRIADBG frame ch=%@ len=%d hex=%@",
                       uuid.uuidString.prefix(8).description,
                       data.count,
                       Self.hex([UInt8](data)))
             }
-            if uuid == UUIDs.whoopStream7 {
+            if uuid == UUIDs.strapStream7 {
                 recordResearchProbeCandidate(payload: [UInt8](data), source: .diagnostic)
             }
             // The "type" byte: for aa-framed packets it's payload[0] (index 4);
@@ -9321,7 +9321,7 @@ extension WhoopBLEManager: CBPeripheralDelegate {
                                                   truncated: truncated,
                                                   frameTime: Date()))
         case 0x24:
-            guard let frame = WhoopFrame.parse(data, source: source) else { return nil }
+            guard let frame = AtriaFrame.parse(data, source: source) else { return nil }
             return .commandResponse(frame)
         case Packet.metadata:
             return .historyMetadata([UInt8](payload))
@@ -9407,10 +9407,10 @@ extension WhoopBLEManager: CBPeripheralDelegate {
 
     nonisolated static func label(for uuid: CBUUID) -> String {
         switch uuid {
-        case UUIDs.whoopRX:      return "RX/resp"
-        case UUIDs.whoopStream4: return "stream4"
-        case UUIDs.whoopStream5: return "stream5"
-        case UUIDs.whoopStream7: return "stream7"
+        case UUIDs.strapRX:      return "RX/resp"
+        case UUIDs.strapStream4: return "stream4"
+        case UUIDs.strapStream5: return "stream5"
+        case UUIDs.strapStream7: return "stream7"
         default:                 return uuid.uuidString.prefix(8).lowercased()
         }
     }

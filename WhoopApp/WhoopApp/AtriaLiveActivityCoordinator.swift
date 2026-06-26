@@ -55,13 +55,13 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: Date().addingTimeInterval(90)),
                                             pushType: nil)
-            WHOOPDebugLog("WHOOPDBG live_activity status=started bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
+            AtriaDebugLog("ATRIADBG live_activity status=started bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
                           snapshot.readingCount,
                           snapshot.mediaHasNowPlayingInfo ? 1 : 0)
         } catch {
-            WHOOPDebugLog("WHOOPDBG live_activity status=start_failed error=%@ local_only=1",
+            AtriaDebugLog("ATRIADBG live_activity status=start_failed error=%@ local_only=1",
                           String(describing: error))
         }
         lastActivitySnapshot = snapshot
@@ -87,7 +87,7 @@ final class AtriaLiveActivityCoordinator {
         lastActivityUpdateAt = nil
         pendingActivityUpdateTask?.cancel()
         pendingActivityUpdateTask = nil
-        WHOOPDebugLog("WHOOPDBG live_activity status=ended bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
+        AtriaDebugLog("ATRIADBG live_activity status=ended bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
                       snapshot.heartRate,
                       snapshot.strain,
                       snapshot.readingCount,

@@ -49,7 +49,7 @@ enum WidgetSnapshotPublisher {
     }
 
     static func publishFromLaunchIfRequested(store: SessionStore,
-                                             ble: WhoopBLEManager,
+                                             ble: AtriaBLEManager,
                                              arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--whoop-log-widget-snapshot") else { return }
         publish(store: store, ble: ble, reason: "launch")
@@ -61,7 +61,7 @@ enum WidgetSnapshotPublisher {
 
     @discardableResult
     static func publish(store: SessionStore,
-                        ble: WhoopBLEManager,
+                        ble: AtriaBLEManager,
                         reason: String = "update") -> WidgetSnapshot {
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable
         let validatedHRV = store.latestReferenceValidatedHRV
@@ -110,7 +110,7 @@ enum WidgetSnapshotPublisher {
                 ? (UserDefaults(suiteName: appGroupID) ?? .standard)
                 : .standard
             defaults.set(data, forKey: key)
-            WHOOPDebugLog("WHOOPDBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
+            AtriaDebugLog("ATRIADBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
                           reason,
                           snapshot.schema,
                           formatInt(snapshot.recoveryPercent),
@@ -128,7 +128,7 @@ enum WidgetSnapshotPublisher {
             let readinessStatus = widgetDiagnostics.appGroupEnabled
                 && widgetDiagnostics.widgetTargetPresent
                 && widgetDiagnostics.complicationTargetPresent ? "ready" : "diagnostic_only"
-            WHOOPDebugLog("WHOOPDBG widget_readiness status=%@ storage=%@ app_group=%d widget_target=%d complication_target=%d action=%@",
+            AtriaDebugLog("ATRIADBG widget_readiness status=%@ storage=%@ app_group=%d widget_target=%d complication_target=%d action=%@",
                           readinessStatus,
                           snapshot.storage,
                           snapshot.appGroupEnabled ? 1 : 0,
@@ -141,12 +141,12 @@ enum WidgetSnapshotPublisher {
             }
 #endif
         } else {
-            WHOOPDebugLog("WHOOPDBG widget_snapshot status=error reason=encode_failed")
+            AtriaDebugLog("ATRIADBG widget_snapshot status=error reason=encode_failed")
         }
         return snapshot
     }
 
-    private static func dayStrain(store: SessionStore, ble: WhoopBLEManager, rest: Int) -> Double {
+    private static func dayStrain(store: SessionStore, ble: AtriaBLEManager, rest: Int) -> Double {
         let saved = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
         let live = ble.session.first.map { first in
             Metrics.trimp(ble.session.map { (t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
@@ -194,7 +194,7 @@ enum WidgetSnapshotPublisher {
             }
             let supportsAccessory =
                 (bundle.object(forInfoDictionaryKey: "AtriaWidgetSupportsAccessoryFamilies") as? Bool) == true
-                || (bundle.object(forInfoDictionaryKey: "WhoopWidgetSupportsAccessoryFamilies") as? Bool) == true
+                || (bundle.object(forInfoDictionaryKey: "AtriaWidgetSupportsAccessoryFamilies") as? Bool) == true
             return BundledExtensionInfo(extensionPoint: identifier,
                                         supportsAccessoryFamilies: supportsAccessory)
         }

@@ -9,10 +9,10 @@ enum AtriaResearchProbe {
 
     enum ModelGeneration: String, Equatable {
         case unknown
-        case whoop3
-        case whoop4
-        case whoop5
-        case whoopMG
+        case strap3
+        case strap4
+        case strap5
+        case strapMG
     }
 
     struct Candidate: Equatable {
@@ -90,16 +90,16 @@ enum AtriaResearchProbe {
                 .replacingOccurrences(of: "-", with: " ")
                 .replacingOccurrences(of: ".", with: " ")
             if normalized.contains("WHOOP MG") || normalized.contains("WHOOPMG") || normalized.contains(" MG") {
-                return (.whoopMG, run)
+                return (.strapMG, run)
             }
             if normalized.contains("WHOOP 5") || normalized.contains("WHOOP5") {
-                return (.whoop5, run)
+                return (.strap5, run)
             }
             if normalized.contains("WHOOP 4") || normalized.contains("WHOOP4") {
-                return (.whoop4, run)
+                return (.strap4, run)
             }
             if normalized.contains("WHOOP 3") || normalized.contains("WHOOP3") {
-                return (.whoop3, run)
+                return (.strap3, run)
             }
         }
         return (.unknown, redactedRuns.prefix(4).joined(separator: "|"))

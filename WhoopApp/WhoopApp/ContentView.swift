@@ -3,7 +3,7 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    let ble: WhoopBLEManager
+    let ble: AtriaBLEManager
     let store: SessionStore
     @State private var showOnboarding = false
 
@@ -364,7 +364,7 @@ private struct DailyEvidenceCard: View {
         ].joined(separator: "|")
         guard key != lastLogKey else { return }
         lastLogKey = key
-        WHOOPDebugLog("WHOOPDBG daily_evidence_ui reason=%@ sessions_today=%d saved_minutes=%d rr_saved=%d detections=%d workouts=%d rest_candidates=%d sleep_candidates=%d activity_candidates=%d confirmed_workouts=%d confirmed_sleeps=%d sleep_signal=%d sleep_state=%@ sleep_motion_validated=%d workout_signal=%d workout_diagnosis=%@ top_kind=%@ top_confidence=%@ top_duration_s=%d top_avg_hr=%d top_peak_hr=%d top_reason=%@ rest_diagnostic_only=1 diagnostic_only=%d",
+        AtriaDebugLog("ATRIADBG daily_evidence_ui reason=%@ sessions_today=%d saved_minutes=%d rr_saved=%d detections=%d workouts=%d rest_candidates=%d sleep_candidates=%d activity_candidates=%d confirmed_workouts=%d confirmed_sleeps=%d sleep_signal=%d sleep_state=%@ sleep_motion_validated=%d workout_signal=%d workout_diagnosis=%@ top_kind=%@ top_confidence=%@ top_duration_s=%d top_avg_hr=%d top_peak_hr=%d top_reason=%@ rest_diagnostic_only=1 diagnostic_only=%d",
                       reason,
                       summary.sessionsToday,
                       summary.savedMinutes,
@@ -392,7 +392,7 @@ private struct DailyEvidenceCard: View {
 }
 
 private struct CollectionReliabilityCard: View {
-    @EnvironmentObject var ble: WhoopBLEManager
+    @EnvironmentObject var ble: AtriaBLEManager
     @State private var tick = Date()
     @State private var lastLogKey = ""
 
@@ -424,14 +424,14 @@ private struct CollectionReliabilityCard: View {
         let rrPresenceSamples: Int
         let rrPresenceValues: Int
         let rrPresenceAge: Int
-        let officialWhoopMayBeInstalled: Bool
+        let officialAppMayBeInstalled: Bool
 
         var checkpointSaved: Bool {
             checkpointLastStatus.hasPrefix("saved")
         }
 
         var protected: Bool {
-            longWear && checkpointArmed && (journal.fresh || checkpointSaved) && !officialWhoopMayBeInstalled
+            longWear && checkpointArmed && (journal.fresh || checkpointSaved) && !officialAppMayBeInstalled
         }
 
         var rrPresent: Bool {
@@ -456,7 +456,7 @@ private struct CollectionReliabilityCard: View {
         }
 
         var statusText: String {
-            if officialWhoopMayBeInstalled { return "WHOOP risk" }
+            if officialAppMayBeInstalled { return "App conflict" }
             if protected && rrPresent { return "protected" }
             if protected { return "HR protected" }
             if longWear || checkpointArmed { return "warming" }
@@ -464,8 +464,8 @@ private struct CollectionReliabilityCard: View {
         }
 
         var action: String {
-            if officialWhoopMayBeInstalled {
-                return "Official WHOOP may reclaim BLE in the background. Close or remove WHOOP before relying on Atria."
+            if officialAppMayBeInstalled {
+                return "The official strap app may reclaim BLE in the background. Close or remove it before relying on Atria."
             }
             if !connected { return "Keep the phone near the strap until BLE reconnects." }
             if !longWear || !checkpointArmed { return "Keep Atria open so long-wear checkpoints arm." }
@@ -515,8 +515,8 @@ private struct CollectionReliabilityCard: View {
                            summary.watchdogLastStatus == "none" || summary.watchdogLastStatus == "ok")
             }
 
-            if summary.officialWhoopMayBeInstalled {
-                Label("WHOOP app or widgets can interrupt strap ownership and fragment saved sessions.",
+            if summary.officialAppMayBeInstalled {
+                Label("The official strap app or its widgets can interrupt strap ownership and fragment saved sessions.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.orange)
@@ -543,41 +543,41 @@ private struct CollectionReliabilityCard: View {
     private func makeSummary() -> Summary {
         _ = tick
         let defaults = UserDefaults.standard
-        let watchdogAt = defaults.object(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.lastAt) as? Double
-        let rrAt = defaults.object(forKey: WhoopBLEManager.RRPresenceDefaults.at) as? Double
+        let watchdogAt = defaults.object(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.lastAt) as? Double
+        let rrAt = defaults.object(forKey: AtriaBLEManager.RRPresenceDefaults.at) as? Double
         let watchdogAge = watchdogAt.map { max(0, Int((Date().timeIntervalSince1970 - $0).rounded())) } ?? -1
         let rrAge = rrAt.map { max(0, Int((Date().timeIntervalSince1970 - $0).rounded())) } ?? -1
         return Summary(connected: ble.status == .connected,
                        heartRate: ble.heartRate,
                        longWear: ble.longWearModeEnabled,
-                       checkpointArmed: defaults.bool(forKey: WhoopBLEManager.CheckpointDefaults.armed),
-                       checkpointInterval: Int(defaults.double(forKey: WhoopBLEManager.CheckpointDefaults.interval)),
-                       checkpointSource: defaults.string(forKey: WhoopBLEManager.CheckpointDefaults.source) ?? "none",
-                       checkpointLastStatus: defaults.string(forKey: WhoopBLEManager.CheckpointDefaults.lastStatus) ?? "none",
-                       checkpointLastSamples: defaults.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastSamples),
-                       checkpointLastDuration: defaults.integer(forKey: WhoopBLEManager.CheckpointDefaults.lastDuration),
+                       checkpointArmed: defaults.bool(forKey: AtriaBLEManager.CheckpointDefaults.armed),
+                       checkpointInterval: Int(defaults.double(forKey: AtriaBLEManager.CheckpointDefaults.interval)),
+                       checkpointSource: defaults.string(forKey: AtriaBLEManager.CheckpointDefaults.source) ?? "none",
+                       checkpointLastStatus: defaults.string(forKey: AtriaBLEManager.CheckpointDefaults.lastStatus) ?? "none",
+                       checkpointLastSamples: defaults.integer(forKey: AtriaBLEManager.CheckpointDefaults.lastSamples),
+                       checkpointLastDuration: defaults.integer(forKey: AtriaBLEManager.CheckpointDefaults.lastDuration),
                        journal: ActiveSessionJournal.diagnostics(),
-                       sampleStatus: defaults.string(forKey: WhoopBLEManager.SampleDefaults.lastStatus) ?? "none",
-                       sampleReason: defaults.string(forKey: WhoopBLEManager.SampleDefaults.lastReason) ?? "none",
-                       acceptedSamples: defaults.integer(forKey: WhoopBLEManager.SampleDefaults.acceptedSamples),
-                       acceptedGaps: defaults.integer(forKey: WhoopBLEManager.SampleDefaults.acceptedGaps),
-                       maxAcceptedGap: defaults.double(forKey: WhoopBLEManager.SampleDefaults.maxAcceptedGap),
-                       watchdogLastStatus: defaults.string(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.lastStatus) ?? "none",
-                       watchdogLastSource: defaults.string(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.lastSource) ?? "none",
-                       watchdogLastAction: defaults.string(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.lastAction) ?? "none",
+                       sampleStatus: defaults.string(forKey: AtriaBLEManager.SampleDefaults.lastStatus) ?? "none",
+                       sampleReason: defaults.string(forKey: AtriaBLEManager.SampleDefaults.lastReason) ?? "none",
+                       acceptedSamples: defaults.integer(forKey: AtriaBLEManager.SampleDefaults.acceptedSamples),
+                       acceptedGaps: defaults.integer(forKey: AtriaBLEManager.SampleDefaults.acceptedGaps),
+                       maxAcceptedGap: defaults.double(forKey: AtriaBLEManager.SampleDefaults.maxAcceptedGap),
+                       watchdogLastStatus: defaults.string(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.lastStatus) ?? "none",
+                       watchdogLastSource: defaults.string(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.lastSource) ?? "none",
+                       watchdogLastAction: defaults.string(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.lastAction) ?? "none",
                        watchdogLastAge: watchdogAge,
-                       watchdogRecoveries: defaults.integer(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.noDataCount)
-                           + defaults.integer(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.hrContinuityCount)
-                           + defaults.integer(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.acceptedHRCount)
-                           + defaults.integer(forKey: WhoopBLEManager.WatchdogRecoveryDefaults.rrPresenceCount),
-                       rrPresenceStatus: defaults.string(forKey: WhoopBLEManager.RRPresenceDefaults.status) ?? "none",
-                       rrPresenceAction: defaults.string(forKey: WhoopBLEManager.RRPresenceDefaults.action) ?? "none",
-                       rrPresenceRRGap: defaults.double(forKey: WhoopBLEManager.RRPresenceDefaults.rrGap),
-                       rrPresenceAcceptedGap: defaults.double(forKey: WhoopBLEManager.RRPresenceDefaults.acceptedGap),
-                       rrPresenceSamples: defaults.integer(forKey: WhoopBLEManager.RRPresenceDefaults.samples),
-                       rrPresenceValues: defaults.integer(forKey: WhoopBLEManager.RRPresenceDefaults.rrValues),
+                       watchdogRecoveries: defaults.integer(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.noDataCount)
+                           + defaults.integer(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.hrContinuityCount)
+                           + defaults.integer(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.acceptedHRCount)
+                           + defaults.integer(forKey: AtriaBLEManager.WatchdogRecoveryDefaults.rrPresenceCount),
+                       rrPresenceStatus: defaults.string(forKey: AtriaBLEManager.RRPresenceDefaults.status) ?? "none",
+                       rrPresenceAction: defaults.string(forKey: AtriaBLEManager.RRPresenceDefaults.action) ?? "none",
+                       rrPresenceRRGap: defaults.double(forKey: AtriaBLEManager.RRPresenceDefaults.rrGap),
+                       rrPresenceAcceptedGap: defaults.double(forKey: AtriaBLEManager.RRPresenceDefaults.acceptedGap),
+                       rrPresenceSamples: defaults.integer(forKey: AtriaBLEManager.RRPresenceDefaults.samples),
+                       rrPresenceValues: defaults.integer(forKey: AtriaBLEManager.RRPresenceDefaults.rrValues),
                        rrPresenceAge: rrAge,
-                       officialWhoopMayBeInstalled: OfficialWhoopCoexistenceRisk.mayBeInstalled)
+                       officialAppMayBeInstalled: OfficialAppCoexistenceRisk.mayBeInstalled)
     }
 
     private func miniMetric(_ title: String,
@@ -626,11 +626,11 @@ private struct CollectionReliabilityCard: View {
             "\(summary.rrPresenceValues)",
             summary.watchdogLastStatus,
             "\(summary.watchdogRecoveries)",
-            "\(summary.officialWhoopMayBeInstalled ? 1 : 0)"
+            "\(summary.officialAppMayBeInstalled ? 1 : 0)"
         ].joined(separator: "|")
         guard key != lastLogKey else { return }
         lastLogKey = key
-        WHOOPDebugLog("WHOOPDBG collection_reliability_ui reason=%@ protected=%d connected=%d hr=%d long_wear=%d checkpoint_armed=%d checkpoint_interval_s=%d checkpoint_source=%@ checkpoint_last_status=%@ checkpoint_last_samples=%d checkpoint_last_duration_s=%d journal_present=%d journal_fresh=%d journal_samples=%d journal_rr_values=%d journal_duration_s=%d journal_rr_max_gap_s=%.1f journal_rr_coverage_3s_percent=%d rr_present=%d rr_presence_status=%@ rr_presence_action=%@ rr_presence_rr_gap_s=%.1f rr_presence_accepted_gap_s=%.1f rr_presence_samples=%d rr_presence_values=%d rr_presence_age_s=%d sample_status=%@ sample_reason=%@ accepted_samples=%d accepted_gaps=%d max_accepted_gap_s=%.1f watchdog_recoveries=%d watchdog_last_status=%@ watchdog_last_source=%@ watchdog_last_action=%@ watchdog_last_age_s=%d official_whoop_may_be_installed=%d fail_closed=1",
+        AtriaDebugLog("ATRIADBG collection_reliability_ui reason=%@ protected=%d connected=%d hr=%d long_wear=%d checkpoint_armed=%d checkpoint_interval_s=%d checkpoint_source=%@ checkpoint_last_status=%@ checkpoint_last_samples=%d checkpoint_last_duration_s=%d journal_present=%d journal_fresh=%d journal_samples=%d journal_rr_values=%d journal_duration_s=%d journal_rr_max_gap_s=%.1f journal_rr_coverage_3s_percent=%d rr_present=%d rr_presence_status=%@ rr_presence_action=%@ rr_presence_rr_gap_s=%.1f rr_presence_accepted_gap_s=%.1f rr_presence_samples=%d rr_presence_values=%d rr_presence_age_s=%d sample_status=%@ sample_reason=%@ accepted_samples=%d accepted_gaps=%d max_accepted_gap_s=%.1f watchdog_recoveries=%d watchdog_last_status=%@ watchdog_last_source=%@ watchdog_last_action=%@ watchdog_last_age_s=%d official_app_may_be_installed=%d fail_closed=1",
                       reason,
                       summary.protected ? 1 : 0,
                       summary.connected ? 1 : 0,
@@ -667,11 +667,11 @@ private struct CollectionReliabilityCard: View {
                       summary.watchdogLastSource,
                       summary.watchdogLastAction,
                       summary.watchdogLastAge,
-                      summary.officialWhoopMayBeInstalled ? 1 : 0)
+                      summary.officialAppMayBeInstalled ? 1 : 0)
     }
 }
 
-private enum OfficialWhoopCoexistenceRisk {
+private enum OfficialAppCoexistenceRisk {
     static var mayBeInstalled: Bool {
         guard let url = URL(string: "whoop://") else { return false }
         return UIApplication.shared.canOpenURL(url)
@@ -734,8 +734,8 @@ struct ProfileOnboardingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: OnboardingStep = .welcome
-    @State private var whoopMayBeInstalled = OfficialWhoopCoexistenceRisk.mayBeInstalled
-    @State private var didRecheckWhoop = false
+    @State private var officialAppMayBeInstalled = OfficialAppCoexistenceRisk.mayBeInstalled
+    @State private var didRecheckOfficialApp = false
 
     private enum OnboardingStep: Int, CaseIterable {
         case welcome
@@ -750,7 +750,7 @@ struct ProfileOnboardingView: View {
             guard let debugName else { return nil }
             switch debugName.lowercased() {
             case "welcome": self = .welcome
-            case "coexistence", "whoop": self = .coexistence
+            case "coexistence": self = .coexistence
             case "connect", "strap": self = .connect
             case "profile": self = .profile
             default: return nil
@@ -766,13 +766,13 @@ struct ProfileOnboardingView: View {
         self.onComplete = onComplete
     }
 
-    private func recheckWhoop() {
-        let installed = OfficialWhoopCoexistenceRisk.mayBeInstalled
-        didRecheckWhoop = true
+    private func recheckOfficialApp() {
+        let installed = OfficialAppCoexistenceRisk.mayBeInstalled
+        didRecheckOfficialApp = true
         if reduceMotion {
-            whoopMayBeInstalled = installed
+            officialAppMayBeInstalled = installed
         } else {
-            withAnimation(.snappy(duration: 0.28)) { whoopMayBeInstalled = installed }
+            withAnimation(.snappy(duration: 0.28)) { officialAppMayBeInstalled = installed }
         }
     }
 
@@ -835,7 +835,7 @@ struct ProfileOnboardingView: View {
     private var primaryButtonTitle: String {
         switch step {
         case .welcome: return "Get started"
-        case .coexistence: return whoopMayBeInstalled ? "I’ll do this — continue" : "Continue"
+        case .coexistence: return officialAppMayBeInstalled ? "I’ll do this — continue" : "Continue"
         case .connect: return "Continue"
         case .profile: return "Use this profile"
         }
@@ -904,18 +904,18 @@ struct ProfileOnboardingView: View {
         }
     }
 
-    // MARK: - Step 2: WHOOP coexistence
+    // MARK: - Step 2: app coexistence
 
     @ViewBuilder
     private var coexistenceStep: some View {
-        if whoopMayBeInstalled {
-            whoopConflictStep
+        if officialAppMayBeInstalled {
+            officialAppConflictStep
         } else {
-            whoopClearStep
+            officialAppClearStep
         }
     }
 
-    private var whoopConflictStep: some View {
+    private var officialAppConflictStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -923,7 +923,7 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.orange)
                 Text("Make room for Atria")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("WHOOP can reclaim the strap and fragment readings.")
+                Text("The official strap app can reclaim the strap and fragment readings.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -935,7 +935,7 @@ struct ProfileOnboardingView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 onboardingNumberedStep(1,
-                                       title: "Delete the WHOOP app (recommended)",
+                                       title: "Delete the official strap app (recommended)",
                                        detail: "Remove App, then Delete App.")
                 onboardingNumberedStep(2,
                                        title: "Or fully disable it",
@@ -955,7 +955,7 @@ struct ProfileOnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button {
-                    recheckWhoop()
+                    recheckOfficialApp()
                 } label: {
                     Label("I removed it — recheck", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
@@ -964,8 +964,8 @@ struct ProfileOnboardingView: View {
                 .buttonStyle(.glassProminent)
                 .tint(.orange)
 
-                if didRecheckWhoop && whoopMayBeInstalled {
-                    Label("WHOOP still detected.",
+                if didRecheckOfficialApp && officialAppMayBeInstalled {
+                    Label("Official strap app still detected.",
                           systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -977,15 +977,15 @@ struct ProfileOnboardingView: View {
         }
     }
 
-    private var whoopClearStep: some View {
+    private var officialAppClearStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 40, weight: .semibold))
                     .foregroundStyle(.green)
-                Text(didRecheckWhoop ? "Nicely done" : "You’re clear")
+                Text(didRecheckOfficialApp ? "Nicely done" : "You’re clear")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text("No competing WHOOP app detected.")
+                Text("No competing app detected.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -1414,5 +1414,5 @@ private struct SparklineShape: Shape, Equatable {
 }
 
 #Preview {
-    ContentView(ble: WhoopBLEManager(), store: SessionStore())
+    ContentView(ble: AtriaBLEManager(), store: SessionStore())
 }

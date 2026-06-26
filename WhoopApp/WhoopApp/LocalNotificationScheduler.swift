@@ -8,10 +8,10 @@ enum LocalNotificationScheduler {
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
         static let diagnostic = "atria.diagnostic.delivery"
-        static let legacyRecovery = "whoop.recovery.ready"
-        static let legacyStrain = "whoop.strain.target"
-        static let legacyBattery = "whoop.battery.low"
-        static let legacyDiagnostic = "whoop.diagnostic.delivery"
+        static let legacyRecovery = "atria.recovery.ready"
+        static let legacyStrain = "atria.strain.target"
+        static let legacyBattery = "atria.battery.low"
+        static let legacyDiagnostic = "atria.diagnostic.delivery"
 
         static let active = [recovery, strain, battery]
         static let diagnosticOnly = [diagnostic]
@@ -20,14 +20,14 @@ enum LocalNotificationScheduler {
     }
 
     static func scheduleFromLaunchIfRequested(store: SessionStore,
-                                              ble: WhoopBLEManager,
+                                              ble: AtriaBLEManager,
                                               arguments: [String] = ProcessInfo.processInfo.arguments) {
         configureDeliveryLogger()
         let debugMetricRequest = arguments.contains("--whoop-schedule-notifications")
         let debugDiagnosticRequest = arguments.contains("--whoop-test-notification")
         let productionCadence = !debugMetricRequest && !debugDiagnosticRequest
         let delay = launchDelay(arguments: arguments)
-        WHOOPDebugLog("WHOOPDBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
+        AtriaDebugLog("ATRIADBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
               productionCadence ? "production" : "debug",
               delay)
 
@@ -48,7 +48,7 @@ enum LocalNotificationScheduler {
     }
 
     private static func schedule(store: SessionStore,
-                                 ble: WhoopBLEManager,
+                                 ble: AtriaBLEManager,
                                  includeMetricDecisions: Bool,
                                  includeDiagnostic: Bool,
                                  productionCadence: Bool) async {
@@ -56,8 +56,8 @@ enum LocalNotificationScheduler {
         let granted = await requestProvisionalAuthorization(center: center)
         let settings = await notificationSettings(center: center)
         let status = statusName(settings.authorizationStatus)
-        WHOOPDebugLog("WHOOPDBG notification_auth status=%@ granted=%d", status, granted ? 1 : 0)
-        WHOOPDebugLog("WHOOPDBG notification_readiness status=%@ authorization=%@ metric_decisions=%d diagnostic=%d production_cadence=%d action=%@",
+        AtriaDebugLog("ATRIADBG notification_auth status=%@ granted=%d", status, granted ? 1 : 0)
+        AtriaDebugLog("ATRIADBG notification_readiness status=%@ authorization=%@ metric_decisions=%d diagnostic=%d production_cadence=%d action=%@",
               productionCadence ? "production_cadence" : "debug_trigger",
               status,
               includeMetricDecisions ? 1 : 0,
@@ -68,7 +68,7 @@ enum LocalNotificationScheduler {
         guard settings.authorizationStatus == .authorized ||
                 settings.authorizationStatus == .provisional ||
                 settings.authorizationStatus == .ephemeral else {
-            WHOOPDebugLog("WHOOPDBG notification_schedule status=blocked reason=authorization_%@", status)
+            AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@", status)
             await logPendingRequests(center: center)
             return
         }
@@ -93,22 +93,22 @@ enum LocalNotificationScheduler {
                 try await add(decision: decision, center: center)
                 scheduled += 1
             } catch {
-                WHOOPDebugLog("WHOOPDBG notification_error kind=%@ error=%@",
+                AtriaDebugLog("ATRIADBG notification_error kind=%@ error=%@",
                       decision.kind,
                       String(describing: error))
             }
         }
         for decision in decisions where !decision.shouldSchedule {
-            WHOOPDebugLog("WHOOPDBG notification_skip kind=%@ reason=%@",
+            AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=%@",
                   decision.kind,
                   decision.reason)
         }
-        WHOOPDebugLog("WHOOPDBG notification_schedule status=scheduled count=%d", scheduled)
+        AtriaDebugLog("ATRIADBG notification_schedule status=scheduled count=%d", scheduled)
         await logPendingRequests(center: center)
     }
 
     private static func makeDecisions(store: SessionStore,
-                                      ble: WhoopBLEManager) -> [NotificationDecision] {
+                                      ble: AtriaBLEManager) -> [NotificationDecision] {
         let validatedHRV = store.latestReferenceValidatedHRV
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
                                           fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
@@ -184,7 +184,7 @@ enum LocalNotificationScheduler {
         }
 
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
-        WHOOPDebugLog("WHOOPDBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
+        AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
               battery.level,
               battery.source,
               battery.age,
@@ -222,7 +222,7 @@ enum LocalNotificationScheduler {
         if liveLevel >= 0 {
             return (liveLevel, "live_2A19", 0, true)
         }
-        let cached = WhoopBLEManager.cachedBattery()
+        let cached = AtriaBLEManager.cachedBattery()
         if cached.usable {
             return cached
         }
@@ -241,7 +241,7 @@ enum LocalNotificationScheduler {
                                             content: content,
                                             trigger: trigger)
         try await center.add(request)
-        WHOOPDebugLog("WHOOPDBG notification_scheduled kind=%@ id=%@ title=%@ delay_s=%.1f reason=%@",
+        AtriaDebugLog("ATRIADBG notification_scheduled kind=%@ id=%@ title=%@ delay_s=%.1f reason=%@",
               decision.kind,
               decision.identifier,
               decision.title,
@@ -253,7 +253,7 @@ enum LocalNotificationScheduler {
         await withCheckedContinuation { continuation in
             center.requestAuthorization(options: [.alert, .sound, .badge, .provisional]) { granted, error in
                 if let error {
-                    WHOOPDebugLog("WHOOPDBG notification_auth_error error=%@", String(describing: error))
+                    AtriaDebugLog("ATRIADBG notification_auth_error error=%@", String(describing: error))
                 }
                 continuation.resume(returning: granted)
             }
@@ -275,7 +275,7 @@ enum LocalNotificationScheduler {
         let battery = requests.filter { [Identifier.battery, Identifier.legacyBattery].contains($0.identifier) }.count
         let diagnostic = requests.filter { [Identifier.diagnostic, Identifier.legacyDiagnostic].contains($0.identifier) }.count
         let known = recovery + strain + battery + diagnostic
-        WHOOPDebugLog("WHOOPDBG notification_pending total=%d recovery=%d strain=%d battery=%d diagnostic=%d unknown=%d",
+        AtriaDebugLog("ATRIADBG notification_pending total=%d recovery=%d strain=%d battery=%d diagnostic=%d unknown=%d",
               requests.count,
               recovery,
               strain,
@@ -331,16 +331,16 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
         static let diagnostic = "atria.diagnostic.delivery"
-        static let legacyRecovery = "whoop.recovery.ready"
-        static let legacyStrain = "whoop.strain.target"
-        static let legacyBattery = "whoop.battery.low"
-        static let legacyDiagnostic = "whoop.diagnostic.delivery"
+        static let legacyRecovery = "atria.recovery.ready"
+        static let legacyStrain = "atria.strain.target"
+        static let legacyBattery = "atria.battery.low"
+        static let legacyDiagnostic = "atria.diagnostic.delivery"
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         let request = notification.request
-        WHOOPDebugLog("WHOOPDBG notification_delivered kind=%@ id=%@ foreground=1",
+        AtriaDebugLog("ATRIADBG notification_delivered kind=%@ id=%@ foreground=1",
               kind(for: request.identifier),
               request.identifier)
         return [.banner, .sound]
@@ -349,7 +349,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         let request = response.notification.request
-        WHOOPDebugLog("WHOOPDBG notification_response kind=%@ id=%@ action=%@",
+        AtriaDebugLog("ATRIADBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)

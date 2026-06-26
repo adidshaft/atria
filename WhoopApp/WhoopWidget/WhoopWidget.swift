@@ -6,7 +6,7 @@ import AppIntents
 private let snapshotKey = "atria.widgetSnapshot.v1"
 private let appGroupID = "group.com.adidshaft.atria"
 
-struct WhoopWidgetSnapshot: Codable {
+struct AtriaWidgetSnapshot: Codable {
     let schema: Int
     let createdAt: Date
     let recoveryPercent: Int?
@@ -26,38 +26,38 @@ struct WhoopWidgetSnapshot: Codable {
     let complicationTargetPresent: Bool
 }
 
-struct WhoopWidgetEntry: TimelineEntry {
+struct AtriaWidgetEntry: TimelineEntry {
     let date: Date
-    let snapshot: WhoopWidgetSnapshot?
+    let snapshot: AtriaWidgetSnapshot?
 }
 
-struct WhoopWidgetProvider: TimelineProvider {
-    func placeholder(in context: Context) -> WhoopWidgetEntry {
-        WhoopWidgetEntry(date: Date(), snapshot: nil)
+struct AtriaWidgetProvider: TimelineProvider {
+    func placeholder(in context: Context) -> AtriaWidgetEntry {
+        AtriaWidgetEntry(date: Date(), snapshot: nil)
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (WhoopWidgetEntry) -> Void) {
-        completion(WhoopWidgetEntry(date: Date(), snapshot: Self.loadSnapshot()))
+    func getSnapshot(in context: Context, completion: @escaping (AtriaWidgetEntry) -> Void) {
+        completion(AtriaWidgetEntry(date: Date(), snapshot: Self.loadSnapshot()))
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<WhoopWidgetEntry>) -> Void) {
-        let entry = WhoopWidgetEntry(date: Date(), snapshot: Self.loadSnapshot())
+    func getTimeline(in context: Context, completion: @escaping (Timeline<AtriaWidgetEntry>) -> Void) {
+        let entry = AtriaWidgetEntry(date: Date(), snapshot: Self.loadSnapshot())
         completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(15 * 60))))
     }
 
-    private static func loadSnapshot() -> WhoopWidgetSnapshot? {
+    private static func loadSnapshot() -> AtriaWidgetSnapshot? {
         guard let data = UserDefaults(suiteName: appGroupID)?.data(forKey: snapshotKey) else {
             return nil
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(WhoopWidgetSnapshot.self, from: data)
+        return try? decoder.decode(AtriaWidgetSnapshot.self, from: data)
     }
 }
 
-struct WhoopWidgetEntryView: View {
+struct AtriaWidgetEntryView: View {
     @Environment(\.widgetFamily) private var family
-    let entry: WhoopWidgetEntry
+    let entry: AtriaWidgetEntry
 
     var body: some View {
         switch family {
@@ -210,10 +210,10 @@ struct WhoopWidgetEntryView: View {
     }
 }
 
-struct WhoopStatusWidget: Widget {
+struct AtriaStatusWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "WhoopWidget", provider: WhoopWidgetProvider()) { entry in
-            WhoopWidgetEntryView(entry: entry)
+        StaticConfiguration(kind: "AtriaWidget", provider: AtriaWidgetProvider()) { entry in
+            AtriaWidgetEntryView(entry: entry)
         }
         .configurationDisplayName("Atria")
         .description("Shows local recovery and strain status when shared widget storage is enabled.")
@@ -398,7 +398,7 @@ enum AtriaWidgetMetric {
         }
     }
 
-    func value(_ s: WhoopWidgetSnapshot?) -> String {
+    func value(_ s: AtriaWidgetSnapshot?) -> String {
         guard let s else { return "--" }
         switch self {
         case .steps:
@@ -417,7 +417,7 @@ enum AtriaWidgetMetric {
 struct AtriaMetricWidgetEntryView: View {
     @Environment(\.widgetFamily) private var family
     let metric: AtriaWidgetMetric
-    let entry: WhoopWidgetEntry
+    let entry: AtriaWidgetEntry
 
     private var value: String { metric.value(entry.snapshot) }
 
@@ -460,7 +460,7 @@ struct AtriaMetricWidgetEntryView: View {
 
 struct AtriaStepsWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AtriaStepsWidget", provider: WhoopWidgetProvider()) { entry in
+        StaticConfiguration(kind: "AtriaStepsWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .steps, entry: entry)
         }
         .configurationDisplayName("Atria Steps")
@@ -471,7 +471,7 @@ struct AtriaStepsWidget: Widget {
 
 struct AtriaStrainWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AtriaStrainWidget", provider: WhoopWidgetProvider()) { entry in
+        StaticConfiguration(kind: "AtriaStrainWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .strain, entry: entry)
         }
         .configurationDisplayName("Atria Strain")
@@ -482,7 +482,7 @@ struct AtriaStrainWidget: Widget {
 
 struct AtriaHRVWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AtriaHRVWidget", provider: WhoopWidgetProvider()) { entry in
+        StaticConfiguration(kind: "AtriaHRVWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .hrv, entry: entry)
         }
         .configurationDisplayName("Atria HRV")
@@ -493,7 +493,7 @@ struct AtriaHRVWidget: Widget {
 
 struct AtriaBPMWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AtriaBPMWidget", provider: WhoopWidgetProvider()) { entry in
+        StaticConfiguration(kind: "AtriaBPMWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .bpm, entry: entry)
         }
         .configurationDisplayName("Atria BPM")
@@ -503,9 +503,9 @@ struct AtriaBPMWidget: Widget {
 }
 
 @main
-struct WhoopWidgetBundle: WidgetBundle {
+struct AtriaWidgetBundle: WidgetBundle {
     var body: some Widget {
-        WhoopStatusWidget()
+        AtriaStatusWidget()
         AtriaStepsWidget()
         AtriaStrainWidget()
         AtriaHRVWidget()
