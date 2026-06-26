@@ -26,6 +26,7 @@ struct AtriaSettingsView: View {
     @State private var syncTapped = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
     @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
+    @AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -296,15 +297,41 @@ struct AtriaSettingsView: View {
 
     private var todayLayoutSection: some View {
         Section {
-            ForEach(AtriaTodayMetric.allCases) { metric in
-                Toggle(isOn: todayBinding(metric)) {
-                    Label(metric.label, systemImage: metric.systemImage)
+            ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
+                HStack(spacing: 10) {
+                    Toggle(isOn: todayBinding(metric)) {
+                        Label(metric.label, systemImage: metric.systemImage)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 6) {
+                        Button {
+                            todayOrderCSV = AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)
+                        } label: {
+                            Image(systemName: "chevron.up")
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
+                        .accessibilityLabel("Move \(metric.label) up")
+
+                        Button {
+                            todayOrderCSV = AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)
+                        .accessibilityLabel("Move \(metric.label) down")
+                    }
                 }
             }
         } header: {
             Text("Today screen")
         } footer: {
-            Text("Choose which cards appear on Today.")
+            Text("Choose and reorder the cards shown at a glance.")
         }
     }
 

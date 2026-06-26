@@ -466,6 +466,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     let subtitle: String
 
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
+    @AppStorage(AtriaTodayMetric.orderStorageKey) private var orderCSV: String = ""
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -473,8 +474,14 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      subtitle: subtitle,
-                                     hiddenMetrics: AtriaTodayMetric.hidden(from: hiddenCSV))
+                                     visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
+                                                                                    hiddenCSV: hiddenCSV),
+                                     onMoveMetric: moveMetric)
             .equatable()
+    }
+
+    private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
+        orderCSV = AtriaTodayMetric.moving(dragged, before: target, in: orderCSV)
     }
 
 }
@@ -512,8 +519,48 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     /// Persisted as a comma-separated list of HIDDEN raw values, so the default
     /// (empty) shows everything.
     static let storageKey = "atriaTodayHiddenMetrics"
+    static let orderStorageKey = "atria.overview.glanceOrderCSV"
+
+    static var defaultGlanceOrder: [AtriaTodayMetric] {
+        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend]
+    }
+
     static func hidden(from csv: String) -> Set<String> {
         Set(csv.split(separator: ",").map(String.init))
+    }
+
+    static func ordered(from csv: String) -> [AtriaTodayMetric] {
+        let decoded = csv.split(separator: ",").compactMap { AtriaTodayMetric(rawValue: String($0)) }
+        var result: [AtriaTodayMetric] = []
+        var seen = Set<AtriaTodayMetric>()
+        for metric in decoded + defaultGlanceOrder {
+            guard defaultGlanceOrder.contains(metric), !seen.contains(metric) else { continue }
+            result.append(metric)
+            seen.insert(metric)
+        }
+        return result
+    }
+
+    static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric] {
+        let hidden = hidden(from: hiddenCSV)
+        return ordered(from: orderCSV).filter { !hidden.contains($0.rawValue) }
+    }
+
+    static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String {
+        guard dragged != target else { return ordered(from: csv).map(\.rawValue).joined(separator: ",") }
+        var order = ordered(from: csv).filter { $0 != dragged }
+        let insertIndex = order.firstIndex(of: target) ?? order.endIndex
+        order.insert(dragged, at: insertIndex)
+        return order.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func moving(_ metric: AtriaTodayMetric, direction: Int, in csv: String) -> String {
+        var order = ordered(from: csv)
+        guard let index = order.firstIndex(of: metric) else { return order.map(\.rawValue).joined(separator: ",") }
+        let next = max(0, min(order.count - 1, index + direction))
+        guard next != index else { return order.map(\.rawValue).joined(separator: ",") }
+        order.swapAt(index, next)
+        return order.map(\.rawValue).joined(separator: ",")
     }
 }
 
@@ -523,11 +570,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let subtitle: String
-    var hiddenMetrics: Set<String> = []
-
-    private func shows(_ metric: AtriaTodayMetric) -> Bool {
-        !hiddenMetrics.contains(metric.rawValue)
-    }
+    let visibleMetrics: [AtriaTodayMetric]
+    let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -545,79 +589,34 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.phoneStepsText == rhs.live.phoneStepsText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
-            && lhs.hiddenMetrics == rhs.hiddenMetrics
-    }
-
-    private var showsAnyRing: Bool { shows(.recovery) || shows(.strain) }
-    private var showsAnyTile: Bool {
-        shows(.hrv) || shows(.sleep) || shows(.rhr) || shows(.steps) || shows(.calories)
+            && lhs.visibleMetrics == rhs.visibleMetrics
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
 
-            // Recovery + Strain as rings (the at-a-glance signals); supporting
-            // metrics as compact tiles below. All are user-toggleable.
-            if showsAnyRing {
-                HStack(alignment: .top, spacing: 12) {
-                    if shows(.recovery) {
-                        AtriaMetricRing(label: "Recovery",
-                                        value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
-                                        fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
-                                        tint: recoveryColor(hero.recoveryEstimate.percent),
-                                        size: 104)
-                            .frame(maxWidth: .infinity)
-                    }
-                    if shows(.strain) {
-                        AtriaMetricRing(label: "Strain",
-                                        value: metricDisplayValue(hero.strainValue),
-                                        fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
-                                        tint: .orange,
-                                        size: 84)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-            }
-
-            if showsAnyTile {
+            if visibleMetrics.isEmpty {
+                Text("Choose Today cards in Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .atriaInsetCard(tint: .secondary)
+            } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
-                    if shows(.hrv) {
-                        AtriaMetricTile(label: "HRV",
-                                        value: metricDisplayValue(hero.hrvValue),
-                                        state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
-                                        tint: .pink)
-                    }
-                    if shows(.sleep) {
-                        AtriaMetricTile(label: "Sleep",
-                                        value: metricDisplayValue(snapshot.sleepValue),
-                                        state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
-                                        tint: .cyan)
-                    }
-                    if shows(.rhr) {
-                        AtriaMetricTile(label: "RHR",
-                                        value: metricDisplayValue(hero.restingHeartRateText),
-                                        state: .personalBaseline,
-                                        tint: .red)
-                    }
-                    if shows(.steps) {
-                        AtriaMetricTile(label: "Steps",
-                                        value: live.phoneStepsText,
-                                        state: live.phoneStepsToday > 0 ? .validated : .learning,
-                                        tint: .green)
-                            .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
-                    }
-                    if shows(.calories) {
-                        AtriaMetricTile(label: "kcal",
-                                        value: live.liveActiveCaloriesText,
-                                        state: live.liveActiveCalories == nil ? .learning : .estimate,
-                                        tint: .orange)
-                            .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+                    ForEach(visibleMetrics) { metric in
+                        glanceCard(metric)
+                            .draggable(metric.rawValue)
+                            .dropDestination(for: String.self) { items, _ in
+                                guard let raw = items.first,
+                                      let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
+                                onMoveMetric(dragged, metric)
+                                return true
+                            }
                     }
                 }
             }
-
-            if shows(.trend) { restingTrend }
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
@@ -629,26 +628,80 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     @ViewBuilder
-    private var restingTrend: some View {
-        if trendValues.count > 1 {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("Resting trend", systemImage: "waveform.path.ecg.rectangle")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                    Spacer(minLength: 0)
-                    Text("14 sessions")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
-                Sparkline(values: trendValues)
-                    .frame(height: 58)
-                    .accessibilityLabel("Resting heart rate trend")
-            }
-            .padding(12)
-            .atriaInsetCard(tint: .red)
+    private func glanceCard(_ metric: AtriaTodayMetric) -> some View {
+        switch metric {
+        case .recovery:
+            AtriaMetricRing(label: "Recovery",
+                            value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
+                            fraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
+                            tint: recoveryColor(hero.recoveryEstimate.percent),
+                            size: 96)
+                .frame(maxWidth: .infinity, minHeight: 126)
+                .padding(10)
+                .atriaInsetCard(tint: recoveryColor(hero.recoveryEstimate.percent))
+        case .strain:
+            AtriaMetricRing(label: "Strain",
+                            value: metricDisplayValue(hero.strainValue),
+                            fraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
+                            tint: .orange,
+                            size: 96)
+                .frame(maxWidth: .infinity, minHeight: 126)
+                .padding(10)
+                .atriaInsetCard(tint: .orange)
+        case .hrv:
+            AtriaMetricTile(label: "HRV",
+                            value: metricDisplayValue(hero.hrvValue),
+                            state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : hrvLearningState,
+                            tint: .pink)
+        case .sleep:
+            AtriaMetricTile(label: "Sleep",
+                            value: metricDisplayValue(snapshot.sleepValue),
+                            state: metricIsPending(snapshot.sleepValue) ? .learning : .local,
+                            tint: .cyan)
+        case .rhr:
+            AtriaMetricTile(label: "RHR",
+                            value: metricDisplayValue(hero.restingHeartRateText),
+                            state: .personalBaseline,
+                            tint: .red)
+        case .steps:
+            AtriaMetricTile(label: "Steps",
+                            value: live.phoneStepsText,
+                            state: live.phoneStepsToday > 0 ? .validated : .learning,
+                            tint: .green)
+                .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
+        case .calories:
+            AtriaMetricTile(label: "kcal",
+                            value: live.liveActiveCaloriesText,
+                            state: live.liveActiveCalories == nil ? .learning : .estimate,
+                            tint: .orange)
+                .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+        case .trend:
+            trendCard
+        case .insights:
+            EmptyView()
         }
+    }
+
+    private var trendCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Resting trend", systemImage: "waveform.path.ecg.rectangle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                Spacer(minLength: 0)
+                Text(trendValues.count > 1 ? "14 sessions" : "Building")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Sparkline(values: trendValues.count > 1 ? trendValues : [0, 0])
+                .frame(height: 58)
+                .opacity(trendValues.count > 1 ? 1 : 0.28)
+                .accessibilityLabel("Resting heart rate trend")
+        }
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+        .padding(12)
+        .atriaInsetCard(tint: .red)
     }
 
     private var hrvLearningState: AtriaMetricState {
