@@ -101,6 +101,10 @@ struct AtriaConnectionGuideContext: Equatable {
     let lastStatus: String
     let lastReason: String
     let officialWhoopCoexistenceRisk: WhoopBLEManager.OfficialWhoopCoexistenceRisk
+    /// Whether the official WHOOP app is actually installed (canOpenURL whoop://).
+    /// The short-disconnect heuristic alone over-blames WHOOP; only point at WHOOP
+    /// when it's genuinely present, otherwise show generic connection recovery.
+    var whoopAppInstalled: Bool = false
 
     var isFirstHandoff: Bool {
         !hasEverConnected
@@ -155,7 +159,7 @@ struct AtriaConnectionGuideContext: Equatable {
         case .advisory:
             return "Before relying on Atria"
         case .suspected:
-            return "WHOOP may be interfering"
+            return whoopAppInstalled ? "WHOOP may be interfering" : "Connection keeps dropping"
         case .cleared:
             return "Atria has the strap"
         }
@@ -166,10 +170,17 @@ struct AtriaConnectionGuideContext: Equatable {
         case .advisory:
             return "If the official WHOOP app or widget is installed, iOS may let it reclaim the strap. Atria cannot kill another app, so uninstall or fully disable WHOOP if readings keep dropping."
         case .suspected:
-            return "Atria cannot terminate another iOS app. For reliable readings, uninstall WHOOP or remove its widget/background access, then reopen Atria and reconnect."
+            return whoopAppInstalled
+                ? "Atria cannot terminate another iOS app. For reliable readings, uninstall WHOOP or remove its widget/background access, then reopen Atria and reconnect."
+                : "The strap dropped soon after connecting, and WHOOP isn't installed — so it's most likely a stale Bluetooth pairing or a low strap battery. The steps below fix it for good."
         case .cleared:
-            return "The current Atria connection is active. If WHOOP is reinstalled later and drops return, Atria will warn here."
+            return "The current Atria connection is active. If readings drop again, Atria will warn here."
         }
+    }
+
+    /// Header above the recovery steps in the modal.
+    var coexistencePickLabel: String {
+        whoopAppInstalled ? "Pick one" : "Try these"
     }
 }
 

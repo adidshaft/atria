@@ -66,6 +66,10 @@ struct AtriaHomeView: View {
     @State private var showSettings = false
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var showCoexistenceModal = false
+    @State private var whoopAppInstalled: Bool = {
+        guard let url = URL(string: "whoop://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }()
     @State private var didApplyDebugUIScreenLaunchArgument = false
     @State private var coexistenceSnoozedUntil: Date?
     @State private var connectionGuideSnoozedUntil: Date?
@@ -285,6 +289,9 @@ struct AtriaHomeView: View {
             }
             ble.refreshPhoneStepsToday(reason: "scene_active")
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "scene_active")
+            if let url = URL(string: "whoop://") {
+                whoopAppInstalled = UIApplication.shared.canOpenURL(url)
+            }
             consumePendingIntentCommandIfNeeded()
             refreshAICoachKeyState()
             updateHapticCoordinator()
@@ -964,7 +971,8 @@ struct AtriaHomeView: View {
             failures: defaults.integer(forKey: WhoopBLEManager.LinkDefaults.failures),
             lastStatus: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastStatus) ?? "idle",
             lastReason: defaults.string(forKey: WhoopBLEManager.LinkDefaults.lastReason) ?? "waiting",
-            officialWhoopCoexistenceRisk: model.statusStore.state.officialWhoopCoexistenceRisk
+            officialWhoopCoexistenceRisk: model.statusStore.state.officialWhoopCoexistenceRisk,
+            whoopAppInstalled: whoopAppInstalled
         )
     }
 
