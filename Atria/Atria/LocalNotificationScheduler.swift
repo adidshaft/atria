@@ -3,6 +3,8 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
+    private static let actionableBatteryThreshold = 20
+
     private enum Identifier {
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
@@ -199,13 +201,14 @@ enum LocalNotificationScheduler {
 
     private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision] {
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
-        AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=20",
+        AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d",
               battery.level,
               battery.source,
               battery.age,
-              battery.usable ? 1 : 0)
+              battery.usable ? 1 : 0,
+              Self.actionableBatteryThreshold)
         let batteryDecision: NotificationDecision
-        if battery.usable && battery.level <= 20 {
+        if battery.usable && battery.level <= Self.actionableBatteryThreshold {
             batteryDecision = NotificationDecision(
                 kind: "battery",
                 identifier: Identifier.battery,

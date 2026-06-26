@@ -2907,6 +2907,8 @@ private struct AtriaTopStatusChip: View {
 }
 
 private struct AtriaConnectionDiagnosis: Equatable {
+    private static let lowBatteryThreshold = 20
+
     let title: String
     let action: String
     let systemImage: String
@@ -2927,7 +2929,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
     static func derive(live: AtriaHomeModel.CoreLiveState,
                        pulse: AtriaHomeModel.PulseLiveState,
                        officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
-        if live.batteryLevel >= 0, live.batteryLevel <= 15, !live.batteryIsCharging {
+        if live.batteryLevel >= 0, live.batteryLevel <= Self.lowBatteryThreshold, !live.batteryIsCharging {
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
                                             systemImage: "battery.25percent",
