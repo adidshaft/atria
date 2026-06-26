@@ -831,6 +831,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Sleep eff\"",
             "value: latestNight?.sleepEfficiencyText ?? \"--\"",
             "state: latestNight?.sleepEfficiency == nil ? .learning : .research",
+            "AtriaMetricTile(label: \"HRV\"",
+            "footnote: hero.hrvDetail",
             "parts.append(\"Eff \\(latestNight.sleepEfficiencyText)\")",
             "parts.append(\"HRV \\(latestNight.hrvText)\")",
             "parts.append(\"Resp \\(latestNight.respiratoryRateText)\")",
@@ -1762,6 +1764,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .unverified:\n            return .research",
             "state: recoveryState",
             "footnote: hero.recoveryEstimate.confidence.rawValue",
+            "footnote: hero.hrvDetail",
         ]:
             assert_contains(self, overview + vitals, needle)
 

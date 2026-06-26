@@ -1303,7 +1303,8 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                 AtriaMetricTile(label: "HRV",
                                 value: metricDisplayValue(hero.hrvValue),
                                 state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning,
-                                tint: .pink)
+                                tint: .pink,
+                                footnote: hero.hrvDetail)
             }
 
             LazyVGrid(columns: Self.tagColumns, spacing: 8) {
