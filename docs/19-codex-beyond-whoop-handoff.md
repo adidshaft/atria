@@ -63,7 +63,7 @@ theme are visibly smooth on the cabled iPhone; no data math runs in any `body`.
 ## Feature 1 — Widgets + Lock Screen (highest "what people want")
 
 WHOOP's widgets are thin; make Atria glanceable everywhere without opening the app.
-- **WidgetKit target** (`WhoopWidget` scaffold exists). Share a small snapshot via
+- **WidgetKit target** (`AtriaWidget` scaffold exists). Share a small snapshot via
   an **App Group** (`group.com.adidshaft.atria`): Recovery %, Strain, live/last HR,
   Steps, battery+charging, last-updated. The app writes the snapshot on each
   meaningful update (reuse the derived store); the widget reads it.

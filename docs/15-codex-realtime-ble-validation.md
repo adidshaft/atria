@@ -429,7 +429,7 @@ complete the full 2–3h validation:
   2+ hour rerun because the active journal had just restarted after install.
 - Official WHOOP coexistence is now an explicit gate. The physical process pull
   must report whether `Whoop.app/Whoop` or
-  `Whoop.app/PlugIns/WhoopWidgetExtension.appex/WhoopWidgetExtension` is running
+  `Whoop.app/PlugIns/AtriaWidgetExtension.appex/AtriaWidgetExtension` is running
   alongside Atria. A daytime run with `official_whoop_coexistence_risk=1` blocks
   validation as `official_whoop_coexistence_risk_present` until we have a clean
   standalone run or a dedicated coexistence run proves live recovery plus

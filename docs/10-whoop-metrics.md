@@ -28,10 +28,10 @@ WHOOP's cardiovascular-load score on a 0–21 (Borg-style) scale.
 - The app logs the active profile on device for audit:
 
 ```text
-WHOOPDBG strain_profile age=<years> source=<ageEstimate|measured> max_hr=<bpm> measured_max_hr=<bpm> rest_hr=<bpm>
-WHOOPDBG onboarding complete=1 age=<years> source=<ageEstimate|measured> max_hr=<bpm> measured_max_hr=<bpm>
-WHOOPDBG strain_zone_summary source=saved_plus_live rest_hr=<bpm> max_hr=<bpm> samples=<n> seconds_total=<seconds> z0_lt30=<seconds> z1_30_50=<seconds> z2_50_70=<seconds> z3_70_85=<seconds> z4_85_100=<seconds> dropped_gap_s=<seconds> min_hrr=<0-1> max_hrr=<0-1> trimp_total=<n.n> strain=<n.n> confidence=<learning|local>
-WHOOPDBG strain_validation ready=<0|1> rest_to_max_ready=<0|1> primary_blocker=<blockers> external_hr_reference_validated=<0|1> ... criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required
+ATRIADBG strain_profile age=<years> source=<ageEstimate|measured> max_hr=<bpm> measured_max_hr=<bpm> rest_hr=<bpm>
+ATRIADBG onboarding complete=1 age=<years> source=<ageEstimate|measured> max_hr=<bpm> measured_max_hr=<bpm>
+ATRIADBG strain_zone_summary source=saved_plus_live rest_hr=<bpm> max_hr=<bpm> samples=<n> seconds_total=<seconds> z0_lt30=<seconds> z1_30_50=<seconds> z2_50_70=<seconds> z3_70_85=<seconds> z4_85_100=<seconds> dropped_gap_s=<seconds> min_hrr=<0-1> max_hrr=<0-1> trimp_total=<n.n> strain=<n.n> confidence=<learning|local>
+ATRIADBG strain_validation ready=<0|1> rest_to_max_ready=<0|1> primary_blocker=<blockers> external_hr_reference_validated=<0|1> ... criteria=total>=600_low_z0>=60_high_z3_z4>=60_max_hrr>=0.85_stream_coverage>=75_external_hr_reference_required
 ```
 
 This is a faithful *model* of strain, not WHOOP's exact proprietary formula.
@@ -95,7 +95,7 @@ Verified on adidshaft's physical iPhone (`<DEVICE_ID>`) on
 2026-06-12. Clean Debug build installed/launched with `devicectl`; simulator was
 not used.
 
-Key `WHOOPDBG` lines:
+Key `ATRIADBG` lines:
 
 ```text
 send mode=wwr cmd=03 seq=0 ... frame=aa0800a82300030199bce9cf
@@ -154,7 +154,7 @@ selected independent RR/IBI CSV into `Documents/atria-reference/rr-reference.csv
 before running the existing Gate B validator. Physical iPhone evidence in
 `docs/evidence/gate-b/20260614T174320Z-rr-reference-import-export-ui-device-verify/`
 verified the dashboard export wrapper with
-`WHOOPDBG rr_reference_export_ui status=ok`; the exported window was real and
+`ATRIADBG rr_reference_export_ui status=ok`; the exported window was real and
 ready for comparison (`raw=368`, `kept=361`, `conf=98`, `max_rr_gap_s=1.8`,
 `rmssd=32.7`) but stayed `reference_validated=0` until an independent reference
 is imported.
@@ -181,7 +181,7 @@ contract explicit:
 - The app logs the decision on device:
 
 ```text
-WHOOPDBG recovery_v2 percent=<n|-1> confidence=<learning|fallback|high> uses_hrv=<0|1> detail=<reason>
+ATRIADBG recovery_v2 percent=<n|-1> confidence=<learning|fallback|high> uses_hrv=<0|1> detail=<reason>
 ```
 
 > Sleep is only a low-confidence local candidate until motion/IMU is validated,
@@ -213,7 +213,7 @@ WHOOP's core daily decision loop, in `Dashboard.swift`:
 - The on-device decision is logged:
 
 ```text
-WHOOPDBG guidance_decision recovery=<n|learning> recovery_confidence=<learning|fallback|high> target=<n.n|learning> strain=<n.n> state=<learning|ready> reason=<rule>
+ATRIADBG guidance_decision recovery=<n|learning> recovery_confidence=<learning|fallback|high> target=<n.n|learning> strain=<n.n> state=<learning|ready> reason=<rule>
 ```
 
 ## Activity detection
@@ -252,11 +252,11 @@ Saved HR sessions are classified locally after capture:
 - Each detection is logged for device evidence:
 
 ```text
-WHOOPDBG activity_detect kind=<Workout|Sleep candidate> confidence=<low|medium|high> duration_s=<seconds> avg_hr=<bpm> peak_hr=<bpm> reason=<rule>
-WHOOPDBG resting_source label=<session> value=<bpm> source=<hr_only_sleep_candidate_5th_percentile|session_10th_percentile> stable_10th=<bpm> sleep_5th=<bpm>
-WHOOPDBG live_workout tick=<n> samples=<n> duration_s=<seconds> observed_duration_s=<seconds> dropped_gap_s=<seconds> max_gap_s=<seconds> gap_count=<n> avg_hr=<bpm> peak_hr=<bpm> rest_hr=<bpm> max_hr=<bpm> threshold_hr=<bpm> elevated_s=<seconds> longest_bout_s=<seconds> ready=<0|1> label=<session>
-WHOOPDBG workout_replay_summary sessions=<n> ready=<n> best_label=<session> status=<ready|learning> reason=<rule> duration_s=<seconds> observed_duration_s=<seconds> dropped_gap_s=<seconds> max_gap_s=<seconds> gap_count=<n> p95_hr=<bpm> p99_hr=<bpm> samples_above_threshold=<n> samples_above_borderline=<n> hr_distribution_below_workout_band=<0|1> elevated_s=<seconds> required_elevated_s=<seconds> longest_bout_s=<seconds> required_bout_s=<seconds> source=saved_sessions
-WHOOPDBG workout_validation status=<ready|learning> reason=<rule> label=<requested> matched_label=<session> duration_s=<seconds> elevated_s=<seconds> required_elevated_s=<seconds> longest_bout_s=<seconds> required_bout_s=<seconds> workouts_matching=<n>
+ATRIADBG activity_detect kind=<Workout|Sleep candidate> confidence=<low|medium|high> duration_s=<seconds> avg_hr=<bpm> peak_hr=<bpm> reason=<rule>
+ATRIADBG resting_source label=<session> value=<bpm> source=<hr_only_sleep_candidate_5th_percentile|session_10th_percentile> stable_10th=<bpm> sleep_5th=<bpm>
+ATRIADBG live_workout tick=<n> samples=<n> duration_s=<seconds> observed_duration_s=<seconds> dropped_gap_s=<seconds> max_gap_s=<seconds> gap_count=<n> avg_hr=<bpm> peak_hr=<bpm> rest_hr=<bpm> max_hr=<bpm> threshold_hr=<bpm> elevated_s=<seconds> longest_bout_s=<seconds> ready=<0|1> label=<session>
+ATRIADBG workout_replay_summary sessions=<n> ready=<n> best_label=<session> status=<ready|learning> reason=<rule> duration_s=<seconds> observed_duration_s=<seconds> dropped_gap_s=<seconds> max_gap_s=<seconds> gap_count=<n> p95_hr=<bpm> p99_hr=<bpm> samples_above_threshold=<n> samples_above_borderline=<n> hr_distribution_below_workout_band=<0|1> elevated_s=<seconds> required_elevated_s=<seconds> longest_bout_s=<seconds> required_bout_s=<seconds> source=saved_sessions
+ATRIADBG workout_validation status=<ready|learning> reason=<rule> label=<requested> matched_label=<session> duration_s=<seconds> elevated_s=<seconds> required_elevated_s=<seconds> longest_bout_s=<seconds> required_bout_s=<seconds> workouts_matching=<n>
 ```
 
 Latest current-device forensics after the long/gym wear:
@@ -280,7 +280,7 @@ windows with `total_ready=0`, confirming there is no hidden valid HRR50 workout
 window in the saved store.
 
 The Gate E replay now also emits a compact on-device
-`WHOOPDBG hr_profile_validation_plan` whenever the best workout candidate has
+`ATRIADBG hr_profile_validation_plan` whenever the best workout candidate has
 enough inspected data but the wrist-HR distribution stays below the personalized
 HRR50 workout band. This line repeats the decisive evidence (`p95_hr`, `p99_hr`,
 `threshold_hr`, samples above threshold/borderline, coverage, and required
@@ -300,7 +300,7 @@ HealthKit access is available but not yet useful as an independent reference:
 The same proof gap is now visible in the dashboard diagnostics, not only in
 launch logs. Physical iPhone evidence in
 `docs/evidence/gate-d/20260614T173043Z-hr-reference-ui-device-verify/` verified
-`WHOOPDBG hr_reference_ui state=missing_independent_hr ... workout_p95_hr=91
+`ATRIADBG hr_reference_ui state=missing_independent_hr ... workout_p95_hr=91
 workout_p99_hr=106 workout_threshold_hr=121 workout_samples_above_threshold=5
 workout_elevated_s=3 workout_required_elevated_s=1200`. The UI remains
 fail-closed and points to independent HR proof instead of weakening the detector.
@@ -310,7 +310,7 @@ Atria HR package for comparison, Import copies a selected independent CSV into
 Gate D validator. Physical iPhone evidence in
 `docs/evidence/gate-d/20260614T173634Z-hr-reference-import-export-ui-device-verify/`
 verified the dashboard export path with
-`WHOOPDBG hr_reference_export_ui status=ok ... reference_validated=0`; import
+`ATRIADBG hr_reference_export_ui status=ok ... reference_validated=0`; import
 still cannot pass without a true non-Atria HR source.
 
 ## Trends and anomalies
@@ -330,8 +330,8 @@ History renders local 7/30/90-day trend windows from saved sessions:
   labels, and the same short explanation shown in History:
 
 ```text
-WHOOPDBG trend_summary sessions=<n> rest_hr=<bpm> max_hr=<bpm> windows=3
-WHOOPDBG trend_window days=<7|30|90> sessions=<n> coverage_days=<n> coverage_percent=<n> confidence=<learning|partial|high> recovery=<n|learning> hrv=<n|learning> hrv_state=<reference_pending|validated_samples_N> rhr=<n|learning> strain=<n.n|learning> anomalies=<n> anomaly_flags=<none|...> detail=<coverage_sparse...>
+ATRIADBG trend_summary sessions=<n> rest_hr=<bpm> max_hr=<bpm> windows=3
+ATRIADBG trend_window days=<7|30|90> sessions=<n> coverage_days=<n> coverage_percent=<n> confidence=<learning|partial|high> recovery=<n|learning> hrv=<n|learning> hrv_state=<reference_pending|validated_samples_N> rhr=<n|learning> strain=<n.n|learning> anomalies=<n> anomaly_flags=<none|...> detail=<coverage_sparse...>
 ```
 
 ## HRV on iPhone — status

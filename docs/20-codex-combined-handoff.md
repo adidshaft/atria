@@ -13,7 +13,7 @@ in docs/18; never fabricate from HR/HRV), **light + dark both legible**, and
 cabled iPhone (`devicectl … capture screenshot`) → commit small.
 
 ## Done already (don't redo — verify)
-- **Lock Screen widgets (singles)** — `WhoopWidget.swift` now has 4 single-metric
+- **Lock Screen widgets (singles)** — `AtriaWidget.swift` now has 4 single-metric
   widgets: **Steps / Strain / HRV / BPM** (`AtriaStepsWidget` etc.), each
   supporting `.accessoryCircular` + `.accessoryInline` + `.accessoryRectangular`,
   rendered by the shared `AtriaMetricWidgetEntryView`. `WidgetSnapshot` schema
@@ -126,7 +126,7 @@ The lag root is heavy compute in view bodies. Extend the `restingTrend14` patter
    device; no data math in any `body`.
 
 ### B. Widgets + Lock Screen (docs/19 §Feature 1)
-WidgetKit target (`WhoopWidget` scaffold exists) + **App Group**
+WidgetKit target (`AtriaWidget` scaffold exists) + **App Group**
 `group.com.adidshaft.atria`. App writes a small snapshot (Recovery, Strain, HR,
 Steps, battery+charging, updatedAt) from the derived store; widget reads it.
 Families: systemSmall/medium, accessoryCircular/Rectangular (Lock Screen), StandBy.

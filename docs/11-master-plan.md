@@ -78,7 +78,7 @@ HRV/Recovery still reference-gated.
 Fix paths, cheapest → deepest:
 1. **Write-mode** — send command as write-WITHOUT-response (NUS-style). **Landed.**
 2. **Connection recipe** — fresh scan-and-connect, never `retrieveConnectedPeripherals`; send START only after `0005` notify confirmed; settle ≥3s. **Landed.**
-3. **On-device log diagnosis** — stream `WHOOPDBG` from the strap-connected iPhone to see exactly what the strap returns to the command. **Landed.**
+3. **On-device log diagnosis** — stream `ATRIADBG` from the strap-connected iPhone to see exactly what the strap returns to the command. **Landed.**
 4. **Pairing/encryption** — not needed for realtime after the write-mode/fresh-connect fix.
 5. **Gate B RR continuity** — not needed for Gate A realtime unlock, but
    required before any HRV accuracy claim. Cross-checking `NoopApp/noop` showed
@@ -122,7 +122,7 @@ Verified on adidshaft's physical iPhone (`<DEVICE_ID>`) on
 2026-06-12. Clean Debug build installed and launched with `devicectl`; simulator
 was not used.
 
-Key `WHOOPDBG` lines:
+Key `ATRIADBG` lines:
 
 ```text
 notifyState ch=61080005-... notifying=1 err=nil
@@ -254,9 +254,9 @@ comparison step.
 
 **Phase B update 2026-06-13 2A37 primary RR path:** read-only `NoopApp/noop` inspection revealed that standard BLE Heart Rate Measurement `2A37` is the reliable HR/R-R source and custom `REALTIME_DATA` commonly carries `rr_count=0`. The app now parses full `2A37` payloads (`flags`, 8/16-bit HR, optional energy expended, little-endian R-R intervals in 1/1024s), logs `standardHR payload=... rrnum=... rr_ms=...`, feeds those real intervals into the existing HRV/RR ledger, and demotes `0x28` to supplemental diagnostics when `2A37` RR is fresh. The cabled physical iPhone run in `docs/evidence/gate-b/20260613T132138Z-gate-b-2a37-reset-keep-recording/` verified this path with `standard_2a37_rr_values=832`, `rr_source_0x28_used_values=0`, `capture_aborts=0`, and `capture_quality_resets=2`. The app no longer throws away the whole recording when a live RR gap appears; it checkpoints the real received RR chunk, resets the HRV window, and keeps recording until a clean 300-second window exists. The pulled CSV ended `capture_summary ready=1 elapsed=604 raw=345 kept=315 conf=91 window=300 max_rr_gap_s=2.8 quality_resets=2 rmssd=46.7 sdnn=58.6 pnn50=25.6 lnrmssd=3.84 resp=12.0`. Independent log replay on `2A37` found one strict 300-second window (`raw=348`, `kept=318`, `conf=91.4`, `max_gap_s=2.845`, `rmssd_ms=52.1`). This clears the iPhone live-continuity blocker through a standards-based channel. Gate B is still not clinically passed until simultaneous external RR/IBI reference comparison shows RMSSD within `+/-5 ms`; all downstream surfaces remain reference-gated.
 
-**Phase B update 2026-06-13 RR-quality abort watchdog:** `WhoopBLEManager` now aborts an active HRV capture when rolling realtime RR evidence violates the Gate B continuity contract (`rr_fraction < 0.90` or `max_rr_gap_s > 3s` after the first 45 seconds), logs `capture_abort`, and writes a `ready=0 stop=rr_quality_abort` capture summary so bad windows cannot later surface as HRV. Physical iPhone evidence in `docs/evidence/gate-b/20260613T103515Z-still-5min-rr-abort-watchdog/` verified the behavior while adidshaft sat still: capture started at `rr_fraction_0.906`, then aborted at `fraction=0.500`, `max_rr_gap_s=30.8`; the pulled CSV stayed `learning`, and whole-run `realtime_rr_fraction=0.814`, `hrv_ready=False`. This is not a Gate B pass; it confirms that still posture alone does not guarantee live RR continuity and that phone-side buffering cannot recover RR intervals absent from `rrnum=0` live frames. Next work: retry from a fresh capture-local RR window after abort and keep pursuing validated historical/stored RR fallback plus external RR reference.
+**Phase B update 2026-06-13 RR-quality abort watchdog:** `AtriaBLEManager` now aborts an active HRV capture when rolling realtime RR evidence violates the Gate B continuity contract (`rr_fraction < 0.90` or `max_rr_gap_s > 3s` after the first 45 seconds), logs `capture_abort`, and writes a `ready=0 stop=rr_quality_abort` capture summary so bad windows cannot later surface as HRV. Physical iPhone evidence in `docs/evidence/gate-b/20260613T103515Z-still-5min-rr-abort-watchdog/` verified the behavior while adidshaft sat still: capture started at `rr_fraction_0.906`, then aborted at `fraction=0.500`, `max_rr_gap_s=30.8`; the pulled CSV stayed `learning`, and whole-run `realtime_rr_fraction=0.814`, `hrv_ready=False`. This is not a Gate B pass; it confirms that still posture alone does not guarantee live RR continuity and that phone-side buffering cannot recover RR intervals absent from `rrnum=0` live frames. Next work: retry from a fresh capture-local RR window after abort and keep pursuing validated historical/stored RR fallback plus external RR reference.
 
-**Phase B update 2026-06-13 auto-retry fresh window:** the capture controller now separates display RR quality from capture-local RR quality and supports bounded auto-capture retries (`--whoop-auto-capture-max-attempts`, launcher `--auto-capture-max-attempts`). When a capture aborts for RR continuity, the app writes the failed window as `learning`, clears the capture-local quality window, and re-arms auto-capture so the next attempt starts only after fresh short-window RR evidence passes. Physical iPhone evidence in `docs/evidence/gate-b/20260613T104923Z-auto-retry-fresh-window/` verified the loop: attempt 1 started at `rr_fraction_0.906`, aborted at `fraction=0.889` with `ready=0 stop=rr_quality_abort`, then scheduled and started attempt 2 at a fresh `rr_fraction_0.906`. Attempt 2 reached `raw=255 kept=252 conf=99 window=221 max_rr_gap_s=2.0` before the harness ended, so it still remained `learning` (`reason=window`) and Gate B remains reference-pending. This implements honest local chunking/retry for live RR; it does not recover RR intervals absent from `rrnum=0` frames, so the stored-session/historical fallback is still required.
+**Phase B update 2026-06-13 auto-retry fresh window:** the capture controller now separates display RR quality from capture-local RR quality and supports bounded auto-capture retries (`--atria-auto-capture-max-attempts`, launcher `--auto-capture-max-attempts`). When a capture aborts for RR continuity, the app writes the failed window as `learning`, clears the capture-local quality window, and re-arms auto-capture so the next attempt starts only after fresh short-window RR evidence passes. Physical iPhone evidence in `docs/evidence/gate-b/20260613T104923Z-auto-retry-fresh-window/` verified the loop: attempt 1 started at `rr_fraction_0.906`, aborted at `fraction=0.889` with `ready=0 stop=rr_quality_abort`, then scheduled and started attempt 2 at a fresh `rr_fraction_0.906`. Attempt 2 reached `raw=255 kept=252 conf=99 window=221 max_rr_gap_s=2.0` before the harness ended, so it still remained `learning` (`reason=window`) and Gate B remains reference-pending. This implements honest local chunking/retry for live RR; it does not recover RR intervals absent from `rrnum=0` frames, so the stored-session/historical fallback is still required.
 
 **Phase B update 2026-06-13 finalized auto-retry failure:** `docs/evidence/gate-b/20260613T105834Z-auto-retry-finalized-300s/` ran the bounded retry path to completion on adidshaft's physical iPhone while he sat still with the strap tight. The app built, installed, launched, started 5 auto-capture attempts, and exhausted all 5 without surfacing HRV (`hrv_ready=False`, `capture_summary_ready=False`, `auto_capture_starts=5`, `capture_aborts=5`, `auto_capture_exhausted=1`). The best partial attempts were real but too short: attempt 2 reached `raw=186 kept=181 conf=97 window=150` before `rr_gap_over_3s`, and attempt 4 reached `raw=109 kept=109 conf=100 window=99` before another gap. Whole-run live RR was only `realtime_rr_fraction=0.590` with `max_rr_log_gap_s=100.9`, and zero-RR frames had no hidden RR tail (`realtime_zero_rr_tail_nonzero_frames=0`). This answers the local-storage/chunking question: the app stores every RR interval iOS receives, but phone-side buffering cannot recover RR intervals absent from `rrnum=0` realtime frames. Keep the live watchdog/retry path, keep metrics in `learning` when continuity fails, and prioritize validated stored-session/historical decode for live dropout periods.
 
@@ -266,7 +266,7 @@ comparison step.
 
 **Phase B/Gate H update 2026-06-13 current-Unix prefix1 selector:** physical iPhone evidence in `docs/evidence/gate-h/20260613T-gate-h-current-unix-prefix1-selector/` tested `0x21 01<current_unix_le32>` from the `0x22` live-ish field (`value=1781335696`, `delta_s=-10`). Prefix1 also ACKed (`payload=2442210601000000`), followed by a `0x16 [00]` ACK (`payload=24451609020b0000`), but the returned `0x2f` range still stayed on old March history (`first_unix_offset_7=1774790035`, `last_unix_offset_7=1774790563`, `historical_2f_frames=590`). The run's live realtime RR fraction was `0.000`, so it cannot contribute to Gate B. Bare, prefix0, and prefix1 current-Unix selector shapes are now exhausted for this approach; historical RR remains provisional, and HRV stays reference-pending/learning.
 
-**Phase B/Gate H update 2026-06-13 0x22 range mapping:** the app and launcher now support debug-only `--history-range-sweep`, `--history-range-payloads`, and `--history-selector-range-index`, and `WHOOPDBG data_range_response` logs include `request_index` plus `request_data` so each `0x22 GET_DATA_RANGE` response can be mapped to the exact request that produced it. Physical iPhone evidence in `docs/evidence/gate-b/20260613T123319Z-history-range22-sweep/` verified the initial `00..05` sweep, and `docs/evidence/gate-b/20260613T123710Z-history-range22-mapped-broad/` tested `00,06,07,08,09,0a,10,11,20,40,80,ff`. All responses kept the old-history fields at body offsets `40`/`48` (`1774803144`/`1774803189`) while offset `56` tracked current-ish time; no single-byte payload exposed a current stored-session range. A targeted selector run in `docs/evidence/gate-b/20260613T123915Z-history-selector-range-index/` proved response-index targeting works: range index `0` was skipped, range index `1` triggered `0x21 range_window24`, `0x16 [00]`, and `0x17 trim`, yielding `historical_2f_frames=1902`. The payload still decoded to the old March block (`2026-03-29T16:52:24Z` to `17:22:48Z`), with `ready_windows=0` under the literal `whoof` RR layout and `live_history_overlap=0`. This rules out more blind single-byte `0x22` sweeps as a useful near-term path; next historical fallback work should test a different init/selector family such as the `whoof` optional `0x14 [00]`/`0x60 [00]` sequence around `0x16`, or wait for official-app/sniffer evidence. HRV remains `learning`/reference-pending.
+**Phase B/Gate H update 2026-06-13 0x22 range mapping:** the app and launcher now support debug-only `--history-range-sweep`, `--history-range-payloads`, and `--history-selector-range-index`, and `ATRIADBG data_range_response` logs include `request_index` plus `request_data` so each `0x22 GET_DATA_RANGE` response can be mapped to the exact request that produced it. Physical iPhone evidence in `docs/evidence/gate-b/20260613T123319Z-history-range22-sweep/` verified the initial `00..05` sweep, and `docs/evidence/gate-b/20260613T123710Z-history-range22-mapped-broad/` tested `00,06,07,08,09,0a,10,11,20,40,80,ff`. All responses kept the old-history fields at body offsets `40`/`48` (`1774803144`/`1774803189`) while offset `56` tracked current-ish time; no single-byte payload exposed a current stored-session range. A targeted selector run in `docs/evidence/gate-b/20260613T123915Z-history-selector-range-index/` proved response-index targeting works: range index `0` was skipped, range index `1` triggered `0x21 range_window24`, `0x16 [00]`, and `0x17 trim`, yielding `historical_2f_frames=1902`. The payload still decoded to the old March block (`2026-03-29T16:52:24Z` to `17:22:48Z`), with `ready_windows=0` under the literal `whoof` RR layout and `live_history_overlap=0`. This rules out more blind single-byte `0x22` sweeps as a useful near-term path; next historical fallback work should test a different init/selector family such as the `whoof` optional `0x14 [00]`/`0x60 [00]` sequence around `0x16`, or wait for official-app/sniffer evidence. HRV remains `learning`/reference-pending.
 
 **Phase B/Gate H update 2026-06-13 whoof init-only transfer:** the app and launcher now support `--history-init-sweep` plus `--history-skip-range`, allowing a clean history-only command sequence without realtime START and without an automatic `0x22`. Physical iPhone evidence in `docs/evidence/gate-b/20260613T124517Z-history-whoof-init-only/` sent `0x14 [00]`, `0x60 [00]`, then `0x16 [00]` with `0x17 trim`. The strap accepted the path (`cmd_response_count=57`) and emitted `historical_2f_frames=2377`, `0x31` metadata, and `0x32` diagnostic packets. The download still advanced through the old March stored region (`2026-03-29T17:22:19Z` to `17:59:06Z`), not the current live session; the literal `whoof` layout had `ready_windows=0`, `live_history_overlap=0`, and `gate_b_ready=0`. This confirms the clean init sequence is a real transfer path but not a current-history selector. HRV/Recovery stay `learning`/reference-pending.
 
@@ -274,13 +274,13 @@ comparison step.
 
 **Phase C update 2026-06-13 Recovery v2 model slice:** Recovery now has a confidence-gated local model: high-confidence recovery requires validated HRV and at least 7 validated personal HRV baseline samples, then uses `50 + 16 * (0.75 * lnRMSSD_z - 0.25 * RHR_z)` clamped to `1...99`. When HRV is unavailable or the baseline is immature, the app labels Recovery as learning and does not show a resting-HR-only Recovery percent. The baseline persists rolling samples while keeping backward compatibility with the older EMA store. Device evidence in `docs/evidence/gate-c/20260613T-gate-c-recovery-v2-nslog-smoke/` built, installed, and launched on adidshaft's cabled iPhone and logged the earlier fallback diagnostic while HRV stayed `learning`; the stricter no-percent behavior is documented in the 2026-06-14 update below. Morning-HRV auto-capture is still pending, and Gate C is not done until the model is stable on real saved history with the required baseline.
 
-**Phase C update 2026-06-13 morning-HRV auto-capture slice:** The app now has a guarded morning-HRV launch path (`--whoop-morning-hrv-check`, launcher `--morning-hrv-check`) that evaluates the local 04:00-11:59 morning window, configures strict adaptive RR capture, and logs the stillness evidence source. Because IMU is not decoded yet, stillness is explicitly labeled `still_source=rr_continuity motion_source=unavailable`; no motion-based sleep/still claim is made. Physical iPhone smoke evidence in `docs/evidence/gate-c/20260613T-gate-c-morning-hrv-smoke/` used `--morning-hrv-force` only to bypass the clock window and verified the path on device. The strap emitted `realtime_rr_fraction=0.000`, so the capture correctly saved as learning (`capture_summary ready=0 reason=no_realtime_rr`). Gate C remains incomplete until a real morning produces a validated 5-minute HRV sample and the personal baseline reaches the required 7-day maturity.
+**Phase C update 2026-06-13 morning-HRV auto-capture slice:** The app now has a guarded morning-HRV launch path (`--atria-morning-hrv-check`, launcher `--morning-hrv-check`) that evaluates the local 04:00-11:59 morning window, configures strict adaptive RR capture, and logs the stillness evidence source. Because IMU is not decoded yet, stillness is explicitly labeled `still_source=rr_continuity motion_source=unavailable`; no motion-based sleep/still claim is made. Physical iPhone smoke evidence in `docs/evidence/gate-c/20260613T-gate-c-morning-hrv-smoke/` used `--morning-hrv-force` only to bypass the clock window and verified the path on device. The strap emitted `realtime_rr_fraction=0.000`, so the capture correctly saved as learning (`capture_summary ready=0 reason=no_realtime_rr`). Gate C remains incomplete until a real morning produces a validated 5-minute HRV sample and the personal baseline reaches the required 7-day maturity.
 
 **Phase C update 2026-06-13 real morning-HRV ready check:** `docs/evidence/gate-c/20260613T-gate-c-real-morning-hrv-ready-check/` verified the guarded morning-HRV path on adidshaft's cabled physical iPhone during the actual morning window, not a forced clock bypass. The app logged `morning_hrv_check eligible=1 reason=morning_window local_time=08:56`, still labeled stillness honestly as `still_source=rr_continuity motion_source=unavailable`, waited for the adaptive RR gate (`fraction=1.000`, `rr_frames=20/20`, `max_rr_gap_s=1.2`), then pulled a ready CSV with `capture_summary ready=1 elapsed=301 raw=323 kept=323 conf=100 window=300 max_rr_gap_s=2.0 rmssd=49.4 sdnn=59.7 pnn50=35.1 lnrmssd=3.90 resp=11.0`. Whole-run realtime continuity was `realtime_rr_fraction=0.988`, `rr_values=770`, and `historical_2f_frames=0`. This proves the real morning auto-capture slice works when the strap supplies continuous RR, but it is not a full Gate C pass: launch diagnostics still showed `daily_rollup ... hrv=learning`, `trend_window ... hrv=learning`, `widget_snapshot ... hrv=reference_pending`, and `recovery_v2 ... uses_hrv=0` because there is no external RMSSD reference validation or 7-day validated HRV baseline yet.
 
 **Phase C update 2026-06-13 latest validated HRV lookup:** Recovery, widget snapshots, and notification decisions now use the latest reference-validated saved HRV sample anywhere in local history instead of only checking the newest saved session. Physical iPhone evidence in `docs/evidence/gate-c/20260613T-gate-c-latest-validated-hrv-lookup/` verified the current store still has no validated HRV: `recovery_v2 ... confidence=fallback uses_hrv=0`, `widget_snapshot ... hrv=reference_pending`, and recovery/strain notifications skipped on fallback confidence. This is a correctness slice for future reference-approved HRV samples; Gate C still needs external HRV reference validation and a 7-day validated baseline.
 
-**Phase C update 2026-06-13 baseline maturity diagnostic:** the app and launcher now support `--log-baseline` / `--whoop-log-baseline`, which logs the exact Recovery v2 maturity inputs. Physical iPhone evidence in `docs/evidence/gate-c/20260613T-gate-c-baseline-maturity-diagnostic/` built, installed, and launched against the real local store. The app logged `baseline_maturity sessions=11 resting_samples=8 resting_mean=66.6 resting_sd=4.2 hrv_validated_samples=0 hrv_required=7 hrv_ready=0 latest_validated_hrv=0 recovery_high_ready=0` and `baseline_hrv_stats count=0 ... state=learning`. In the same run, downstream surfaces stayed gated: `recovery_v2 ... confidence=fallback uses_hrv=0`, `widget_snapshot ... hrv=reference_pending`, and trend HRV remained `learning`. This improves Gate C auditability but does not complete Gate C; external HRV reference validation and at least 7 validated HRV baseline samples are still missing.
+**Phase C update 2026-06-13 baseline maturity diagnostic:** the app and launcher now support `--log-baseline` / `--atria-log-baseline`, which logs the exact Recovery v2 maturity inputs. Physical iPhone evidence in `docs/evidence/gate-c/20260613T-gate-c-baseline-maturity-diagnostic/` built, installed, and launched against the real local store. The app logged `baseline_maturity sessions=11 resting_samples=8 resting_mean=66.6 resting_sd=4.2 hrv_validated_samples=0 hrv_required=7 hrv_ready=0 latest_validated_hrv=0 recovery_high_ready=0` and `baseline_hrv_stats count=0 ... state=learning`. In the same run, downstream surfaces stayed gated: `recovery_v2 ... confidence=fallback uses_hrv=0`, `widget_snapshot ... hrv=reference_pending`, and trend HRV remained `learning`. This improves Gate C auditability but does not complete Gate C; external HRV reference validation and at least 7 validated HRV baseline samples are still missing.
 
 **Phase C update 2026-06-14 strict Recovery learning:** Recovery no longer returns a numeric resting-HR-only fallback percent. If HRV is unavailable, reference-pending, or the validated HRV baseline is immature, `recoveryV2` returns `percent=nil`, `confidence=learning`, and an explicit learning detail. Resting HR still contributes to the high-confidence model once HRV is reference-validated and the baseline has at least 7 validated HRV samples, but current dashboard/widget/notification surfaces must show learning instead of a pseudo Recovery number. Physical iPhone evidence in `docs/evidence/gate-c/20260614T134906Z-strict-recovery-learning-healthkit-device-verify/` built, installed, launched, and verified the guard: `recovery_v2 percent=-1 confidence=learning uses_hrv=0 detail=learning: need validated HRV` (`-1` is the diagnostic encoding for nil), `widget_snapshot ... recovery=learning confidence=learning hrv=learning`, `guidance_decision recovery=learning recovery_confidence=learning target=learning`, and notifications skipped Recovery/Strain with learning reasons. The same run used the newly granted Apple Health write permission: `healthkit_export status=authorization_cached ... hr_samples=267`, then `status=saved ... workouts=0 hrv_samples=0 ... incremental=1`, while `healthkit_reference_audit ... independent_hr_samples=0` kept Gate D reference validation honest.
 
@@ -313,7 +313,7 @@ was only a 45-second run and exceeded the strict 3-second gap contract.
 
 **Gate-status update 2026-06-15 fast deep audits:** current-state audits now log
 gate status before slower backup/export launch tasks, and deep status emits an
-explicit `WHOOPDBG gate_status_deep status=ready stage=e_deep_logged` marker as
+explicit `ATRIADBG gate_status_deep status=ready stage=e_deep_logged` marker as
 soon as the `E.deep` row is available. Physical iPhone evidence in
 `docs/evidence/gate-status/20260614T190359Z-gate-status-deep-marker-device-verify/`
 rebuilt, installed, launched, and verified `gate_status_complete=True` plus
@@ -339,8 +339,8 @@ proved the preflight reports short-but-parseable references as not ready
 device (`gate_b_pass=0`, `gate_d_pass=0`). No metric gate was promoted.
 
 **Reference-reducer update 2026-06-15:** `tools/analyze_gate_status.py` now
-parses focused `WHOOPDBG hr_reference_package` and
-`WHOOPDBG hr_reference_validation` rows into a real Gate D reducer row, matching
+parses focused `ATRIADBG hr_reference_package` and
+`ATRIADBG hr_reference_validation` rows into a real Gate D reducer row, matching
 the Gate B RR reference reducer. The launcher now marks RR/HR reference
 validation complete only after a terminal validator status, not `status=started`.
 Physical iPhone evidence in
@@ -355,13 +355,13 @@ enough paired samples inside the `+/-2 bpm` contract.
 
 **Phase D — Strain accuracy (§3.4) + onboarding (HRmax/age, profile).**
 
-**Phase D update 2026-06-13 profile/HRmax slice:** Strain now reads HRmax from a local athlete profile instead of an anonymous manual integer. The profile supports age-estimated HRmax (`208 - 0.7 * age`) or measured HRmax, migrates the previous `maxHR` value into the measured field, persists locally in `UserDefaults`, and logs `WHOOPDBG strain_profile ...` for device verification. Day strain, live zones, charts, and history details use the profile HRmax with learned RHR as before. This is a Gate D slice, not the full exit: onboarding still needs a polished first-run flow and the rest-to-max validation run.
+**Phase D update 2026-06-13 profile/HRmax slice:** Strain now reads HRmax from a local athlete profile instead of an anonymous manual integer. The profile supports age-estimated HRmax (`208 - 0.7 * age`) or measured HRmax, migrates the previous `maxHR` value into the measured field, persists locally in `UserDefaults`, and logs `ATRIADBG strain_profile ...` for device verification. Day strain, live zones, charts, and history details use the profile HRmax with learned RHR as before. This is a Gate D slice, not the full exit: onboarding still needs a polished first-run flow and the rest-to-max validation run.
 
-**Phase D update 2026-06-13 onboarding slice:** First launch now presents a local profile onboarding sheet for age, HRmax source, and measured HRmax, with dismissal disabled until the profile is completed. The cabled-device debug launcher supports `--complete-onboarding` and logs `WHOOPDBG onboarding complete=1 ...` so this path can be verified without manual tapping during BLE runs. This remains a Gate D slice: Gate D is not complete until a physical-device rest-to-max validation shows personalized HR-reserve Strain reacting correctly across the effort range.
+**Phase D update 2026-06-13 onboarding slice:** First launch now presents a local profile onboarding sheet for age, HRmax source, and measured HRmax, with dismissal disabled until the profile is completed. The cabled-device debug launcher supports `--complete-onboarding` and logs `ATRIADBG onboarding complete=1 ...` so this path can be verified without manual tapping during BLE runs. This remains a Gate D slice: Gate D is not complete until a physical-device rest-to-max validation shows personalized HR-reserve Strain reacting correctly across the effort range.
 
-**Phase D update 2026-06-13 strain explainability slice:** The Strain gauge now explains day strain with a local confidence state and the exact personalized HR-reserve TRIMP inputs: saved TRIMP, live TRIMP, learned RHR, and profile HRmax. Physical iPhone evidence in `docs/evidence/gate-d/20260613T-gate-d-strain-explainability/` built, installed, launched, and logged `WHOOPDBG strain_explain strain=0.14 confidence=local trimp_total=0.27 trimp_saved=0.27 trimp_live=0.00 rest_hr=67 max_hr=191 saved_sessions_today=11`. The same run kept HRV honest in downstream surfaces (`widget_snapshot ... hrv=reference_pending`, `recovery_v2 ... uses_hrv=0`). This is an explainability/accuracy slice; Gate D still requires a physical rest-to-max validation run before it can pass.
+**Phase D update 2026-06-13 strain explainability slice:** The Strain gauge now explains day strain with a local confidence state and the exact personalized HR-reserve TRIMP inputs: saved TRIMP, live TRIMP, learned RHR, and profile HRmax. Physical iPhone evidence in `docs/evidence/gate-d/20260613T-gate-d-strain-explainability/` built, installed, launched, and logged `ATRIADBG strain_explain strain=0.14 confidence=local trimp_total=0.27 trimp_saved=0.27 trimp_live=0.00 rest_hr=67 max_hr=191 saved_sessions_today=11`. The same run kept HRV honest in downstream surfaces (`widget_snapshot ... hrv=reference_pending`, `recovery_v2 ... uses_hrv=0`). This is an explainability/accuracy slice; Gate D still requires a physical rest-to-max validation run before it can pass.
 
-**Phase D update 2026-06-13 guidance confidence guard:** Strain Coach now refuses to compute or display a daily strain target from `learning` or `fallback` Recovery. The dashboard passes Recovery into guidance only when Recovery v2 is `high`, and logs `WHOOPDBG guidance_decision ...` with the exact confidence reason. Physical iPhone evidence in `docs/evidence/gate-d/20260613T-gate-d-guidance-confidence-guard/` built, installed, launched, and logged `guidance_decision recovery=learning recovery_confidence=fallback target=learning strain=0.14 state=learning reason=recovery_confidence_fallback_not_high` while widget/Recovery stayed `hrv=reference_pending` and `uses_hrv=0`. The same short run confirmed the strap was streaming real RR (`realtime_rr_fraction=0.939`), but this was not a 300-second HRV capture and did not change Gate B/C reference status. Gate D still requires a physical rest-to-max validation run.
+**Phase D update 2026-06-13 guidance confidence guard:** Strain Coach now refuses to compute or display a daily strain target from `learning` or `fallback` Recovery. The dashboard passes Recovery into guidance only when Recovery v2 is `high`, and logs `ATRIADBG guidance_decision ...` with the exact confidence reason. Physical iPhone evidence in `docs/evidence/gate-d/20260613T-gate-d-guidance-confidence-guard/` built, installed, launched, and logged `guidance_decision recovery=learning recovery_confidence=fallback target=learning strain=0.14 state=learning reason=recovery_confidence_fallback_not_high` while widget/Recovery stayed `hrv=reference_pending` and `uses_hrv=0`. The same short run confirmed the strap was streaming real RR (`realtime_rr_fraction=0.939`), but this was not a 300-second HRV capture and did not change Gate B/C reference status. Gate D still requires a physical rest-to-max validation run.
 
 **Phase D update 2026-06-13 HR channel consistency diagnostic:** the app and launcher now support `--log-hr-consistency`, which compares standard BLE `2A37` HR against the proprietary realtime `0x28` HR byte when samples are within 5 seconds. The diagnostic logs all-run mean/max delta plus a rolling 20-pair readiness window so transient notification timing lag is visible without permanently failing the current channel state. Physical iPhone evidence in `docs/evidence/gate-d/20260613T-gate-d-hr-channel-consistency/` built, installed, launched, and reached `ready=1` by 10 pairs (`mean_delta=0.3`, `max_delta=1`); during a fast HR transition the all-run max reached `3 bpm`, then the rolling window recovered to `ready=1` at pair 100 (`recent_mean_delta=0.2`, `recent_max_delta=1`). This is an internal WHOOP channel/parser check, not the final chest-strap HR accuracy pass. Gate D still requires external HR validation and a real rest-to-max Strain run.
 
@@ -403,7 +403,7 @@ This makes the upcoming rest-to-max validation auditable by effort zone, but it
 does not complete Gate D without external HR validation and a real range test.
 
 **Phase D update 2026-06-14 rest-to-max validator:** the app and launcher now
-support `--log-strain-validation` / `--whoop-log-strain-validation`. The
+support `--log-strain-validation` / `--atria-log-strain-validation`. The
 diagnostic groups saved local HR sessions by day, computes personalized
 HR-reserve zone exposure, stream coverage, TRIMP, Strain, and combined blockers
 against the Gate D rest-to-max criteria: `total>=600s`, `z0>=60s`,
@@ -420,9 +420,9 @@ The same run had healthy live RR (`realtime_rr_fraction=0.973`,
 
 **Phase D update 2026-06-14 dashboard validation surface:** the dashboard now
 shows a Strain validation card using the same fail-closed rest-to-max summary as
-`WHOOPDBG strain_validation`. It displays duration, stream coverage, low-zone
+`ATRIADBG strain_validation`. It displays duration, stream coverage, low-zone
 rest, high-zone exposure, max HR-reserve, and external HR reference status, and
-logs `WHOOPDBG strain_validation_ui` whenever those blockers change. Physical
+logs `ATRIADBG strain_validation_ui` whenever those blockers change. Physical
 iPhone evidence in
 `docs/evidence/gate-d/20260614T-strain-validation-dashboard-device-verify/`
 built, installed, launched, confirmed the WHOOP link (`ble_link
@@ -454,7 +454,7 @@ the full strain-validation blocker instead of collapsing the row to only
 `independent_reference_missing`. Physical iPhone evidence in
 `docs/evidence/gate-d/20260614T190640Z-gate-d-full-blocker-device-verify/`
 rebuilt, installed, launched, and verified the Gate D row now matches
-`WHOOPDBG strain_validation`: `stream_coverage_below_75_percent`
+`ATRIADBG strain_validation`: `stream_coverage_below_75_percent`
 `+missing_high_zone_exposure+max_hrr_below_85_percent`
 `+external_hr_reference_missing`. The current store is therefore not a
 rest-to-max proof for four concrete reasons: stream coverage is `39%`,
@@ -466,7 +466,7 @@ remains partial.
 `--log-strain-validation` runs are now first-class verifier runs. The launcher
 tracks `strain_validation_complete` and fails with
 `HARNESS_ERROR=strain_validation_incomplete` if the physical-device log does not
-emit `WHOOPDBG strain_validation`. `tools/analyze_gate_status.py` also
+emit `ATRIADBG strain_validation`. `tools/analyze_gate_status.py` also
 synthesizes a Gate D row from a strain-only log. Physical iPhone evidence in
 `docs/evidence/gate-d/20260615T-strain-harness-completion-device-verify/`
 built cleanly, installed/launched Atria, and completed with
@@ -476,10 +476,10 @@ built cleanly, installed/launched Atria, and completed with
 `stream_coverage_below_75_percent+missing_high_zone_exposure+max_hrr_below_85_percent+external_hr_reference_missing`.
 
 **Phase D update 2026-06-14 HR reference package export:** the app and launcher
-now support `--whoop-export-hr-reference-package` /
+now support `--atria-export-hr-reference-package` /
 `--export-hr-reference-package`. A physical-device run exports the best saved
 real `2A37` HR segment as a validator-ready CSV plus JSON manifest, logs
-`WHOOPDBG hr_reference_package`, and can pull the files with
+`ATRIADBG hr_reference_package`, and can pull the files with
 `--pull-reference-package`. The manifest is intentionally fail-closed:
 `external_reference_required=1`, `reference_validated=0`, and `gate_d_pass=0`.
 Physical iPhone evidence in
@@ -497,33 +497,33 @@ the CSV must still be compared against an independent HR reference with
 
 **Phase E — Sleep & auto-detect.** Overnight sleep estimate; workout auto-detection; daily rollups.
 
-**Phase E update 2026-06-13 HR-only detector slice:** Saved sessions now receive a local activity classification. Workout candidates use sustained elevated HR against learned RHR and profile HRmax, while overnight low-HR windows are labeled only as low-confidence sleep candidates because motion/IMU is not decoded yet. Detections render in History and log `WHOOPDBG activity_detect ...` when sessions are saved. This is useful daily signal, but not Gate E complete until a real night and workout are detected correctly on device, and sleep confidence includes low-motion evidence or a documented fallback.
+**Phase E update 2026-06-13 HR-only detector slice:** Saved sessions now receive a local activity classification. Workout candidates use sustained elevated HR against learned RHR and profile HRmax, while overnight low-HR windows are labeled only as low-confidence sleep candidates because motion/IMU is not decoded yet. Detections render in History and log `ATRIADBG activity_detect ...` when sessions are saved. This is useful daily signal, but not Gate E complete until a real night and workout are detected correctly on device, and sleep confidence includes low-motion evidence or a documented fallback.
 
-**Phase E update 2026-06-13 unattended save slice:** The cabled-device launcher now supports `--auto-save-session-after N`, which forwards `--whoop-auto-save-session-after N` and makes the app finish/persist the current live HR session through the normal local `SessionStore` path without waiting for disconnect. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-delayed-session-save-label-smoke/` verified `session_auto_save status=saved samples=21 duration_s=19 avg_hr=65 peak_hr=69 resting_hr=62 hrv=learning label=gate-e-delayed-session-save-label-smoke`. This makes overnight evidence runs durable, but Gate E still requires a real overnight low-HR session and a correctly detected workout; sleep confidence remains low until motion/IMU is decoded or the HR-only fallback is explicitly accepted.
+**Phase E update 2026-06-13 unattended save slice:** The cabled-device launcher now supports `--auto-save-session-after N`, which forwards `--atria-auto-save-session-after N` and makes the app finish/persist the current live HR session through the normal local `SessionStore` path without waiting for disconnect. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-delayed-session-save-label-smoke/` verified `session_auto_save status=saved samples=21 duration_s=19 avg_hr=65 peak_hr=69 resting_hr=62 hrv=learning label=gate-e-delayed-session-save-label-smoke`. This makes overnight evidence runs durable, but Gate E still requires a real overnight low-HR session and a correctly detected workout; sleep confidence remains low until motion/IMU is decoded or the HR-only fallback is explicitly accepted.
 
 **Phase E update 2026-06-13 overnight run:** `docs/evidence/gate-e/20260613T-gate-e-overnight-autosave-run/` attempted a 4-hour cabled-device run with delayed save at `12600s`. The run streamed for about 51 minutes and captured strong Gate B RR continuity, but ended early with `com.apple.dt.CoreDeviceError error 3` / `com.apple.Mercury.error 1001` remote-process invalidation before the delayed save timer. No `session_auto_save status=saved` or `activity_detect` row was produced, so this is not a Gate E pass. Next Gate E run needs either a shorter periodic save cadence, a background-safe app-side checkpoint, or a reconnect/resume strategy so a Mac/CoreDevice debugging interruption does not lose the overnight session.
 
-**Phase E update 2026-06-13 periodic save fallback:** the app and launcher now support `--auto-save-session-every N` / `--whoop-auto-save-session-every N`, which periodically finishes and persists real live-HR chunks through `SessionStore` with `mode=periodic`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-periodic-autosave-label-smoke/` verified labeled periodic saves: chunk 1 saved `18` samples over `16s`, chunk 2 saved `21` samples over `19s`, both with the requested label and `hrv=learning`. This reduces data loss when CoreDevice drops during unattended runs, but it is not a sleep-detection pass because short chunks do not meet the 3-hour HR-only sleep-candidate threshold. Next overnight run should use periodic checkpoints plus a longer app-side/session-merge strategy if sleep detection must survive debug-console loss.
+**Phase E update 2026-06-13 periodic save fallback:** the app and launcher now support `--auto-save-session-every N` / `--atria-auto-save-session-every N`, which periodically finishes and persists real live-HR chunks through `SessionStore` with `mode=periodic`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-periodic-autosave-label-smoke/` verified labeled periodic saves: chunk 1 saved `18` samples over `16s`, chunk 2 saved `21` samples over `19s`, both with the requested label and `hrv=learning`. This reduces data loss when CoreDevice drops during unattended runs, but it is not a sleep-detection pass because short chunks do not meet the 3-hour HR-only sleep-candidate threshold. Next overnight run should use periodic checkpoints plus a longer app-side/session-merge strategy if sleep detection must survive debug-console loss.
 
-**Phase E update 2026-06-13 live-session checkpoint path:** periodic chunks were not enough for sleep detection because each save reset the live session. The app and launcher now support `--checkpoint-session-every N` / `--whoop-checkpoint-session-every N`, which snapshots the same live session ID and upserts it through `SessionStore` without clearing the in-memory samples. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-session-checkpoint-smoke/` verified growing checkpoints at `15s`, `36s`, and `56s` with `mode=upsert`, plus `realtime_rr_fraction=0.901`. Follow-up evidence in `docs/evidence/gate-e/20260613T-gate-e-checkpoint-backup-smoke/` verified local backup/verify of `12` persisted sessions. This is now the preferred unattended overnight fallback: the persisted session can grow past the 3-hour HR-only sleep-candidate threshold while still surviving a later Mac/CoreDevice console drop. Gate E still requires an actual overnight session and workout detection on device.
+**Phase E update 2026-06-13 live-session checkpoint path:** periodic chunks were not enough for sleep detection because each save reset the live session. The app and launcher now support `--checkpoint-session-every N` / `--atria-checkpoint-session-every N`, which snapshots the same live session ID and upserts it through `SessionStore` without clearing the in-memory samples. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-session-checkpoint-smoke/` verified growing checkpoints at `15s`, `36s`, and `56s` with `mode=upsert`, plus `realtime_rr_fraction=0.901`. Follow-up evidence in `docs/evidence/gate-e/20260613T-gate-e-checkpoint-backup-smoke/` verified local backup/verify of `12` persisted sessions. This is now the preferred unattended overnight fallback: the persisted session can grow past the 3-hour HR-only sleep-candidate threshold while still surviving a later Mac/CoreDevice console drop. Gate E still requires an actual overnight session and workout detection on device.
 
-**Phase E update 2026-06-13 overnight sleep candidate verified:** `docs/evidence/gate-e/20260613T-gate-e-overnight-checkpoint-run/` ran on the cabled physical iPhone for just over 3 hours with `--checkpoint-session-every 300`. The app persisted `36` growing checkpoint upserts; checkpoint 36 saved `11239` samples over `10803s`, `avg_hr=58`, `peak_hr=85`, `resting_hr=53`, `hrv=73`, and emitted `WHOOPDBG activity_detect kind=Sleep candidate confidence=low ... reason=HR-only overnight low-HR window; motion not decoded source=checkpoint`. Follow-up verification in `docs/evidence/gate-e/20260613T-gate-e-overnight-checkpoint-verify/` logged `detections=1`, wrote a local backup with `13` sessions / `938780` bytes, and verified it with `session_backup_verify status=ok`. This closes the sleep-candidate half of Gate E using the documented low-confidence HR-only fallback; Gate E still needs workout auto-detect on device before the full gate is passed.
+**Phase E update 2026-06-13 overnight sleep candidate verified:** `docs/evidence/gate-e/20260613T-gate-e-overnight-checkpoint-run/` ran on the cabled physical iPhone for just over 3 hours with `--checkpoint-session-every 300`. The app persisted `36` growing checkpoint upserts; checkpoint 36 saved `11239` samples over `10803s`, `avg_hr=58`, `peak_hr=85`, `resting_hr=53`, `hrv=73`, and emitted `ATRIADBG activity_detect kind=Sleep candidate confidence=low ... reason=HR-only overnight low-HR window; motion not decoded source=checkpoint`. Follow-up verification in `docs/evidence/gate-e/20260613T-gate-e-overnight-checkpoint-verify/` logged `detections=1`, wrote a local backup with `13` sessions / `938780` bytes, and verified it with `session_backup_verify status=ok`. This closes the sleep-candidate half of Gate E using the documented low-confidence HR-only fallback; Gate E still needs workout auto-detect on device before the full gate is passed.
 
-**Phase E update 2026-06-13 daily rollups + workout readiness:** the app and launcher now support `--log-daily-rollups` / `--whoop-log-daily-rollups`, which logs daily local rollups and per-session workout-readiness diagnostics: duration, avg/peak HR over resting baseline, elevated-zone seconds, elevated fraction, and required elevated seconds. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-daily-rollup-workout-readiness/` verified the real saved sleep day: `daily_rollup day=2026-06-13 sessions=10 workouts=0 sleep_candidates=1 duration_s=11016 strain=0.14 hrv=73 rhr=53`. The same evidence correctly refused to call the overnight session a workout: `ready=0`, `avg_over_rest=-9`, `peak_over_rest=18`, `elevated_s=0`, `required_elevated_s=1200`. This completes the daily-rollup diagnostic slice and makes the remaining workout verification explicit; Gate E still needs a real elevated-HR workout captured and detected on device.
+**Phase E update 2026-06-13 daily rollups + workout readiness:** the app and launcher now support `--log-daily-rollups` / `--atria-log-daily-rollups`, which logs daily local rollups and per-session workout-readiness diagnostics: duration, avg/peak HR over resting baseline, elevated-zone seconds, elevated fraction, and required elevated seconds. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-daily-rollup-workout-readiness/` verified the real saved sleep day: `daily_rollup day=2026-06-13 sessions=10 workouts=0 sleep_candidates=1 duration_s=11016 strain=0.14 hrv=73 rhr=53`. The same evidence correctly refused to call the overnight session a workout: `ready=0`, `avg_over_rest=-9`, `peak_over_rest=18`, `elevated_s=0`, `required_elevated_s=1200`. This completes the daily-rollup diagnostic slice and makes the remaining workout verification explicit; Gate E still needs a real elevated-HR workout captured and detected on device.
 
-**Phase E update 2026-06-13 sustained workout guardrail:** workout auto-detection now matches the Gate E wording more strictly: a session must last at least 10 minutes, accumulate enough elevated HR seconds above the personalized threshold, and include a continuous elevated bout; a single peak or average-HR bump can no longer classify a session as a workout. The app logs the new decision variable as `WHOOPDBG workout_sustained ... longest_bout_s=... required_bout_s=... decision=...`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-sustained-workout-detector-guardrail/` built, installed, and launched on adidshaft's cabled iPhone, then verified the current store still has `workouts=0 sleep_candidates=1`. The overnight session stayed correctly non-workout: `workout_sustained label=gate-e-overnight-checkpoint-run longest_bout_s=0 required_bout_s=480 elevated_s=0 required_elevated_s=1200 decision=learning`. This is an accuracy guardrail, not a Gate E exit; Gate E still needs a real elevated-HR workout captured and detected on device.
+**Phase E update 2026-06-13 sustained workout guardrail:** workout auto-detection now matches the Gate E wording more strictly: a session must last at least 10 minutes, accumulate enough elevated HR seconds above the personalized threshold, and include a continuous elevated bout; a single peak or average-HR bump can no longer classify a session as a workout. The app logs the new decision variable as `ATRIADBG workout_sustained ... longest_bout_s=... required_bout_s=... decision=...`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-sustained-workout-detector-guardrail/` built, installed, and launched on adidshaft's cabled iPhone, then verified the current store still has `workouts=0 sleep_candidates=1`. The overnight session stayed correctly non-workout: `workout_sustained label=gate-e-overnight-checkpoint-run longest_bout_s=0 required_bout_s=480 elevated_s=0 required_elevated_s=1200 decision=learning`. This is an accuracy guardrail, not a Gate E exit; Gate E still needs a real elevated-HR workout captured and detected on device.
 
 **Phase E update 2026-06-13 sleep RHR source:** RHR for HR-only sleep candidates now uses the 5th percentile of the overnight low-HR window, while non-sleep sessions keep the prior 10th-percentile fallback. This moves the implementation closer to the plan's robust sleep-window RHR definition without pretending motion exists. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-sleep-rhr-source/` built, installed, launched, and logged `daily_rollup day=2026-06-13 sessions=11 workouts=0 sleep_candidates=1 duration_s=11613 strain=0.14 hrv=learning rhr=52` plus `resting_source label=gate-e-overnight-checkpoint-run value=52 source=hr_only_sleep_candidate_5th_percentile stable_10th=53 sleep_5th=52`. The same run kept sleep low-confidence/workout learning and HRV reference-pending. Gate E remains incomplete until a real workout is detected and sleep confidence includes motion/IMU evidence or an explicitly accepted HR-only fallback.
 
 **Phase E update 2026-06-13 broken-sleep checkpoint run:** `docs/evidence/gate-e/20260613T-overnight-sleep-continuity-run-2/` ran on the cabled physical iPhone while adidshaft slept with interruptions. The checkpoint path persisted 17 growing upserts of the same local live session, ending at `samples=5303 duration_s=5099 avg_hr=61 peak_hr=101 resting_hr=54 hrv=learning`. The run was correctly not promoted to a sleep candidate because it was about 85 minutes, below the 3-hour HR-only threshold, and post-wake verification in `docs/evidence/gate-e/20260613T-overnight-sleep-continuity-run-2-postwake/` logged `daily_rollup day=2026-06-13 sessions=12 workouts=0 sleep_candidates=1 duration_s=16712 strain=0.62 hrv=learning rhr=52` plus `workout_sustained label=gate-e-overnight-sleep-continuity-run-2 ... decision=learning`. The same evidence found 9 clean 5-minute RR windows on iPhone (`rr_beats=4296`; best visible window `raw=294 kept=285 conf=96.9 max_gap_s=2.071 rmssd_ms=68.1`), while post-wake realtime RR dropped to `realtime_rr_fraction=0.338`. This strengthens the contact/physiology-state hypothesis for RR continuity and confirms downstream honesty (`widget_snapshot ... hrv=reference_pending`, `recovery_v2 ... uses_hrv=0`). Gate E remains incomplete until a >=3-hour sleep candidate or explicitly accepted shorter/broken-sleep fallback and a real workout are verified on device.
 
-**Phase E update 2026-06-13 live workout diagnostic path:** the app and cabled-device launcher now support `--log-live-workout-every N` / `--whoop-log-live-workout-every N`, which logs the same sustained-workout readiness variables from the current live session without resetting it or changing classifier thresholds. Physical iPhone evidence in `docs/evidence/gate-e/20260613T062305Z-gate-e-live-workout-diagnostic-smoke/` built, installed, launched, and logged six live ticks with `threshold_hr=134`, `elevated_s=0`, `longest_bout_s=0`, and `ready=0`, plus checkpoint upserts at 30-second intervals. This validates the live workout evidence path and correctly avoids classifying a wake/rest run as a workout. Gate E still needs a real elevated-HR workout captured and detected correctly on the physical iPhone.
+**Phase E update 2026-06-13 live workout diagnostic path:** the app and cabled-device launcher now support `--log-live-workout-every N` / `--atria-log-live-workout-every N`, which logs the same sustained-workout readiness variables from the current live session without resetting it or changing classifier thresholds. Physical iPhone evidence in `docs/evidence/gate-e/20260613T062305Z-gate-e-live-workout-diagnostic-smoke/` built, installed, launched, and logged six live ticks with `threshold_hr=134`, `elevated_s=0`, `longest_bout_s=0`, and `ready=0`, plus checkpoint upserts at 30-second intervals. This validates the live workout evidence path and correctly avoids classifying a wake/rest run as a workout. Gate E still needs a real elevated-HR workout captured and detected correctly on the physical iPhone.
 
-**Phase E update 2026-06-13 workout validation verifier:** the app and launcher now support `--verify-workout-label LABEL` plus `--verify-workout-after N`, which logs a delayed `WHOOPDBG workout_validation ...` verdict from the persisted local sessions. Physical iPhone evidence in `docs/evidence/gate-e/20260613T063203Z-gate-e-workout-validation-verifier/` built, installed, launched, and verified the prior wake/rest smoke label as `status=learning reason=duration_below_10m`, with `elevated_s=0`, `longest_bout_s=0`, and `workouts_matching=0`. This gives the next real workout attempt a single-run pass/fail line without loosening the detector. Gate E remains open until a real elevated-HR workout produces `workout_validation status=ready` on the physical iPhone.
+**Phase E update 2026-06-13 workout validation verifier:** the app and launcher now support `--verify-workout-label LABEL` plus `--verify-workout-after N`, which logs a delayed `ATRIADBG workout_validation ...` verdict from the persisted local sessions. Physical iPhone evidence in `docs/evidence/gate-e/20260613T063203Z-gate-e-workout-validation-verifier/` built, installed, launched, and verified the prior wake/rest smoke label as `status=learning reason=duration_below_10m`, with `elevated_s=0`, `longest_bout_s=0`, and `workouts_matching=0`. This gives the next real workout attempt a single-run pass/fail line without loosening the detector. Gate E remains open until a real elevated-HR workout produces `workout_validation status=ready` on the physical iPhone.
 
 **Phase E update 2026-06-14 workout near-miss diagnostics:** the workout
 detector now exposes a diagnostic-only `near_miss` state in
-`WHOOPDBG workout_replay_summary`, `gate_status gate=E`,
+`ATRIADBG workout_replay_summary`, `gate_status gate=E`,
 `workout_validation`, and `tools/analyze_workout_store.py`. Near miss requires
 at least 10 minutes of observed saved HR, at least 20% sparse stream coverage,
 and a peak within 5 bpm of the personalized HRR50 threshold or some true
@@ -548,9 +548,9 @@ and does not satisfy Gate E. It exists so a strength-training or gappy-link
 attempt produces an honest result instead of disappearing when sustained HR
 criteria are not met.
 
-**Phase E update 2026-06-13 workout preflight target:** the app and launcher now support `--log-workout-preflight` / `--whoop-log-workout-preflight`, which logs the personalized sustained-workout target before an attempt. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-workout-preflight/` built, installed, launched, and logged `workout_preflight rest_hr=67 max_hr=191 threshold_hr=134 zone70_hr=134 reserve_hr=97 min_duration_s=600 min_elevated_s=300 min_bout_s=180`. The smoke verifier correctly stayed learning with `workout_validation status=learning reason=no_saved_session`, and the short awake run had `realtime_rr_fraction=0.000`, reinforcing that HRV must remain tied to still/clean RR windows while workout/strain can proceed from HR. Gate E remains open until a real >=10-minute elevated-HR workout is checkpointed and validates as `status=ready` on the physical iPhone.
+**Phase E update 2026-06-13 workout preflight target:** the app and launcher now support `--log-workout-preflight` / `--atria-log-workout-preflight`, which logs the personalized sustained-workout target before an attempt. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-workout-preflight/` built, installed, launched, and logged `workout_preflight rest_hr=67 max_hr=191 threshold_hr=134 zone70_hr=134 reserve_hr=97 min_duration_s=600 min_elevated_s=300 min_bout_s=180`. The smoke verifier correctly stayed learning with `workout_validation status=learning reason=no_saved_session`, and the short awake run had `realtime_rr_fraction=0.000`, reinforcing that HRV must remain tied to still/clean RR windows while workout/strain can proceed from HR. Gate E remains open until a real >=10-minute elevated-HR workout is checkpointed and validates as `status=ready` on the physical iPhone.
 
-**Phase E update 2026-06-13 post-wake sleep validation:** the app and launcher now support `--verify-sleep`, `--verify-sleep-label`, and `--verify-sleep-after`, which log a single `WHOOPDBG sleep_validation ...` verdict from saved local sessions. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-postwake-sleep-validation/` built, installed, launched, and selected the real overnight checkpoint session: `sleep_validation status=ready reason=overnight_low_hr_window matched_label=gate-e-overnight-checkpoint-run duration_s=10803 samples=11239 avg_hr=58 peak_hr=85 rest_hr=67 sleep_rhr=52 overnight=1 low_hr=1 sleep_candidates_matching=1 confidence=low`. The same run logged `activity_detect_summary sessions=16 detections=1` and `daily_rollup day=2026-06-13 sessions=13 workouts=0 sleep_candidates=1 duration_s=16799 strain=0.73 hrv=learning rhr=52`. This strengthens the sleep half of Gate E, but sleep remains low-confidence because motion/IMU is unavailable, and Gate E remains open until a real elevated-HR workout is captured and detected correctly on the physical iPhone.
+**Phase E update 2026-06-13 post-wake sleep validation:** the app and launcher now support `--verify-sleep`, `--verify-sleep-label`, and `--verify-sleep-after`, which log a single `ATRIADBG sleep_validation ...` verdict from saved local sessions. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-postwake-sleep-validation/` built, installed, launched, and selected the real overnight checkpoint session: `sleep_validation status=ready reason=overnight_low_hr_window matched_label=gate-e-overnight-checkpoint-run duration_s=10803 samples=11239 avg_hr=58 peak_hr=85 rest_hr=67 sleep_rhr=52 overnight=1 low_hr=1 sleep_candidates_matching=1 confidence=low`. The same run logged `activity_detect_summary sessions=16 detections=1` and `daily_rollup day=2026-06-13 sessions=13 workouts=0 sleep_candidates=1 duration_s=16799 strain=0.73 hrv=learning rhr=52`. This strengthens the sleep half of Gate E, but sleep remains low-confidence because motion/IMU is unavailable, and Gate E remains open until a real elevated-HR workout is captured and detected correctly on the physical iPhone.
 
 **Phase E update 2026-06-13 broken-sleep aggregate detector:** sleep detection now evaluates overnight low-HR saved sessions as gap-bounded clusters instead of treating an interrupted night as all-or-nothing. The aggregate path requires at least 3 hours of total overnight low-HR evidence, splits clusters when gaps exceed 2 hours, rejects workout-like sessions, uses the cluster 5th-percentile HR for RHR, and always reports `confidence=low` with `motion_source=unavailable` until IMU/motion is decoded. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-broken-sleep-aggregate/` built, installed, launched, and logged `broken_sleep_summary candidates=1 eligible_sessions=2 ... min_total_s=10800 max_gap_s=7200` plus `broken_sleep_candidate day=2026-06-13 sessions=1 duration_s=10803 avg_hr=58 peak_hr=85 rest_hr=52 confidence=low reason=HR-only overnight low-HR window; motion not decoded`. The same run verified `daily_rollup ... workouts=0 sleep_candidates=1 hrv=learning rhr=52` and a local backup/verify of `17` sessions. Gate E still needs a real elevated-HR workout captured and detected on device before the full gate passes.
 
@@ -619,7 +619,7 @@ downloaded gravity block is old stored history, not merely a missing drift
 correction, so captured-at time must not be used as a surrogate motion
 timestamp. Sleep remains low-confidence and Gate E remains partial.
 
-**Phase E update 2026-06-13 workout auto-save guard:** the app and launcher now support `--auto-save-workout-when-ready N` / `--whoop-auto-save-workout-when-ready N`, which checks the current live session at an interval and saves it only when the existing sustained-workout readiness gate passes. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-workout-auto-save-guard/` built, installed, launched, and logged the guard schedule plus repeated honest refusals at wake/rest HR: `workout_auto_save status=learning reason=not_ready ... duration_s=36 avg_hr=91 peak_hr=98 ... elevated_s=0 required_elevated_s=300 longest_bout_s=0 required_bout_s=180`. The same run checkpointed the live session and the delayed verifier correctly returned `workout_validation status=learning reason=duration_below_10m ... workouts_matching=0`. This makes the next real workout attempt durable without lowering thresholds; Gate E still needs a real >=10-minute elevated-HR workout with `workout_auto_save status=saved` and `workout_validation status=ready` on the physical iPhone.
+**Phase E update 2026-06-13 workout auto-save guard:** the app and launcher now support `--auto-save-workout-when-ready N` / `--atria-auto-save-workout-when-ready N`, which checks the current live session at an interval and saves it only when the existing sustained-workout readiness gate passes. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-gate-e-workout-auto-save-guard/` built, installed, launched, and logged the guard schedule plus repeated honest refusals at wake/rest HR: `workout_auto_save status=learning reason=not_ready ... duration_s=36 avg_hr=91 peak_hr=98 ... elevated_s=0 required_elevated_s=300 longest_bout_s=0 required_bout_s=180`. The same run checkpointed the live session and the delayed verifier correctly returned `workout_validation status=learning reason=duration_below_10m ... workouts_matching=0`. This makes the next real workout attempt durable without lowering thresholds; Gate E still needs a real >=10-minute elevated-HR workout with `workout_auto_save status=saved` and `workout_validation status=ready` on the physical iPhone.
 
 **Phase E update 2026-06-15 leave-running harness:** the cabled-device harness now
 supports `--leave-running`. After the console evidence window, required pulls,
@@ -635,7 +635,7 @@ showed Atria still running on the phone. This is not a Gate E metric pass; it
 advances the unattended-local-logging requirement and reduces the chance that
 short verification runs accidentally stop the long-wear collector.
 
-**Phase E update 2026-06-13 local status dashboard:** the main dashboard now has a `Local status` card for Sleep, Workout, HRV, and Trends, using the same local store inputs and confidence gates as `WHOOPDBG gate_status`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-local-status-dashboard/` verified `WHOOPDBG local_status ...`, `gate_status gate=local status=dashboard ...`, and the expanded Gate E evidence line. A stale-verification issue was found and fixed: `live_device_debug.sh --no-build` now refuses to run when Swift sources are newer than the project-local app bundle it installs from `build/DerivedData`, preventing accidental validation of an old binary. During that cleanup the app was uninstalled once from the physical iPhone, which reset the on-phone local session store and removed in-app backups; earlier 18-session evidence remains documented, but the current phone container is rebuilding from zero sessions. Post-reset verification completed onboarding and confirmed BLE still works (`realtime_rr_fraction=1.000` over the short smoke). Gate E remains open: the current store has no sleep/workout sessions after reset, and no real elevated-HR workout has validated.
+**Phase E update 2026-06-13 local status dashboard:** the main dashboard now has a `Local status` card for Sleep, Workout, HRV, and Trends, using the same local store inputs and confidence gates as `ATRIADBG gate_status`. Physical iPhone evidence in `docs/evidence/gate-e/20260613T-local-status-dashboard/` verified `ATRIADBG local_status ...`, `gate_status gate=local status=dashboard ...`, and the expanded Gate E evidence line. A stale-verification issue was found and fixed: `live_device_debug.sh --no-build` now refuses to run when Swift sources are newer than the project-local app bundle it installs from `build/DerivedData`, preventing accidental validation of an old binary. During that cleanup the app was uninstalled once from the physical iPhone, which reset the on-phone local session store and removed in-app backups; earlier 18-session evidence remains documented, but the current phone container is rebuilding from zero sessions. Post-reset verification completed onboarding and confirmed BLE still works (`realtime_rr_fraction=1.000` over the short smoke). Gate E remains open: the current store has no sleep/workout sessions after reset, and no real elevated-HR workout has validated.
 
 **Phase E update 2026-06-13 workout readiness reasons:** workout readiness now
 has a shared strict decision state with `status`, `reason`, and personalized
@@ -677,11 +677,11 @@ verifier stayed `learning` with `reason=duration_below_3h` on the latest
 (`realtime_rr_fraction=0.833`). This confirms the current miss is missing
 durable long-session state after the earlier app-container reset, not a reason
 to loosen detection thresholds. Next recovery step is a Mac-side tool that
-reconstructs a restorable session backup from the real overnight WHOOPDBG log
+reconstructs a restorable session backup from the real overnight ATRIADBG log
 and restores it on the physical iPhone.
 
 **Phase E update 2026-06-13 reconstructed sleep backup restore:** `tools/reconstruct_session_backup_from_log.py`
-now rebuilds a local `SessionBackupEnvelope` from real `WHOOPDBG realtimeFrame`
+now rebuilds a local `SessionBackupEnvelope` from real `ATRIADBG realtimeFrame`
 rows, copying baseline/profile from a current backup and forcing
 `hrvReferenceValidated=false`. Smoke evidence in
 `docs/evidence/gate-e/20260613T120002Z-reconstructed-sleep-backup-smoke/`
@@ -703,7 +703,7 @@ Gate E remains partial because no real elevated-HR workout has passed and sleep
 is still low-confidence HR-only until motion/IMU is decoded.
 
 **Phase E update 2026-06-13 live workout status diagnostic:** the dashboard
-`Local status` card and `WHOOPDBG local_status` log now include the current live
+`Local status` card and `ATRIADBG local_status` log now include the current live
 session's sustained-workout readiness: duration, average/peak HR, personalized
 threshold, elevated seconds, longest elevated bout, required seconds/bout, ready
 flag, and reason. A first build attempt in
@@ -784,7 +784,7 @@ confirmed running as a device process for the workout. Gate E still requires the
 completed workout to validate as sustained elevated HR on device.
 
 **Phase E update 2026-06-13 local-status checkpoint fields:** the dashboard
-`Local status` card and `WHOOPDBG local_status` log now mirror checkpoint
+`Local status` card and `ATRIADBG local_status` log now mirror checkpoint
 readiness and the last checkpoint outcome, so post-wake audits can see
 `checkpoint_armed`, interval, source, last status, last samples, and last
 duration without relying only on `gate_status`. Physical iPhone evidence in
@@ -901,11 +901,11 @@ candidate, but workout auto-detect still needs a real elevated-HR capture.
 
 **Phase F — Trends & insights.** 7/30/90-day Recovery/HRV/RHR/Strain with anomaly flags.
 
-**Phase F update 2026-06-13 trend slice:** History now renders 7/30/90-day local trend windows for Recovery, HRV, RHR, and Strain from saved sessions. HRV remains `learning` when no validated saved RMSSD exists; anomalies require at least 3 sessions and flag only high RHR or Strain outliers. The cabled-device debug launcher supports `--log-trends` and the app logs `WHOOPDBG trend_summary ...` plus one `trend_window` row per window. This is a Gate F slice, not the full exit, because real long-term history still has to accumulate and render across 7/30/90 days.
+**Phase F update 2026-06-13 trend slice:** History now renders 7/30/90-day local trend windows for Recovery, HRV, RHR, and Strain from saved sessions. HRV remains `learning` when no validated saved RMSSD exists; anomalies require at least 3 sessions and flag only high RHR or Strain outliers. The cabled-device debug launcher supports `--log-trends` and the app logs `ATRIADBG trend_summary ...` plus one `trend_window` row per window. This is a Gate F slice, not the full exit, because real long-term history still has to accumulate and render across 7/30/90 days.
 
 **Phase F update 2026-06-13 current-history refresh:** after the overnight checkpoint run created a real saved HRV/sleep session, `docs/evidence/gate-f/20260613T-gate-f-current-history-trends/` verified trends again on the physical iPhone. The app logged `trend_summary sessions=13 rest_hr=67 max_hr=191 windows=3`, and 7/30/90-day windows now include `recovery=75`, `hrv=73`, `rhr=66`, `strain=0.0`, `anomalies=0`. The same run logged the current daily rollup (`2026-06-13 sessions=10 workouts=0 sleep_candidates=1 duration_s=11016 hrv=73 rhr=53`). Gate F is still not complete because all windows are populated by sparse same-day history; validating true 7/30/90-day trend behavior requires real saved history over those spans.
 
-**Phase F update 2026-06-13 coverage confidence slice:** Trend windows now expose covered calendar days, coverage percent, and a confidence label in both History UI and `WHOOPDBG trend_window` logs so sparse data cannot masquerade as mature 7/30/90-day trends. Physical iPhone evidence in `docs/evidence/gate-f/20260613T-gate-f-trend-coverage-confidence/` logged `days=7 coverage_days=2 coverage_percent=29 confidence=partial`, `days=30 coverage_days=2 coverage_percent=7 confidence=learning`, and `days=90 coverage_days=2 coverage_percent=2 confidence=learning`, while HRV remained `learning` and the widget stayed `hrv=reference_pending`. This improves Gate F honesty but does not complete the gate until real local history spans 7/30/90 days.
+**Phase F update 2026-06-13 coverage confidence slice:** Trend windows now expose covered calendar days, coverage percent, and a confidence label in both History UI and `ATRIADBG trend_window` logs so sparse data cannot masquerade as mature 7/30/90-day trends. Physical iPhone evidence in `docs/evidence/gate-f/20260613T-gate-f-trend-coverage-confidence/` logged `days=7 coverage_days=2 coverage_percent=29 confidence=partial`, `days=30 coverage_days=2 coverage_percent=7 confidence=learning`, and `days=90 coverage_days=2 coverage_percent=2 confidence=learning`, while HRV remained `learning` and the widget stayed `hrv=reference_pending`. This improves Gate F honesty but does not complete the gate until real local history spans 7/30/90 days.
 
 **Phase F update 2026-06-13 anomaly flag logging:** Trend windows now log the exact anomaly labels as `anomaly_flags=...` rather than only an integer count, preserving `none` when no flag fires. Physical iPhone evidence in `docs/evidence/gate-f/20260613T-gate-f-trend-anomaly-flags/` built, installed, and launched against the real saved store (`sessions=16`). The run logged `days=7 coverage_days=2 coverage_percent=29 confidence=partial recovery=74 hrv=learning rhr=65 strain=0.1 anomalies=0 anomaly_flags=none`, plus 30/90-day windows at `confidence=learning` with `anomaly_flags=none`. Live RR was zero in this short launch, so this is trend evidence only. Gate F remains incomplete until real local history spans the requested 7/30/90-day windows.
 
@@ -926,7 +926,7 @@ Recovery, HRV, RHR, and Strain chart surfaces. Missing Recovery/HRV values are
 shown as `learning` placeholders and are not plotted as zeroes. Physical iPhone
 evidence in
 `docs/evidence/gate-f/20260614T-trend-chart-dashboard-device-verify/` built,
-installed, launched, and logged `WHOOPDBG trend_chart_ui windows=7d,30d,90d
+installed, launched, and logged `ATRIADBG trend_chart_ui windows=7d,30d,90d
 recovery_points=0 hrv_points=0 rhr_points=3 strain_points=3 coverage_min=2
 confidence=partial,learning,learning`. The same run logged 7/30/90 trend
 windows from the real saved store (`sessions=76`, `coverage_days=2`,
@@ -935,7 +935,7 @@ windows from the real saved store (`sessions=76`, `coverage_days=2`,
 history and reference-validated HRV are still absent.
 
 **Phase F update 2026-06-14 blocker explainability:** Gate F status now reports
-the exact trend blockers in the on-device `WHOOPDBG gate_status gate=F` row:
+the exact trend blockers in the on-device `ATRIADBG gate_status gate=F` row:
 90-day coverage days/percent, required coverage days, window sessions, per-metric
 point presence, anomaly flags, HRV reference gating, and
 `trend_blockers=...`. The chart UI log now mirrors anomaly flags and blockers.
@@ -955,7 +955,7 @@ learning, now with an exact blocker list.
 **Phase G update 2026-06-13 backup slice:** The app can now write a local JSON
 backup of saved sessions, learned baseline, and athlete profile into
 `Documents/atria-backups/`. The cabled-device debug launcher supports
-`--backup-sessions`, and the app logs `WHOOPDBG session_backup ...` with the
+`--backup-sessions`, and the app logs `ATRIADBG session_backup ...` with the
 relative path, session count, byte size, and schema. This is a local-only backup
 slice, not Gate G complete: HealthKit write, notifications, widget/complication,
 and restore/import still need physical-device verification. Legacy
@@ -963,7 +963,7 @@ and restore/import still need physical-device verification. Legacy
 
 **Phase G update 2026-06-13 backup verification slice:** The app can now decode
 the latest local backup on-device with `--verify-backup`, check schema/session
-counts against the current store, and log `WHOOPDBG session_backup_verify ...`.
+counts against the current store, and log `ATRIADBG session_backup_verify ...`.
 This proves backup files are readable after write; destructive restore/import is
 still pending and must be tested separately before backup is considered complete.
 
@@ -971,7 +971,7 @@ still pending and must be tested separately before backup is considered complete
 debug restore path (`--restore-backup`) that writes a pre-restore safety backup,
 decodes the latest local backup, restores sessions, baseline, and athlete
 profile into their normal local stores, saves them, and logs
-`WHOOPDBG session_backup_restore ...`. Physical iPhone evidence in
+`ATRIADBG session_backup_restore ...`. Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T-gate-g-backup-restore-smoke/` verified restore
 status `ok`, then a relaunch `--verify-backup` confirmed the restored store still
 matched the latest backup. This closes local backup write/decode/restore
@@ -985,7 +985,7 @@ debug launcher supports `--healthkit-export`. Attempting to enable the
 HealthKit entitlement failed the build because the current development
 provisioning profile does not include the HealthKit capability, so the app keeps
 the entitlement disabled, checks the embedded provisioning profile at runtime,
-and logs `WHOOPDBG healthkit_export status=missing_entitlement ...` instead of
+and logs `ATRIADBG healthkit_export status=missing_entitlement ...` instead of
 calling HealthKit or fabricating success. Gate G HealthKit remains incomplete
 until the app is signed with HealthKit enabled, permission is granted on the
 physical iPhone, and HR/workout data appears in Apple Health.
@@ -1113,7 +1113,7 @@ and Gate D now reports
 `primary_blocker=independent_non_atria_hr_reference_missing`,
 `healthkit_reference_status=ok`, `healthkit_independent_hr_samples=0`, and
 `healthkit_external_reference_ready=0`. This does not pass Gate D, but it makes
-the blocker exact and visible in both `WHOOPDBG gate_status gate=D` and the
+the blocker exact and visible in both `ATRIADBG gate_status gate=D` and the
 in-app readiness strip.
 
 **Phase G update 2026-06-14 Atria app-group profile recheck:** current App
@@ -1203,9 +1203,9 @@ real widget/complication surfaces are verified on the physical iPhone.
 
 **Phase G update 2026-06-13 Mac-side backup pull:** The cabled-device launcher
 now supports `--pull-backups DIR`. During a physical iPhone run it records the
-exact `WHOOPDBG session_backup path=...` file produced by `--backup-sessions`
+exact `ATRIADBG session_backup path=...` file produced by `--backup-sessions`
 and copies that JSON out of the app data container with `devicectl`, logging
-`WHOOPDBG_BACKUP_PULL_FILE=...`. Evidence in
+`ATRIADBG_BACKUP_PULL_FILE=...`. Evidence in
 `docs/evidence/gate-g/20260613T082612Z-device-backup-pull/` built, installed,
 launched, wrote and verified a backup, copied
 `whoop-sessions-20260613T082619Z-debug.json` to the Mac, and validated that the
@@ -1224,7 +1224,7 @@ restore sources and selects backups by timestamped filename, avoiding stale file
 modification-time behavior from `devicectl`. Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T085226Z-mac-backup-push-restore-direct/`
 verified the original legacy path
-`WHOOPDBG_BACKUP_PUSH_FILE=Documents/whoop-backups/whoop-sessions-20260613T085230Z-pushed.json`,
+`ATRIADBG_BACKUP_PUSH_FILE=Documents/whoop-backups/whoop-sessions-20260613T085230Z-pushed.json`,
 `session_backup_verify status=ok ... digest_match=1`, and
 `session_backup_restore status=ok path=...pushed.json safety=...pre-restore.json`.
 The input backup was still a post-reset zero-session backup, so this proves
@@ -1245,13 +1245,13 @@ reset, but Gate G remains partial until HealthKit entitlement-backed writes,
 real widget/app-group surfaces, and production notification cadence are verified.
 
 **Phase G update 2026-06-13 verify-backup pull fallback:** The cabled-device
-launcher now treats `WHOOPDBG session_backup_verify path=...` as a pullable
+launcher now treats `ATRIADBG session_backup_verify path=...` as a pullable
 backup source when no new `session_backup path=...` was created in that launch.
 Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T090232Z-verify-backup-pull-fallback/` used a
 verify-only `--no-build` launch, confirmed `session_backup_verify status=ok`
 with `sessions=1 current_sessions=1 digest_match=1`, emitted
-`WHOOPDBG_BACKUP_FILE=...auto-session-add.json`, and pulled that exact backup
+`ATRIADBG_BACKUP_FILE=...auto-session-add.json`, and pulled that exact backup
 to the Mac. This makes backup evidence/recovery checks less fragile; Gate G
 remains partial for HealthKit, widget/app-group, and production notifications.
 
@@ -1304,7 +1304,7 @@ saved sessions or a restorable Mac-side backup.
 now exists behind the cabled-device `--schedule-notifications` flag. The app
 requests provisional notification authorization, waits for live BLE state, and
 only schedules eligible recovery, strain-target, and low-battery notifications.
-It logs every scheduled and skipped decision via `WHOOPDBG notification_*`; low
+It logs every scheduled and skipped decision via `ATRIADBG notification_*`; low
 battery is skipped unless the strap battery is known and <=20%, and strain is
 skipped unless the target is actually reached. This is not full Gate G complete
 until the production notification cadence is wired and user-visible behavior is
@@ -1313,7 +1313,7 @@ verified outside the debug trigger.
 **Phase G update 2026-06-13 notification delivery probe:** The app now installs a
 foreground `UNUserNotificationCenterDelegate` and supports a debug-only
 `--test-notification` launch argument. The diagnostic notification logs
-`WHOOPDBG notification_delivered kind=diagnostic` when iOS presents it, proving
+`ATRIADBG notification_delivered kind=diagnostic` when iOS presents it, proving
 delivery without pretending a recovery, strain, or battery condition occurred.
 Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T-gate-g-notification-delivery-smoke/` verified
@@ -1326,7 +1326,7 @@ triggering recovery, strain, or battery notifications.
 notification copy now uses the Atria product name and generic strap language:
 the diagnostic probe title is `Atria diagnostic`, the battery alert title is
 `Strap battery low`, and the Bluetooth permission prompt says Atria reads live
-data from the strap. Internal debug identifiers and `WHOOPDBG` logs remain
+data from the strap. Internal debug identifiers and `ATRIADBG` logs remain
 unchanged for evidence continuity. The physical iPhone run in
 `docs/evidence/gate-g/20260614T140323Z-atria-notification-naming-device-verify/`
 rebuilt, installed, launched, and verified the title in-device:
@@ -1368,7 +1368,7 @@ archive write creates the new Atria path. Gate G platform polish improved; HRV
 and workout exports remain source-gated.
 
 **Phase G update 2026-06-13 notification readiness diagnostic:** Notification
-scheduling now emits `WHOOPDBG notification_readiness ...` before decisions,
+scheduling now emits `ATRIADBG notification_readiness ...` before decisions,
 explicitly labeling the current path as `status=debug_trigger_only` with
 `production_cadence=0`. Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T091334Z-notification-readiness-diagnostic/`
@@ -1423,7 +1423,7 @@ evidence in
 installed, launched, and logged the expanded Gate G line with
 `widget_storage=app_local_userdefaults`, `widget_app_group=0`,
 `widget_target=0`, and `complication_target=0`, matching the separate
-`WHOOPDBG widget_readiness` diagnostic. The same run confirmed the strap was
+`ATRIADBG widget_readiness` diagnostic. The same run confirmed the strap was
 connected and streaming short-window RR (`realtime_rr_fraction=1.000`). Gate G
 remains partial until a signed WidgetKit/app-group or Watch complication target
 is added and verified on device.
@@ -1431,14 +1431,14 @@ is added and verified on device.
 **Phase G update 2026-06-13 widget snapshot groundwork:** The app now publishes a
 compact app-local widget/complication snapshot with recovery percent/confidence,
 strain, RHR, HRV state, and HRmax behind `--log-widget-snapshot`, logging
-`WHOOPDBG widget_snapshot ...`. This is not a completed widget: `app_group=0`
+`ATRIADBG widget_snapshot ...`. This is not a completed widget: `app_group=0`
 until a signed WidgetKit/Watch target and shared app group are added and verified
 on device.
 
 **Phase G update 2026-06-13 widget readiness diagnostic:** Widget snapshots now
 carry explicit local-only readiness metadata (`storage=app_local_userdefaults`,
 `app_group=0`, `widget_target=0`, `complication_target=0`) and emit a separate
-`WHOOPDBG widget_readiness status=diagnostic_only ...` line with the required
+`ATRIADBG widget_readiness status=diagnostic_only ...` line with the required
 next action. Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T091151Z-widget-readiness-diagnostic/` built,
 installed, launched, and logged both launch and delayed snapshots with the
@@ -1464,7 +1464,7 @@ window, but HRV still lacks external reference validation, and workout detection
 remained a near miss.
 
 **Phase G update 2026-06-14 WidgetKit target slice:** the project now builds and
-embeds a real `WhoopWidget.appex` WidgetKit extension. Physical iPhone evidence
+embeds a real `AtriaWidget.appex` WidgetKit extension. Physical iPhone evidence
 in `docs/evidence/gate-g/20260614T-widgetkit-target-device-verify/` built,
 installed, launched full-protocol, confirmed BLE notify/START/CMD_RESP, and
 logged `widget_target=1` in both Gate G and `widget_snapshot`. The embedded
@@ -1475,9 +1475,9 @@ is removed, while shared app-group storage and a complication target still need
 signing/project work before widget data can be considered complete.
 
 **Phase G update 2026-06-14 WidgetKit accessory complication slice:** the
-`WhoopWidget` extension now supports WidgetKit accessory families for Lock
+`AtriaWidget` extension now supports WidgetKit accessory families for Lock
 Screen / accessory complication surfaces and declares
-`WhoopWidgetSupportsAccessoryFamilies=true` in its embedded plist. Physical
+`AtriaWidgetSupportsAccessoryFamilies=true` in its embedded plist. Physical
 iPhone evidence in
 `docs/evidence/gate-g/20260614T-widgetkit-accessory-complication-device-verify/`
 built, installed, launched full-protocol, confirmed BLE notify/START/CMD_RESP,
@@ -1507,13 +1507,13 @@ installed, launched, verified/pulled a backup, and logged
 workouts=4 hrv_samples=0`. Gate G remains partial; the app can plan HR/workout
 exports, but Apple Health writes are blocked by signing/provisioning.
 
-**Phase G update 2026-06-13 current-store HealthKit signing recheck:** `docs/evidence/gate-g/20260613T133739Z-healthkit-signed-probe/` repeated the export probe against the current 14-session store. The normal signed physical-iPhone build installed and launched, BLE stayed healthy (`realtime_rr_fraction=0.984`), and the app correctly logged `healthkit_export status=missing_entitlement sessions=14 hr_samples=14921 workouts=14 hrv_samples=0`. The repo already has a `WhoopApp.entitlements` file containing `com.apple.developer.healthkit`, so a non-invasive command-line signing probe in `docs/evidence/gate-g/20260613T133936Z-healthkit-entitlement-wired/` passed `CODE_SIGN_ENTITLEMENTS=WhoopApp/WhoopApp.entitlements` and retried with `-allowProvisioningUpdates`; Xcode failed with `No Accounts: Add a new account in Accounts settings` and the current `iOS Team Provisioning Profile: *` still lacks the HealthKit capability/entitlement. The default project remains unwired to preserve physical BLE verification. Gate G cannot exit until Xcode has an Apple account/profile for `com.adidshaft.atria` with HealthKit, then the same exporter must be rebuilt, installed, authorized, and verified as `healthkit_export status=saved` plus visible Apple Health data.
+**Phase G update 2026-06-13 current-store HealthKit signing recheck:** `docs/evidence/gate-g/20260613T133739Z-healthkit-signed-probe/` repeated the export probe against the current 14-session store. The normal signed physical-iPhone build installed and launched, BLE stayed healthy (`realtime_rr_fraction=0.984`), and the app correctly logged `healthkit_export status=missing_entitlement sessions=14 hr_samples=14921 workouts=14 hrv_samples=0`. The repo already has a `WhoopApp.entitlements` file containing `com.apple.developer.healthkit`, so a non-invasive command-line signing probe in `docs/evidence/gate-g/20260613T133936Z-healthkit-entitlement-wired/` passed `CODE_SIGN_ENTITLEMENTS=Atria/Atria.entitlements` and retried with `-allowProvisioningUpdates`; Xcode failed with `No Accounts: Add a new account in Accounts settings` and the current `iOS Team Provisioning Profile: *` still lacks the HealthKit capability/entitlement. The default project remains unwired to preserve physical BLE verification. Gate G cannot exit until Xcode has an Apple account/profile for `com.adidshaft.atria` with HealthKit, then the same exporter must be rebuilt, installed, authorized, and verified as `healthkit_export status=saved` plus visible Apple Health data.
 
 **Phase G update 2026-06-14 HealthKit entitled build recheck:** a fresh
 non-invasive physical-iPhone signing probe in
 `docs/evidence/gate-g/20260614T044257Z-healthkit-entitled-build-recheck/` again
 passed the existing entitlement file through
-`CODE_SIGN_ENTITLEMENTS=WhoopApp/WhoopApp.entitlements`. The build failed before
+`CODE_SIGN_ENTITLEMENTS=Atria/Atria.entitlements`. The build failed before
 install with the decisive provisioning errors: `iOS Team Provisioning Profile:
 *` does not include the HealthKit capability and does not include the
 `com.apple.developer.healthkit` entitlement. This confirms the Gate G HealthKit
@@ -1524,12 +1524,12 @@ remains green until the app identifier/profile is updated.
 **Phase G update 2026-06-14 current-store HealthKit provisioning recheck:** the
 same entitlement wiring test was repeated against the 74-session current store
 in `docs/evidence/gate-g/20260614T053244Z-healthkit-provisioning-blocker/`.
-Temporarily wiring `CODE_SIGN_ENTITLEMENTS = WhoopApp/WhoopApp.entitlements`
+Temporarily wiring `CODE_SIGN_ENTITLEMENTS = Atria/Atria.entitlements`
 failed physical-iPhone build with Xcode exit 65: the current `iOS Team
 Provisioning Profile: *` still lacks the HealthKit capability and
 `com.apple.developer.healthkit` entitlement. The target wiring was removed
 again, then a green cabled fallback launch with
-`--whoop-healthkit-export --whoop-log-gate-status` logged
+`--atria-healthkit-export --atria-log-gate-status` logged
 `healthkit_export status=missing_entitlement sessions=74 hr_samples=38816
 workouts=74 hrv_samples=0 action=enable_healthkit_capability` and Gate G
 `healthkit_entitlement=missing`. This confirms the app has local HR/workout data
@@ -1540,7 +1540,7 @@ validation is still missing.
 **Phase G update 2026-06-13 notification confidence guard:** Recovery-ready and strain-target notifications now require high-confidence Recovery, so fallback/RHR-only Recovery no longer produces user nudges. Physical iPhone evidence in `docs/evidence/gate-g/20260613T-gate-g-notification-confidence-guard/` logged `notification_skip kind=recovery reason=recovery_confidence_fallback_not_high` and `notification_skip kind=strain reason=recovery_confidence_fallback_not_high`, while the diagnostic delivery probe still scheduled and delivered. Gate G remains open for production cadence, HealthKit entitlement-backed writes, and real widget/complication surfaces.
 
 **Phase G update 2026-06-13 battery notification evidence:** Battery reads now
-emit an explicit `WHOOPDBG battery level=... source=2A19` line, so the
+emit an explicit `ATRIADBG battery level=... source=2A19` line, so the
 low-battery notification decision can be traced to the physical strap value.
 Physical iPhone evidence in
 `docs/evidence/gate-g/20260613T090003Z-battery-read-notification-evidence/`
@@ -1553,12 +1553,12 @@ HealthKit, and widget/app-group surfaces are verified.
 
 **Phase H — Protocol expansion.** Probe opcodes for SpO2/skin-temp/historical download; decode IMU/PPG; pull stored history off the strap.
 
-**Phase H update 2026-06-13 protocol packet logger:** the app now logs all valid non-realtime/non-history WHOOP packet families as `WHOOPDBG protocol_packet ...` instead of silently dropping them, and has a conservative `WHOOPDBG imu_candidate validated=0 ...` path for packet `0x33` if it appears. Physical iPhone evidence in `docs/evidence/gate-h/20260613T064008Z-gate-h-protocol-packet-logger/` built, installed, and launched a `1400,6000,1600` sweep. The run captured `0x28:117`, `0x2f:1552`, `0x30:32`, `0x31:65`, and `0x32:131` on `61080005`, with `historical_2f_frames=1552` and no `0x33` IMU frames. `0x14` and `0x60` again produced short clean live-RR segments (`100.0%` RR-bearing each), while `0x16` pulled old historical data with no live/history overlap (`separation_seconds=6549187.0`). Gate H remains incomplete: historical download is reproducible but not decoded/validated enough for metrics, and no new sensor has been decoded.
+**Phase H update 2026-06-13 protocol packet logger:** the app now logs all valid non-realtime/non-history WHOOP packet families as `ATRIADBG protocol_packet ...` instead of silently dropping them, and has a conservative `ATRIADBG imu_candidate validated=0 ...` path for packet `0x33` if it appears. Physical iPhone evidence in `docs/evidence/gate-h/20260613T064008Z-gate-h-protocol-packet-logger/` built, installed, and launched a `1400,6000,1600` sweep. The run captured `0x28:117`, `0x2f:1552`, `0x30:32`, `0x31:65`, and `0x32:131` on `61080005`, with `historical_2f_frames=1552` and no `0x33` IMU frames. `0x14` and `0x60` again produced short clean live-RR segments (`100.0%` RR-bearing each), while `0x16` pulled old historical data with no live/history overlap (`separation_seconds=6549187.0`). Gate H remains incomplete: historical download is reproducible but not decoded/validated enough for metrics, and no new sensor has been decoded.
 
-**Phase H update 2026-06-13 diagnostic text logger:** packet `0x32` now has a dedicated `WHOOPDBG diagnostic_text validated=0 ...` logger that extracts printable UTF-8 runs while preserving the raw payload and full frame. Physical iPhone evidence in `docs/evidence/gate-h/20260613T064457Z-gate-h-diagnostic-text-logger/` built, installed, and launched the same `1400,6000,1600` sweep. The run captured `0x28:87`, `0x2f:1030`, `0x30:44`, `0x31:47`, and `0x32:212` on `61080005`, with `historical_2f_frames=1030`, `realtime_rr_fraction=1.000`, and no `0x33` IMU frames. Diagnostic examples include `SLEEPFLAG: moving from state 'STILL' to 'WAKE'`, `motion_short = 0.446667`, `SUPERVISOR: SOC report`, charger events, and BPK/NFC events. These logs are protocol clues, not validated sensor metrics; historical data again did not overlap live time (`separation_seconds=6548559.0`), so Gate H remains incomplete.
+**Phase H update 2026-06-13 diagnostic text logger:** packet `0x32` now has a dedicated `ATRIADBG diagnostic_text validated=0 ...` logger that extracts printable UTF-8 runs while preserving the raw payload and full frame. Physical iPhone evidence in `docs/evidence/gate-h/20260613T064457Z-gate-h-diagnostic-text-logger/` built, installed, and launched the same `1400,6000,1600` sweep. The run captured `0x28:87`, `0x2f:1030`, `0x30:44`, `0x31:47`, and `0x32:212` on `61080005`, with `historical_2f_frames=1030`, `realtime_rr_fraction=1.000`, and no `0x33` IMU frames. Diagnostic examples include `SLEEPFLAG: moving from state 'STILL' to 'WAKE'`, `motion_short = 0.446667`, `SUPERVISOR: SOC report`, charger events, and BPK/NFC events. These logs are protocol clues, not validated sensor metrics; historical data again did not overlap live time (`separation_seconds=6548559.0`), so Gate H remains incomplete.
 
 **Phase H/Gate E update 2026-06-13 sleep-motion hint classifier:** packet
-`0x32` diagnostic text now has a conservative `WHOOPDBG sleep_motion_hint
+`0x32` diagnostic text now has a conservative `ATRIADBG sleep_motion_hint
 validated=0 ...` classifier for obvious sleep/motion phrases such as
 `SLEEPFLAG`, `motion_short`, and `deepsleep`. Physical iPhone evidence in
 `docs/evidence/gate-h/20260613T092549Z-sleep-motion-hint-diagnostic/` built,
@@ -1582,7 +1582,7 @@ short realtime run (`realtime_rr_fraction=1.000`). This improves evidence
 quality only; it does not validate `0x32` as motion or upgrade sleep confidence.
 
 **Phase H/Gate E update 2026-06-13 local motion observe status:** the in-app
-`Local status` card and `WHOOPDBG local_status` log now surface the diagnostic
+`Local status` card and `ATRIADBG local_status` log now surface the diagnostic
 sleep/motion hint source and aggregate hint counts while keeping
 `motion_validated=0`. Physical iPhone evidence in
 `docs/evidence/gate-h/20260613T093517Z-local-motion-observe-status-aggregate/`
@@ -1625,7 +1625,7 @@ verified backup accounting with `motion_short_samples=0`,
 `current_motion_short_samples=0`, and `digest_match=1`. This is honest
 persistence/accounting only; it does not validate IMU or upgrade sleep.
 
-**Phase H update 2026-06-13 data-range field logger:** command-response logging now has a dedicated read-only `WHOOPDBG data_range_response validated=0 ...` path for `0x22` responses, including overlapping u32/u16 fields, Unix-looking candidates, `last_realtime_unix`, and the raw status. Physical iPhone evidence in `docs/evidence/gate-h/20260613T-gate-h-data-range-field-logger/` first preserved a failed local build (`Data` vs `[UInt8]`), then built, installed, launched, and ran `1400,6000,2200,1600` with trim ACKs. The `0x22 [00]` response had `status_len=69 lead=090101 body_len=66`; candidate fields included old-history timestamps `1774784553`/`1774784591` (`2026-03-29T11:42:33Z`/`11:43:11Z`) and a live-ish candidate `1781334714` (`2026-06-13T07:11:54Z`) near `last_realtime_unix=1781334723`. The following `0x16 [00]` still pulled old history (`historical_2f_frames=1225`, `historical_unix_first=1774784553`, `historical_unix_last=1774785693`, `separation_seconds=6548971`), so Gate H remains incomplete. Next selector work should derive a non-blind read-pointer/range experiment from this `0x22` evidence; do not claim historical HRV or stored-session decode yet.
+**Phase H update 2026-06-13 data-range field logger:** command-response logging now has a dedicated read-only `ATRIADBG data_range_response validated=0 ...` path for `0x22` responses, including overlapping u32/u16 fields, Unix-looking candidates, `last_realtime_unix`, and the raw status. Physical iPhone evidence in `docs/evidence/gate-h/20260613T-gate-h-data-range-field-logger/` first preserved a failed local build (`Data` vs `[UInt8]`), then built, installed, launched, and ran `1400,6000,2200,1600` with trim ACKs. The `0x22 [00]` response had `status_len=69 lead=090101 body_len=66`; candidate fields included old-history timestamps `1774784553`/`1774784591` (`2026-03-29T11:42:33Z`/`11:43:11Z`) and a live-ish candidate `1781334714` (`2026-06-13T07:11:54Z`) near `last_realtime_unix=1781334723`. The following `0x16 [00]` still pulled old history (`historical_2f_frames=1225`, `historical_unix_first=1774784553`, `historical_unix_last=1774785693`, `separation_seconds=6548971`), so Gate H remains incomplete. Next selector work should derive a non-blind read-pointer/range experiment from this `0x22` evidence; do not claim historical HRV or stored-session decode yet.
 
 **Phase H update 2026-06-13 whoof-layout historical analysis:** `tools/analyze_historical_2f.py` now has an explicit `--whoof-layout` mode for the `madhursatija/whoof`-derived hypothesis: historical HR at payload offset `17`, RR count at `18`, and RR values from offset `19`. The analyzer was run against the three physical-iPhone current-Unix selector captures and saved in `docs/evidence/gate-h/20260613T-gate-h-whoof-layout-analysis/`; it now validates the full logged frames through `whoop_codec.py` before analyzing payloads. All three captures were codec-clean (`codec_bad_frames=0`), so the transport/frame decode is validated, but the RR interpretation is still not metric-ready: current-Unix had `2399` `0x2f` frames, `1148` RR values, `hr_mae_bpm=4.72`, but `ready_windows=0`, `max_gap_s=39.621`, `live_history_overlap=0`, and `gate_b_ready=0`; prefix0/prefix1 also had `ready_windows=0` with no live/history overlap. This exhausts the bare/prefix0/prefix1 current-Unix selector family for now. Historical download is reproducible and one RR-layout hypothesis is plausible, but it still must not feed HRV/Recovery/Trends/HealthKit until the stored range overlaps the intended session and is validated against an external RR/IBI reference.
 
@@ -1637,8 +1637,8 @@ widgets/complications, and documents several speculative sensor decodes. Reuse
 ideas only behind our device evidence and confidence gates.
 
 **Cross-gate audit 2026-06-13:** the app and cabled-device launcher now support
-`--log-gate-status` / `--whoop-log-gate-status`, a single on-device
-`WHOOPDBG gate_status ...` diagnostic that summarizes the current local store
+`--log-gate-status` / `--atria-log-gate-status`, a single on-device
+`ATRIADBG gate_status ...` diagnostic that summarizes the current local store
 without upgrading any metric past its evidence. Physical iPhone evidence in
 `docs/evidence/gate-status/20260613T-gate-status-diagnostic/` built,
 installed, launched, wrote a fresh backup, verified its deterministic digest, and
@@ -1656,7 +1656,7 @@ so the audit catches that class of false-positive platform evidence.
 
 **Phase B update 2026-06-13 RR-quality surface:** the app now exposes a short
 rolling RR continuity/contact state in the HRV card, capture readiness panel, and
-`WHOOPDBG rr_quality` logs. Physical iPhone evidence in
+`ATRIADBG rr_quality` logs. Physical iPhone evidence in
 `docs/evidence/gate-b/20260613T083750Z-rr-quality-surface-smoke/` built,
 installed, launched, wrote/verified/pulled a backup, and logged a clean short
 window: `state=ready fraction=1.000 rr_frames=48 total_frames=48
@@ -1768,7 +1768,7 @@ included a user report of AirPods music interruption, the app reduced avoidable
 normal-run logging load without changing BLE subscriptions or local collection.
 Raw packet hex logs (`standardHR payload`, `realtimeFrame`, raw `frame ch=...`,
 unknown packet hex, and raw RR packet dumps) are now gated behind
-`--whoop-log-ble-frames`; the debug harness still enables them by default for
+`--atria-log-ble-frames`; the debug harness still enables them by default for
 forensic evidence and adds `--quiet-ble-logs` for long wear. This does not prove
 the app caused the AirPods interruption, but it removes a plausible avoidable
 source of CPU/unified-log pressure while preserving checkpoints and high-level
@@ -1931,7 +1931,7 @@ at HRR35/40/45/50 without changing the production HRR50 detector. Physical
 iPhone evidence in
 `docs/evidence/gate-e/20260614T-workout-threshold-sensitivity-device-verify/`
 built, installed, launched, pulled `sessions.json`, and logged
-`WHOOPDBG workout_threshold_sensitivity ... diagnostic_only=1
+`ATRIADBG workout_threshold_sensitivity ... diagnostic_only=1
 detector_threshold_hrr50_unchanged=1`. The sensitivity summary was
 `ready_fractions=none`: HRR35 chose the gym `Auto-saved + 3 chunks` aggregate
 but still had only `92s` elevated against `353s` required and a `44s` longest
@@ -1943,7 +1943,7 @@ rules out a simple threshold bug or one-bpm edge as the reason the saved workout
 did not auto-detect.
 
 **Gate E update 2026-06-14 saved workout status surface:** the in-app Local
-Status panel and `WHOOPDBG local_status` now surface the best saved workout
+Status panel and `ATRIADBG local_status` now surface the best saved workout
 attempt from the same replay used by Gate E status. Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T-saved-workout-status-device-verify/` built,
 installed, launched, pulled `sessions.json`, and logged
@@ -1960,7 +1960,7 @@ evidence still lacks sustained elevated-HR coverage.
 **Gate E update 2026-06-14 HR-only workout capture path:** the app and
 launcher now have a labeled standard-HR-only workout mode:
 `live_device_debug.sh --gate-e-hr-only-workout-capture` passes
-`--whoop-standard-hr-only`, subscribes to standard `2A37` HR/RR plus battery,
+`--atria-standard-hr-only`, subscribes to standard `2A37` HR/RR plus battery,
 skips WHOOP custom notify streams, skips realtime START, disables history ACKs,
 and logs `standardHR` packets even with quiet BLE logs. Physical iPhone
 evidence in
@@ -1977,7 +1977,7 @@ HR coverage and possible AirPods/Bluetooth coexistence from proprietary WHOOP
 traffic instead of re-running the same full protocol path.
 
 **Gate execution update 2026-06-14 current blocker reducer:** added
-`tools/analyze_gate_status.py`, which parses real `WHOOPDBG gate_status` logs
+`tools/analyze_gate_status.py`, which parses real `ATRIADBG gate_status` logs
 into a compact blocker/next-action table for gates A-H. Physical iPhone
 evidence in `docs/evidence/gate-status/20260614T-current-blocker-audit/` built,
 installed, launched, pulled the current store, and reduced the fresh
@@ -1993,7 +1993,7 @@ paths.
 **Gate B/G coexistence update 2026-06-13 single START default:** standard BLE
 `2A37` is now the primary HR/RR source, so repeated realtime START sends are no
 longer a default recovery policy. The app sends the validated `0x03 0x01` START
-once after `61080005` notify confirmation; `--whoop-realtime-start-retries N`
+once after `61080005` notify confirmation; `--atria-realtime-start-retries N`
 remains available only as a labeled protocol experiment, and retry loops stop as
 soon as standard HR/RR or proprietary realtime frames prove the stream is alive.
 Physical iPhone evidence in
@@ -2010,7 +2010,7 @@ relaxing HRV gates: the 30-second smoke still ended `hrv_ready=False`.
 current app container `sessions.json` from adidshaft's cabled iPhone
 (`43` sessions, `4564` saved RR samples, `21307` HR points), the app now exports
 the best saved strict 5-minute RR window for external comparison via
-`--whoop-export-rr-reference-package`. Physical iPhone evidence in
+`--atria-export-rr-reference-package`. Physical iPhone evidence in
 `docs/evidence/gate-b/20260614T-rr-reference-package-drop-only-device-verify/`
 built, installed, launched, logged `rr_reference_package status=ok`, and pulled
 both CSV and manifest from `Documents/whoop-rr-reference-packages/`. The selected
@@ -2054,11 +2054,11 @@ explicit parser smoke returned `status=parser_smoke_pass`,
 `external_reference=0`, and `gate_b_pass=0`.
 
 **Phase B update 2026-06-14 current active RR export attempt:** a one-shot
-physical-device run attempted `--whoop-export-rr-reference-package` again after
+physical-device run attempted `--atria-export-rr-reference-package` again after
 the Long Wear default changes. Evidence in
 `docs/evidence/gate-b/20260614T-gate-b-rr-reference-package-attempt/` built,
 installed, launched, and did not pull a new package
-(`WHOOPDBG_REFERENCE_PULL_SKIPPED=missing_reference_package_path`). The current
+(`ATRIADBG_REFERENCE_PULL_SKIPPED=missing_reference_package_path`). The current
 active journal at launch had only `63s` duration and `67` RR values, with
 `active_journal_rr_max_gap_s=8.7` and `active_journal_rr_coverage_3s_percent=71`,
 so it is correctly below the strict `300s`, no `>3s` gap Gate B contract. This
@@ -2192,7 +2192,7 @@ motion-gated workout/sleep detection once gravity is validated.
 storage is implemented in `Documents/whoop-historical/historical-archive.jsonl`
 as JSONL rows with `schema`, `layoutVersion`, raw payload hex, WHOOP/WHoof RR
 hypothesis fields, and explicit `metricUsable=false` /
-`currentSessionUsable=false` flags. The app logs `WHOOPDBG historicalArchive`
+`currentSessionUsable=false` flags. The app logs `ATRIADBG historicalArchive`
 and skips future `0x17` continuation ACKs if local persistence fails. The
 launcher now supports `--pull-historical`, and
 `tools/analyze_historical_archive.py` verifies the pulled archive. Physical
@@ -2207,10 +2207,10 @@ This is a Gate H storage/robustness slice, not a new-sensor or historical-HRV
 pass.
 
 **Phase H update 2026-06-14 archive status:** the app now inspects the
-on-device historical archive during `--whoop-log-gate-status` and reports
+on-device historical archive during `--atria-log-gate-status` and reports
 `historical_archive_local`, parse health, row/byte counts, schema/layout labels,
 raw-payload rows, undecodable rows, usable-row counts, and Unix range directly in
-the Gate H `WHOOPDBG gate_status` row. Physical iPhone evidence in
+the Gate H `ATRIADBG gate_status` row. Physical iPhone evidence in
 `docs/evidence/gate-h/20260614T-historical-archive-status-device-verify/`
 built, installed, launched, pulled sessions and the archive, and confirmed
 `historical_archive_local=1`, `historical_archive_parse_ok=1`,
@@ -2401,7 +2401,7 @@ coverage across real gym interruptions while keeping the detector strict.
 persists low-radio `standard_hr_only` for stable HR collection, but that setting
 also suppresses custom WHOOP notify streams and realtime START on later Gate B/H
 launches. The app and harness now expose `--full-protocol-mode` /
-`--whoop-full-protocol-mode`, which clears persisted Long wear + Low radio HR,
+`--atria-full-protocol-mode`, which clears persisted Long wear + Low radio HR,
 cancels Long wear timers, discards any CoreBluetooth-restored peripheral, and
 reconnects from a fresh advertisement in full-protocol mode before
 characteristic discovery. Physical iPhone evidence in
@@ -2557,7 +2557,7 @@ elevated-HR workout validates.
 now turns a post-workout return into one deterministic local command: build,
 install, launch, low-radio HR-only capture by default, strict checkpoint and
 auto-save wiring, delayed validation, current `sessions.json` pull, verified
-backup pull, WHOOPDBG log analysis, saved-store replay, and `summary.txt`.
+backup pull, ATRIADBG log analysis, saved-store replay, and `summary.txt`.
 Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T-gate-e-workout-audit-wrapper-device-verify/`
 verified the wrapper with a short smoke. The run built and installed on the
@@ -2631,7 +2631,7 @@ status run in
 `docs/evidence/gate-status/20260614T051559Z-post-ruling-current-status/`
 built, installed, launched, logged the current local store, verified backup
 integrity, and pulled `sessions.json`. The short launch did not emit explicit
-`WHOOPDBG gate_status` rows, so `tools/analyze_gate_status.py` now synthesizes a
+`ATRIADBG gate_status` rows, so `tools/analyze_gate_status.py` now synthesizes a
 fallback status table from `local_status`, daily rollups, trend windows, widget
 snapshot, and backup verification. Current blocker table: Gate B
 `external_rr_reference`; Gate C `validated_hrv_baseline_0/7`; Gate D
@@ -2646,9 +2646,9 @@ repair for this data; move only when there is a cleaner workout capture,
 external HR/RR reference, HealthKit-capable signing profile, or enough real
 calendar history.
 
-**Gate execution update 2026-06-14 fast gate-status path:** `--whoop-log-gate-status`
+**Gate execution update 2026-06-14 fast gate-status path:** `--atria-log-gate-status`
 now emits a lightweight, explicit blocker table before replay-heavy RR/workout
-forensics run, and `WhoopAppApp` calls it before BLE launch automation. The
+forensics run, and `AtriaApp` calls it before BLE launch automation. The
 harness also logs the exact `devicectl` launch command and starts its runtime
 timer after CoreDevice confirms launch, so missing launch arguments are no
 longer ambiguous. Physical iPhone evidence in
@@ -2664,7 +2664,7 @@ E `deep_replay_required_for_best_candidate` in fast mode, Gate F
 `coverage_2pct_hrv_gated_1`, Gate G
 `healthkit_entitlement,widget_target,complication_target`, and Gate H `ready`
 for protocol download but `metric_fail_closed`. Deep replay remains available
-with `--whoop-log-gate-status-deep`; the normal status command is intentionally
+with `--atria-log-gate-status-deep`; the normal status command is intentionally
 cheap so every future physical-device phase can start with a reliable blocker
 table.
 
@@ -2693,7 +2693,7 @@ diagnostics as the gate-status logger. Physical iPhone evidence in
 `docs/evidence/gate-status/20260614T-gate-readiness-ui-device-verify/` built,
 installed, launched with `--full-protocol-mode --log-gate-status`, connected to
 the strap, subscribed to `61080005`, and logged
-`WHOOPDBG gate_readiness_ui gates=8 ready=1`. The row matched the canonical
+`ATRIADBG gate_readiness_ui gates=8 ready=1`. The row matched the canonical
 gate blockers: A `runtime`, B `reference_pending[external_rr_reference]`,
 C `learning[validated_hrv_baseline_0_of_7]`, D
 `partial[external_hr_rest_to_max_validation]`, E
@@ -2705,7 +2705,7 @@ triage.
 
 **Gate execution update 2026-06-14 bounded deep gate-status:** the launcher now
 supports `--log-gate-status-deep`, forwarding
-`--whoop-log-gate-status-deep` after the normal fast status flag. The app keeps
+`--atria-log-gate-status-deep` after the normal fast status flag. The app keeps
 the initial `gate_status_summary` and Gates A-H rows fast, explicitly marks
 Gate B RR-ledger replay as `skipped_bounded_deep_status`, then emits a separate
 `gate_status gate=E.deep` row plus `workout_replay_summary`,
@@ -2756,7 +2756,7 @@ ruining coverage.
 
 **Phase E update 2026-06-14 accepted-HR watchdog forced verification:** the app
 and launcher now support a device-only verifier:
-`--force-accepted-hr-watchdog-after N` / `--whoop-force-accepted-hr-watchdog-after
+`--force-accepted-hr-watchdog-after N` / `--atria-force-accepted-hr-watchdog-after
 N`. Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T-accepted-hr-watchdog-forced-device-verify-2/`
 logged `accepted_hr_watchdog debug_force_schedule delay_s=5.0`; the console
@@ -2847,7 +2847,7 @@ capture-continuity failure rather than a hidden detector pass.
 capture now reduces foreground log and dashboard pressure: `standardHR payload`
 logs emit the first five frames and then at most once per minute with
 `suppressed_since_last=N`, full packet logging remains opt-in through
-`--whoop-log-ble-frames`, `strain_explain`/`strain_zone_summary` are time-gated,
+`--atria-log-ble-frames`, `strain_explain`/`strain_zone_summary` are time-gated,
 and Local Status de-dupe ignores active-journal age while still logging age in
 the emitted evidence row. Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T-standard-hr-log-budget-device-verify/` built,
@@ -2925,9 +2925,9 @@ required 300s/reference RMSSD comparison is still missing.
 now self-arm the production capture path once: Long Wear enabled, standard
 `2A37` HR-only radio, 60-second checkpoints, 15-second workout diagnostics,
 15-second strict workout auto-save checks, and stale-stream watchdogs. Explicit
-`--whoop-full-protocol-mode` still disables this for Gate B/H protocol work, and
+`--atria-full-protocol-mode` still disables this for Gate B/H protocol work, and
 user toggles mark the defaults as configured so the app does not keep
-re-enabling after a manual choice. `WhoopAppApp` now applies BLE automation and
+re-enabling after a manual choice. `AtriaApp` now applies BLE automation and
 persistent Long Wear before gate/daily/status logs, so Gate rows report the
 actual active capture mode. Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T-default-long-wear-bootstrap-device-verify/`
@@ -3086,7 +3086,7 @@ history.
 
 **Phase B update 2026-06-14 on-device RR reference validator:** Atria now has a
 device-side debug path for the remaining clinical HRV blocker. Launching with
-`--whoop-validate-rr-reference` exports the best saved WHOOP RR window, looks
+`--atria-validate-rr-reference` exports the best saved WHOOP RR window, looks
 for an independent RR/IBI CSV at `Documents/atria-reference/rr-reference.csv`,
 applies the same Gate B correction contract to the reference side, compares
 RMSSD with a `+/-5 ms` tolerance, and rejects same-content copies of Atria's own
@@ -3103,7 +3103,7 @@ file/validation workflow.
 
 **Phase D update 2026-06-14 on-device HR reference validator:** Atria now has
 the matching physical-device validator for the `+/-2 bpm` HR/Strain blocker.
-Launching with `--whoop-validate-hr-reference` selects the best saved real
+Launching with `--atria-validate-hr-reference` selects the best saved real
 `2A37` HR segment, looks for an independent HR CSV at
 `Documents/atria-reference/hr-reference.csv`, rejects same-content copies of
 Atria's own export, pairs WHOOP samples to the nearest reference samples within
@@ -3137,7 +3137,7 @@ turns the remaining external-reference step into a one-command, on-device,
 fail-closed workflow. Real reference CSVs overwrite the smoke files.
 
 **Gate B/D update 2026-06-14 reference cleanup workflow:** Atria now supports
-`--whoop-clear-reference-inputs`, exposed in the launcher as
+`--atria-clear-reference-inputs`, exposed in the launcher as
 `--clear-reference-inputs`, to delete `Documents/atria-reference/rr-reference.csv`
 and `Documents/atria-reference/hr-reference.csv` before export/validation runs.
 Physical iPhone evidence in
@@ -3216,8 +3216,8 @@ reference requirement.
 now explicitly pins `CFBundleDisplayName` and `CFBundleName` to `Atria`, matching
 the installed app product name and widget display name. The BLE device-name
 fallback for an unnamed strap now displays `Strap` instead of a product/protocol
-brand. Internal protocol/debug identifiers such as `WHOOPDBG`, BLE UUID names,
-and `--whoop-*` harness flags remain unchanged because they are evidence and
+brand. Internal protocol/debug identifiers such as `ATRIADBG`, BLE UUID names,
+and `--atria-*` harness flags remain unchanged because they are evidence and
 automation surfaces, not user-facing app branding.
 
 **Phase E update 2026-06-14 low-confidence sleep UI hardening:** The local
@@ -3242,7 +3242,7 @@ longer displays the live `ble.hrv` RMSSD as the headline value unless an
 external RR reference has validated a saved HRV session. A clean live RR window
 without reference validation now shows `pending`/`reference pending` in the main
 card while preserving RR-count/confidence diagnostics. The app logs
-`WHOOPDBG hrv_display ... live_rmssd_hidden=1` when live HRV is ready but hidden
+`ATRIADBG hrv_display ... live_rmssd_hidden=1` when live HRV is ready but hidden
 behind the external-reference gate. This keeps the user-facing metric aligned
 with Gate B: real RR collection can be working while clinical HRV remains
 reference-pending.
@@ -3268,7 +3268,7 @@ synthetic 317 ms / HR 75 artifact while leaving Gate B `reference_pending`
 until a real 5-minute window is externally validated.
 
 **Gate execution update 2026-06-14 execution-priority checkpoint:** Atria now
-emits a single on-device `WHOOPDBG execution_priority` line after gate-status
+emits a single on-device `ATRIADBG execution_priority` line after gate-status
 logging so the next session can avoid looping on already ruled-out work.
 Physical iPhone evidence in
 `docs/evidence/gate-status/20260614T170810Z-execution-priority-device-verify/`
@@ -3308,7 +3308,7 @@ captures.
 
 **Gate execution update 2026-06-14 wrist-HR priority alignment:** after broad
 Gate E replay proved the old gym data has low wrist-HR distribution rather than
-a missed workout window, `WHOOPDBG execution_priority` now reuses the replay's
+a missed workout window, `ATRIADBG execution_priority` now reuses the replay's
 concrete `bestNextAction` instead of always saying to run another low-radio
 workout capture. Physical iPhone evidence in
 `docs/evidence/gate-e/20260614T172150Z-execution-priority-wrist-hr-device-verify/`
@@ -3319,7 +3319,7 @@ Gate E remains partial and fail-closed; the next productive work is independent
 HR/profile validation, not another protocol or generic capture loop.
 
 **Gate D/E update 2026-06-14 HR/profile validation plan:** the app now emits a
-focused `WHOOPDBG hr_profile_validation_plan` when broad workout replay proves
+focused `ATRIADBG hr_profile_validation_plan` when broad workout replay proves
 the best candidate is below the personalized HRR50 band. The diagnostic logs the
 same fail-closed decision variables (`p95_hr`, `p99_hr`, `threshold_hr`,
 samples above threshold/borderline, stream coverage, elevated seconds, and
@@ -3342,7 +3342,7 @@ Status panel includes an HR reference card with Atria HR samples, independent HR
 samples, validation pairs, and the saved workout's threshold evidence. Physical
 iPhone evidence in
 `docs/evidence/gate-d/20260614T173043Z-hr-reference-ui-device-verify/` verified
-`WHOOPDBG hr_reference_ui state=missing_independent_hr ... workout_p95_hr=91
+`ATRIADBG hr_reference_ui state=missing_independent_hr ... workout_p95_hr=91
 workout_p99_hr=106 workout_threshold_hr=121 workout_samples_above_threshold=5
 workout_elevated_s=3 workout_required_elevated_s=1200`. This is still not a
 Gate D or Gate E pass; it makes the correct fail-closed next action visible in
@@ -3354,7 +3354,7 @@ package builder and exposes the CSV through the share sheet; Import copies a
 selected independent CSV into `Documents/atria-reference/hr-reference.csv` and
 immediately runs the existing Gate D validator. Physical iPhone evidence in
 `docs/evidence/gate-d/20260614T173634Z-hr-reference-import-export-ui-device-verify/`
-verified the dashboard export wrapper with `WHOOPDBG hr_reference_export_ui
+verified the dashboard export wrapper with `ATRIADBG hr_reference_export_ui
 status=ok` while the package remained `reference_validated=0`. This removes the
 Mac-only friction from the reference step without changing the accuracy bar:
 Gate D/E remain partial until a true non-Atria HR reference passes.
@@ -3366,7 +3366,7 @@ share sheet; Import copies a selected independent RR/IBI CSV into
 `Documents/atria-reference/rr-reference.csv` and immediately runs the existing
 Gate B validator. Physical iPhone evidence in
 `docs/evidence/gate-b/20260614T174320Z-rr-reference-import-export-ui-device-verify/`
-verified the dashboard export wrapper with `WHOOPDBG rr_reference_export_ui
+verified the dashboard export wrapper with `ATRIADBG rr_reference_export_ui
 status=ok` for a real saved window (`raw=368`, `kept=361`, `conf=98`,
 `max_rr_gap_s=1.8`, `rmssd=32.7`) while `reference_validated=0`. This removes
 Mac-only friction from the final HRV reference step without changing the
@@ -3410,8 +3410,8 @@ proof is independent HR/profile validation rather than lowering thresholds or
 retrying realtime START policy.
 
 **Gate execution update 2026-06-14 gate-status completion wait:** the cabled
-launcher now treats `WHOOPDBG execution_priority` as the normal
-`--log-gate-status` completion marker and `WHOOPDBG gate_status_deep` as the
+launcher now treats `ATRIADBG execution_priority` as the normal
+`--log-gate-status` completion marker and `ATRIADBG gate_status_deep` as the
 deep-status completion marker. Gate-status launches get a minimum 180-second
 deadline, but stop early once the marker arrives; missing markers now fail the
 harness with `HARNESS_ERROR=gate_status_incomplete` or
@@ -3451,7 +3451,7 @@ verified the fast path with `gate_status_complete=True`, `digest_match=1`,
 churn without pretending the gym data passed.
 
 **Gate D/E update 2026-06-15 HR comparison plan surfaced:** the HR reference
-card and `WHOOPDBG hr_reference_ui` now carry the saved workout's p99 HRR
+card and `ATRIADBG hr_reference_ui` now carry the saved workout's p99 HRR
 percent, profile-sensitivity gap, and a concrete comparison action. Physical
 iPhone evidence in
 `docs/evidence/gate-d/20260614T184832Z-hr-comparison-plan-device-verify/`
@@ -3481,8 +3481,8 @@ captured in the same physical-device deep audit instead of being skipped.
 
 **Gate D/E update 2026-06-15 explicit HealthKit reference audit:** the launcher
 now has `--healthkit-reference-audit`, and the app has a matching
-`--whoop-healthkit-reference-audit` launch path that runs only the Apple Health
-HR reference check and requires a `WHOOPDBG healthkit_reference_audit` result.
+`--atria-healthkit-reference-audit` launch path that runs only the Apple Health
+HR reference check and requires a `ATRIADBG healthkit_reference_audit` result.
 It rejects Atria-written samples as self-reference before comparing against the
 strict Gate D tolerance. Physical iPhone evidence in
 `docs/evidence/gate-d/20260614T191825Z-healthkit-reference-audit-device-verify/`
@@ -3541,7 +3541,7 @@ and left no matching `devicectl`/`live_device_debug.sh` process running.
 **Gate G update 2026-06-15 HealthKit write after permission:** after Health
 write permission was granted on the phone, physical iPhone evidence in
 `docs/evidence/gate-g/20260614T193454Z-healthkit-export-after-permission-device-verify/`
-launched Atria, ran `--whoop-healthkit-export`, completed gate status, and
+launched Atria, ran `--atria-healthkit-export`, completed gate status, and
 pulled valid `sessions.json`. The app logged
 `healthkit_export status=saved sessions=169 hr_samples=193 workouts=0
 hrv_samples=0 ledger_entries=168 idempotent=1 incremental=1` followed by
@@ -3829,7 +3829,7 @@ without converting it into a Gate E pass.
 such as sleep validation, HealthKit export/audit, reference package export,
 reference validation, and backup verification. A `--log-gate-status` run with
 post-run artifact pulls can now detach from `devicectl --console` as soon as the
-gate-status line and requested WHOOPDBG side-effect evidence are present, then
+gate-status line and requested ATRIADBG side-effect evidence are present, then
 perform the file pulls. This is a speed/reliability improvement only: it does
 not relax any metric gate or promote incomplete sleep, HRV, HR, or workout data.
 
@@ -3859,7 +3859,7 @@ so the next honest checkpoint is real-world/reference evidence, not another
 blind BLE START retry, speculative history selector, or fabricated metric.
 
 **Gate G/E low-radio evidence hardening 2026-06-15:** long-wear and
-standard-HR-only operation now emits explicit radio evidence into WHOOPDBG gate
+standard-HR-only operation now emits explicit radio evidence into ATRIADBG gate
 status: `radio_mode`, `radio_standard_hr_only`, `radio_custom_notify_skipped`,
 `radio_custom_notify_enabled`, `radio_tx_skipped`, and
 `radio_realtime_start_skipped`. This is a platform-polish and long-wear
@@ -3872,7 +3872,7 @@ for evidence that custom WHOOP traffic was actually suppressed. Full custom
 WHOOP protocol traffic stays reserved for deliberate Gate B/H protocol runs.
 
 **Gate E update 2026-06-15 always-on HR proof plan:** when workout readiness is
-zero, Atria now always emits `WHOOPDBG hr_profile_validation_plan`, not only the
+zero, Atria now always emits `ATRIADBG hr_profile_validation_plan`, not only the
 earlier profile-specific subset. The line carries the exact `next_action`,
 `next_proof`, and `required_proof` so a real-world capture cannot end with only
 a generic `learning` state. Physical iPhone evidence in
@@ -3938,8 +3938,8 @@ Gate D, and Gate E remain gated by independent reference or real-world
 validation evidence.
 
 **Gate B tooling update 2026-06-15 RR reference reducer + early exit:** the Mac
-gate reducer now parses `WHOOPDBG rr_reference_package` and
-`WHOOPDBG rr_reference_validation` rows directly, including focused
+gate reducer now parses `ATRIADBG rr_reference_package` and
+`ATRIADBG rr_reference_validation` rows directly, including focused
 reference-only logs and broad local-status logs that previously hid the precise
 Gate B package state. The launcher also exits once requested reference
 package/validation side effects have completed, so these checks no longer wait
@@ -4013,7 +4013,7 @@ HealthKit authorization is cached and Atria can save another incremental HR
 delta (`healthkit_export status=saved ... hr_samples=551`). It also exposed a
 harness honesty gap: the run could finish before the asynchronous
 `healthkit_export_verify` readback appeared. The device harness now requires a
-`WHOOPDBG healthkit_export_verify` row for every `--healthkit-export` phase, so
+`ATRIADBG healthkit_export_verify` row for every `--healthkit-export` phase, so
 future Gate G evidence must prove both HealthKit save and Apple Health readback;
 the post-patch cabled-iPhone rerun stayed alive through
 `healthkit_export_verify status=ok reason=up_to_date readback_covers_delta=1
@@ -4030,7 +4030,7 @@ focused on Gates B/E instead of a completed platform loop.
 
 **Gate G tooling update 2026-06-15 widget snapshot guard:** the physical-device
 harness now treats `--log-widget-snapshot` as a strict completion target:
-future widget evidence must emit `WHOOPDBG widget_snapshot status=...` or the
+future widget evidence must emit `ATRIADBG widget_snapshot status=...` or the
 run fails with `HARNESS_ERROR=widget_snapshot_incomplete`. Physical iPhone
 evidence in
 `docs/evidence/gate-g/20260615T-widget-harness-completion-device-verify/`
@@ -4160,7 +4160,7 @@ Atria now labels large-store deep status as bounded
 (`workout_replay_scope=bounded_large_store`, `workout_replay_limit=80`), emits
 the normal A-H rows first, and skips only the expensive deep detail dump with
 `gate_status_deep_detail status=skipped ... diagnostic_only=1`. The launcher
-also resets its deadline after `WHOOPDBG gate_status_start` so late-starting
+also resets its deadline after `ATRIADBG gate_status_start` so late-starting
 deep status gets a fresh completion window. Physical iPhone evidence in
 `docs/evidence/gate-status/20260615T-deep-status-bounded-deadline-device-verify/`
 built, installed, launched, verified backup, emitted
@@ -4201,11 +4201,11 @@ the same current filename before running `tools/analyze_workout_store.py
 segment just because the app renamed its local journal during the Atria cleanup.
 Physical iPhone evidence in
 `docs/evidence/gate-e/20260615T-active-journal-pull-current-name-device-verify/`
-first proved the explicit missing-state path (`WHOOPDBG_ACTIVE_JOURNAL_PULL_STATUS=missing`)
+first proved the explicit missing-state path (`ATRIADBG_ACTIVE_JOURNAL_PULL_STATUS=missing`)
 when no journal existed. The targeted verification in
 `docs/evidence/gate-e/20260615T-active-journal-pull-flushed-device-verify/`
 built cleanly, launched Atria, forced journal saves (`samples=22`, `rr_values=23`),
-pulled `WHOOPDBG_ACTIVE_JOURNAL_PULL_SOURCE=Documents/atria-active-session.json`,
+pulled `ATRIADBG_ACTIVE_JOURNAL_PULL_SOURCE=Documents/atria-active-session.json`,
 and produced workout-store analysis with `active_journal=1`. Gate E remained
 partial (`workout_days=0`) because the real HR evidence still lacks sustained
 HRR50 workout-band time; this phase removes an evidence blind spot without
@@ -4282,7 +4282,7 @@ the app keeps a legacy fallback reader for older extension plists. Physical
 iPhone evidence in
 `docs/evidence/gate-g/20260615T-atria-widget-capability-key-device-verify/`
 built, installed, launched, and verified the signed extension plist contains
-`AtriaWidgetSupportsAccessoryFamilies => true` while `WHOOPDBG widget_readiness`
+`AtriaWidgetSupportsAccessoryFamilies => true` while `ATRIADBG widget_readiness`
 still reports `status=ready`, `app_group=1`, `widget_target=1`, and
 `complication_target=1`. Gate G remains `metric_gated` because HRV/workout
 exports are still blocked by the upstream reference/workout gates.
@@ -4479,16 +4479,16 @@ debug-rig corroboration: it must not validate wrist motion, sleep, workout,
 HRV, recovery, trends, or HealthKit metrics. The code builds cleanly and the
 physical iPhone install succeeded in
 `docs/evidence/gate-e/20260615T-phone-motion-audit-device-verify/`, but the
-launch/WHOOPDBG verification was blocked because the iPhone was locked
+launch/ATRIADBG verification was blocked because the iPhone was locked
 (`FBSOpenApplicationErrorDomain error 7`, `reason: Locked`). A no-console
 launch retry failed for the same reason. This checkpoint is therefore not
 device-verified and does not pass Gate E; rerun the physical launch after the
-iPhone is unlocked to collect `WHOOPDBG phone_motion` and
+iPhone is unlocked to collect `ATRIADBG phone_motion` and
 `session_checkpoint ... phone_motion_*` evidence.
 
 **Gate E tooling update 2026-06-15 phone-motion sampled verification:** the
 phone-motion audit now logs direct sampler summaries as
-`WHOOPDBG phone_motion status=sampled`, so CoreMotion delivery can be verified
+`ATRIADBG phone_motion status=sampled`, so CoreMotion delivery can be verified
 without depending on a saved HR segment. Physical iPhone evidence in
 `docs/evidence/gate-e/20260615T-phone-motion-sampled-device-verify/` built,
 installed, and launched Atria, then confirmed the sampler on-device:
@@ -4653,7 +4653,7 @@ exposes typed active-journal RR diagnostics to Gate Status, so the execution
 priority can distinguish a saved historical clean RR candidate from the current
 single-device stream quality. If the fresh active journal has HR/RR samples but
 fails the live Gate B continuity rule (`duration >= 300s`, `rr >= 240`,
-`max_rr_gap <= 3s`, `coverage >= 90%`), `WHOOPDBG execution_priority` reports
+`max_rr_gap <= 3s`, `coverage >= 90%`), `ATRIADBG execution_priority` reports
 `next_local_gate=B` and a concrete local blocker such as
 `B:current_rr_continuity_gap_31s_coverage_1p`. Physical iPhone verification in
 `docs/evidence/gate-status/20260615T-rr-continuity-local-priority-device-verify/`
@@ -4780,7 +4780,7 @@ installed and launched Atria, pulled the snapshot, and showed Gate G
 next_local_action=run_targeted_sleep_or_workout_diagnostics`. No gate was
 promoted. Follow-up evidence in
 `docs/evidence/gate-status/20260615T-execution-router-harness-pull-device-verify/`
-proved the harness pull path by logging `WHOOPDBG_GATE_STATUS_PULL_FILE` and
+proved the harness pull path by logging `ATRIADBG_GATE_STATUS_PULL_FILE` and
 left Atria running in long-wear mode. This is execution hygiene for faster
 single-device progress.
 
@@ -4807,8 +4807,8 @@ window and no detector relaxation.
 **Gate E tooling update 2026-06-15 focused validation reducer:** focused
 sleep/workout verifier launches now have the same fail-closed harness semantics
 as the other targeted gates. `live_device_debug.sh --verify-sleep` and
-`--verify-workout-label` wait for the corresponding `WHOOPDBG sleep_validation`
-/ `WHOOPDBG workout_validation` rows and fail with
+`--verify-workout-label` wait for the corresponding `ATRIADBG sleep_validation`
+/ `ATRIADBG workout_validation` rows and fail with
 `HARNESS_ERROR=sleep_validation_incomplete` or
 `HARNESS_ERROR=workout_validation_incomplete` if the row is absent. The reducer
 now synthesizes a focused Gate E row from those logs. Physical iPhone evidence
@@ -4961,7 +4961,7 @@ a protocol-harness improvement, not an HRV/sleep/workout metric pass.
 
 **Gate H/E active-motion result row 2026-06-15:** Atria now logs a delayed
 `active_motion_imu_check` outcome row for the physical-device active-motion
-preset, configurable with `--whoop-active-motion-result-after N`. The verified
+preset, configurable with `--atria-active-motion-result-after N`. The verified
 cabled iPhone run in
 `docs/evidence/gate-h/20260615T-active-motion-result-row-device-verify/` built,
 installed, launched, connected BLE, enabled the full custom notify set, sent
@@ -4997,7 +4997,7 @@ coverage, high-zone exposure, and max HR reserve.
 `Today` card instead of making the first viewport wait on full sleep/workout/
 trend/gate replay. Physical iPhone evidence in
 `docs/evidence/app-usability/20260615T-stable-hr-first-device-verify/` built,
-installed, launched, logged `WHOOPDBG today_usability`, connected to the strap,
+installed, launched, logged `ATRIADBG today_usability`, connected to the strap,
 and received real `2A37` HR/RR packets. Long-wear standard-HR mode now holds a
 healthy HR connection and reasserts/reads `2A37` when RR is absent instead of
 fresh-scan reconnecting just to hunt HRV. This should reduce avoidable Bluetooth
@@ -5010,7 +5010,7 @@ historical/probe requests count as pending post-gate work, so the harness no
 longer exits early just because a stale archive can be pulled; it waits for live
 `0x2f` frames or the requested capture timeout. Physical iPhone evidence in
 `docs/evidence/gate-h/20260615T-history-probe-early-exit-fix-device-verify/`
-built, installed, launched, ran `--whoop-history-only-probe`, sent `0x22`,
+built, installed, launched, ran `--atria-history-only-probe`, sent `0x22`,
 received a command response, and verified watchdog reconnect suppression during
 the probe. No live `0x2f` frames arrived in the minimal run, and the broader
 `1400,6000,1600` init sweep was killed before app logs, so Gate H does not
@@ -5033,7 +5033,7 @@ or a new sensor stream is decoded and validated.
 The run built, installed, launched, held the history-only probe window, synced
 the strap clock (`drift_s=1`), ACKed through `0x16` (`06020b0000`), emitted `50`
 app-level `historicalData` payloads, and pulled a `100`-row local archive. The
-quiet-log analyzer and launcher now count `WHOOPDBG historicalData` rows, so
+quiet-log analyzer and launcher now count `ATRIADBG historicalData` rows, so
 quiet probes no longer misreport true downloads as `historical_2f_frames=0`.
 The result still rules out metric use: the corrected historical range remains
 March 29, 2026, with `current_session_usable_rows=0` and
@@ -5289,7 +5289,7 @@ validation and Sleep Analysis permission are available.
 
 **Gate C/G usability checkpoint 2026-06-15 recovery guidance explainability:**
 Daily guidance now consumes the full Recovery estimate rather than only a
-nullable percent, so the card and `WHOOPDBG guidance_decision` explain why the
+nullable percent, so the card and `ATRIADBG guidance_decision` explain why the
 target is unavailable when Recovery is still learning. Physical iPhone evidence
 in
 `docs/evidence/gate-c/20260615T-recovery-guidance-explainability-device-verify/`
@@ -5395,7 +5395,7 @@ physical UDID namespace.
 **App usability checkpoint 2026-06-15 manual checkpoint + Today stability:**
 Atria now exposes a non-destructive `Save checkpoint` control next to
 `Finish & save session`, and debug launches can fire the same path with
-`--whoop-manual-checkpoint-after N`. This preserves the current live session as
+`--atria-manual-checkpoint-after N`. This preserves the current live session as
 a saved checkpoint without resetting long-wear collection, so short rest, nap,
 and activity slices can be captured immediately instead of waiting for a timer
 or ending the session. Physical iPhone evidence in
@@ -5419,7 +5419,7 @@ checkpoint checks do not need raw `devicectl` launch commands. Physical iPhone
 evidence in
 `docs/evidence/app-usability/20260615T-manual-checkpoint-harness-device-verify/`
 built green, installed, launched, and logged `HARNESS_LAUNCH_ARGS ...
---whoop-manual-checkpoint-after 15` / `45`, then
+--atria-manual-checkpoint-after 15` / `45`, then
 `manual_checkpoint schedule delay_s=... source=launch_arg`. The same evidence
 also records the fail-closed case from the current strap state: Atria was
 `connected=0`, kept fresh-scanning, and reported
@@ -5442,7 +5442,7 @@ tooling runs; it does not pass Gate B's 5-minute/reference requirement.
 
 **Gate B checkpoint 2026-06-15 standard 2A37 5-minute capture after reconnect:**
 `live_device_debug.sh --pull-capture DIR` now waits for a real
-`WHOOPDBG capture_file` before treating capture pull work as complete; the
+`ATRIADBG capture_file` before treating capture pull work as complete; the
 first attempt in
 `docs/evidence/gate-b/20260615T-standard-2a37-5min-capture-after-reconnect/`
 proved the old harness bug by interrupting Atria immediately after launch.
@@ -5481,7 +5481,7 @@ window and no independent RR/IBI RMSSD reference comparison.
 
 **Gate status tooling update 2026-06-15 activity diagnostic cap:** current-store
 diagnostics no longer flood the launch log with every activity candidate.
-`--whoop-log-activity-detections` ranks detections by confidence, kind,
+`--atria-log-activity-detections` ranks detections by confidence, kind,
 duration, and peak HR, emits the top 12, and reports the suppressed count plus
 kind totals. Physical iPhone evidence in
 `docs/evidence/gate-status/20260615T-activity-diagnostics-cap-device-verify/`
@@ -5545,7 +5545,7 @@ Status now turns the confirmed sleep/workout examples into focused training
 diagnostics instead of another broad replay pass. Physical iPhone evidence in
 `docs/evidence/gate-e/20260615T-confirmed-vs-auto-training-device-verify/`
 built green, installed, launched, and pulled `Documents/atria-gate-status.txt`
-with two new `WHOOPDBG_gate_e_training` rows. The confirmed workout is a real
+with two new `ATRIADBG_gate_e_training` rows. The confirmed workout is a real
 near-miss but not an automatic workout: `auto_ready=0`,
 `primary_blocker=stream_gaps`, `coverage_percent=38`, `peak_hr=122`,
 `p95_hr=90`, `threshold_hr=121`, `elevated_s=3/1200`, and
@@ -5562,7 +5562,7 @@ confirmed-vs-auto evidence now appears in the Today card through a shared
 `GateETrainingSummary`, so the product explains the confirmed local examples
 without changing the detector. Physical iPhone evidence in
 `docs/evidence/gate-e/20260615T-today-training-card-device-verify/` built
-green, installed, launched, and logged `WHOOPDBG today_gate_e_training
+green, installed, launched, and logged `ATRIADBG today_gate_e_training
 confirmed_workout=1 workout_auto_ready=0 workout_blocker=stream_gaps
 workout_stream_coverage_percent=38 workout_elevated_s=3
 workout_required_elevated_s=1200 confirmed_sleep=1 sleep_auto_ready=0
@@ -5587,7 +5587,7 @@ Xcode build fails with that availability error it retries a signed
 Physical iPhone evidence in
 `docs/evidence/gate-g/20260615T-xcode-build-fallback-device-verify/` logged
 `HARNESS_BUILD_FALLBACK status=retry ... to_destination=generic/platform=iOS`,
-then `** BUILD SUCCEEDED **`, `App installed`, and real WHOOPDBG output from
+then `** BUILD SUCCEEDED **`, `App installed`, and real ATRIADBG output from
 Atria. Gate Status completed with Gate G `metric_gated`, `platform_ready=1`,
 `healthkit_readback_status=ok`, `backup_current=1`, battery live from `2A19`,
 and the harness left Atria running in standard-HR-only long-wear mode. This is
@@ -5629,7 +5629,7 @@ improvement.
 **Gate E workout proof checkpoint 2026-06-15:** physical iPhone evidence in
 `docs/evidence/gate-e/20260615T-workout-proof-status-device-verify/` tightened
 the remaining workout proof. Gate Status, Today logging, and
-`WHOOPDBG_gate_e_training` now emit `workout_proof_status`,
+`ATRIADBG_gate_e_training` now emit `workout_proof_status`,
 `workout_missing_coverage_percent`, `workout_missing_elevated_s`,
 `workout_missing_bout_s`, and `workout_ready_if`. The current confirmed workout
 remains fail-closed and explicit:
@@ -5716,7 +5716,7 @@ selector loop.
 cleans up stale naming that was confusing diagnostics. The Xcode build now
 reports `FULL_PRODUCT_NAME=Atria.app`, `EXECUTABLE_NAME=Atria`, and
 `WRAPPER_NAME=Atria.app`; the device install reported
-`installationURL=.../Atria.app/`; and WHOOPDBG console rows were emitted by
+`installationURL=.../Atria.app/`; and ATRIADBG console rows were emitted by
 `Atria[...]`. A stale legacy `Whoop.app/Whoop` process and old widget extension
 were terminated after the install, leaving the detached process list with only
 `/Atria.app/Atria`. The updated non-disruptive pull reports
@@ -5741,7 +5741,7 @@ or validated profile/reference update, not fake threshold relaxation.
 **App usability checkpoint 2026-06-15 collection health:** physical iPhone
 evidence in
 `docs/evidence/app-usability/20260615T-collection-health-device-verify/`
-adds a compact `WHOOPDBG collection_health` verifier and harness flag. This
+adds a compact `ATRIADBG collection_health` verifier and harness flag. This
 handles the recurring Xcode
 `observing system notifications failed Development services need to be enabled`
 false negative: when `devicectl` reports the phone wired, paired, booted, and
@@ -5761,7 +5761,7 @@ evidence in
 removes the launch-order blind spot from the previous checkpoint. Long-wear
 mode now persists the active journal on the first real accepted `2A37` HR sample
 with `reason=first_accepted_hr`, and the harness can delay
-`WHOOPDBG collection_health` with `--log-collection-health-after N` so it
+`ATRIADBG collection_health` with `--log-collection-health-after N` so it
 measures post-BLE collection state. The proof run logged
 `active_session_journal status=saved reason=first_accepted_hr samples=1
 rr_values=0`, then `collection_health phase=delayed status=ready blocker=none
@@ -5844,7 +5844,7 @@ iPhone evidence in
 closes the UI honesty gap after the clean saved RR package was found. The Today
 HRV tile and larger HRV card now show pending/reference-needed when saved RR is
 locally ready, instead of implying Atria is still learning the RR window. The
-device run logged `WHOOPDBG hrv_display state=reference_pending
+device run logged `ATRIADBG hrv_display state=reference_pending
 rr_package_ready=1 rr_package_raw=368 rr_package_kept=361 rr_package_conf=98
 rr_package_gap_s=1.8 rr_package_rmssd=32.7
 reason=external_rr_reference_required surface=today`, then Gate B persisted
@@ -5858,7 +5858,7 @@ in `docs/evidence/gate-f/20260615T-bounded-local-trends-device-verify/`
 keeps the fast large-store Gate Status path from masking usable local trend
 progress. The bounded path now computes local 7/30/90-day trend summaries and
 sets Gate F to `partial` when non-HRV local trend data exists, while preserving
-the full gate blockers. The device run logged `WHOOPDBG trend_fast_local
+the full gate blockers. The device run logged `ATRIADBG trend_fast_local
 windows=3 local_windows=3 rhr_points=3 strain_points=3 recovery_points=0
 hrv_points=0 trend90_confidence=learning trend90_coverage_days=3
 trend90_required_coverage_days=63 trend90_coverage_percent=3

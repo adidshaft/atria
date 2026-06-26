@@ -179,7 +179,7 @@ Free reference you DO have, restated, because it unlocks most of the list:
 
 ## 1. Code anchors (where to work)
 
-- `WhoopBLEManager.swift`
+- `AtriaBLEManager.swift`
   - Proprietary frame types: `realtime 0x28`, `imu 0x33`, `metadata 0x31`,
     `historical 0x2f` (see the `static let` block ~line 598). `protocolIMUFrameCount`
     already counts 0x33; `logIMUCandidate(payload:)` ~line 7015 already sees them.
@@ -216,7 +216,7 @@ var heightCm: Double = 0            // optional, 0 == unknown
 ### What is already done (verified on a real WHOOP 4.0)
 - Reads Device Information `0x180A`: Model `0x2A24`, Firmware `0x2A26`, Hardware
   `0x2A27` (Manufacturer `0x2A29` was already read). Published as
-  `modelNumber/firmwareRevision/hardwareRevision` on `WhoopBLEManager`.
+  `modelNumber/firmwareRevision/hardwareRevision` on `AtriaBLEManager`.
 - **CONFIRMED FINDING: WHOOP 4.0 returns these characteristics EMPTY.** Standard
   Device Information does NOT carry the generation. So `whoopModelLabel` correctly
   falls back to "WHOOP strap". **Do not chase Device Information further — it's a
@@ -239,8 +239,8 @@ Since Device Info is empty, the model/firmware/serial live in the WHOOP **metada
 frame `0x31`** (and possibly the clock/data-range responses), which the protocol
 tools already classify. To get a real "WHOOP 4.0/5.0/MG":
 1. With frame capture on, inspect the redacted `model_generation` /
-   `model_evidence` fields from `WHOOPDBG sensor_research_probe` and
-   `WHOOPDBG model_gate status=metadata_explicit`.
+   `model_evidence` fields from `ATRIADBG sensor_research_probe` and
+   `ATRIADBG model_gate status=metadata_explicit`.
 2. Cross-check against firmware patterns and which proprietary service generation
    responds. Build the map from observed bytes; **unknown → keep "WHOOP strap"**,
    never guess. Keep Serial out of storage (PII).
@@ -314,7 +314,7 @@ Keep the visible model label generic and keep SpO2/temp at research-only
 `metric_promotions=0`, `healthkit_write=0`, `raw_storage=0`.
 
 ### Feature gating (the reason model matters)
-Derive `WhoopModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
+Derive `AtriaStrapModel` → `supportsSpO2` (4.0+), `supportsSkinTemp` (4.0+),
 `supportsECG` (MG only), `supportsBloodPressure` (MG + cuff). Unknown model →
 conservative: HR/RR/accel only, no SpO₂/temp/ECG probes. §6–10 must check these
 flags first. Until the `0x31` decode lands, treat a strap that speaks the
