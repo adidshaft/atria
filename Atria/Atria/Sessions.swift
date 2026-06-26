@@ -2330,9 +2330,13 @@ final class SessionStore: ObservableObject {
         // so this can never block launch, scrolling, or the workout screen.
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            let summaries = self.behaviorCorrelationSummaries(rest: rest, maxHR: maxHR)
+        let sourceSessions = cachedCanonicalSessions
+        let journalEntries = cachedBehaviorJournalEntries
+        DispatchQueue.global(qos: .utility).async {
+            let summaries = Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,
+                                                                  journalEntries: journalEntries,
+                                                                  rest: rest,
+                                                                  maxHR: maxHR)
             let insights = Self.deriveInsights(from: summaries)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -2345,7 +2349,7 @@ final class SessionStore: ObservableObject {
     /// Turn per-tag correlation deltas into ranked, plain-language findings.
     /// Only surfaces a meaningful effect (recovery ≥2 pts, HRV ≥2 ms); the deltas
     /// already require ≥3 tagged days. Recovery findings rank above HRV.
-    static func deriveInsights(from summaries: [BehaviorCorrelationSummary]) -> [AtriaInsight] {
+    nonisolated static func deriveInsights(from summaries: [BehaviorCorrelationSummary]) -> [AtriaInsight] {
         var insights: [AtriaInsight] = []
         for s in summaries {
             if let rd = s.recoveryDelta, abs(rd) >= 2 {
@@ -5103,12 +5107,24 @@ final class SessionStore: ObservableObject {
     func behaviorCorrelationSummaries(rest: Int,
                                       maxHR: Int,
                                       calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
+        Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),
+                                              journalEntries: cachedBehaviorJournalEntries,
+                                              rest: rest,
+                                              maxHR: maxHR,
+                                              calendar: calendar)
+    }
+
+    private nonisolated static func makeBehaviorCorrelationSummaries(sessions: [SavedSession],
+                                                                     journalEntries: [BehaviorJournalEntry],
+                                                                     rest: Int,
+                                                                     maxHR: Int,
+                                                                     calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
         // LIGHT per-day rollup: only strain (→ recovery proxy) + avg HRV. This
         // deliberately does NOT call dailyRollups(), which runs workout/sleep
         // clustering + detectedActivity twice per session and was blocking the
         // main thread (SessionStore is @MainActor) — the cause of the launch /
         // workout hang + watchdog crash. Insights never needed that detection.
-        let grouped = Dictionary(grouping: canonicalSessions()) { calendar.startOfDay(for: $0.start) }
+        let grouped = Dictionary(grouping: sessions) { calendar.startOfDay(for: $0.start) }
         guard !grouped.isEmpty else {
             return BehaviorJournalEntry.Tag.allCases.map {
                 BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
@@ -5125,16 +5141,16 @@ final class SessionStore: ObservableObject {
         return BehaviorJournalEntry.Tag.allCases.map { tag in
             // Genuine tagged-vs-UNtagged contrast: the baseline excludes the tag's
             // own days, otherwise the delta is diluted by the days being measured.
-            let taggedDayKeys = Set(cachedBehaviorJournalEntries
+            let taggedDayKeys = Set(journalEntries
                 .filter { $0.tags.contains(tag) }
                 .map { calendar.startOfDay(for: $0.day) })
             let tagged = metricsByDay.filter { taggedDayKeys.contains($0.key) }.map(\.value)
             let untagged = metricsByDay.filter { !taggedDayKeys.contains($0.key) }.map(\.value)
 
-            let taggedRecovery = averageDouble(tagged.map(\.recovery))
-            let untaggedRecovery = averageDouble(untagged.map(\.recovery))
-            let taggedHRV = averageDouble(tagged.compactMap(\.hrv))
-            let untaggedHRV = averageDouble(untagged.compactMap(\.hrv))
+            let taggedRecovery = averageDoubleSnapshot(tagged.map(\.recovery))
+            let untaggedRecovery = averageDoubleSnapshot(untagged.map(\.recovery))
+            let taggedHRV = averageDoubleSnapshot(tagged.compactMap(\.hrv))
+            let untaggedHRV = averageDoubleSnapshot(untagged.compactMap(\.hrv))
 
             let recoveryDelta: Double?
             if tagged.count >= 3, let taggedRecovery, let untaggedRecovery {
@@ -5153,6 +5169,11 @@ final class SessionStore: ObservableObject {
                                               recoveryDelta: recoveryDelta,
                                               hrvDelta: hrvDelta)
         }
+    }
+
+    private nonisolated static func averageDoubleSnapshot(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
     }
 
     private static func readBehaviorJournalEntries() -> [BehaviorJournalEntry] {

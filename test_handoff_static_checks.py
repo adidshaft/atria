@@ -424,6 +424,32 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "AtriaOverviewTrendChartHost(store: store, maxHR:")
         assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
 
+    def test_behavior_insights_compute_from_snapshots_off_actor_path(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            "let sourceSessions = cachedCanonicalSessions",
+            "let journalEntries = cachedBehaviorJournalEntries",
+            "Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,",
+            "let insights = Self.deriveInsights(from: summaries)",
+            "nonisolated static func deriveInsights(from summaries: [BehaviorCorrelationSummary])",
+            "private nonisolated static func makeBehaviorCorrelationSummaries(sessions: [SavedSession]",
+            "journalEntries: [BehaviorJournalEntry]",
+            "Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),",
+            "private nonisolated static func averageDoubleSnapshot(_ values: [Double]) -> Double?",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        recompute_start = sessions.index("func recomputeBehaviorInsights()")
+        recompute_end = sessions.index("/// Turn per-tag correlation deltas")
+        recompute_source = sessions[recompute_start:recompute_end]
+        for forbidden in [
+            "self.behaviorCorrelationSummaries(rest:",
+            "dailyRollups(rest:",
+            "detectedActivities(rest:",
+        ]:
+            assert_not_contains(self, recompute_source, forbidden)
+
     def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
