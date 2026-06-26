@@ -18,6 +18,9 @@ struct AtriaHomeContainer: View, Equatable {
 }
 
 struct AtriaHomeView: View {
+    private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
+    private static let connectionDiagnosisTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+
     private struct AtriaWorkoutEndNotice: Identifiable, Equatable {
         let id = UUID()
         let title: String
@@ -82,6 +85,9 @@ struct AtriaHomeView: View {
     @State private var connectionGuideSnoozedUntil: Date?
     @State private var connectionGuidePresentationToken = UUID()
     @State private var connectionGuidePresentationTask: Task<Void, Never>?
+    @State private var connectionDiagnosisCandidate: AtriaConnectionDiagnosis?
+    @State private var connectionDiagnosisCandidateSince: Date?
+    @State private var visibleConnectionDiagnosis: AtriaConnectionDiagnosis?
     @State private var lastAutomaticConnectionSetupAt: Date?
     @State private var secondaryUnlockTask: Task<Void, Never>?
     @State private var overviewDiagnosticsKickoffTask: Task<Void, Never>?
@@ -231,6 +237,16 @@ struct AtriaHomeView: View {
         }
         .onReceive(ble.$officialAppCoexistenceRisk.removeDuplicates()) { risk in
             presentCoexistenceModalIfNeeded(for: risk)
+            updateConnectionDiagnosisVisibility(reason: "coexistence_risk")
+        }
+        .onReceive(model.coreLiveStore.$state.map { _ in () }) { _ in
+            updateConnectionDiagnosisVisibility(reason: "core_live")
+        }
+        .onReceive(model.pulseLiveStore.$state.map { _ in () }) { _ in
+            updateConnectionDiagnosisVisibility(reason: "pulse_live")
+        }
+        .onReceive(Self.connectionDiagnosisTimer) { _ in
+            updateConnectionDiagnosisVisibility(reason: "timer")
         }
         .onAppear {
             applyDebugUIScreenLaunchArgumentIfNeeded()
@@ -254,6 +270,7 @@ struct AtriaHomeView: View {
             updateMediaRefreshLoop()
             updateLiveActivity()
             updateHapticCoordinator()
+            updateConnectionDiagnosisVisibility(reason: "home_appear")
             scheduleAutomaticConnectionSetupIfNeeded(reason: "home_appear",
                                                      delayNanoseconds: 60_000_000)
             hasUnlockedPrimaryContent = true
@@ -691,9 +708,53 @@ struct AtriaHomeView: View {
     }
 
     private var connectionDiagnosis: AtriaConnectionDiagnosis? {
-        AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state,
-                                        pulse: model.pulseLiveStore.state,
-                                        officialAppInstalled: officialAppInstalled)
+        visibleConnectionDiagnosis
+    }
+
+    private func updateConnectionDiagnosisVisibility(reason: String, now: Date = Date()) {
+        let next = AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state,
+                                                   pulse: model.pulseLiveStore.state,
+                                                   officialAppInstalled: officialAppInstalled)
+        guard let next else {
+            if visibleConnectionDiagnosis != nil || connectionDiagnosisCandidate != nil {
+                AtriaDebugLog("ATRIADBG connection_diagnosis status=hidden reason=%@ action=clear", reason)
+            }
+            connectionDiagnosisCandidate = nil
+            connectionDiagnosisCandidateSince = nil
+            visibleConnectionDiagnosis = nil
+            return
+        }
+
+        if next.showsImmediately {
+            connectionDiagnosisCandidate = next
+            connectionDiagnosisCandidateSince = now
+            visibleConnectionDiagnosis = next
+            return
+        }
+
+        if connectionDiagnosisCandidate != next {
+            connectionDiagnosisCandidate = next
+            connectionDiagnosisCandidateSince = now
+            visibleConnectionDiagnosis = nil
+            AtriaDebugLog("ATRIADBG connection_diagnosis status=pending reason=%@ title=%@ delay_s=%.0f",
+                  reason,
+                  next.title,
+                  Self.connectionDiagnosisPersistenceDelay)
+            return
+        }
+
+        let elapsed = connectionDiagnosisCandidateSince.map { now.timeIntervalSince($0) } ?? 0
+        guard elapsed >= Self.connectionDiagnosisPersistenceDelay else {
+            visibleConnectionDiagnosis = nil
+            return
+        }
+        if visibleConnectionDiagnosis != next {
+            AtriaDebugLog("ATRIADBG connection_diagnosis status=visible reason=%@ title=%@ elapsed_s=%.0f",
+                  reason,
+                  next.title,
+                  elapsed)
+        }
+        visibleConnectionDiagnosis = next
     }
 
     private var shouldShowMissedDataBanner: Bool {
@@ -2831,6 +2892,12 @@ private struct AtriaConnectionDiagnosis: Equatable {
         lhs.title == rhs.title
             && lhs.action == rhs.action
             && lhs.systemImage == rhs.systemImage
+    }
+
+    var showsImmediately: Bool {
+        title == "Bluetooth is off"
+            || title == "Bluetooth permission needed"
+            || title == "Strap battery low"
     }
 
     static func derive(live: AtriaHomeModel.CoreLiveState,
