@@ -57,7 +57,9 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   navigation path. The Overview trend chart now reads cached
   `store.overviewTrendPoints`; session filtering, sorting, and TRIMP calculation
   run on a utility queue and publish back to the store instead of running in the
-  chart host.
+  chart host. Behavior insight correlations now copy canonical sessions and
+  journal entries before the utility-queue pass, so the background computation no
+  longer calls main-actor store methods.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate
@@ -79,7 +81,7 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   instead of nested raised cards. Data developer/research cards now use the same
   flat card chrome as other Data panels, and the nested phone-haptics settings
   surface uses inset chrome inside Data settings.
-- **Verification:** `python3 test_handoff_static_checks.py` is green (51), and
+- **Verification:** `python3 test_handoff_static_checks.py` is green (52), and
   Release builds have been installed on the cabled iPhone. Static guards now pin
   the handoff-21 ordering, diagnosis behavior, UI uniformity, and render-path
   cache behavior.
