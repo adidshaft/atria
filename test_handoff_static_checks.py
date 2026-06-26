@@ -305,6 +305,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var clampedRingFraction: Double?",
             "AtriaGlanceMetricMarker(systemImage: systemImage,",
             "precondition(metric.glanceGridSize.isValidGlanceShape, \"Today glance cards must be 1x1 or 1x2.\")",
+            "precondition(rowFitsGlanceGrid(row), \"Today glance row exceeds the fixed two-column grid.\")",
+            "private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric]) -> Bool",
             "if row.count == 1, row.first?.isWideGlanceCard == false",
             "AtriaGlanceMetricCard.placeholder",
             ".gridCellColumns(AtriaGlanceGridSize.compact.columns)",
@@ -333,6 +335,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, overview, needle)
 
         assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
+        assert_not_contains(self, overview, "row.map(\\.glanceColumnSpan).reduce")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",

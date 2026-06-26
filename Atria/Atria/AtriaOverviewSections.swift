@@ -701,9 +701,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if !pending.isEmpty {
             rows.append(pending)
         }
-        return rows.filter { row in
-            row.map(\.glanceColumnSpan).reduce(0, +) <= Self.glanceGridColumnCount
+        for row in rows {
+            precondition(rowFitsGlanceGrid(row), "Today glance row exceeds the fixed two-column grid.")
         }
+        return rows
+    }
+
+    private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric]) -> Bool {
+        var span = 0
+        for metric in row {
+            span += metric.glanceColumnSpan
+        }
+        return span <= Self.glanceGridColumnCount
     }
 
     @ViewBuilder
