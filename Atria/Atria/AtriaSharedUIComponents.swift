@@ -380,6 +380,7 @@ struct AtriaMetricTile: View, Equatable {
 
     private static let compactHeight: CGFloat = 122
     private static let sparklineHeight: CGFloat = 132
+    private static let footerHeight: CGFloat = 34
 
     let label: String
     let value: String
@@ -440,17 +441,7 @@ struct AtriaMetricTile: View, Equatable {
                 }
             }
 
-            if let sparklineValues {
-                Sparkline(values: sparklineValues)
-                    .frame(height: 34)
-            } else if let footnote {
-                Text(footnote)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            footer
         }
         .frame(maxWidth: .infinity,
                minHeight: tileHeight,
@@ -464,6 +455,27 @@ struct AtriaMetricTile: View, Equatable {
 
     private var tileHeight: CGFloat {
         sparklineValues == nil ? Self.compactHeight : Self.sparklineHeight
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if let sparklineValues {
+            Sparkline(values: sparklineValues)
+                .frame(height: Self.footerHeight)
+        } else if let footnote,
+                  !footnote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(footnote)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(height: Self.footerHeight, alignment: .topLeading)
+        } else {
+            Color.clear
+                .frame(height: Self.footerHeight)
+                .accessibilityHidden(true)
+        }
     }
 }
 
