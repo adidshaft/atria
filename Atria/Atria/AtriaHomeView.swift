@@ -197,7 +197,8 @@ struct AtriaHomeView: View {
                               onSyncMissedData: {
                                   _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
                                                                               force: true)
-                              })
+                              },
+                              onForgetStrap: { ble.forgetSavedStrap(reason: "user_settings") })
         }
         .fullScreenCover(item: $workoutSession) { session in
             AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
