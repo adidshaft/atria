@@ -402,6 +402,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "@Published private(set) var historySnapshot = HistorySnapshot.empty",
+            "@Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty",
             "private var historySnapshotRevision = 0",
             "private func refreshHistorySnapshotCache(deferred: Bool = true)",
             "historySnapshot = HistorySnapshot.sessionsOnly(sessions)",
@@ -409,8 +410,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "try? await Task.sleep(nanoseconds: 120_000_000)",
             "private func publishFullHistorySnapshotIfCurrent(revision: Int)",
             "historySnapshot = HistorySnapshot(sessions: sessions,",
+            "sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,",
             "private var snapshot: HistorySnapshot {\n        store.historySnapshot\n    }",
             "struct HistorySnapshot",
+            "struct SleepHistorySnapshot: Equatable",
             "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [])",
             "static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot",
         ]:
@@ -439,6 +442,39 @@ class HandoffStaticChecks(unittest.TestCase):
             "dailyRollups(rest:",
         ]:
             assert_not_contains(self, history_snapshot_source, forbidden)
+
+    def test_sleep_history_snapshot_is_cached_and_shown_in_vitals(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "struct SleepHistorySnapshot: Equatable",
+            "struct Night: Identifiable, Equatable",
+            "@Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty",
+            "let rollups = dailyRollups(rest: rest, maxHR: maxHR)",
+            "sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,",
+            "confirmedSleeps: cachedConfirmedSleeps",
+            "AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore,\n                                          store: store)",
+            "AtriaRecoveryStrainCard(hero: heroStore.state,\n                                sleepHistory: store.sleepHistorySnapshot)",
+            "private struct AtriaSleepHistoryCard: View, Equatable",
+            "AtriaSleepHistoryCard(snapshot: sleepHistory)",
+            "Chart(chartNights)",
+            "Wear the strap overnight.",
+        ]:
+            assert_contains(self, sessions + vitals, needle)
+
+        assert_contains(self, vitals, "case pulse, hrv, recoveryStrain, profile")
+        assert_not_contains(self, vitals, "case pulse, hrv, recoveryStrain, sleep")
+
+        sleep_card_start = vitals.index("private struct AtriaSleepHistoryCard")
+        sleep_card_end = vitals.index("private struct AtriaSleepNightRow")
+        sleep_card_source = vitals[sleep_card_start:sleep_card_end]
+        for forbidden in [
+            "dailyRollups(",
+            "detectedActivity(",
+            "aggregateSleepCandidates(",
+        ]:
+            assert_not_contains(self, sleep_card_source, forbidden)
 
     def test_overview_trend_chart_points_are_cached_off_render_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")

@@ -75,7 +75,8 @@ struct AtriaVitalsTabContent: View {
     }
 
     private var recoveryStrainCard: some View {
-        AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore)
+        AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore,
+                                          store: store)
     }
 
     private var profileCard: some View {
@@ -256,9 +257,11 @@ private struct AtriaVitalsHRVCardHost: View {
 
 private struct AtriaVitalsRecoveryStrainCardHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var store: SessionStore
 
     var body: some View {
-        AtriaRecoveryStrainCard(hero: heroStore.state)
+        AtriaRecoveryStrainCard(hero: heroStore.state,
+                                sleepHistory: store.sleepHistorySnapshot)
             .equatable()
     }
 }
@@ -1173,12 +1176,14 @@ private struct AtriaHRVCard: View, Equatable {
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
+    let sleepHistory: SleepHistorySnapshot
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Coach", subtitle: "")
 
             metricContent
+            AtriaSleepHistoryCard(snapshot: sleepHistory)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
@@ -1209,6 +1214,121 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     }
 
     private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+}
+
+private struct AtriaSleepHistoryCard: View, Equatable {
+    let snapshot: SleepHistorySnapshot
+
+    private var chartNights: [SleepHistorySnapshot.Night] {
+        Array(snapshot.nights.prefix(7).reversed())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sleep history")
+                        .font(.subheadline.weight(.semibold))
+                    Text(snapshot.stateText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                AtriaStateBadge(state: snapshot.confirmedCount > 0 ? .validated : (snapshot.candidateCount > 0 ? .research : .learning))
+            }
+
+            if snapshot.nights.isEmpty {
+                AtriaMetricTile(label: "Recent nights",
+                                value: "Learning",
+                                state: .learning,
+                                tint: .cyan,
+                                footnote: "Wear the strap overnight. Atria shows duration and RHR once saved evidence exists.")
+            } else {
+                LazyVGrid(columns: Self.statColumns, spacing: 10) {
+                    AtriaMetricTile(label: "Latest",
+                                    value: snapshot.latest?.durationText ?? "--",
+                                    state: snapshot.latest?.confirmed == true ? .validated : .research,
+                                    tint: .cyan,
+                                    footnote: snapshot.latest?.confidenceText)
+                    AtriaMetricTile(label: "Average",
+                                    value: snapshot.averageDurationText,
+                                    state: .local,
+                                    tint: .blue,
+                                    footnote: "\(snapshot.nights.count) nights")
+                    AtriaMetricTile(label: "Sleep RHR",
+                                    value: snapshot.latest?.restingHRText ?? "--",
+                                    unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
+                                    state: snapshot.latest?.restingHR == nil ? .learning : .personalBaseline,
+                                    tint: .red)
+                }
+
+                if chartNights.count > 1 {
+                    Chart(chartNights) { night in
+                        BarMark(x: .value("Night", night.day, unit: .day),
+                                y: .value("Hours", night.durationHours))
+                            .foregroundStyle(night.confirmed ? Color.cyan.gradient : Color.teal.opacity(0.55).gradient)
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                            AxisGridLine()
+                            AxisTick()
+                            AxisValueLabel {
+                                if let hours = value.as(Double.self) {
+                                    Text("\(Int(hours.rounded()))h")
+                                }
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                            AxisGridLine()
+                            AxisTick()
+                            AxisValueLabel(format: .dateTime.weekday(.narrow))
+                        }
+                    }
+                    .frame(height: 140)
+                    .padding(12)
+                    .atriaInsetCard(tint: .cyan)
+                }
+
+                ForEach(snapshot.nights.prefix(3)) { night in
+                    AtriaSleepNightRow(night: night)
+                }
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: .cyan)
+    }
+
+    private static let statColumns = [GridItem(.adaptive(minimum: 132), spacing: 10)]
+}
+
+private struct AtriaSleepNightRow: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: night.confirmed ? "checkmark.seal.fill" : "bed.double.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(night.confirmed ? .green : .teal)
+                .frame(width: 24, height: 24)
+                .background(AtriaIconTileBackground(cornerRadius: 8, tint: night.confirmed ? .green : .teal))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(night.day, format: .dateTime.weekday(.abbreviated).month().day())
+                    .font(.caption.weight(.semibold))
+                Text("\(night.durationText) · RHR \(night.restingHRText) · \(night.confidenceText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .atriaInsetCard(tint: night.confirmed ? .green : .teal)
+    }
 }
 
 private struct AtriaTrainingLoadTile: View, Equatable {
