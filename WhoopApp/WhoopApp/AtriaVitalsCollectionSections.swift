@@ -287,27 +287,32 @@ private struct AtriaCollectionCaptureCardHost: View {
 
     @ViewBuilder
     private var captureActionButtons: some View {
-        Button(collectionLiveStore.state.isRecording ? "Stop backup" : "Start backup") {
+        // maxWidth on the LABEL (not the Button) so the glass capsule itself fills
+        // the width — uniform full-width buttons.
+        Button {
             ble.toggleRecording()
+        } label: {
+            Text(collectionLiveStore.state.isRecording ? "Stop backup" : "Start backup")
+                .frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(collectionLiveStore.state.isRecording ? .red : .blue)
-        .frame(maxWidth: .infinity)
 
-        Button("Prepare export") {
+        Button {
             captureShareURL = ble.exportCSV()
+        } label: {
+            Text("Prepare export").frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
-        .frame(maxWidth: .infinity)
 
         if let captureShareURL {
             ShareLink(item: captureShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .tint(.green)
-            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -368,27 +373,29 @@ private struct AtriaCollectionRRReferenceCardHost: View {
 
     @ViewBuilder
     private var rrActionButtons: some View {
-        Button("Export RR") {
+        Button {
             rrShareURL = store.exportRRReferencePackageForUI()
+        } label: {
+            Text("Export RR").frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
-        .frame(maxWidth: .infinity)
 
-        Button("Import RR") {
+        Button {
             showRRImporter = true
+        } label: {
+            Text("Import RR").frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(.blue)
-        .frame(maxWidth: .infinity)
 
         if let rrShareURL {
             ShareLink(item: rrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .tint(.green)
-            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -444,27 +451,29 @@ private struct AtriaCollectionHRReferenceCardHost: View {
 
     @ViewBuilder
     private var hrActionButtons: some View {
-        Button("Export HR") {
+        Button {
             hrShareURL = store.exportHRReferencePackageForUI()
+        } label: {
+            Text("Export HR").frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(.gray)
-        .frame(maxWidth: .infinity)
 
-        Button("Import HR") {
+        Button {
             showHRImporter = true
+        } label: {
+            Text("Import HR").frame(maxWidth: .infinity)
         }
         .buttonStyle(.glassProminent)
         .tint(.blue)
-        .frame(maxWidth: .infinity)
 
         if let hrShareURL {
             ShareLink(item: hrShareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .tint(.green)
-            .frame(maxWidth: .infinity)
         }
     }
 }
