@@ -13,6 +13,8 @@ struct AtriaSettingsView: View {
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     let hapticSettings: AtriaHapticAlertSettings
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
+    let batterySaverEnabled: Bool
+    let onUpdateBatterySaver: (Bool) -> Void
     let onExportHealth: (() -> Void)?
     let onSyncMissedData: (() -> Void)?
     let onForgetStrap: (() -> Void)?
@@ -22,6 +24,7 @@ struct AtriaSettingsView: View {
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
+    @State private var batterySaver: Bool
     @State private var exportTapped = false
     @State private var syncTapped = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
@@ -43,6 +46,8 @@ struct AtriaSettingsView: View {
          onUpdateProfile: @escaping (@escaping (inout AthleteProfile) -> Void) -> Void,
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
+         batterySaverEnabled: Bool,
+         onUpdateBatterySaver: @escaping (Bool) -> Void,
          onExportHealth: (() -> Void)? = nil,
          onSyncMissedData: (() -> Void)? = nil,
          onForgetStrap: (() -> Void)? = nil) {
@@ -55,12 +60,15 @@ struct AtriaSettingsView: View {
         self.onUpdateProfile = onUpdateProfile
         self.hapticSettings = hapticSettings
         self.onUpdateHaptics = onUpdateHaptics
+        self.batterySaverEnabled = batterySaverEnabled
+        self.onUpdateBatterySaver = onUpdateBatterySaver
         self.onExportHealth = onExportHealth
         self.onSyncMissedData = onSyncMissedData
         self.onForgetStrap = onForgetStrap
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
         _nameDraft = State(initialValue: strapName)
+        _batterySaver = State(initialValue: batterySaverEnabled)
     }
 
     var body: some View {
@@ -72,6 +80,7 @@ struct AtriaSettingsView: View {
                     appearanceSection
                     todayLayoutSection
                     deviceSection
+                    radioModeSection
                     sensorAvailabilitySection
                     alertsSection
                     dataSection
@@ -91,6 +100,7 @@ struct AtriaSettingsView: View {
         }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
+        .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
     }
 
     // MARK: Appearance
@@ -374,6 +384,24 @@ struct AtriaSettingsView: View {
             Text("Device")
         } footer: {
             Text("Rename your strap; the name is saved on this phone. Atria stays connected to it automatically — you only pair once, until you forget it here.")
+        }
+    }
+
+    private var radioModeSection: some View {
+        Section {
+            Toggle(isOn: $batterySaver) {
+                Label("Battery saver", systemImage: "battery.75percent")
+            }
+            settingsInfoRow(icon: batterySaver ? "leaf.fill" : "waveform.path.ecg",
+                            tint: batterySaver ? .green : .purple,
+                            title: batterySaver ? "Standard HR radio" : "Full protocol radio",
+                            detail: batterySaver
+                                ? "Uses the strap's low-power heart-rate stream. HR stays live; HRV, Recovery and sleep detail wait for validated RR windows."
+                                : "Keeps richer strap streams available for RR, HRV, Recovery and sleep research. Uses more strap battery.")
+        } header: {
+            Text("Radio mode")
+        } footer: {
+            Text("You can switch anytime. Atria reconnects the strap when the radio mode changes.")
         }
     }
 
