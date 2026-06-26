@@ -27,8 +27,8 @@ class MonitorLongWearTests(unittest.TestCase):
         parsed = monitor_long_wear.parsed_summary(
             "\n".join([
                 "noise",
-                "WHOOPDBG_SESSIONS_SUMMARY status=ok sessions=204 recent_span_s=28800.0 recent_coverage_percent=91.5",
-                "WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=ok duration_s=120.0 delta_samples=121 battery=66 thermal=fair",
+                "ATRIADBG_SESSIONS_SUMMARY status=ok sessions=204 recent_span_s=28800.0 recent_coverage_percent=91.5",
+                "ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=ok duration_s=120.0 delta_samples=121 battery=66 thermal=fair",
             ])
         )
 

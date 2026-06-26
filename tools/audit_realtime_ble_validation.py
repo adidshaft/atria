@@ -326,9 +326,9 @@ def enriched_state_fields(summary: dict[str, Any], summary_path: Path | None = N
             prefs = plistlib.load(handle)
     except Exception:
         return fields
-    fields.setdefault("link_last_auto_save_status", prefs.get("whoop.link.lastAutoSaveStatus") or "none")
-    fields.setdefault("link_last_auto_save_samples", str(int(prefs.get("whoop.link.lastAutoSaveSamples") or 0)))
-    fields.setdefault("link_last_auto_save_duration_s", str(int(prefs.get("whoop.link.lastAutoSaveDuration") or 0)))
+    fields.setdefault("link_last_auto_save_status", prefs.get("atria.link.lastAutoSaveStatus") or "none")
+    fields.setdefault("link_last_auto_save_samples", str(int(prefs.get("atria.link.lastAutoSaveSamples") or 0)))
+    fields.setdefault("link_last_auto_save_duration_s", str(int(prefs.get("atria.link.lastAutoSaveDuration") or 0)))
     return fields
 
 

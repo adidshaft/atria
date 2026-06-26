@@ -15,8 +15,8 @@ from pathlib import Path
 
 
 SUMMARY_PREFIXES = (
-    "WHOOPDBG_SESSIONS_SUMMARY ",
-    "WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY ",
+    "ATRIADBG_SESSIONS_SUMMARY ",
+    "ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY ",
 )
 
 PRESETS = {
@@ -61,7 +61,7 @@ def parsed_summary(output: str) -> dict[str, dict[str, object]]:
         for prefix in SUMMARY_PREFIXES:
             if not line.startswith(prefix):
                 continue
-            name = "sessions" if prefix.startswith("WHOOPDBG_SESSIONS") else "active_journal"
+            name = "sessions" if prefix.startswith("ATRIADBG_SESSIONS") else "active_journal"
             summaries[name] = {key: coerce(value) for key, value in parse_tokens(line).items()}
     return summaries
 

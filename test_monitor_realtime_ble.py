@@ -12,31 +12,31 @@ from tools import monitor_realtime_ble
 class MonitorRealtimeBLETests(unittest.TestCase):
     def test_delta_uses_counter_keys(self):
         previous = {
-            "whoop.sample.rawNotifications": 10,
-            "whoop.sample.acceptedSamples": 8,
-            "whoop.link.disconnects": 2,
-            "whoop.watchdog.hrContinuityCount": 1,
+            "atria.sample.rawNotifications": 10,
+            "atria.sample.acceptedSamples": 8,
+            "atria.link.disconnects": 2,
+            "atria.watchdog.hrContinuityCount": 1,
         }
         current = {
-            "whoop.sample.rawNotifications": 15,
-            "whoop.sample.acceptedSamples": 12,
-            "whoop.link.disconnects": 3,
-            "whoop.watchdog.hrContinuityCount": 1,
+            "atria.sample.rawNotifications": 15,
+            "atria.sample.acceptedSamples": 12,
+            "atria.link.disconnects": 3,
+            "atria.watchdog.hrContinuityCount": 1,
         }
 
         delta = monitor_realtime_ble.compute_delta(previous, current)
 
-        self.assertEqual(delta["whoop.sample.rawNotifications"], 5)
-        self.assertEqual(delta["whoop.sample.acceptedSamples"], 4)
-        self.assertEqual(delta["whoop.link.disconnects"], 1)
-        self.assertEqual(delta["whoop.watchdog.hrContinuityCount"], 0)
-        self.assertEqual(delta["whoop.keepalive.ticks"], 0)
+        self.assertEqual(delta["atria.sample.rawNotifications"], 5)
+        self.assertEqual(delta["atria.sample.acceptedSamples"], 4)
+        self.assertEqual(delta["atria.link.disconnects"], 1)
+        self.assertEqual(delta["atria.watchdog.hrContinuityCount"], 0)
+        self.assertEqual(delta["atria.keepalive.ticks"], 0)
 
     def test_worn_sample_flags_silent_stall_and_zero_contact(self):
         delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
         current = {
-            "whoop.sample.lastStatus": "zero_contact",
-            "whoop.link.lastStatus": "connected",
+            "atria.sample.lastStatus": "zero_contact",
+            "atria.link.lastStatus": "connected",
         }
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
@@ -47,8 +47,8 @@ class MonitorRealtimeBLETests(unittest.TestCase):
     def test_not_worn_sample_allows_zero_contact(self):
         delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
         current = {
-            "whoop.sample.lastStatus": "zero_contact",
-            "whoop.link.lastStatus": "connected",
+            "atria.sample.lastStatus": "zero_contact",
+            "atria.link.lastStatus": "connected",
         }
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=False)
@@ -59,14 +59,14 @@ class MonitorRealtimeBLETests(unittest.TestCase):
     def test_long_wear_allows_flat_keepalive_ticks_when_stream_advances(self):
         delta = {
             **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
-            "whoop.sample.rawNotifications": 12,
-            "whoop.sample.acceptedSamples": 12,
+            "atria.sample.rawNotifications": 12,
+            "atria.sample.acceptedSamples": 12,
         }
         current = {
-            "whoop.sample.lastStatus": "accepted",
-            "whoop.link.lastStatus": "connected",
-            "whoop.longWear.enabled": True,
-            "whoop.keepalive.armed": True,
+            "atria.sample.lastStatus": "accepted",
+            "atria.link.lastStatus": "connected",
+            "atria.longWear.enabled": True,
+            "atria.keepalive.armed": True,
         }
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
@@ -76,10 +76,10 @@ class MonitorRealtimeBLETests(unittest.TestCase):
     def test_long_wear_flags_flat_keepalive_ticks_when_stream_stalls(self):
         delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
         current = {
-            "whoop.sample.lastStatus": "accepted",
-            "whoop.link.lastStatus": "connected",
-            "whoop.longWear.enabled": True,
-            "whoop.keepalive.armed": True,
+            "atria.sample.lastStatus": "accepted",
+            "atria.link.lastStatus": "connected",
+            "atria.longWear.enabled": True,
+            "atria.keepalive.armed": True,
         }
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
@@ -90,15 +90,15 @@ class MonitorRealtimeBLETests(unittest.TestCase):
     def test_long_wear_allows_advancing_keepalive_ticks(self):
         delta = {
             **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
-            "whoop.sample.rawNotifications": 12,
-            "whoop.sample.acceptedSamples": 12,
-            "whoop.keepalive.ticks": 2,
+            "atria.sample.rawNotifications": 12,
+            "atria.sample.acceptedSamples": 12,
+            "atria.keepalive.ticks": 2,
         }
         current = {
-            "whoop.sample.lastStatus": "accepted",
-            "whoop.link.lastStatus": "connected",
-            "whoop.longWear.enabled": True,
-            "whoop.keepalive.armed": True,
+            "atria.sample.lastStatus": "accepted",
+            "atria.link.lastStatus": "connected",
+            "atria.longWear.enabled": True,
+            "atria.keepalive.armed": True,
         }
 
         flags = monitor_realtime_ble.evaluate_sample(delta, current, worn=True)
@@ -108,17 +108,17 @@ class MonitorRealtimeBLETests(unittest.TestCase):
     def test_summary_fails_when_any_tick_flags(self):
         samples = [
             {
-                "current": {"whoop.link.lastStatus": "connected"},
+                "current": {"atria.link.lastStatus": "connected"},
                 "delta": {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
                 "flags": [],
             },
             {
-                "current": {"whoop.link.lastStatus": "connected"},
+                "current": {"atria.link.lastStatus": "connected"},
                 "delta": {
                     **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
-                    "whoop.sample.rawNotifications": 0,
-                    "whoop.link.disconnects": 0,
-                    "whoop.watchdog.hrContinuityCount": 0,
+                    "atria.sample.rawNotifications": 0,
+                    "atria.link.disconnects": 0,
+                    "atria.watchdog.hrContinuityCount": 0,
                 },
                 "flags": ["NO_NEW_DATA"],
             },
@@ -133,19 +133,19 @@ class MonitorRealtimeBLETests(unittest.TestCase):
         baseline_delta = {key: 0 for key in monitor_realtime_ble.COUNTER_KEYS}
         healthy_delta = {
             **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
-            "whoop.sample.rawNotifications": 12,
-            "whoop.sample.acceptedSamples": 12,
-            "whoop.link.disconnects": 0,
-            "whoop.watchdog.hrContinuityCount": 0,
+            "atria.sample.rawNotifications": 12,
+            "atria.sample.acceptedSamples": 12,
+            "atria.link.disconnects": 0,
+            "atria.watchdog.hrContinuityCount": 0,
         }
         samples = [
             {
-                "current": {"whoop.sample.lastStatus": "accepted", "whoop.link.lastStatus": "connected"},
+                "current": {"atria.sample.lastStatus": "accepted", "atria.link.lastStatus": "connected"},
                 "delta": baseline_delta,
                 "flags": [],
             },
             {
-                "current": {"whoop.sample.lastStatus": "accepted", "whoop.link.lastStatus": "connected"},
+                "current": {"atria.sample.lastStatus": "accepted", "atria.link.lastStatus": "connected"},
                 "delta": healthy_delta,
                 "flags": [],
             },
@@ -227,10 +227,10 @@ class MonitorRealtimeBLETests(unittest.TestCase):
                 "sample": 2,
                 "delta": {
                     **{key: 0 for key in monitor_realtime_ble.COUNTER_KEYS},
-                    "whoop.sample.rawNotifications": 18,
-                    "whoop.sample.acceptedSamples": 18,
-                    "whoop.link.disconnects": 0,
-                    "whoop.watchdog.hrContinuityCount": 0,
+                    "atria.sample.rawNotifications": 18,
+                    "atria.sample.acceptedSamples": 18,
+                    "atria.link.disconnects": 0,
+                    "atria.watchdog.hrContinuityCount": 0,
                 },
                 "flags": [],
             },

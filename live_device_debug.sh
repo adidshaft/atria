@@ -135,7 +135,7 @@ Usage:
   ./live_device_debug.sh [--device DEVICE_ID] [--xcode-device XCODE_DEVICE_ID] [--seconds N] [--log PATH] [--no-build] [--pull-only] [--until-realtime] [--until-ready] [--complete-onboarding] [--log-baseline] [--log-collection-health] [--log-collection-health-after N] [--log-gate-status] [--log-gate-readiness] [--log-gate-status-after N] [--log-gate-status-deep] [--log-activity-detections] [--log-daily-rollups] [--log-trends] [--log-widget-snapshot] [--log-workout-preflight] [--log-strain-validation] [--log-hr-consistency] [--log-hr-artifact-policy] [--log-hr-continuity-watchdog-state] [--quiet-ble-logs] [--full-protocol-mode] [--standard-hr-only] [--long-wear-mode] [--leave-running] [--reset-link-diagnostics] [--reset-sample-diagnostics] [--reset-protocol-diagnostics] [--active-motion-imu-check] [--flush-active-journal-after N] [--manual-checkpoint-after N] [--force-no-data-watchdog-after N] [--force-hr-continuity-watchdog-after N] [--force-rr-presence-watchdog-after N] [--force-missing-2a37-after N] [--force-accepted-hr-watchdog-after N] [--backup-sessions] [--verify-backup] [--restore-backup] [--push-backup PATH] [--push-rr-reference PATH] [--push-rr-reference-as NAME.csv] [--push-hr-reference PATH] [--push-hr-reference-as NAME.csv] [--clear-reference-inputs] [--healthkit-export] [--confirm-best-workout-candidate] [--confirm-best-sleep-candidate] [--export-rr-reference-package] [--validate-rr-reference] [--pull-reference-package DIR] [--morning-hrv-check] [--morning-hrv-force] [--gate-d-hr-comparison-capture] [--gate-e-workout-capture] [--gate-e-hr-only-workout-capture] [--auto-save-session-after N] [--auto-save-session-every N] [--checkpoint-session-every N] [--log-live-workout-every N] [--auto-save-workout-when-ready N] [--verify-workout-label LABEL] [--verify-workout-after N] [--verify-sleep] [--verify-sleep-label LABEL] [--verify-sleep-after N] [--schedule-notifications] [--test-notification] [--notification-delay N] [--auto-capture] [--strict-live-rr-capture] [--auto-capture-delay N] [--auto-capture-when-rr FRACTION] [--auto-capture-rr-window N] [--auto-capture-rr-min-frames N] [--auto-capture-max-rr-gap N] [--auto-capture-rr-timeout N] [--stop-when-ready] [--auto-stop-after N] [--label LABEL] [--realtime-start-retries N] [--realtime-restart-zero-rr-seconds N] [--realtime-reassert-zero-rr-seconds N] [--disable-history-ack] [--history-ack-mode trim|enddata|index|unix|zero|none] [--history-recent-sweep] [--history-recent-offsets N[,N...]] [--history-clock-handshake] [--history-noop-backfill] [--probe-command HEX] [--probe-command-delay N] [--probe-sweep HEX[,HEX...]] [--probe-sweep-interval N] [--probe-command-mode wwr|wr] [--pull-capture DIR] [--pull-backups DIR] [--pull-sessions DIR] [--pull-historical DIR] [--replay-log PATH]
 
 Builds, installs, and launches the Atria app on a physical iPhone with
-devicectl --console so WHOOPDBG lines stream in real time. Defaults to adidshaft's
+devicectl --console so ATRIADBG lines stream in real time. Defaults to adidshaft's
 paired iPhone. Set ATRIA_DEVICE_ID, legacy WHOOP_DEVICE_ID, or pass --device to override.
 
 Options:
@@ -150,7 +150,7 @@ Options:
                        --pull-sessions, --pull-backups, or other pull flags
                        during unattended long-wear runs.
   --until-realtime     Stop once a 61080005 realtime frame is observed.
-  --until-ready        Stop once WHOOPDBG reports a validation-ready HRV window
+  --until-ready        Stop once ATRIADBG reports a validation-ready HRV window
                        or a ready capture_summary.
   --complete-onboarding
                        Debug launch arg: complete local profile onboarding.
@@ -197,7 +197,7 @@ Options:
   --log-hr-artifact-policy
                        Debug launch arg: log the HR artifact jump policy
                        self-test without saving a session.
-  --quiet-ble-logs     Do not request verbose per-packet WHOOPDBG logs. Default
+  --quiet-ble-logs     Do not request verbose per-packet ATRIADBG logs. Default
                        debug captures keep packet logs enabled for evidence.
   --full-protocol-mode Disable persisted Long wear / Low radio HR and reconnect
                        through the full WHOOP custom protocol for Gate B/H.
@@ -412,7 +412,7 @@ Options:
                        Start Capture after N seconds even if RR fraction never
                        reaches threshold, preserving learning evidence.
   --stop-when-ready    With --auto-capture, stop Capture at the first ready HRV
-                       window so WHOOPDBG emits a capture_summary.
+                       window so ATRIADBG emits a capture_summary.
   --auto-stop-after N  With --auto-capture, stop Capture after N seconds even if
                        HRV is still learning. Useful for preserving timeout CSVs.
   --label LABEL        Capture label used by --auto-capture. Default: gate-b-auto.
@@ -487,9 +487,9 @@ Options:
                        Seconds between --probe-sweep commands. Default: 30.
   --probe-command-mode wwr|wr
                        Write mode for --probe-command. Default: wwr.
-  --pull-capture DIR   After the app logs WHOOPDBG capture_file, copy that CSV
+  --pull-capture DIR   After the app logs ATRIADBG capture_file, copy that CSV
                        from the app data container into DIR.
-  --replay-log PATH    Parse an existing WHOOPDBG console log and print the same
+  --replay-log PATH    Parse an existing ATRIADBG console log and print the same
                        summary without building, installing, or launching.
 EOF
 }
@@ -1079,7 +1079,7 @@ mode=$([[ "$gate_e_hr_only_workout_capture" -eq 1 ]] && printf 'standard_hr_only
 label=$capture_label
 seconds=$seconds
 expected_target_hr_min_bpm=121
-authoritative_threshold_field=WHOOPDBG_workout_preflight_or_live_workout_threshold_hr
+authoritative_threshold_field=ATRIADBG_workout_preflight_or_live_workout_threshold_hr
 target_continuous_bout_min_s=480
 target_total_duration_min_s=600
 target_stream_coverage_min_percent=75
@@ -1368,8 +1368,8 @@ case "$probe_command_mode" in
     ;;
 esac
 
-project="WhoopApp/WhoopApp.xcodeproj"
-scheme="WhoopApp"
+project="Atria/Atria.xcodeproj"
+scheme="Atria"
 derived_data="build/DerivedData"
 app_path="${derived_data}/Build/Products/Debug-iphoneos/Atria.app"
 xcode_build_destination="id=${xcode_device_id}"
@@ -1544,7 +1544,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       printf 'No built app at %s; rerun without --no-build.\n' "$app_path" >&2
       exit 66
     fi
-    newest_source=$(find WhoopApp/WhoopApp -name '*.swift' -type f -newer "$app_path" -print -quit)
+    newest_source=$(find Atria/Atria -name '*.swift' -type f -newer "$app_path" -print -quit)
     if [[ -n "$newest_source" ]]; then
       printf 'Refusing stale --no-build: %s is newer than %s. Rerun without --no-build.\n' "$newest_source" "$app_path" >&2
       exit 66
@@ -1561,7 +1561,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       --domain-identifier "$bundle_id" \
       --source "$push_backup_path" \
       --destination "Documents/atria-backups/$pushed_backup_name"
-    printf 'WHOOPDBG_BACKUP_PUSH_FILE=Documents/atria-backups/%s\n' "$pushed_backup_name"
+    printf 'ATRIADBG_BACKUP_PUSH_FILE=Documents/atria-backups/%s\n' "$pushed_backup_name"
   fi
   if [[ -n "$push_rr_reference_path" ]]; then
     xcrun devicectl device copy to \
@@ -1570,7 +1570,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       --domain-identifier "$bundle_id" \
       --source "$push_rr_reference_path" \
       --destination "Documents/atria-reference/$push_rr_reference_name"
-    printf 'WHOOPDBG_RR_REFERENCE_PUSH_FILE=Documents/atria-reference/%s\n' "$push_rr_reference_name"
+    printf 'ATRIADBG_RR_REFERENCE_PUSH_FILE=Documents/atria-reference/%s\n' "$push_rr_reference_name"
   fi
   if [[ -n "$push_hr_reference_path" ]]; then
     xcrun devicectl device copy to \
@@ -1579,7 +1579,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       --domain-identifier "$bundle_id" \
       --source "$push_hr_reference_path" \
       --destination "Documents/atria-reference/$push_hr_reference_name"
-    printf 'WHOOPDBG_HR_REFERENCE_PUSH_FILE=Documents/atria-reference/%s\n' "$push_hr_reference_name"
+    printf 'ATRIADBG_HR_REFERENCE_PUSH_FILE=Documents/atria-reference/%s\n' "$push_hr_reference_name"
   fi
 fi
 
@@ -1744,10 +1744,10 @@ def summarize_active_journal_segments(directory: Path) -> None:
                 segment["_file"] = path.name
                 segments.append(segment)
         except (OSError, json.JSONDecodeError) as error:
-            emit(f"WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=decode_error file={path.name} error={str(error)!r}")
+            emit(f"ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=decode_error file={path.name} error={str(error)!r}")
             return
     if not segments:
-        emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=empty segments=0")
+        emit("ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY status=empty segments=0")
         return
     samples = []
     rr_samples = []
@@ -1763,7 +1763,7 @@ def summarize_active_journal_segments(directory: Path) -> None:
     latest = segments[-1]
     duration = (max(updates) - min(starts)) if starts and updates else 0
     latest_bpm = samples[-1].get("bpm", "none") if samples else "none"
-    emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY "
+    emit("ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_SUMMARY "
          f"status=ok segments={len(segments)} duration_s={duration:.1f} "
          f"delta_samples={len(samples)} delta_rr={len(rr_samples)} "
          f"accepted_hr={latest.get('acceptedHRSamples', 0)} raw_hr={latest.get('rawHRNotifications', 0)} "
@@ -1783,7 +1783,7 @@ def summarize_sessions_file(path: Path) -> None:
         with path.open(encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError) as error:
-        emit(f"WHOOPDBG_SESSIONS_SUMMARY status=decode_error error={str(error)!r}")
+        emit(f"ATRIADBG_SESSIONS_SUMMARY status=decode_error error={str(error)!r}")
         return
     if isinstance(payload, list):
         sessions = [item for item in payload if isinstance(item, dict)]
@@ -1792,7 +1792,7 @@ def summarize_sessions_file(path: Path) -> None:
     else:
         sessions = []
     if not sessions:
-        emit("WHOOPDBG_SESSIONS_SUMMARY status=empty sessions=0")
+        emit("ATRIADBG_SESSIONS_SUMMARY status=empty sessions=0")
         return
 
     def number(value, default=0.0):
@@ -1839,7 +1839,7 @@ def summarize_sessions_file(path: Path) -> None:
         last_point = latest_points[-1]
         if isinstance(last_point, dict):
             latest_bpm = last_point.get("bpm", "none")
-    emit("WHOOPDBG_SESSIONS_SUMMARY "
+    emit("ATRIADBG_SESSIONS_SUMMARY "
          f"status=ok sessions={len(sessions)} recent_sessions={len(recent)} recent_window_s={recent_window_s} "
          f"recent_span_s={recent_span:.1f} recent_duration_s={recent_duration:.1f} recent_coverage_percent={recent_coverage:.1f} "
          f"recent_samples={recent_samples} recent_rr={recent_rr} "
@@ -1850,7 +1850,7 @@ def summarize_sessions_file(path: Path) -> None:
 
 
 def frame_payload_from_frame_hex(line: str) -> tuple[str, bytes, bool] | None:
-    tokens = tokens_after("WHOOPDBG frame", line)
+    tokens = tokens_after("ATRIADBG frame", line)
     channel = tokens.get("ch", "")
     raw_hex = tokens.get("hex")
     if raw_hex is None:
@@ -2212,7 +2212,7 @@ def historical_rr_candidate_count(payload: bytes) -> int:
 
 
 def parse_cmd_response(line: str) -> None:
-    tokens = tokens_after("WHOOPDBG cmdResp", line)
+    tokens = tokens_after("ATRIADBG cmdResp", line)
     payload_hex = tokens.get("payload", "")
     try:
         payload = bytes.fromhex(payload_hex)
@@ -2234,7 +2234,7 @@ def parse_cmd_response(line: str) -> None:
 
 
 def ingest_sleep_motion_hint(line: str) -> None:
-    tokens = tokens_after("WHOOPDBG sleep_motion_hint", line)
+    tokens = tokens_after("ATRIADBG sleep_motion_hint", line)
     kind = tokens.get("kind", "unknown") or "unknown"
     rr_summary["sleep_motion_hint_count"] += 1
     sleep_motion_hint_kinds[kind] += 1
@@ -2247,7 +2247,7 @@ def ingest_sleep_motion_hint(line: str) -> None:
 
 
 def ingest_historical_data_row(line: str) -> None:
-    tokens = tokens_after("WHOOPDBG historicalData", line)
+    tokens = tokens_after("ATRIADBG historicalData", line)
     rr_summary["historical_data_rows"] += 1
     payload_hex = tokens.get("payload", "")
     if payload_hex and not rr_summary["historical_2f_first_prefix"]:
@@ -2255,7 +2255,7 @@ def ingest_historical_data_row(line: str) -> None:
     if payload_hex:
         rr_summary["historical_2f_last_prefix"] = payload_hex[:48]
     try:
-        rr_count = int(tokens.get("whoop4_v24_rrnum18", "0"))
+        rr_count = int(tokens.get("strap4_v24_rrnum18", "0"))
     except ValueError:
         rr_count = 0
     rr_summary["historical_2f_candidate_rr_values"] += rr_count
@@ -2271,7 +2271,7 @@ def ingest_historical_data_row(line: str) -> None:
 
 
 def ingest_historical_archive_row(line: str) -> None:
-    tokens = tokens_after("WHOOPDBG historicalArchive", line)
+    tokens = tokens_after("ATRIADBG historicalArchive", line)
     try:
         rows = int(tokens.get("rows", "0"))
     except ValueError:
@@ -2301,76 +2301,76 @@ def ingest_whoopdbg(line: str) -> None:
         timestamps["first_whoopdbg"] = timestamp
     if "notifyState ch=61080005" in line and "notifying=1" in line:
         flags["notify_61080005"] = True
-    if "WHOOPDBG gate_status_start" in line:
+    if "ATRIADBG gate_status_start" in line:
         flags["gate_status_start"] = True
-    if "WHOOPDBG execution_priority" in line:
+    if "ATRIADBG execution_priority" in line:
         flags["gate_status_complete"] = True
-    if "WHOOPDBG gate_readiness_ui source=launch_arg" in line:
+    if "ATRIADBG gate_readiness_ui source=launch_arg" in line:
         flags["gate_readiness_complete"] = True
-    if "WHOOPDBG gate_status_deep" in line:
+    if "ATRIADBG gate_status_deep" in line:
         flags["gate_status_deep_complete"] = True
-    if "WHOOPDBG healthkit_reference_audit status=" in line:
+    if "ATRIADBG healthkit_reference_audit status=" in line:
         flags["healthkit_reference_audit_complete"] = True
-    if "WHOOPDBG healthkit_export status=" in line:
+    if "ATRIADBG healthkit_export status=" in line:
         flags["healthkit_export_complete"] = True
-    if "WHOOPDBG healthkit_export_verify status=" in line:
+    if "ATRIADBG healthkit_export_verify status=" in line:
         flags["healthkit_export_verify_complete"] = True
-    if "WHOOPDBG healthkit_export status=authorization_pending" in line:
+    if "ATRIADBG healthkit_export status=authorization_pending" in line:
         flags["healthkit_export_authorization_pending_complete"] = True
-    if "WHOOPDBG healthkit_sleep_export_verify status=" in line:
+    if "ATRIADBG healthkit_sleep_export_verify status=" in line:
         flags["healthkit_sleep_export_verify_complete"] = True
-    if "WHOOPDBG healthkit_sleep_export status=authorization_required" in line:
+    if "ATRIADBG healthkit_sleep_export status=authorization_required" in line:
         flags["healthkit_sleep_export_deferred_complete"] = True
-    if "WHOOPDBG healthkit_sleep_export status=permission_required" in line:
+    if "ATRIADBG healthkit_sleep_export status=permission_required" in line:
         flags["healthkit_sleep_export_deferred_complete"] = True
-    if "WHOOPDBG healthkit_reset_rebuild status=complete" in line:
+    if "ATRIADBG healthkit_reset_rebuild status=complete" in line:
         flags["healthkit_reset_rebuild_complete"] = True
-    if "WHOOPDBG workout_confirm status=" in line:
+    if "ATRIADBG workout_confirm status=" in line:
         flags["workout_confirm_complete"] = True
-    if "WHOOPDBG sleep_confirm status=" in line:
+    if "ATRIADBG sleep_confirm status=" in line:
         flags["sleep_confirm_complete"] = True
-    if "WHOOPDBG launch_exports_post_healthkit_gate_status status=completed" in line:
+    if "ATRIADBG launch_exports_post_healthkit_gate_status status=completed" in line:
         flags["post_healthkit_gate_status_complete"] = True
     if (
-        "WHOOPDBG rr_reference_validation status=" in line
+        "ATRIADBG rr_reference_validation status=" in line
         and " status=started " not in line
     ):
         flags["rr_reference_validation_complete"] = True
     if (
-        "WHOOPDBG hr_reference_validation status=" in line
+        "ATRIADBG hr_reference_validation status=" in line
         and " status=started " not in line
     ):
         flags["hr_reference_validation_complete"] = True
-    if "WHOOPDBG reference_inputs_clear status=" in line:
+    if "ATRIADBG reference_inputs_clear status=" in line:
         flags["reference_inputs_clear_complete"] = True
-    if "WHOOPDBG collection_health " in line:
+    if "ATRIADBG collection_health " in line:
         flags["collection_health_complete"] = True
-    if "WHOOPDBG workout_validation status=" in line:
+    if "ATRIADBG workout_validation status=" in line:
         flags["workout_validation_complete"] = True
-    if "WHOOPDBG sleep_validation status=" in line:
+    if "ATRIADBG sleep_validation status=" in line:
         flags["sleep_validation_complete"] = True
-    if "WHOOPDBG session_backup " in line:
+    if "ATRIADBG session_backup " in line:
         flags["backup_complete"] = True
-    if "WHOOPDBG session_backup_verify " in line:
+    if "ATRIADBG session_backup_verify " in line:
         flags["backup_verify_complete"] = True
-    if "WHOOPDBG notification_schedule status=" in line:
+    if "ATRIADBG notification_schedule status=" in line:
         flags["notification_schedule_complete"] = True
-    if "WHOOPDBG notification_delivered kind=diagnostic" in line:
+    if "ATRIADBG notification_delivered kind=diagnostic" in line:
         flags["notification_delivery_complete"] = True
-    if "WHOOPDBG trend_summary " in line:
+    if "ATRIADBG trend_summary " in line:
         flags["trend_summary_complete"] = True
-    if "WHOOPDBG trend_window " in line:
-        tokens = tokens_after("WHOOPDBG trend_window", line)
+    if "ATRIADBG trend_window " in line:
+        tokens = tokens_after("ATRIADBG trend_window", line)
         days = tokens.get("days", "")
         if days:
             trend_windows_seen.add(days)
         if {"7", "30", "90"}.issubset(trend_windows_seen):
             flags["trend_windows_complete"] = True
-    if "WHOOPDBG strain_validation " in line:
+    if "ATRIADBG strain_validation " in line:
         flags["strain_validation_complete"] = True
-    if "WHOOPDBG widget_snapshot status=" in line:
+    if "ATRIADBG widget_snapshot status=" in line:
         flags["widget_snapshot_complete"] = True
-    if "WHOOPDBG gate_status gate=" in line and "radio_standard_hr_only=1" in line:
+    if "ATRIADBG gate_status gate=" in line and "radio_standard_hr_only=1" in line:
         radio_fields = tokens_after("evidence=", line.replace(";", " "))
         skipped = int(radio_fields.get("_radio_custom_notify_skipped", radio_fields.get("radio_custom_notify_skipped", "0")) or "0")
         tx_skipped = int(radio_fields.get("_radio_tx_skipped", radio_fields.get("radio_tx_skipped", "0")) or "0")
@@ -2378,10 +2378,10 @@ def ingest_whoopdbg(line: str) -> None:
         enabled = int(radio_fields.get("_radio_custom_notify_enabled", radio_fields.get("radio_custom_notify_enabled", "0")) or "0")
         if (skipped > 0 or tx_skipped > 0 or realtime_skipped > 0) and enabled == 0:
             flags["radio_low_traffic_complete"] = True
-    if "WHOOPDBG radio_low_traffic status=ready" in line and "mode=standard_hr_only" in line:
+    if "ATRIADBG radio_low_traffic status=ready" in line and "mode=standard_hr_only" in line:
         flags["radio_low_traffic_complete"] = True
-    if "WHOOPDBG model_gate " in line:
-        tokens = tokens_after("WHOOPDBG model_gate", line)
+    if "ATRIADBG model_gate " in line:
+        tokens = tokens_after("ATRIADBG model_gate", line)
         status = tokens.get("status", "")
         rr_summary["model_gate_rows"] += 1
         rr_summary["model_gate_last_status"] = status
@@ -2392,42 +2392,42 @@ def ingest_whoopdbg(line: str) -> None:
             rr_summary["model_gate_assume_4_class_rows"] += 1
         if status == "metadata_explicit":
             rr_summary["model_gate_metadata_explicit_rows"] += 1
-    if "WHOOPDBG sensor_research_probe " in line:
-        tokens = tokens_after("WHOOPDBG sensor_research_probe", line)
+    if "ATRIADBG sensor_research_probe " in line:
+        tokens = tokens_after("ATRIADBG sensor_research_probe", line)
         rr_summary["sensor_research_probe_rows"] += 1
         rr_summary["sensor_research_probe_spo2_candidate_frames"] = tokens.get("spo2_candidate_frames", "")
         rr_summary["sensor_research_probe_skin_temp_candidate_frames"] = tokens.get("skin_temp_candidate_frames", "")
         rr_summary["sensor_research_probe_last_model_generation"] = tokens.get("model_generation", "")
         rr_summary["sensor_research_probe_last_model_evidence"] = tokens.get("model_evidence", "")
-    if "WHOOPDBG send mode=" in line and "cmd=03" in line:
+    if "ATRIADBG send mode=" in line and "cmd=03" in line:
         flags["realtime_start"] = True
-    if "WHOOPDBG send mode=" in line and current_segment is None:
-        tokens = tokens_after("WHOOPDBG send", line)
+    if "ATRIADBG send mode=" in line and current_segment is None:
+        tokens = tokens_after("ATRIADBG send", line)
         cmd = tokens.get("cmd", "")
         frame = tokens.get("frame", "")
         start_segment("initial", cmd, timestamp)
         current_segment["frame"] = frame
-    if "WHOOPDBG probeSweep send" in line:
-        tokens = tokens_after("WHOOPDBG probeSweep send", line)
+    if "ATRIADBG probeSweep send" in line:
+        tokens = tokens_after("ATRIADBG probeSweep send", line)
         index = tokens.get("index", str(len(segments)))
         raw = tokens.get("raw", "")
         start_segment(f"sweep_{index}", raw, timestamp)
-    if "WHOOPDBG probeCommand send" in line:
-        tokens = tokens_after("WHOOPDBG probeCommand send", line)
+    if "ATRIADBG probeCommand send" in line:
+        tokens = tokens_after("ATRIADBG probeCommand send", line)
         cmd = tokens.get("cmd", "")
         data = tokens.get("data", "")
         start_segment("probe", f"{cmd}{data}", timestamp)
-    if "WHOOPDBG cmdResp" in line:
+    if "ATRIADBG cmdResp" in line:
         flags["cmd_response"] = True
         parse_cmd_response(line)
-    if "WHOOPDBG sleep_motion_hint" in line:
+    if "ATRIADBG sleep_motion_hint" in line:
         ingest_sleep_motion_hint(line)
-    if "WHOOPDBG historicalData" in line:
+    if "ATRIADBG historicalData" in line:
         ingest_historical_data_row(line)
-    if "WHOOPDBG historicalArchive" in line:
+    if "ATRIADBG historicalArchive" in line:
         ingest_historical_archive_row(line)
-    if "WHOOPDBG standardHR" in line:
-        tokens = tokens_after("WHOOPDBG standardHR", line)
+    if "ATRIADBG standardHR" in line:
+        tokens = tokens_after("ATRIADBG standardHR", line)
         rr_summary["standard_2a37_frames"] += 1
         rr_summary["last_standard_2a37_payload"] = tokens.get("payload", "")
         rr_summary["last_standard_2a37_hr"] = tokens.get("hr", "")
@@ -2440,13 +2440,13 @@ def ingest_whoopdbg(line: str) -> None:
         if rrnum > 0:
             rr_summary["standard_2a37_rr_frames"] += 1
             rr_summary["standard_2a37_rr_values"] += rrnum
-    if "WHOOPDBG frame ch=6108000" in line:
+    if "ATRIADBG frame ch=6108000" in line:
         ingest_frame_catalog(line)
-    if "WHOOPDBG realtimeRestart" in line:
+    if "ATRIADBG realtimeRestart" in line:
         rr_summary["realtime_restarts"] += 1
-    if "WHOOPDBG realtimeReassert" in line:
+    if "ATRIADBG realtimeReassert" in line:
         rr_summary["realtime_reasserts"] += 1
-    if "WHOOPDBG frame ch=61080005" in line:
+    if "ATRIADBG frame ch=61080005" in line:
         flags["frame_61080005"] = True
         if timestamp is not None and timestamps["first_realtime"] is None:
             timestamps["first_realtime"] = timestamp
@@ -2482,8 +2482,8 @@ def ingest_whoopdbg(line: str) -> None:
                 rr_summary["realtime_rr_frames"] += 1
                 if available_rr_bytes < expected_rr_bytes:
                     rr_summary["realtime_truncated_rr_frames"] += 1
-    if "WHOOPDBG hrv" in line:
-        tokens = tokens_after("WHOOPDBG hrv", line)
+    if "ATRIADBG hrv" in line:
+        tokens = tokens_after("ATRIADBG hrv", line)
         gap = tokens.get("max_rr_gap_s")
         if gap is not None:
             rr_summary["last_hrv_max_rr_gap_s"] = gap
@@ -2494,44 +2494,44 @@ def ingest_whoopdbg(line: str) -> None:
                 pass
         if "ready=1" in line:
             flags["hrv_ready"] = True
-    if "WHOOPDBG rr_quality" in line:
-        tokens = tokens_after("WHOOPDBG rr_quality", line)
+    if "ATRIADBG rr_quality" in line:
+        tokens = tokens_after("ATRIADBG rr_quality", line)
         rr_summary["last_rr_quality_source"] = tokens.get("source", "")
     if "capture_summary" in line and "ready=1" in line:
         flags["capture_summary_ready"] = True
-    if "WHOOPDBG autoCapture start" in line:
+    if "ATRIADBG autoCapture start" in line:
         flags["auto_capture_start"] = True
         rr_summary["auto_capture_starts"] += 1
-    if "WHOOPDBG autoCapture stop" in line:
+    if "ATRIADBG autoCapture stop" in line:
         flags["auto_capture_stop"] = True
         rr_summary["auto_capture_stops"] += 1
-    if "WHOOPDBG capture_abort" in line:
+    if "ATRIADBG capture_abort" in line:
         rr_summary["capture_aborts"] += 1
-    if "WHOOPDBG capture_quality_reset" in line:
+    if "ATRIADBG capture_quality_reset" in line:
         rr_summary["capture_quality_resets"] += 1
-    if "WHOOPDBG autoCapture exhausted" in line:
+    if "ATRIADBG autoCapture exhausted" in line:
         rr_summary["auto_capture_exhausted"] += 1
-    if "WHOOPDBG capture_file" in line:
-        tokens = tokens_after("WHOOPDBG capture_file", line)
+    if "ATRIADBG capture_file" in line:
+        tokens = tokens_after("ATRIADBG capture_file", line)
         capture_file_path = tokens.get("path", "") or capture_file_path
-    if "WHOOPDBG rr_reference_package" in line:
-        tokens = tokens_after("WHOOPDBG rr_reference_package", line)
+    if "ATRIADBG rr_reference_package" in line:
+        tokens = tokens_after("ATRIADBG rr_reference_package", line)
         rr_reference_csv_path = tokens.get("csv", "") or rr_reference_csv_path
         rr_reference_manifest_path = tokens.get("manifest", "") or rr_reference_manifest_path
         flags["rr_reference_package_complete"] = bool(rr_reference_csv_path and rr_reference_manifest_path)
-    if "WHOOPDBG hr_reference_package" in line:
-        tokens = tokens_after("WHOOPDBG hr_reference_package", line)
+    if "ATRIADBG hr_reference_package" in line:
+        tokens = tokens_after("ATRIADBG hr_reference_package", line)
         hr_reference_csv_path = tokens.get("csv", "") or hr_reference_csv_path
         hr_reference_manifest_path = tokens.get("manifest", "") or hr_reference_manifest_path
         flags["hr_reference_package_complete"] = bool(hr_reference_csv_path and hr_reference_manifest_path)
-    if "WHOOPDBG session_backup " in line:
-        tokens = tokens_after("WHOOPDBG session_backup", line)
+    if "ATRIADBG session_backup " in line:
+        tokens = tokens_after("ATRIADBG session_backup", line)
         backup_file_path = tokens.get("path", "") or backup_file_path
-    if "WHOOPDBG session_backup_verify " in line:
-        tokens = tokens_after("WHOOPDBG session_backup_verify", line)
+    if "ATRIADBG session_backup_verify " in line:
+        tokens = tokens_after("ATRIADBG session_backup_verify", line)
         backup_verified_path = tokens.get("path", "") or backup_verified_path
-    if "WHOOPDBG rr " in line:
-        tokens = tokens_after("WHOOPDBG rr", line)
+    if "ATRIADBG rr " in line:
+        tokens = tokens_after("ATRIADBG rr", line)
         source = tokens.get("source", "")
         if timestamp is not None:
             if timestamps["first_rr"] is None:
@@ -2580,15 +2580,15 @@ elif replay_log:
     with open(replay_log, encoding="utf-8") as handle:
         for line in handle:
             line = line.rstrip()
-            if line == "WHOOPDBG_SUMMARY_START":
+            if line == "ATRIADBG_SUMMARY_START":
                 skipping_existing_summary = True
                 continue
             if skipping_existing_summary:
-                if line == "WHOOPDBG_SUMMARY_END":
+                if line == "ATRIADBG_SUMMARY_END":
                     skipping_existing_summary = False
                 continue
             emit(line)
-            if "WHOOPDBG" in line:
+            if "ATRIADBG" in line:
                 ingest_whoopdbg(line)
 else:
     devicectl_log_path = f"{log_path}.devicectl.log" if log_path else ""
@@ -2605,195 +2605,195 @@ else:
         bundle_id,
     ])
     if auto_capture:
-        cmd.extend(["--whoop-auto-capture", "--whoop-capture-label", capture_label])
+        cmd.extend(["--atria-auto-capture", "--atria-capture-label", capture_label])
     elif morning_hrv_check or auto_save_session_after or auto_save_session_every or checkpoint_session_every or log_live_workout_every or auto_save_workout_when_ready or verify_workout_label:
-        cmd.extend(["--whoop-capture-label", capture_label])
+        cmd.extend(["--atria-capture-label", capture_label])
     if auto_capture or morning_hrv_check:
         if auto_capture_delay:
-            cmd.extend(["--whoop-auto-capture-delay", auto_capture_delay])
+            cmd.extend(["--atria-auto-capture-delay", auto_capture_delay])
         if auto_capture_when_rr:
-            cmd.extend(["--whoop-auto-capture-when-rr", auto_capture_when_rr])
+            cmd.extend(["--atria-auto-capture-when-rr", auto_capture_when_rr])
         if auto_capture_rr_window:
-            cmd.extend(["--whoop-auto-capture-rr-window", auto_capture_rr_window])
+            cmd.extend(["--atria-auto-capture-rr-window", auto_capture_rr_window])
         if auto_capture_rr_min_frames:
-            cmd.extend(["--whoop-auto-capture-rr-min-frames", auto_capture_rr_min_frames])
+            cmd.extend(["--atria-auto-capture-rr-min-frames", auto_capture_rr_min_frames])
         if auto_capture_max_rr_gap:
-            cmd.extend(["--whoop-auto-capture-max-rr-gap", auto_capture_max_rr_gap])
+            cmd.extend(["--atria-auto-capture-max-rr-gap", auto_capture_max_rr_gap])
         if auto_capture_rr_timeout:
-            cmd.extend(["--whoop-auto-capture-rr-timeout", auto_capture_rr_timeout])
+            cmd.extend(["--atria-auto-capture-rr-timeout", auto_capture_rr_timeout])
         if auto_capture_max_attempts:
-            cmd.extend(["--whoop-auto-capture-max-attempts", auto_capture_max_attempts])
+            cmd.extend(["--atria-auto-capture-max-attempts", auto_capture_max_attempts])
         if stop_when_ready:
-            cmd.append("--whoop-stop-when-ready")
+            cmd.append("--atria-stop-when-ready")
         if auto_stop_after:
-            cmd.extend(["--whoop-auto-stop-after", auto_stop_after])
+            cmd.extend(["--atria-auto-stop-after", auto_stop_after])
         if strict_live_rr_capture:
-            cmd.append("--whoop-strict-live-rr-capture")
+            cmd.append("--atria-strict-live-rr-capture")
     if complete_onboarding:
-        cmd.append("--whoop-complete-onboarding")
+        cmd.append("--atria-complete-onboarding")
     if log_baseline:
-        cmd.append("--whoop-log-baseline")
+        cmd.append("--atria-log-baseline")
     if log_collection_health:
-        cmd.append("--whoop-log-collection-health")
+        cmd.append("--atria-log-collection-health")
         if log_collection_health_after:
-            cmd.extend(["--whoop-log-collection-health-after", log_collection_health_after])
+            cmd.extend(["--atria-log-collection-health-after", log_collection_health_after])
     if log_gate_status:
-        cmd.append("--whoop-log-gate-status")
+        cmd.append("--atria-log-gate-status")
         if log_gate_status_after:
-            cmd.extend(["--whoop-log-gate-status-after", log_gate_status_after])
+            cmd.extend(["--atria-log-gate-status-after", log_gate_status_after])
     if log_gate_readiness:
-        cmd.append("--whoop-log-gate-readiness")
+        cmd.append("--atria-log-gate-readiness")
     if log_gate_status_deep:
-        cmd.append("--whoop-log-gate-status-deep")
+        cmd.append("--atria-log-gate-status-deep")
     if log_activity_detections:
-        cmd.append("--whoop-log-activity-detections")
+        cmd.append("--atria-log-activity-detections")
     if log_daily_rollups:
-        cmd.append("--whoop-log-daily-rollups")
+        cmd.append("--atria-log-daily-rollups")
     if log_trends:
-        cmd.append("--whoop-log-trends")
+        cmd.append("--atria-log-trends")
     if log_widget_snapshot:
-        cmd.append("--whoop-log-widget-snapshot")
+        cmd.append("--atria-log-widget-snapshot")
     if log_workout_preflight:
-        cmd.append("--whoop-log-workout-preflight")
+        cmd.append("--atria-log-workout-preflight")
     if log_strain_validation:
-        cmd.append("--whoop-log-strain-validation")
+        cmd.append("--atria-log-strain-validation")
     if log_hr_consistency:
-        cmd.append("--whoop-log-hr-consistency")
+        cmd.append("--atria-log-hr-consistency")
     if log_hr_artifact_policy:
-        cmd.append("--whoop-log-hr-artifact-policy")
+        cmd.append("--atria-log-hr-artifact-policy")
     if log_hr_continuity_watchdog_state:
-        cmd.append("--whoop-log-hr-continuity-watchdog-state")
+        cmd.append("--atria-log-hr-continuity-watchdog-state")
     if not quiet_ble_logs:
-        cmd.append("--whoop-log-ble-frames")
+        cmd.append("--atria-log-ble-frames")
     if full_protocol_mode:
-        cmd.append("--whoop-full-protocol-mode")
+        cmd.append("--atria-full-protocol-mode")
     if standard_hr_only:
-        cmd.append("--whoop-standard-hr-only")
+        cmd.append("--atria-standard-hr-only")
     if long_wear_mode:
-        cmd.append("--whoop-long-wear-mode")
+        cmd.append("--atria-long-wear-mode")
     if reset_capture_defaults:
-        cmd.append("--whoop-reset-capture-defaults")
+        cmd.append("--atria-reset-capture-defaults")
     if reset_link_diagnostics:
-        cmd.append("--whoop-reset-link-diagnostics")
+        cmd.append("--atria-reset-link-diagnostics")
     if reset_sample_diagnostics:
-        cmd.append("--whoop-reset-sample-diagnostics")
+        cmd.append("--atria-reset-sample-diagnostics")
     if reset_protocol_diagnostics:
-        cmd.append("--whoop-reset-protocol-diagnostics")
+        cmd.append("--atria-reset-protocol-diagnostics")
     if active_motion_imu_check:
-        cmd.append("--whoop-active-motion-imu-check")
+        cmd.append("--atria-active-motion-imu-check")
     if flush_active_journal_after:
-        cmd.extend(["--whoop-flush-active-journal-after", flush_active_journal_after])
+        cmd.extend(["--atria-flush-active-journal-after", flush_active_journal_after])
     if manual_checkpoint_after:
-        cmd.extend(["--whoop-manual-checkpoint-after", manual_checkpoint_after])
+        cmd.extend(["--atria-manual-checkpoint-after", manual_checkpoint_after])
     if force_no_data_watchdog_after:
-        cmd.extend(["--whoop-force-no-data-watchdog-after", force_no_data_watchdog_after])
+        cmd.extend(["--atria-force-no-data-watchdog-after", force_no_data_watchdog_after])
     if force_hr_continuity_watchdog_after:
-        cmd.extend(["--whoop-force-hr-continuity-watchdog-after", force_hr_continuity_watchdog_after])
+        cmd.extend(["--atria-force-hr-continuity-watchdog-after", force_hr_continuity_watchdog_after])
     if force_rr_presence_watchdog_after:
-        cmd.extend(["--whoop-force-rr-presence-watchdog-after", force_rr_presence_watchdog_after])
+        cmd.extend(["--atria-force-rr-presence-watchdog-after", force_rr_presence_watchdog_after])
     if force_missing_2a37_after:
-        cmd.extend(["--whoop-force-missing-2a37-after", force_missing_2a37_after])
+        cmd.extend(["--atria-force-missing-2a37-after", force_missing_2a37_after])
     if force_accepted_hr_watchdog_after:
-        cmd.extend(["--whoop-force-accepted-hr-watchdog-after", force_accepted_hr_watchdog_after])
+        cmd.extend(["--atria-force-accepted-hr-watchdog-after", force_accepted_hr_watchdog_after])
     if backup_sessions:
-        cmd.append("--whoop-backup-sessions")
+        cmd.append("--atria-backup-sessions")
     if verify_backup:
-        cmd.append("--whoop-verify-backup")
+        cmd.append("--atria-verify-backup")
     if restore_backup:
-        cmd.append("--whoop-restore-backup")
+        cmd.append("--atria-restore-backup")
     if healthkit_export:
-        cmd.append("--whoop-healthkit-export")
+        cmd.append("--atria-healthkit-export")
     if healthkit_reference_audit:
-        cmd.append("--whoop-healthkit-reference-audit")
+        cmd.append("--atria-healthkit-reference-audit")
     if healthkit_reset_rebuild:
-        cmd.append("--whoop-healthkit-reset-rebuild-atria-hr")
+        cmd.append("--atria-healthkit-reset-rebuild-atria-hr")
     if confirm_best_workout_candidate:
-        cmd.append("--whoop-confirm-best-workout-candidate")
+        cmd.append("--atria-confirm-best-workout-candidate")
     if confirm_best_sleep_candidate:
-        cmd.append("--whoop-confirm-best-sleep-candidate")
+        cmd.append("--atria-confirm-best-sleep-candidate")
     if export_rr_reference_package:
-        cmd.append("--whoop-export-rr-reference-package")
+        cmd.append("--atria-export-rr-reference-package")
     if export_hr_reference_package:
-        cmd.append("--whoop-export-hr-reference-package")
+        cmd.append("--atria-export-hr-reference-package")
     if validate_rr_reference:
-        cmd.append("--whoop-validate-rr-reference")
+        cmd.append("--atria-validate-rr-reference")
     if validate_hr_reference:
-        cmd.append("--whoop-validate-hr-reference")
+        cmd.append("--atria-validate-hr-reference")
     if clear_reference_inputs:
-        cmd.append("--whoop-clear-reference-inputs")
+        cmd.append("--atria-clear-reference-inputs")
     if morning_hrv_check:
-        cmd.append("--whoop-morning-hrv-check")
+        cmd.append("--atria-morning-hrv-check")
     if morning_hrv_force:
-        cmd.append("--whoop-morning-hrv-force")
+        cmd.append("--atria-morning-hrv-force")
     if auto_save_session_after:
-        cmd.extend(["--whoop-auto-save-session-after", auto_save_session_after])
+        cmd.extend(["--atria-auto-save-session-after", auto_save_session_after])
     if auto_save_session_every:
-        cmd.extend(["--whoop-auto-save-session-every", auto_save_session_every])
+        cmd.extend(["--atria-auto-save-session-every", auto_save_session_every])
     if checkpoint_session_every:
-        cmd.extend(["--whoop-checkpoint-session-every", checkpoint_session_every])
+        cmd.extend(["--atria-checkpoint-session-every", checkpoint_session_every])
     if log_live_workout_every:
-        cmd.extend(["--whoop-log-live-workout-every", log_live_workout_every])
+        cmd.extend(["--atria-log-live-workout-every", log_live_workout_every])
     if auto_save_workout_when_ready:
-        cmd.extend(["--whoop-auto-save-workout-when-ready", auto_save_workout_when_ready])
+        cmd.extend(["--atria-auto-save-workout-when-ready", auto_save_workout_when_ready])
     if verify_workout_label:
-        cmd.extend(["--whoop-verify-workout-label", verify_workout_label])
+        cmd.extend(["--atria-verify-workout-label", verify_workout_label])
         if verify_workout_after:
-            cmd.extend(["--whoop-verify-workout-after", verify_workout_after])
+            cmd.extend(["--atria-verify-workout-after", verify_workout_after])
     if verify_sleep:
-        cmd.append("--whoop-verify-sleep")
+        cmd.append("--atria-verify-sleep")
         if verify_sleep_label:
-            cmd.extend(["--whoop-verify-sleep-label", verify_sleep_label])
+            cmd.extend(["--atria-verify-sleep-label", verify_sleep_label])
         if verify_sleep_after:
-            cmd.extend(["--whoop-verify-sleep-after", verify_sleep_after])
+            cmd.extend(["--atria-verify-sleep-after", verify_sleep_after])
     if schedule_notifications:
-        cmd.append("--whoop-schedule-notifications")
+        cmd.append("--atria-schedule-notifications")
     if test_notification:
-        cmd.append("--whoop-test-notification")
+        cmd.append("--atria-test-notification")
     if schedule_notifications or test_notification:
         if notification_delay:
-            cmd.extend(["--whoop-notification-delay", notification_delay])
+            cmd.extend(["--atria-notification-delay", notification_delay])
     if realtime_start_retries:
-        cmd.extend(["--whoop-realtime-start-retries", realtime_start_retries])
+        cmd.extend(["--atria-realtime-start-retries", realtime_start_retries])
     if realtime_restart_zero_rr_seconds:
-        cmd.extend(["--whoop-realtime-restart-zero-rr-seconds", realtime_restart_zero_rr_seconds])
+        cmd.extend(["--atria-realtime-restart-zero-rr-seconds", realtime_restart_zero_rr_seconds])
     if realtime_reassert_zero_rr_seconds:
-        cmd.extend(["--whoop-realtime-reassert-zero-rr-seconds", realtime_reassert_zero_rr_seconds])
+        cmd.extend(["--atria-realtime-reassert-zero-rr-seconds", realtime_reassert_zero_rr_seconds])
     if disable_history_ack:
-        cmd.append("--whoop-disable-history-ack")
+        cmd.append("--atria-disable-history-ack")
     if history_ack_mode:
-        cmd.extend(["--whoop-history-ack-mode", history_ack_mode])
+        cmd.extend(["--atria-history-ack-mode", history_ack_mode])
     if history_recent_sweep:
-        cmd.append("--whoop-history-recent-sweep")
+        cmd.append("--atria-history-recent-sweep")
         if history_recent_offsets:
-            cmd.extend(["--whoop-history-recent-offsets", history_recent_offsets])
+            cmd.extend(["--atria-history-recent-offsets", history_recent_offsets])
     if history_selector_sweep:
-        cmd.append("--whoop-history-selector-sweep")
+        cmd.append("--atria-history-selector-sweep")
     if history_selector_mode:
-        cmd.extend(["--whoop-history-selector-mode", history_selector_mode])
+        cmd.extend(["--atria-history-selector-mode", history_selector_mode])
     if history_selector_range_index:
-        cmd.extend(["--whoop-history-selector-range-index", history_selector_range_index])
+        cmd.extend(["--atria-history-selector-range-index", history_selector_range_index])
     if history_range_sweep:
-        cmd.append("--whoop-history-range-sweep")
+        cmd.append("--atria-history-range-sweep")
         if history_range_payloads:
-            cmd.extend(["--whoop-history-range-payloads", history_range_payloads])
+            cmd.extend(["--atria-history-range-payloads", history_range_payloads])
     if history_init_sweep:
-        cmd.extend(["--whoop-history-init-sweep", history_init_sweep])
+        cmd.extend(["--atria-history-init-sweep", history_init_sweep])
     if history_skip_range:
-        cmd.append("--whoop-history-skip-range")
+        cmd.append("--atria-history-skip-range")
     if history_clock_handshake:
-        cmd.append("--whoop-history-clock-handshake")
+        cmd.append("--atria-history-clock-handshake")
     if history_only_probe:
-        cmd.append("--whoop-history-only-probe")
+        cmd.append("--atria-history-only-probe")
     if probe_command:
-        cmd.extend(["--whoop-probe-command", probe_command])
+        cmd.extend(["--atria-probe-command", probe_command])
         if probe_command_delay:
-            cmd.extend(["--whoop-probe-command-delay", probe_command_delay])
+            cmd.extend(["--atria-probe-command-delay", probe_command_delay])
     if probe_command_mode:
-        cmd.extend(["--whoop-probe-command-mode", probe_command_mode])
+        cmd.extend(["--atria-probe-command-mode", probe_command_mode])
     if probe_sweep:
-        cmd.extend(["--whoop-probe-sweep", probe_sweep])
+        cmd.extend(["--atria-probe-sweep", probe_sweep])
         if probe_sweep_interval:
-            cmd.extend(["--whoop-probe-sweep-interval", probe_sweep_interval])
+            cmd.extend(["--atria-probe-sweep-interval", probe_sweep_interval])
     emit("HARNESS_LAUNCH_ARGS=" + " ".join(shlex.quote(part) for part in cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     stopped_for_deadline = False
@@ -2816,13 +2816,13 @@ else:
                     if log_gate_status or log_gate_status_deep:
                         deadline_seconds = max(deadline_seconds, 180)
                     deadline = time.time() + deadline_seconds
-                if "WHOOPDBG" in line:
-                    if "WHOOPDBG gate_status_start" in line and (log_gate_status or log_gate_status_deep):
+                if "ATRIADBG" in line:
+                    if "ATRIADBG gate_status_start" in line and (log_gate_status or log_gate_status_deep):
                         gate_deadline_seconds = 240 if log_gate_status_deep else 120
                         deadline = max(deadline, time.time() + gate_deadline_seconds)
                         emit(f"HARNESS_GATE_STATUS_DEADLINE_RESET seconds={gate_deadline_seconds}")
                     ingest_whoopdbg(line)
-                    if "WHOOPDBG frame ch=61080005" in line and until_realtime:
+                    if "ATRIADBG frame ch=61080005" in line and until_realtime:
                         break
                     if flags["hrv_ready"] or flags["capture_summary_ready"]:
                         if until_ready:
@@ -2875,7 +2875,7 @@ else:
         for line in rest.splitlines():
             launch_output_lines.append(line)
             emit(line)
-            if "WHOOPDBG" in line:
+            if "ATRIADBG" in line:
                 ingest_whoopdbg(line)
     if app_exit_code is None and proc.returncode is not None and not stopped_for_deadline:
         app_exit_code = proc.returncode
@@ -2885,12 +2885,12 @@ else:
         with open(devicectl_log_path, encoding="utf-8", errors="replace") as handle:
             for raw in handle:
                 line = raw.rstrip()
-                if "WHOOPDBG" not in line:
+                if "ATRIADBG" not in line:
                     continue
                 emit(line)
                 ingest_whoopdbg(line)
 
-emit("WHOOPDBG_SUMMARY_START")
+emit("ATRIADBG_SUMMARY_START")
 if rr_summary["realtime_frames"]:
     fraction = rr_summary["realtime_rr_frames"] / rr_summary["realtime_frames"]
     rr_summary["realtime_rr_fraction"] = f"{fraction:.3f}"
@@ -2933,24 +2933,24 @@ for index, segment in enumerate(segments):
     emit(f"segment_{index}_historical_2f_last_prefix={segment['historical_2f_last_prefix']}")
     emit(f"segment_{index}_sleep_motion_hint_count={segment['sleep_motion_hint_count']}")
     emit(f"segment_{index}_sleep_motion_hint_kinds={format_counter(segment['sleep_motion_hint_kinds'])}")
-emit(f"WHOOPDBG_LINES={len(lines)}")
+emit(f"ATRIADBG_LINES={len(lines)}")
 if log_path:
-    emit(f"WHOOPDBG_LOG={log_path}")
+    emit(f"ATRIADBG_LOG={log_path}")
 if capture_file_path:
-    emit(f"WHOOPDBG_CAPTURE_FILE={capture_file_path}")
+    emit(f"ATRIADBG_CAPTURE_FILE={capture_file_path}")
 if backup_file_path:
-    emit(f"WHOOPDBG_BACKUP_FILE={backup_file_path}")
+    emit(f"ATRIADBG_BACKUP_FILE={backup_file_path}")
 elif backup_verified_path:
-    emit(f"WHOOPDBG_BACKUP_FILE={backup_verified_path}")
+    emit(f"ATRIADBG_BACKUP_FILE={backup_verified_path}")
 if rr_reference_csv_path:
-    emit(f"WHOOPDBG_RR_REFERENCE_CSV_FILE={rr_reference_csv_path}")
+    emit(f"ATRIADBG_RR_REFERENCE_CSV_FILE={rr_reference_csv_path}")
 if rr_reference_manifest_path:
-    emit(f"WHOOPDBG_RR_REFERENCE_MANIFEST_FILE={rr_reference_manifest_path}")
+    emit(f"ATRIADBG_RR_REFERENCE_MANIFEST_FILE={rr_reference_manifest_path}")
 if hr_reference_csv_path:
-    emit(f"WHOOPDBG_HR_REFERENCE_CSV_FILE={hr_reference_csv_path}")
+    emit(f"ATRIADBG_HR_REFERENCE_CSV_FILE={hr_reference_csv_path}")
 if hr_reference_manifest_path:
-    emit(f"WHOOPDBG_HR_REFERENCE_MANIFEST_FILE={hr_reference_manifest_path}")
-emit("WHOOPDBG_SUMMARY_END")
+    emit(f"ATRIADBG_HR_REFERENCE_MANIFEST_FILE={hr_reference_manifest_path}")
+emit("ATRIADBG_SUMMARY_END")
 
 if not replay_log and not pull_only:
     if not launch_seen:
@@ -2986,12 +2986,12 @@ if not replay_log and pull_capture_dir and capture_file_path:
         emit(line)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
-    emit(f"WHOOPDBG_CAPTURE_PULL_FILE={destination_file}")
+    emit(f"ATRIADBG_CAPTURE_PULL_FILE={destination_file}")
 
 if not replay_log and pull_backups_dir:
     backup_source_path = backup_file_path or backup_verified_path
     if not backup_source_path:
-        emit("WHOOPDBG_BACKUP_PULL_SKIPPED=missing_session_backup_path")
+        emit("ATRIADBG_BACKUP_PULL_SKIPPED=missing_session_backup_path")
     else:
         destination = Path(pull_backups_dir)
         destination.mkdir(parents=True, exist_ok=True)
@@ -3009,7 +3009,7 @@ if not replay_log and pull_backups_dir:
             emit(line)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
-        emit(f"WHOOPDBG_BACKUP_PULL_FILE={destination_file}")
+        emit(f"ATRIADBG_BACKUP_PULL_FILE={destination_file}")
 
 if not replay_log and pull_sessions_dir:
     destination = Path(pull_sessions_dir)
@@ -3028,7 +3028,7 @@ if not replay_log and pull_sessions_dir:
         emit(line)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
-    emit(f"WHOOPDBG_SESSIONS_PULL_FILE={destination_file}")
+    emit(f"ATRIADBG_SESSIONS_PULL_FILE={destination_file}")
     summarize_sessions_file(destination_file)
     active_destination_file = destination / "atria-active-session.json"
     last_active_result = None
@@ -3049,14 +3049,14 @@ if not replay_log and pull_sessions_dir:
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 emit(line)
-            emit(f"WHOOPDBG_ACTIVE_JOURNAL_PULL_FILE={active_destination_file}")
-            emit(f"WHOOPDBG_ACTIVE_JOURNAL_PULL_SOURCE={source_path}")
+            emit(f"ATRIADBG_ACTIVE_JOURNAL_PULL_FILE={active_destination_file}")
+            emit(f"ATRIADBG_ACTIVE_JOURNAL_PULL_SOURCE={source_path}")
             break
     else:
         if last_active_result is not None:
             for line in last_active_result.stdout.splitlines():
                 emit(line)
-        emit("WHOOPDBG_ACTIVE_JOURNAL_PULL_STATUS=missing")
+        emit("ATRIADBG_ACTIVE_JOURNAL_PULL_STATUS=missing")
     active_segments_destination = destination / "atria-active-session.segments"
     copy_cmd = [
         "xcrun", "devicectl", "device", "copy", "from",
@@ -3070,10 +3070,10 @@ if not replay_log and pull_sessions_dir:
     if result.returncode == 0:
         for line in result.stdout.splitlines():
             emit(line)
-        emit(f"WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_FILE={active_segments_destination}")
+        emit(f"ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_PULL_FILE={active_segments_destination}")
         summarize_active_journal_segments(active_segments_destination)
     else:
-        emit("WHOOPDBG_ACTIVE_JOURNAL_SEGMENTS_PULL_STATUS=missing")
+        emit("ATRIADBG_ACTIVE_JOURNAL_SEGMENTS_PULL_STATUS=missing")
     gate_status_destination_file = destination / "atria-gate-status.txt"
     copy_cmd = [
         "xcrun", "devicectl", "device", "copy", "from",
@@ -3087,9 +3087,9 @@ if not replay_log and pull_sessions_dir:
     if result.returncode == 0:
         for line in result.stdout.splitlines():
             emit(line)
-        emit(f"WHOOPDBG_GATE_STATUS_PULL_FILE={gate_status_destination_file}")
+        emit(f"ATRIADBG_GATE_STATUS_PULL_FILE={gate_status_destination_file}")
     else:
-        emit("WHOOPDBG_GATE_STATUS_PULL_STATUS=missing")
+        emit("ATRIADBG_GATE_STATUS_PULL_STATUS=missing")
 
 if not replay_log and pull_historical_dir:
     destination = Path(pull_historical_dir)
@@ -3113,8 +3113,8 @@ if not replay_log and pull_historical_dir:
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 emit(line)
-            emit(f"WHOOPDBG_HISTORICAL_PULL_FILE={destination_file}")
-            emit(f"WHOOPDBG_HISTORICAL_PULL_SOURCE={source_path}")
+            emit(f"ATRIADBG_HISTORICAL_PULL_FILE={destination_file}")
+            emit(f"ATRIADBG_HISTORICAL_PULL_SOURCE={source_path}")
             break
     else:
         if last_result is not None:
@@ -3130,7 +3130,7 @@ if not replay_log and pull_reference_package_dir:
         hr_reference_manifest_path,
     ] if path]
     if not sources:
-        emit("WHOOPDBG_REFERENCE_PULL_SKIPPED=missing_reference_package_path")
+        emit("ATRIADBG_REFERENCE_PULL_SKIPPED=missing_reference_package_path")
     else:
         destination = Path(pull_reference_package_dir)
         destination.mkdir(parents=True, exist_ok=True)
@@ -3150,7 +3150,7 @@ if not replay_log and pull_reference_package_dir:
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
             name = Path(source_path).name
-            prefix = "WHOOPDBG_HR_REFERENCE_PULL_FILE" if "hr-reference" in name else "WHOOPDBG_RR_REFERENCE_PULL_FILE"
+            prefix = "ATRIADBG_HR_REFERENCE_PULL_FILE" if "hr-reference" in name else "ATRIADBG_RR_REFERENCE_PULL_FILE"
             emit(f"{prefix}={destination_file}")
 
 if not replay_log and leave_running and not pull_only:

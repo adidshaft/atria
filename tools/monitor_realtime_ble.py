@@ -21,36 +21,36 @@ DEFAULT_BUNDLE = "com.adidshaft.atria"
 PREFS_SOURCE = "Library/Preferences/com.adidshaft.atria.plist"
 
 COUNTER_KEYS = [
-    "whoop.link.attempts",
-    "whoop.link.disconnects",
-    "whoop.link.successes",
-    "whoop.watchdog.hrContinuityCount",
-    "whoop.watchdog.acceptedHRCount",
-    "whoop.sample.rawNotifications",
-    "whoop.sample.acceptedSamples",
-    "whoop.keepalive.ticks",
+    "atria.link.attempts",
+    "atria.link.disconnects",
+    "atria.link.successes",
+    "atria.watchdog.hrContinuityCount",
+    "atria.watchdog.acceptedHRCount",
+    "atria.sample.rawNotifications",
+    "atria.sample.acceptedSamples",
+    "atria.keepalive.ticks",
 ]
 
 STATUS_KEYS = [
-    "whoop.sample.lastStatus",
-    "whoop.link.lastStatus",
-    "whoop.link.lastReason",
-    "whoop.watchdog.lastAction",
-    "whoop.keepalive.armed",
-    "whoop.keepalive.lastStatus",
-    "whoop.keepalive.lastAction",
-    "whoop.keepalive.lastSilence",
-    "whoop.keepalive.ticks",
-    "whoop.radio.standardHROnly",
-    "whoop.longWear.enabled",
-    "whoop.offlineSync.enabled",
-    "whoop.offlineSync.attempts",
-    "whoop.offlineSync.lastStatus",
-    "whoop.offlineSync.lastReason",
-    "whoop.offlineSync.rangeLossBackfillPending",
-    "whoop.offlineSync.rangeLossBackfillReason",
-    "whoop.offlineSync.rangeLossBackfillRequestedAt",
-    "whoop.offlineSync.rangeLossBackfillStartedAt",
+    "atria.sample.lastStatus",
+    "atria.link.lastStatus",
+    "atria.link.lastReason",
+    "atria.watchdog.lastAction",
+    "atria.keepalive.armed",
+    "atria.keepalive.lastStatus",
+    "atria.keepalive.lastAction",
+    "atria.keepalive.lastSilence",
+    "atria.keepalive.ticks",
+    "atria.radio.standardHROnly",
+    "atria.longWear.enabled",
+    "atria.offlineSync.enabled",
+    "atria.offlineSync.attempts",
+    "atria.offlineSync.lastStatus",
+    "atria.offlineSync.lastReason",
+    "atria.offlineSync.rangeLossBackfillPending",
+    "atria.offlineSync.rangeLossBackfillReason",
+    "atria.offlineSync.rangeLossBackfillRequestedAt",
+    "atria.offlineSync.rangeLossBackfillStartedAt",
 ]
 
 PULL_STATE_SUMMARY_KEYS = [
@@ -153,19 +153,19 @@ def compute_delta(previous: dict[str, Any] | None, current: dict[str, Any]) -> d
 
 def evaluate_sample(delta: dict[str, int], current: dict[str, Any], worn: bool) -> list[str]:
     flags: list[str] = []
-    if worn and delta["whoop.sample.rawNotifications"] <= 0:
+    if worn and delta["atria.sample.rawNotifications"] <= 0:
         flags.append("NO_NEW_DATA")
-    if delta["whoop.link.disconnects"] >= 3:
+    if delta["atria.link.disconnects"] >= 3:
         flags.append("DISCONNECT_CHURN")
-    if delta["whoop.watchdog.hrContinuityCount"] >= 3:
+    if delta["atria.watchdog.hrContinuityCount"] >= 3:
         flags.append("TEARDOWN_CHURN")
-    if worn and current.get("whoop.sample.lastStatus") == "zero_contact":
+    if worn and current.get("atria.sample.lastStatus") == "zero_contact":
         flags.append("ZERO_CONTACT")
-    if current.get("whoop.link.lastStatus") not in {None, "connected"}:
+    if current.get("atria.link.lastStatus") not in {None, "connected"}:
         flags.append("NOT_CONNECTED")
-    if current.get("whoop.longWear.enabled") and current.get("whoop.keepalive.armed"):
-        stream_stalled = worn and delta["whoop.sample.rawNotifications"] <= 0
-        if stream_stalled and delta["whoop.keepalive.ticks"] <= 0:
+    if current.get("atria.longWear.enabled") and current.get("atria.keepalive.armed"):
+        stream_stalled = worn and delta["atria.sample.rawNotifications"] <= 0
+        if stream_stalled and delta["atria.keepalive.ticks"] <= 0:
             flags.append("KEEPALIVE_NOT_ADVANCING")
     return flags
 
@@ -173,10 +173,10 @@ def evaluate_sample(delta: dict[str, int], current: dict[str, Any], worn: bool) 
 def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
     deltas = [sample["delta"] for sample in samples[1:]]
     flags = sorted({flag for sample in samples for flag in sample["flags"]})
-    raw_deltas = [delta["whoop.sample.rawNotifications"] for delta in deltas]
-    accepted_deltas = [delta["whoop.sample.acceptedSamples"] for delta in deltas]
-    disconnect_deltas = [delta["whoop.link.disconnects"] for delta in deltas]
-    hr_continuity_deltas = [delta["whoop.watchdog.hrContinuityCount"] for delta in deltas]
+    raw_deltas = [delta["atria.sample.rawNotifications"] for delta in deltas]
+    accepted_deltas = [delta["atria.sample.acceptedSamples"] for delta in deltas]
+    disconnect_deltas = [delta["atria.link.disconnects"] for delta in deltas]
+    hr_continuity_deltas = [delta["atria.watchdog.hrContinuityCount"] for delta in deltas]
     return {
         "status": "pass" if len(samples) > 1 and not flags else "fail",
         "samples": len(samples),
@@ -201,9 +201,9 @@ def event_outcomes(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
         next_sample = by_index.get(sample_index + 1)
         next_delta = next_sample.get("delta", {}) if next_sample else {}
         next_flags = next_sample.get("flags", []) if next_sample else []
-        raw_delta = numeric(next_delta.get("whoop.sample.rawNotifications"))
-        disconnect_delta = numeric(next_delta.get("whoop.link.disconnects"))
-        hr_continuity_delta = numeric(next_delta.get("whoop.watchdog.hrContinuityCount"))
+        raw_delta = numeric(next_delta.get("atria.sample.rawNotifications"))
+        disconnect_delta = numeric(next_delta.get("atria.link.disconnects"))
+        hr_continuity_delta = numeric(next_delta.get("atria.watchdog.hrContinuityCount"))
         status = "pending_next_sample"
         if next_sample:
             if raw_delta > 0 and disconnect_delta < 3 and hr_continuity_delta < 3:
@@ -220,7 +220,7 @@ def event_outcomes(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "status": status,
             "next_sample": sample_index + 1 if next_sample else None,
             "next_raw_notification_delta": raw_delta,
-            "next_accepted_sample_delta": numeric(next_delta.get("whoop.sample.acceptedSamples")),
+            "next_accepted_sample_delta": numeric(next_delta.get("atria.sample.acceptedSamples")),
             "next_disconnect_delta": disconnect_delta,
             "next_hr_continuity_delta": hr_continuity_delta,
             "next_flags": next_flags,

@@ -23,8 +23,8 @@ enum LocalNotificationScheduler {
                                               ble: AtriaBLEManager,
                                               arguments: [String] = ProcessInfo.processInfo.arguments) {
         configureDeliveryLogger()
-        let debugMetricRequest = arguments.contains("--whoop-schedule-notifications")
-        let debugDiagnosticRequest = arguments.contains("--whoop-test-notification")
+        let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
+        let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
         let productionCadence = !debugMetricRequest && !debugDiagnosticRequest
         let delay = launchDelay(arguments: arguments)
         AtriaDebugLog("ATRIADBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
@@ -293,7 +293,7 @@ enum LocalNotificationScheduler {
     }
 
     private static func launchDelay(arguments: [String]) -> TimeInterval {
-        guard let index = arguments.firstIndex(of: "--whoop-notification-delay"),
+        guard let index = arguments.firstIndex(of: "--atria-notification-delay"),
               arguments.indices.contains(arguments.index(after: index)),
               let delay = Double(arguments[arguments.index(after: index)]) else {
             return 8

@@ -2994,12 +2994,12 @@ final class SessionStore: ObservableObject {
 
     func completeOnboardingFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard AtriaDeveloperMode.isEnabled else { return }
-        guard arguments.contains("--whoop-complete-onboarding") else { return }
+        guard arguments.contains("--atria-complete-onboarding") else { return }
         completeOnboarding(with: profile)
     }
 
     func logBaselineMaturityFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-baseline") else { return }
+        guard arguments.contains("--atria-log-baseline") else { return }
         let restingStats = baseline.restingStats
         let hrvStats = baseline.lnRMSSDStats
         let latestValidated = latestReferenceValidatedHRV ?? 0
@@ -3024,9 +3024,9 @@ final class SessionStore: ObservableObject {
     }
 
     func logCollectionHealthFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-collection-health") else { return }
-        if !arguments.contains("--whoop-log-collection-health-delay-fired"),
-           let delayIndex = arguments.firstIndex(of: "--whoop-log-collection-health-after"),
+        guard arguments.contains("--atria-log-collection-health") else { return }
+        if !arguments.contains("--atria-log-collection-health-delay-fired"),
+           let delayIndex = arguments.firstIndex(of: "--atria-log-collection-health-after"),
            arguments.indices.contains(arguments.index(after: delayIndex)),
            let delay = Double(arguments[arguments.index(after: delayIndex)]),
            delay > 0 {
@@ -3035,12 +3035,12 @@ final class SessionStore: ObservableObject {
                 try? await Task.sleep(for: .seconds(delay))
                 if Task.isCancelled { return }
                 var delayedArguments = arguments
-                delayedArguments.append("--whoop-log-collection-health-delay-fired")
+                delayedArguments.append("--atria-log-collection-health-delay-fired")
                 self.logCollectionHealthFromLaunchIfRequested(arguments: delayedArguments)
             }
             return
         }
-        let phase = arguments.contains("--whoop-log-collection-health-delay-fired") ? "delayed" : "launch"
+        let phase = arguments.contains("--atria-log-collection-health-delay-fired") ? "delayed" : "launch"
         let journal = ActiveSessionJournal.diagnostics()
         let linkEvidence = AtriaBLEManager.linkEvidence().replacingOccurrences(of: " ", with: "_")
         let sampleEvidence = AtriaBLEManager.sampleGapEvidence().replacingOccurrences(of: " ", with: "_")
@@ -3087,14 +3087,14 @@ final class SessionStore: ObservableObject {
     }
 
     func logGateReadinessFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-gate-readiness") else { return }
-        if !arguments.contains("--whoop-log-gate-readiness-delay-fired") {
-            let delay = arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") ? 8.0 : 1.0
+        guard arguments.contains("--atria-log-gate-readiness") else { return }
+        if !arguments.contains("--atria-log-gate-readiness-delay-fired") {
+            let delay = arguments.contains("--atria-standard-hr-only") || arguments.contains("--atria-long-wear-mode") ? 8.0 : 1.0
             AtriaDebugLog("ATRIADBG gate_readiness_ui schedule delay_s=%.1f reason=launch_arg", delay)
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 var delayedArguments = arguments
-                delayedArguments.append("--whoop-log-gate-readiness-delay-fired")
+                delayedArguments.append("--atria-log-gate-readiness-delay-fired")
                 self.logGateReadinessFromLaunchIfRequested(arguments: delayedArguments)
             }
             return
@@ -3192,35 +3192,35 @@ final class SessionStore: ObservableObject {
     }
 
     func logGateStatusFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-gate-status") else { return }
+        guard arguments.contains("--atria-log-gate-status") else { return }
         let explicitDelay: Double? = {
-            guard let delayIndex = arguments.firstIndex(of: "--whoop-log-gate-status-after"),
+            guard let delayIndex = arguments.firstIndex(of: "--atria-log-gate-status-after"),
                   arguments.indices.contains(arguments.index(after: delayIndex)),
                   let delay = Double(arguments[arguments.index(after: delayIndex)]),
                   delay > 0 else { return nil }
             return delay
         }()
         let liveCollectionSettleDelay: Double? = {
-            guard !arguments.contains("--whoop-log-gate-status-delay-fired"),
+            guard !arguments.contains("--atria-log-gate-status-delay-fired"),
                   explicitDelay == nil,
-                  arguments.contains("--whoop-standard-hr-only") || arguments.contains("--whoop-long-wear-mode") else {
+                  arguments.contains("--atria-standard-hr-only") || arguments.contains("--atria-long-wear-mode") else {
                 return nil
             }
             return 18
         }()
-        if !arguments.contains("--whoop-log-gate-status-delay-fired"),
+        if !arguments.contains("--atria-log-gate-status-delay-fired"),
            let delay = explicitDelay ?? liveCollectionSettleDelay {
             let clampedDelay = min(max(delay, 0), 86_400)
             AtriaDebugLog("ATRIADBG gate_status schedule delay_s=%.1f reason=%@", clampedDelay, explicitDelay != nil ? "launch_arg" : "live_collection_settle")
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(clampedDelay))
                 var delayedArguments = arguments
-                delayedArguments.append("--whoop-log-gate-status-delay-fired")
+                delayedArguments.append("--atria-log-gate-status-delay-fired")
                 logGateStatusFromLaunchIfRequested(arguments: delayedArguments)
             }
             return
         }
-        let includeDeepReplay = arguments.contains("--whoop-log-gate-status-deep")
+        let includeDeepReplay = arguments.contains("--atria-log-gate-status-deep")
         let mode = includeDeepReplay ? "deep" : "fast"
         let rest = baseline.restingInt ?? 60
         let hrvValidated = sessions.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }.count
@@ -4640,7 +4640,7 @@ final class SessionStore: ObservableObject {
     }
 
     func confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-confirm-best-workout-candidate") else { return }
+        guard arguments.contains("--atria-confirm-best-workout-candidate") else { return }
         let rest = baseline.restingInt ?? 60
         _ = confirmBestWorkoutCandidate(rest: rest, maxHR: profile.maxHR, source: "launch_arg")
     }
@@ -4759,7 +4759,7 @@ final class SessionStore: ObservableObject {
     }
 
     func confirmBestSleepCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-confirm-best-sleep-candidate") else { return }
+        guard arguments.contains("--atria-confirm-best-sleep-candidate") else { return }
         let rest = baseline.restingInt ?? 60
         _ = confirmBestSleepCandidate(rest: rest, source: "launch_arg")
     }
@@ -5385,7 +5385,7 @@ final class SessionStore: ObservableObject {
     }
 
     func logActivityDetectionsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-activity-detections") else { return }
+        guard arguments.contains("--atria-log-activity-detections") else { return }
         let detections = detectedActivities(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
         let maxRows = 12
         let kindCounts = Dictionary(grouping: detections, by: \.kind).mapValues(\.count)
@@ -5441,7 +5441,7 @@ final class SessionStore: ObservableObject {
     }
 
     func logWorkoutPreflightFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-workout-preflight") else { return }
+        guard arguments.contains("--atria-log-workout-preflight") else { return }
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
         let reserve = max(0, maxHR - rest)
@@ -5463,7 +5463,7 @@ final class SessionStore: ObservableObject {
     }
 
     func logStrainValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-strain-validation") else { return }
+        guard arguments.contains("--atria-log-strain-validation") else { return }
         let rest = baseline.restingInt ?? 60
         logStrainValidation(strainValidationSummary(rest: rest, maxHR: profile.maxHR))
     }
@@ -6533,7 +6533,7 @@ final class SessionStore: ObservableObject {
     }
 
     func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-trends") else { return }
+        guard arguments.contains("--atria-log-trends") else { return }
         let rest = baseline.restingInt ?? 60
         let summaries = trendSummaries(rest: rest, maxHR: profile.maxHR)
         AtriaDebugLog("ATRIADBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
@@ -6564,7 +6564,7 @@ final class SessionStore: ObservableObject {
     }
 
     func logDailyRollupsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-log-daily-rollups") else { return }
+        guard arguments.contains("--atria-log-daily-rollups") else { return }
         let rest = baseline.restingInt ?? 60
         let rollups = dailyRollups(rest: rest, maxHR: profile.maxHR)
         let sleepReadyDays = rollups.filter { $0.sleepReady > 0 }.count
@@ -6810,10 +6810,10 @@ final class SessionStore: ObservableObject {
     }
 
     func scheduleSleepValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-verify-sleep") else { return }
-        let label = value(after: "--whoop-verify-sleep-label", in: arguments)?
+        guard arguments.contains("--atria-verify-sleep") else { return }
+        let label = value(after: "--atria-verify-sleep-label", in: arguments)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let delay = doubleValue(after: "--whoop-verify-sleep-after",
+        let delay = doubleValue(after: "--atria-verify-sleep-after",
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
@@ -6955,9 +6955,9 @@ final class SessionStore: ObservableObject {
     }
 
     func scheduleWorkoutValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard let label = value(after: "--whoop-verify-workout-label", in: arguments),
+        guard let label = value(after: "--atria-verify-workout-label", in: arguments),
               !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let delay = doubleValue(after: "--whoop-verify-workout-after",
+        let delay = doubleValue(after: "--atria-verify-workout-after",
                                 in: arguments,
                                 default: 0,
                                 range: 0...86_400)
@@ -7126,12 +7126,12 @@ final class SessionStore: ObservableObject {
     }
 
     func writeSessionBackupFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-backup-sessions") else { return }
+        guard arguments.contains("--atria-backup-sessions") else { return }
         _ = writeSessionBackup(label: "debug")
     }
 
     func clearReferenceInputsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-clear-reference-inputs") else { return }
+        guard arguments.contains("--atria-clear-reference-inputs") else { return }
         let referenceDir = url.deletingLastPathComponent().appendingPathComponent("atria-reference")
         let targets = [
             referenceDir.appendingPathComponent("rr-reference.csv"),
@@ -7162,7 +7162,7 @@ final class SessionStore: ObservableObject {
     }
 
     func exportRRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-export-rr-reference-package") else { return }
+        guard arguments.contains("--atria-export-rr-reference-package") else { return }
         AtriaDebugLog("ATRIADBG rr_reference_package status=started sessions=%d rr_samples=%d external_reference_required=1 reference_validated=0",
               sessions.count,
               totalRRSamples(in: sessions))
@@ -7170,7 +7170,7 @@ final class SessionStore: ObservableObject {
     }
 
     func validateRRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-validate-rr-reference") else { return }
+        guard arguments.contains("--atria-validate-rr-reference") else { return }
         AtriaDebugLog("ATRIADBG rr_reference_validation status=started sessions=%d rr_samples=%d expected_reference=Documents/atria-reference/rr-reference.csv tolerance_ms=5 external_reference_required=1",
               sessions.count,
               totalRRSamples(in: sessions))
@@ -7219,7 +7219,7 @@ final class SessionStore: ObservableObject {
     }
 
     func exportHRReferencePackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-export-hr-reference-package") else { return }
+        guard arguments.contains("--atria-export-hr-reference-package") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
         AtriaDebugLog("ATRIADBG hr_reference_package status=started sessions=%d hr_samples=%d external_reference_required=1 reference_validated=0 gate_d_pass=0",
               sessions.count,
@@ -7228,7 +7228,7 @@ final class SessionStore: ObservableObject {
     }
 
     func validateHRReferenceFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-validate-hr-reference") else { return }
+        guard arguments.contains("--atria-validate-hr-reference") else { return }
         let hrSamples = sessions.reduce(0) { $0 + $1.points.count }
         AtriaDebugLog("ATRIADBG hr_reference_validation status=started sessions=%d hr_samples=%d expected_reference=Documents/atria-reference/hr-reference.csv tolerance_bpm=2 max_pair_age_s=5 external_reference_required=1",
               sessions.count,
@@ -8130,7 +8130,7 @@ final class SessionStore: ObservableObject {
     }
 
     func verifyLatestSessionBackupFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-verify-backup") else { return }
+        guard arguments.contains("--atria-verify-backup") else { return }
         verifyLatestSessionBackup()
     }
 
@@ -8143,7 +8143,7 @@ final class SessionStore: ObservableObject {
     }
 
     func restoreLatestSessionBackupFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-restore-backup") else { return }
+        guard arguments.contains("--atria-restore-backup") else { return }
         restoreLatestSessionBackup()
     }
 
@@ -8345,7 +8345,7 @@ final class SessionStore: ObservableObject {
     }
 
     func exportHealthKitFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--whoop-healthkit-export") else { return }
+        guard arguments.contains("--atria-healthkit-export") else { return }
         let rest = baseline.restingInt ?? 60
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,

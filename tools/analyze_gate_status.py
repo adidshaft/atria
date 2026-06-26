@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reduce WHOOPDBG gate_status logs into an ordered blocker table."""
+"""Reduce ATRIADBG gate_status logs into an ordered blocker table."""
 
 from __future__ import annotations
 
@@ -8,24 +8,24 @@ import re
 from pathlib import Path
 
 
-SUMMARY_RE = re.compile(r"WHOOPDBG gate_status_summary (?P<body>.*)$")
-GATE_RE = re.compile(r"WHOOPDBG gate_status gate=(?P<gate>\S+) status=(?P<status>\S+) evidence=(?P<evidence>.*)$")
-LOCAL_RE = re.compile(r"WHOOPDBG local_status (?P<body>.*)$")
-DAILY_SUMMARY_RE = re.compile(r"WHOOPDBG daily_rollup_summary (?P<body>.*)$")
-TREND_SUMMARY_RE = re.compile(r"WHOOPDBG trend_summary (?P<body>.*)$")
-TREND_RE = re.compile(r"WHOOPDBG trend_window (?P<body>.*)$")
-STRAIN_VALIDATION_RE = re.compile(r"WHOOPDBG strain_validation (?P<body>.*)$")
-WORKOUT_VALIDATION_RE = re.compile(r"WHOOPDBG workout_validation (?P<body>.*)$")
-SLEEP_VALIDATION_RE = re.compile(r"WHOOPDBG sleep_validation (?P<body>.*)$")
-RR_REFERENCE_PACKAGE_RE = re.compile(r"WHOOPDBG rr_reference_package (?P<body>.*)$")
-RR_REFERENCE_VALIDATION_RE = re.compile(r"WHOOPDBG rr_reference_validation (?P<body>.*)$")
-HR_REFERENCE_PACKAGE_RE = re.compile(r"WHOOPDBG hr_reference_package (?P<body>.*)$")
-HR_REFERENCE_VALIDATION_RE = re.compile(r"WHOOPDBG hr_reference_validation (?P<body>.*)$")
-BACKUP_VERIFY_RE = re.compile(r"WHOOPDBG session_backup_verify (?P<body>.*)$")
-WIDGET_RE = re.compile(r"WHOOPDBG widget_snapshot (?P<body>.*)$")
-HEALTHKIT_EXPORT_RE = re.compile(r"WHOOPDBG healthkit_export (?P<body>.*)$")
-HEALTHKIT_EXPORT_VERIFY_RE = re.compile(r"WHOOPDBG healthkit_export_verify (?P<body>.*)$")
-HEALTHKIT_REFERENCE_AUDIT_RE = re.compile(r"WHOOPDBG healthkit_reference_audit (?P<body>.*)$")
+SUMMARY_RE = re.compile(r"ATRIADBG gate_status_summary (?P<body>.*)$")
+GATE_RE = re.compile(r"ATRIADBG gate_status gate=(?P<gate>\S+) status=(?P<status>\S+) evidence=(?P<evidence>.*)$")
+LOCAL_RE = re.compile(r"ATRIADBG local_status (?P<body>.*)$")
+DAILY_SUMMARY_RE = re.compile(r"ATRIADBG daily_rollup_summary (?P<body>.*)$")
+TREND_SUMMARY_RE = re.compile(r"ATRIADBG trend_summary (?P<body>.*)$")
+TREND_RE = re.compile(r"ATRIADBG trend_window (?P<body>.*)$")
+STRAIN_VALIDATION_RE = re.compile(r"ATRIADBG strain_validation (?P<body>.*)$")
+WORKOUT_VALIDATION_RE = re.compile(r"ATRIADBG workout_validation (?P<body>.*)$")
+SLEEP_VALIDATION_RE = re.compile(r"ATRIADBG sleep_validation (?P<body>.*)$")
+RR_REFERENCE_PACKAGE_RE = re.compile(r"ATRIADBG rr_reference_package (?P<body>.*)$")
+RR_REFERENCE_VALIDATION_RE = re.compile(r"ATRIADBG rr_reference_validation (?P<body>.*)$")
+HR_REFERENCE_PACKAGE_RE = re.compile(r"ATRIADBG hr_reference_package (?P<body>.*)$")
+HR_REFERENCE_VALIDATION_RE = re.compile(r"ATRIADBG hr_reference_validation (?P<body>.*)$")
+BACKUP_VERIFY_RE = re.compile(r"ATRIADBG session_backup_verify (?P<body>.*)$")
+WIDGET_RE = re.compile(r"ATRIADBG widget_snapshot (?P<body>.*)$")
+HEALTHKIT_EXPORT_RE = re.compile(r"ATRIADBG healthkit_export (?P<body>.*)$")
+HEALTHKIT_EXPORT_VERIFY_RE = re.compile(r"ATRIADBG healthkit_export_verify (?P<body>.*)$")
+HEALTHKIT_REFERENCE_AUDIT_RE = re.compile(r"ATRIADBG healthkit_reference_audit (?P<body>.*)$")
 KV_RE = re.compile(r"(?<![A-Za-z0-9_])_?([A-Za-z][A-Za-z0-9_]*)=")
 BARE_KV_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)=(.*)$")
 GATE_ORDER = ["local", "A", "B", "C", "D", "E", "F", "G", "H"]
@@ -230,7 +230,7 @@ def synthesize_fallback_status(
                 "saved_rr_kept": rr_package.get("kept", rr_validation.get("whoop_kept", "0")),
                 "saved_rr_confidence": rr_package.get("conf", rr_validation.get("whoop_conf", "0")),
                 "saved_rr_max_gap_s": rr_package.get("max_rr_gap_s", rr_validation.get("whoop_gap_s", "0")),
-                "saved_rr_best_rmssd": rr_package.get("rmssd", rr_validation.get("whoop_rmssd", "0")),
+                "saved_rr_best_rmssd": rr_package.get("rmssd", rr_validation.get("strap_rmssd", "0")),
                 "saved_rr_best_label": rr_package.get("session_label", "missing"),
                 "reference_validation_status": rr_validation.get("status", "not_checked"),
                 "reference_validation_reason": rr_validation.get("reason", "not_checked"),
@@ -276,13 +276,13 @@ def synthesize_fallback_status(
                 "primary_blocker": primary_blocker,
                 "hr_reference_package_status": hr_package.get("status", "not_checked"),
                 "saved_hr_ready": package_ready,
-                "whoop_samples": hr_package.get("samples", hr_validation.get("whoop_samples", "0")),
+                "strap_samples": hr_package.get("samples", hr_validation.get("strap_samples", "0")),
                 "whoop_duration_s": hr_package.get("duration_s", hr_validation.get("duration_s", "0")),
                 "whoop_observed_s": hr_package.get("observed_s", "0"),
                 "whoop_coverage_percent": hr_package.get("coverage_percent", "0"),
                 "whoop_avg_hr": hr_package.get("avg_hr", "missing"),
                 "whoop_peak_hr": hr_package.get("peak_hr", hr_validation.get("whoop_peak_hr", "missing")),
-                "rest_hr": hr_package.get("resting_hr", hr_validation.get("whoop_resting_hr", "missing")),
+                "rest_hr": hr_package.get("resting_hr", hr_validation.get("strap_resting_hr", "missing")),
                 "reference_validation_status": hr_validation.get("status", "not_checked"),
                 "reference_validation_reason": validation_reason,
                 "reference_samples": hr_validation.get("reference_samples", "0"),
@@ -598,7 +598,7 @@ def synthesize_fallback_status(
             "saved_rr_kept": rr_package.get("kept", rr_validation.get("whoop_kept", "0")),
             "saved_rr_confidence": rr_package.get("conf", rr_validation.get("whoop_conf", "0")),
             "saved_rr_max_gap_s": rr_package.get("max_rr_gap_s", rr_validation.get("whoop_gap_s", "0")),
-            "saved_rr_best_rmssd": rr_package.get("rmssd", rr_validation.get("whoop_rmssd", local.get("saved_rr_best_rmssd", "0"))),
+            "saved_rr_best_rmssd": rr_package.get("rmssd", rr_validation.get("strap_rmssd", local.get("saved_rr_best_rmssd", "0"))),
             "saved_rr_best_label": rr_package.get("session_label", local.get("saved_rr_best_label", "missing")),
             "rr_reference_package_status": rr_package.get("status", "not_checked"),
             "reference_validation_status": rr_validation.get("status", "not_checked"),
@@ -623,7 +623,7 @@ def synthesize_fallback_status(
             "rest_hr": hr_package.get("resting_hr", daily.get("rest_hr", "missing")),
             "hr_reference_package_status": hr_package.get("status", "not_checked"),
             "saved_hr_ready": hr_package_ready,
-            "whoop_samples": hr_package.get("samples", hr_validation.get("whoop_samples", "0")),
+            "strap_samples": hr_package.get("samples", hr_validation.get("strap_samples", "0")),
             "whoop_duration_s": hr_package.get("duration_s", hr_validation.get("duration_s", "0")),
             "whoop_observed_s": hr_package.get("observed_s", "0"),
             "whoop_coverage_percent": hr_package.get("coverage_percent", "0"),
@@ -796,7 +796,7 @@ def next_action(gate: str, row: dict[str, str]) -> str:
     if gate == "local":
         return "Use this row as the current-store dashboard; it is not a gate exit."
     if gate == "A":
-        return "For each launch, confirm live BLE/RR in WHOOPDBG; Gate A implementation is otherwise done."
+        return "For each launch, confirm live BLE/RR in ATRIADBG; Gate A implementation is otherwise done."
     if gate == "B":
         if val(row, "reference_validated", "0") != "1":
             if val(row, "saved_rr_ready", "0") == "1":
@@ -813,7 +813,7 @@ def next_action(gate: str, row: dict[str, str]) -> str:
         if val(row, "reference_validated", "0") != "1":
             if val(row, "saved_hr_ready", "0") == "1":
                 action = code_value(val(row, "reference_action", "provide_independent_chest_strap_hr_recording"))
-                samples = val(row, "whoop_samples", "missing")
+                samples = val(row, "strap_samples", "missing")
                 avg_hr = val(row, "whoop_avg_hr", "missing")
                 peak_hr = val(row, "whoop_peak_hr", "missing")
                 reason = code_value(val(row, "reference_validation_reason", val(row, "primary_blocker", "external_hr_reference_missing")))

@@ -13,7 +13,7 @@ struct ContentView: View {
             .onAppear {
                 let debugOnboardingStep = Self.debugOnboardingStepArgument()
                 let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
-                    && ProcessInfo.processInfo.arguments.contains("--whoop-complete-onboarding")
+                    && ProcessInfo.processInfo.arguments.contains("--atria-complete-onboarding")
                 showOnboarding = debugOnboardingStep != nil || (!store.profile.hasCompletedOnboarding && !debugCompletesOnboarding)
             }
             .sheet(isPresented: $showOnboarding) {

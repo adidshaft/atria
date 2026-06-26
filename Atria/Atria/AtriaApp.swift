@@ -206,31 +206,31 @@ struct AtriaApp: App {
         ble.scheduleWorkoutAutoSaveIfRequested(rest: store.baseline.restingInt ?? 60,
                                                maxHR: store.profile.maxHR)
 
-        let requestedLaunchDiagnostics = arguments.contains("--whoop-log-baseline")
-            || arguments.contains("--whoop-log-collection-health")
-            || arguments.contains("--whoop-log-gate-readiness")
-            || arguments.contains("--whoop-log-activity-detections")
-            || arguments.contains("--whoop-log-daily-rollups")
-            || arguments.contains("--whoop-log-workout-preflight")
-            || arguments.contains("--whoop-log-strain-validation")
-            || arguments.contains("--whoop-schedule-sleep-validation")
-            || arguments.contains("--whoop-schedule-workout-validation")
-            || arguments.contains("--whoop-log-trend-summaries")
-            || arguments.contains("--whoop-write-session-backup")
-            || arguments.contains("--whoop-verify-session-backup")
-            || arguments.contains("--whoop-log-gate-status")
-            || arguments.contains("--whoop-export-rr-reference-package")
-            || arguments.contains("--whoop-export-rr-reference-ui-package")
-            || arguments.contains("--whoop-export-hr-reference-package")
-            || arguments.contains("--whoop-export-hr-reference-ui-package")
-            || arguments.contains("--whoop-validate-rr-reference")
-            || arguments.contains("--whoop-validate-hr-reference")
-            || arguments.contains("--whoop-clear-reference-inputs")
-            || arguments.contains("--whoop-healthkit-export")
-            || arguments.contains("--whoop-healthkit-reference-audit")
-            || arguments.contains("--whoop-healthkit-reset-rebuild-atria-hr")
-            || arguments.contains("--whoop-confirm-best-workout-candidate")
-            || arguments.contains("--whoop-confirm-best-sleep-candidate")
+        let requestedLaunchDiagnostics = arguments.contains("--atria-log-baseline")
+            || arguments.contains("--atria-log-collection-health")
+            || arguments.contains("--atria-log-gate-readiness")
+            || arguments.contains("--atria-log-activity-detections")
+            || arguments.contains("--atria-log-daily-rollups")
+            || arguments.contains("--atria-log-workout-preflight")
+            || arguments.contains("--atria-log-strain-validation")
+            || arguments.contains("--atria-schedule-sleep-validation")
+            || arguments.contains("--atria-schedule-workout-validation")
+            || arguments.contains("--atria-log-trend-summaries")
+            || arguments.contains("--atria-write-session-backup")
+            || arguments.contains("--atria-verify-session-backup")
+            || arguments.contains("--atria-log-gate-status")
+            || arguments.contains("--atria-export-rr-reference-package")
+            || arguments.contains("--atria-export-rr-reference-ui-package")
+            || arguments.contains("--atria-export-hr-reference-package")
+            || arguments.contains("--atria-export-hr-reference-ui-package")
+            || arguments.contains("--atria-validate-rr-reference")
+            || arguments.contains("--atria-validate-hr-reference")
+            || arguments.contains("--atria-clear-reference-inputs")
+            || arguments.contains("--atria-healthkit-export")
+            || arguments.contains("--atria-healthkit-reference-audit")
+            || arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
+            || arguments.contains("--atria-confirm-best-workout-candidate")
+            || arguments.contains("--atria-confirm-best-sleep-candidate")
         guard requestedLaunchDiagnostics else {
             logLaunchTiming(event: "deferred_launch_complete")
             return
@@ -264,8 +264,8 @@ struct AtriaApp: App {
 
     private func hasRequestedDeferredLaunchWork(arguments: [String]) -> Bool {
         arguments.contains { argument in
-            guard argument.hasPrefix("--whoop-") else { return false }
-            return argument != "--whoop-enable-debug-logs"
+            guard argument.hasPrefix("--atria-") else { return false }
+            return argument != "--atria-enable-debug-logs"
         }
     }
 
@@ -279,18 +279,18 @@ struct AtriaApp: App {
 
     @MainActor
     private func scheduleLaunchExportsIfRequested(store: SessionStore, arguments: [String]) {
-        let needsRR = arguments.contains("--whoop-export-rr-reference-package")
-        let needsRRUI = arguments.contains("--whoop-export-rr-reference-ui-package")
-        let needsHR = arguments.contains("--whoop-export-hr-reference-package")
-        let needsHRUI = arguments.contains("--whoop-export-hr-reference-ui-package")
-        let needsRRValidation = arguments.contains("--whoop-validate-rr-reference")
-        let needsHRValidation = arguments.contains("--whoop-validate-hr-reference")
-        let needsReferenceClear = arguments.contains("--whoop-clear-reference-inputs")
-        let needsHealthKit = arguments.contains("--whoop-healthkit-export")
-        let needsHealthKitAudit = arguments.contains("--whoop-healthkit-reference-audit")
-        let needsHealthKitResetRebuild = arguments.contains("--whoop-healthkit-reset-rebuild-atria-hr")
-        let needsWorkoutConfirm = arguments.contains("--whoop-confirm-best-workout-candidate")
-        let needsSleepConfirm = arguments.contains("--whoop-confirm-best-sleep-candidate")
+        let needsRR = arguments.contains("--atria-export-rr-reference-package")
+        let needsRRUI = arguments.contains("--atria-export-rr-reference-ui-package")
+        let needsHR = arguments.contains("--atria-export-hr-reference-package")
+        let needsHRUI = arguments.contains("--atria-export-hr-reference-ui-package")
+        let needsRRValidation = arguments.contains("--atria-validate-rr-reference")
+        let needsHRValidation = arguments.contains("--atria-validate-hr-reference")
+        let needsReferenceClear = arguments.contains("--atria-clear-reference-inputs")
+        let needsHealthKit = arguments.contains("--atria-healthkit-export")
+        let needsHealthKitAudit = arguments.contains("--atria-healthkit-reference-audit")
+        let needsHealthKitResetRebuild = arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
+        let needsWorkoutConfirm = arguments.contains("--atria-confirm-best-workout-candidate")
+        let needsSleepConfirm = arguments.contains("--atria-confirm-best-sleep-candidate")
         guard needsRR || needsRRUI || needsHR || needsHRUI || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
         AtriaDebugLog("ATRIADBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                       needsRR ? 1 : 0,
@@ -348,13 +348,13 @@ struct AtriaApp: App {
                                                          arguments: [String],
                                                          needsHealthKit: Bool,
                                                          needsResetRebuild: Bool) {
-        guard needsHealthKit, arguments.contains("--whoop-log-gate-status") else { return }
+        guard needsHealthKit, arguments.contains("--atria-log-gate-status") else { return }
         Task { @MainActor in
             let delaySeconds: UInt64 = needsResetRebuild ? 120 : 5
             try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
             var statusArguments = arguments
-            if !statusArguments.contains("--whoop-log-gate-status-delay-fired") {
-                statusArguments.append("--whoop-log-gate-status-delay-fired")
+            if !statusArguments.contains("--atria-log-gate-status-delay-fired") {
+                statusArguments.append("--atria-log-gate-status-delay-fired")
             }
             AtriaDebugLog("ATRIADBG launch_exports_post_healthkit_gate_status status=scheduled delay_s=%llu", delaySeconds)
             store.logGateStatusFromLaunchIfRequested(arguments: statusArguments)

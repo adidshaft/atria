@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild a WhoopApp session backup from real WHOOPDBG realtimeFrame logs.
+"""Rebuild a Atria session backup from real ATRIADBG realtimeFrame logs.
 
 This is a recovery tool for physical-device evidence only. It never fabricates
 RR intervals or validated HRV; it reconstructs the compact saved HR time series
@@ -23,11 +23,11 @@ from typing import Any
 TIMESTAMP_FMT = "%Y-%m-%d %H:%M:%S.%f"
 REALTIME_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}).*"
-    r"WHOOPDBG realtimeFrame hrByte=(?P<hr>\d+)"
+    r"ATRIADBG realtimeFrame hrByte=(?P<hr>\d+)"
 )
 CHECKPOINT_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}).*"
-    r"WHOOPDBG session_checkpoint status=saved "
+    r"ATRIADBG session_checkpoint status=saved "
     r"samples=(?P<samples>\d+) duration_s=(?P<duration>[0-9.]+) "
     r"avg_hr=(?P<avg>\d+) peak_hr=(?P<peak>\d+) resting_hr=(?P<resting>\d+) "
     r"hrv=(?P<hrv>\S+) label=(?P<label>.+?) checkpoint_index=(?P<index>\d+) "
@@ -56,12 +56,12 @@ class Checkpoint:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--log", required=True, type=Path, help="WHOOPDBG live-device.log")
+    parser.add_argument("--log", required=True, type=Path, help="ATRIADBG live-device.log")
     parser.add_argument(
         "--base-backup",
         required=True,
         type=Path,
-        help="Existing WhoopApp backup JSON to copy baseline/profile and merge sessions from",
+        help="Existing Atria backup JSON to copy baseline/profile and merge sessions from",
     )
     parser.add_argument("--out", required=True, type=Path, help="Output backup JSON")
     parser.add_argument(
@@ -136,7 +136,7 @@ def parse_log(path: Path, tz: timezone) -> tuple[list[Frame], Checkpoint]:
                 )
 
     if not frames:
-        raise SystemExit(f"No WHOOPDBG realtimeFrame rows found in {path}")
+        raise SystemExit(f"No ATRIADBG realtimeFrame rows found in {path}")
     if not checkpoints:
         raise SystemExit(f"No saved session_checkpoint rows found in {path}")
     return frames, checkpoints[-1]
@@ -202,7 +202,7 @@ def merge_backup(base: dict[str, Any], session: dict[str, Any], replace_labels: 
     merged["sessions"] = sessions
     merged["createdAt"] = iso_z(datetime.now(timezone.utc))
     merged["schema"] = 1
-    merged["app"] = "WhoopApp.local"
+    merged["app"] = "Atria.local"
     return merged
 
 

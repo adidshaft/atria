@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize Gate E workout evidence from a WhoopApp WHOOPDBG log.
+"""Summarize Gate E workout evidence from a Atria ATRIADBG log.
 
 The live-device logs are intentionally verbose. This tool reduces them to a
 single honest decision: did the workout detector have enough real saved/live HR
@@ -108,67 +108,67 @@ class LogEvidence:
         if "Launching application" in line or "devicectl device process launch" in line:
             self.app_launched = True
 
-        if "WHOOPDBG workout_preflight" in line:
-            self.preflight = kv_after("WHOOPDBG workout_preflight", line)
-        elif "WHOOPDBG session_checkpoint schedule" in line:
-            tokens = kv_after("WHOOPDBG session_checkpoint schedule", line)
+        if "ATRIADBG workout_preflight" in line:
+            self.preflight = kv_after("ATRIADBG workout_preflight", line)
+        elif "ATRIADBG session_checkpoint schedule" in line:
+            tokens = kv_after("ATRIADBG session_checkpoint schedule", line)
             if matches_label(tokens.get("label"), label):
                 self.checkpoint_schedule = tokens
-        elif "WHOOPDBG session_checkpoint status=saved" in line:
-            tokens = kv_after("WHOOPDBG session_checkpoint", line)
+        elif "ATRIADBG session_checkpoint status=saved" in line:
+            tokens = kv_after("ATRIADBG session_checkpoint", line)
             if matches_label(tokens.get("label"), label):
                 self.checkpoint_saved = tokens
-        elif "WHOOPDBG hr_continuity_watchdog schedule" in line:
-            tokens = kv_after("WHOOPDBG hr_continuity_watchdog schedule", line)
+        elif "ATRIADBG hr_continuity_watchdog schedule" in line:
+            tokens = kv_after("ATRIADBG hr_continuity_watchdog schedule", line)
             if matches_label(tokens.get("label"), label):
                 self.hr_continuity_schedule = tokens
-        elif "WHOOPDBG hr_continuity_watchdog status=" in line or (
-            "WHOOPDBG hr_continuity_watchdog persisted=1" in line
+        elif "ATRIADBG hr_continuity_watchdog status=" in line or (
+            "ATRIADBG hr_continuity_watchdog persisted=1" in line
         ):
-            tokens = kv_after("WHOOPDBG hr_continuity_watchdog", line)
+            tokens = kv_after("ATRIADBG hr_continuity_watchdog", line)
             if matches_label(tokens.get("label"), label):
                 self.hr_continuity_actions += 1
                 self.last_hr_continuity = tokens
-        elif "WHOOPDBG live_workout schedule" in line:
-            tokens = kv_after("WHOOPDBG live_workout schedule", line)
+        elif "ATRIADBG live_workout schedule" in line:
+            tokens = kv_after("ATRIADBG live_workout schedule", line)
             if matches_label(tokens.get("label"), label):
                 self.live_schedule = tokens
-        elif "WHOOPDBG live_workout tick=" in line:
-            tokens = kv_after("WHOOPDBG live_workout", line)
+        elif "ATRIADBG live_workout tick=" in line:
+            tokens = kv_after("ATRIADBG live_workout", line)
             if matches_label(tokens.get("label"), label):
                 self.live_ticks += 1
                 self.last_live = tokens
                 if better_workout_row(tokens, self.best_live):
                     self.best_live = tokens
-        elif "WHOOPDBG workout_auto_save schedule" in line:
-            tokens = kv_after("WHOOPDBG workout_auto_save schedule", line)
+        elif "ATRIADBG workout_auto_save schedule" in line:
+            tokens = kv_after("ATRIADBG workout_auto_save schedule", line)
             if matches_label(tokens.get("label"), label):
                 self.auto_save_schedule = tokens
-        elif "WHOOPDBG workout_auto_save status=saved" in line:
-            tokens = kv_after("WHOOPDBG workout_auto_save", line)
+        elif "ATRIADBG workout_auto_save status=saved" in line:
+            tokens = kv_after("ATRIADBG workout_auto_save", line)
             if matches_label(tokens.get("label"), label):
                 self.auto_save_saved = tokens
-        elif "WHOOPDBG workout_auto_save status=learning" in line:
-            tokens = kv_after("WHOOPDBG workout_auto_save", line)
+        elif "ATRIADBG workout_auto_save status=learning" in line:
+            tokens = kv_after("ATRIADBG workout_auto_save", line)
             if matches_label(tokens.get("label"), label):
                 self.auto_save_learning = tokens
-        elif "WHOOPDBG workout_validation" in line:
-            tokens = kv_after("WHOOPDBG workout_validation", line)
+        elif "ATRIADBG workout_validation" in line:
+            tokens = kv_after("ATRIADBG workout_validation", line)
             if "status" in tokens and matches_label(tokens.get("label"), label):
                 self.validation = tokens
-        elif "WHOOPDBG workout_replay_summary" in line:
-            self.replay = kv_after("WHOOPDBG workout_replay_summary", line)
-        elif "WHOOPDBG gate_status gate=E" in line:
-            self.gate_e = kv_after("WHOOPDBG gate_status", line)
-        elif "WHOOPDBG session_backup " in line:
-            self.backup = kv_after("WHOOPDBG session_backup", line)
-        elif "WHOOPDBG session_backup_verify " in line:
-            self.backup_verify = kv_after("WHOOPDBG session_backup_verify", line)
-        elif "WHOOPDBG daily_rollup" in line:
-            self.daily_rollup = kv_after("WHOOPDBG daily_rollup", line)
-        elif "WHOOPDBG local_status" in line:
-            self.local_status = kv_after("WHOOPDBG local_status", line)
-        elif "=" in line and line.startswith(("WHOOPDBG_", "notify_", "rr_", "standard_", "frame_", "hrv_", "realtime_")):
+        elif "ATRIADBG workout_replay_summary" in line:
+            self.replay = kv_after("ATRIADBG workout_replay_summary", line)
+        elif "ATRIADBG gate_status gate=E" in line:
+            self.gate_e = kv_after("ATRIADBG gate_status", line)
+        elif "ATRIADBG session_backup " in line:
+            self.backup = kv_after("ATRIADBG session_backup", line)
+        elif "ATRIADBG session_backup_verify " in line:
+            self.backup_verify = kv_after("ATRIADBG session_backup_verify", line)
+        elif "ATRIADBG daily_rollup" in line:
+            self.daily_rollup = kv_after("ATRIADBG daily_rollup", line)
+        elif "ATRIADBG local_status" in line:
+            self.local_status = kv_after("ATRIADBG local_status", line)
+        elif "=" in line and line.startswith(("ATRIADBG_", "notify_", "rr_", "standard_", "frame_", "hrv_", "realtime_")):
             key, value = line.strip().split("=", 1)
             self.summary[key] = value
 

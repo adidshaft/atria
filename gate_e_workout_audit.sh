@@ -26,7 +26,7 @@ Runs the deterministic Gate E workout audit on the physical iPhone:
   - low-radio HR-only capture by default
   - checkpoint + strict auto-save + delayed workout validation
   - pull Documents/sessions.json, the active Long Wear journal, and verified backup
-  - summarize the WHOOPDBG log, pulled current store, and active journal
+  - summarize the ATRIADBG log, pulled current store, and active journal
 
 By default the log analyzer considers all labels. This is intentional because a
 persisted Long wear run can keep logging live rows as "Long wear" even when the

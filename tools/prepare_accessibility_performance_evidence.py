@@ -41,7 +41,7 @@ def current_git_commit(repo: Path) -> str:
 
 
 def read_build_string(repo: Path) -> str:
-    project_plist = repo / "WhoopApp" / "Info.plist"
+    project_plist = repo / "Atria" / "Info.plist"
     display_name = "Atria"
     version = ""
     build = ""
@@ -68,7 +68,7 @@ def project_build_string(repo: Path, display_name: str) -> str:
 
 
 def project_build_settings(repo: Path) -> dict[str, str]:
-    project = repo / "WhoopApp" / "WhoopApp.xcodeproj" / "project.pbxproj"
+    project = repo / "Atria" / "Atria.xcodeproj" / "project.pbxproj"
     if not project.exists():
         return {}
     text = project.read_text(encoding="utf-8", errors="replace")

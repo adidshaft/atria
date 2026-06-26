@@ -41,8 +41,8 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
     def test_build_string_falls_back_to_xcode_project_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / "WhoopApp" / "WhoopApp.xcodeproj").mkdir(parents=True)
-            (repo / "WhoopApp" / "Info.plist").write_text(
+            (repo / "Atria" / "Atria.xcodeproj").mkdir(parents=True)
+            (repo / "Atria" / "Info.plist").write_text(
                 """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
@@ -53,7 +53,7 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
 """,
                 encoding="utf-8",
             )
-            (repo / "WhoopApp" / "WhoopApp.xcodeproj" / "project.pbxproj").write_text(
+            (repo / "Atria" / "Atria.xcodeproj" / "project.pbxproj").write_text(
                 """
                 MARKETING_VERSION = 1.2;
                 CURRENT_PROJECT_VERSION = 45;
