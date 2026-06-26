@@ -2115,6 +2115,32 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "if reduceMotion")
         assert_contains(self, heart_rate, ".animation(reduceMotion ? nil")
 
+    def test_section_render_paths_do_not_recompute_session_metrics(self):
+        forbidden_calls = [
+            ".sorted(",
+            ".reduce(",
+            ".compactMap(",
+            "detectedActivity(",
+            "dailyRollups(",
+            "aggregateWorkoutCandidates(",
+            "aggregateSleepCandidates(",
+            "canonicalSessions(",
+        ]
+
+        for path in [
+            ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift",
+            ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift",
+        ]:
+            text = source(path)
+            for start, block in swift_some_view_blocks(text):
+                line = text.count("\n", 0, start) + 1
+                for forbidden in forbidden_calls:
+                    self.assertNotIn(
+                        forbidden,
+                        block,
+                        f"{path.name}:{line} recomputes session metrics in a render path via {forbidden}",
+                    )
+
     def test_end_user_copy_avoids_lab_only_language(self):
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
