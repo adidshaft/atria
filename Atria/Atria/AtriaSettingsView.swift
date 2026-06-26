@@ -15,8 +15,10 @@ struct AtriaSettingsView: View {
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
     let onExportHealth: (() -> Void)?
     let onSyncMissedData: (() -> Void)?
+    let onForgetStrap: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showForgetConfirm = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -41,7 +43,8 @@ struct AtriaSettingsView: View {
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
          onExportHealth: (() -> Void)? = nil,
-         onSyncMissedData: (() -> Void)? = nil) {
+         onSyncMissedData: (() -> Void)? = nil,
+         onForgetStrap: (() -> Void)? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
         self.strapName = strapName
@@ -53,6 +56,7 @@ struct AtriaSettingsView: View {
         self.onUpdateHaptics = onUpdateHaptics
         self.onExportHealth = onExportHealth
         self.onSyncMissedData = onSyncMissedData
+        self.onForgetStrap = onForgetStrap
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
         _nameDraft = State(initialValue: strapName)
@@ -324,10 +328,25 @@ struct AtriaSettingsView: View {
                     Text(strapFirmware).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
+            if let onForgetStrap {
+                Button(role: .destructive) {
+                    showForgetConfirm = true
+                } label: {
+                    Label("Forget this strap", systemImage: "minus.circle")
+                }
+                .confirmationDialog("Forget this strap?",
+                                    isPresented: $showForgetConfirm,
+                                    titleVisibility: .visible) {
+                    Button("Forget strap", role: .destructive) { onForgetStrap() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Atria will stop auto-reconnecting and won't pair again until you connect a strap. You can reconnect any time.")
+                }
+            }
         } header: {
             Text("Device")
         } footer: {
-            Text("Rename your strap; the name is saved on this phone. Model is detected automatically when available.")
+            Text("Rename your strap; the name is saved on this phone. Atria stays connected to it automatically — you only pair once, until you forget it here.")
         }
     }
 

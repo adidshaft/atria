@@ -573,6 +573,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let lastAutoSaveDuration = "atria.link.lastAutoSaveDuration"
         static let officialAppCoexistenceRisk = "atria.link.officialAppCoexistenceRisk"
         static let officialAppCoexistenceReason = "atria.link.officialAppCoexistenceReason"
+        /// The CoreBluetooth identifier of the strap the user paired with. Once set,
+        /// Atria maintains a standing pending connection to it forever (reconnects
+        /// across range loss + app relaunch) until the user explicitly forgets it.
+        static let savedPeripheralUUID = "atria.link.savedPeripheralUUID"
     }
 
     static func officialAppCoexistenceRisk(defaults: UserDefaults = .standard) -> OfficialAppCoexistenceRisk {
@@ -2021,6 +2025,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func recordLinkConnected(peripheral: CBPeripheral) {
         resetRecoveryReconnectBackoff(reason: "did_connect")
         let defaults = UserDefaults.standard
+        // Remember this strap so we can re-arm a standing pending connection to it
+        // on every launch / drop without scanning. "Connect once, stay connected."
+        defaults.set(peripheral.identifier.uuidString, forKey: LinkDefaults.savedPeripheralUUID)
         let successes = defaults.integer(forKey: LinkDefaults.successes) + 1
         defaults.set(successes, forKey: LinkDefaults.successes)
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
@@ -5092,6 +5099,59 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let p = peripheral { central.cancelPeripheralConnection(p) }
     }
 
+    /// True once the user has paired a strap that we should keep reconnecting to.
+    var hasSavedStrap: Bool {
+        UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID) != nil
+    }
+
+    /// Re-arm a STANDING pending connection to the saved strap — no scan. iOS keeps
+    /// the request and connects whenever the strap is in range, across range loss,
+    /// background, and app relaunch. This is the "connect once, stay connected"
+    /// primitive. Returns false only if no strap is saved yet (first-time setup).
+    @discardableResult
+    func reconnectToSavedPeripheralIfPossible(reason: String) -> Bool {
+        let defaults = UserDefaults.standard
+        guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
+              let uuid = UUID(uuidString: uuidString),
+              let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+            return false
+        }
+        saved.delegate = self
+        self.peripheral = saved
+        assignIfChanged(\.deviceName, saved.name ?? deviceName)
+        if saved.state == .connected {
+            assignIfChanged(\.status, .connected)
+            saved.discoverServices(Self.UUIDs.discoveryServices)
+            AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=already_connected", reason)
+        } else {
+            assignIfChanged(\.status, .connecting)
+            recordLinkAttempt(reason: reason, peripheral: saved)
+            // Standing pending connect — never times out; iOS fulfils it whenever
+            // the strap becomes reachable. No scanning, no give-up.
+            central.connect(saved, options: nil)
+            AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=pending_connect", reason)
+        }
+        return true
+    }
+
+    /// Explicit user action: stop reconnecting to the saved strap and forget it.
+    func forgetSavedStrap(reason: String) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: LinkDefaults.savedPeripheralUUID)
+        userRequestedDisconnect = true
+        reconnectWatchdogTask?.cancel()
+        reconnectWatchdogTask = nil
+        freshScanFallbackTask?.cancel()
+        freshScanFallbackTask = nil
+        if let peripheral {
+            central.cancelPeripheralConnection(peripheral)
+        }
+        self.peripheral = nil
+        central.stopScan()
+        assignIfChanged(\.status, .disconnected)
+        AtriaDebugLog("ATRIADBG ble_link status=forgotten reason=%@ action=user_forget", reason)
+    }
+
     private func startReconnectWatchdog(reason: String, peripheral: CBPeripheral) {
         reconnectWatchdogTask?.cancel()
         reconnectWatchdogTask = Task { @MainActor in
@@ -5100,6 +5160,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard self.peripheral === peripheral,
                   self.status == .connecting,
                   peripheral.state != .connected else { return }
+            // For a SAVED strap, NEVER cancel the connection and fall back to
+            // scanning — that is what made "unable to reconnect" possible. A
+            // pending connect() stands forever and iOS fulfils it the moment the
+            // strap returns to range. Keep it armed and stay in the reconnecting
+            // state; only an explicit user "Forget" stops it.
+            if self.hasSavedStrap {
+                self.central.connect(peripheral, options: nil)
+                AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=keep_pending_connect_saved_strap", reason)
+                return
+            }
             self.recordLinkFailure(reason: "\(reason)_watchdog", error: nil)
             self.preserveLongWearRangeLossRecovery(reason: "\(reason)_watchdog")
             self.realtimeArmed = false
@@ -8732,7 +8802,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 pendingScanReason = nil
                 if let peripheral, peripheral.state == .connected {
                     peripheral.discoverServices(Self.UUIDs.discoveryServices)
+                } else if reconnectToSavedPeripheralIfPossible(reason: "powered_on_\(reason)") {
+                    // Re-armed a standing pending connection to the known strap.
+                    // No scan needed — iOS reconnects when it is in range.
                 } else {
+                    // No saved strap yet (first-time setup) — scan to find one.
                     startScan(reason: reason)
                 }
             case .poweredOff:
@@ -8899,6 +8973,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 }
                 assignIfChanged(\.status, .disconnected)
                 let freshReason = longWearModeEnabled ? "long_wear_disconnect" : "stale_data_recovery"
+                // Even on a forced fresh recovery, prefer a standing pending connect
+                // to the KNOWN strap over scanning — it reconnects without giving up.
+                if reconnectToSavedPeripheralIfPossible(reason: "\(freshReason)_known_strap") {
+                    return
+                }
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=%@ action=fresh_scan",
                       freshReason)
                 startScan(reason: freshReason)
