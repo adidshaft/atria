@@ -288,11 +288,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "fileprivate var isWideGlanceCard: Bool { glanceGridSize.isWide }",
             "private static let glanceGridSpacing: CGFloat = 10",
             "private static let glanceGridColumnCount = 2",
+            "private static let glanceRowHeight = AtriaGlanceMetricCard.cardHeight",
             "Grid(horizontalSpacing: Self.glanceGridSpacing, verticalSpacing: Self.glanceGridSpacing)",
+            ".frame(maxWidth: .infinity)",
             "ForEach(glanceRows, id: \\.glanceRowID)",
+            "minHeight: Self.glanceRowHeight",
+            "maxHeight: Self.glanceRowHeight",
             ".gridCellColumns(metric.glanceColumnSpan)",
             "private struct AtriaGlanceMetricCard: View, Equatable",
             "static let cardHeight: CGFloat = 154",
+            "private static let headerHeight: CGFloat = 42",
+            "private static let valueHeight: CGFloat = 38",
             "private struct AtriaGlanceMetricMarker: View, Equatable",
             "private static let size: CGFloat = 42",
             "private static let innerSize: CGFloat = 28",
@@ -314,11 +320,13 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)",
             ".frame(width: Self.size, height: Self.size)",
             "private var markerRing: some View",
-            "StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round, dash: [3, 7])",
-            "case .strain: return \"bolt.heart.fill\"",
-            "case .sleep: return \"moon.zzz.fill\"",
+            "StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round)",
+            "case .strain: return \"figure.run\"",
+            "case .hrv: return \"waveform.path.ecg.rectangle\"",
+            "case .sleep: return \"bed.double.fill\"",
             "case .rhr: return \"heart.text.square.fill\"",
-            "case .steps: return \"shoeprints.fill\"",
+            "case .steps: return \"figure.walk\"",
+            "case .insights: return \"sparkles\"",
             "[.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]",
             "insights: store.behaviorInsights",
             "taggedDays: store.behaviorJournalEntries.count",
@@ -1718,6 +1726,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         widget = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
         intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
         docs = "\n".join(source(path) for path in (ROOT / "docs").rglob("*.md"))
@@ -1737,6 +1747,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "hrvState = recovery.confidence == .validated ? \"validated\" : \"personal_baseline\"",
         ]:
             assert_contains(self, widget, needle)
+
+        for needle in [
+            "private var recoveryState: AtriaMetricState",
+            "case .personalBaseline:\n            return .personalBaseline",
+            "case .unverified:\n            return .research",
+            "state: recoveryState",
+            "footnote: hero.recoveryEstimate.confidence.rawValue",
+        ]:
+            assert_contains(self, overview + vitals, needle)
+
+        assert_not_contains(self, overview + vitals, "state: hero.recoveryEstimate.percent == nil ? .learning : .validated")
 
         assert_contains(self, intents, "Read the latest local recovery, strain, and HRV snapshot.")
         assert_contains(self, intents, "snapshot.hrvRMSSD.map")

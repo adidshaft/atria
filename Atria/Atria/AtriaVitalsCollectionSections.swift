@@ -1351,6 +1351,19 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let sleepHistory: SleepHistorySnapshot
 
+    private var recoveryState: AtriaMetricState {
+        switch hero.recoveryEstimate.confidence {
+        case .validated:
+            return .validated
+        case .personalBaseline:
+            return .personalBaseline
+        case .unverified:
+            return .research
+        case .learning:
+            return .learning
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Coach", subtitle: "")
@@ -1374,8 +1387,9 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         AtriaMetricTile(label: "Recovery",
                         value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
                         unit: hero.recoveryEstimate.percent == nil ? nil : "%",
-                        state: hero.recoveryEstimate.percent == nil ? .learning : .validated,
-                        tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange)
+                        state: recoveryState,
+                        tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
+                        footnote: hero.recoveryEstimate.confidence.rawValue)
         AtriaMetricTile(label: "Strain",
                         value: String(format: "%.1f", hero.strain),
                         state: .local,

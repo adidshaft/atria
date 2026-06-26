@@ -521,14 +521,14 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .recovery: return "heart.fill"
-        case .strain: return "bolt.heart.fill"
-        case .hrv: return "waveform.path.ecg"
-        case .sleep: return "moon.zzz.fill"
+        case .strain: return "figure.run"
+        case .hrv: return "waveform.path.ecg.rectangle"
+        case .sleep: return "bed.double.fill"
         case .rhr: return "heart.text.square.fill"
-        case .steps: return "shoeprints.fill"
+        case .steps: return "figure.walk"
         case .calories: return "flame.fill"
         case .trend: return "chart.xyaxis.line"
-        case .insights: return "chart.line.uptrend.xyaxis"
+        case .insights: return "sparkles"
         }
     }
 
@@ -650,6 +650,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         GridRow {
                             ForEach(row) { metric in
                                 glanceCard(metric)
+                                    .frame(maxWidth: .infinity,
+                                           minHeight: Self.glanceRowHeight,
+                                           maxHeight: Self.glanceRowHeight,
+                                           alignment: .topLeading)
                                     .gridCellColumns(metric.glanceColumnSpan)
                                     .draggable(metric.rawValue)
                                     .dropDestination(for: String.self) { items, _ in
@@ -677,6 +681,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
         }
         .padding(16)
@@ -690,6 +695,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private static let glanceGridSpacing: CGFloat = 10
     private static let glanceGridColumnCount = 2
+    private static let glanceRowHeight = AtriaGlanceMetricCard.cardHeight
 
     private var glanceRows: [[AtriaTodayMetric]] {
         var rows: [[AtriaTodayMetric]] = []
@@ -829,6 +835,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
 private struct AtriaGlanceMetricCard: View, Equatable {
     static let cardHeight: CGFloat = 154
+    private static let headerHeight: CGFloat = 42
+    private static let valueHeight: CGFloat = 38
     private static let footerHeight: CGFloat = 34
 
     let title: String
@@ -859,7 +867,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 10) {
                 AtriaGlanceMetricMarker(systemImage: systemImage,
                                         tint: tint,
@@ -880,6 +888,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: Self.headerHeight, alignment: .center)
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(displayValue)
@@ -890,6 +899,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 
                 Spacer(minLength: 0)
             }
+            .frame(height: Self.valueHeight, alignment: .bottom)
 
             footer
         }
@@ -987,7 +997,7 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
         } else {
             Circle()
                 .stroke(tint.opacity(0.36),
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round, dash: [3, 7]))
+                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
         }
     }
 }
@@ -1225,6 +1235,19 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         sleepHistory.latest
     }
 
+    private var recoveryState: AtriaMetricState {
+        switch hero.recoveryEstimate.confidence {
+        case .validated:
+            return .validated
+        case .personalBaseline:
+            return .personalBaseline
+        case .unverified:
+            return .research
+        case .learning:
+            return .learning
+        }
+    }
+
     private var shouldShowConfirmSleep: Bool {
         guard let latestNight else { return false }
         return !latestNight.confirmed && sleepHistory.candidateCount > 0
@@ -1274,8 +1297,9 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                 AtriaMetricTile(label: "Recovery",
                                 value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
                                 unit: hero.recoveryEstimate.percent == nil ? nil : "%",
-                                state: hero.recoveryEstimate.percent == nil ? .learning : .validated,
-                                tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange)
+                                state: recoveryState,
+                                tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
+                                footnote: hero.recoveryEstimate.confidence.rawValue)
                 AtriaMetricTile(label: "HRV",
                                 value: metricDisplayValue(hero.hrvValue),
                                 state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning,
