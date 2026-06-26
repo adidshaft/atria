@@ -41,6 +41,27 @@ cabled iPhone (`devicectl … capture screenshot`) → commit small.
   (gradual rise), **light-mode borders** (white→black separators). ✅
 - **Steps/Calories/VO₂/model gates/HealthKit scaffolds** — per docs/18 status block. ✅
 
+## "DO NO HARM" product requirements (using Atria must never make the phone worse)
+Hard rules the user set — verify none regress:
+1. **Never touch the user's music/audio.** No `AVAudioSession.setActive`, no
+   `MPMusicPlayerController.systemMusicPlayer`, no `beginGeneratingPlaybackNotifications`.
+   (Fixed: `AtriaMediaController` is now fully inert; the media-control feature is
+   gone. Don't reintroduce it.)
+2. **No heavy phone-battery drain.** No polling loops (removed the 10s now-playing
+   poll), no `allowDuplicates:true` scanning, no main-thread compute (Phase 0).
+   Scanning is already duty-cycled (widening + capped retries).
+3. **No heavy strap-battery drain — OPEN TRADE-OFF.** `standardHROnlyMode` defaults
+   to false → full proprietary protocol (RR streams) → richer HRV/recovery but more
+   strap drain. Low-radio standard-HR-only saves the strap but loses live HRV. This
+   needs a product call: add a user "Battery saver" toggle (standard-HR-only, HRV
+   computes only during an explicit capture) vs always-rich. Do NOT silently change
+   the default — it would break HRV/recovery. Surface it as a Settings toggle.
+4. **Never auto-interrupt.** No modal/popup unless the user asked. The coexistence
+   modal now only auto-shows when WHOOP is actually installed (`canOpenURL`).
+5. **Dead simple.** Atria can't kill another app (iOS sandbox) — so guidance must be
+   sure-shot: the real reset for phantom BLE contention is Settings → Bluetooth →
+   Forget This Device. Don't over-explain.
+
 ## Remaining grunt work (in priority order)
 
 ### A0. CRITICAL LESSON — main-thread watchdog crash (fixed 2026-06-26)
