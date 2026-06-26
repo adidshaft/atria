@@ -398,6 +398,21 @@ struct AtriaMetricTile: View, Equatable {
         return trimmed.isEmpty ? "--" : value
     }
 
+    private var accessibilityText: String {
+        var parts = ["\(label) \(displayValue)"]
+        if let unit {
+            parts[0] += " \(unit)"
+        }
+        if let state {
+            parts.append(state.accessibilityLabel)
+        }
+        if let footnote,
+           !footnote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(footnote)
+        }
+        return parts.joined(separator: ", ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
@@ -444,7 +459,7 @@ struct AtriaMetricTile: View, Equatable {
         .padding(13)
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label) \(value)")
+        .accessibilityLabel(accessibilityText)
     }
 
     private var tileHeight: CGFloat {
