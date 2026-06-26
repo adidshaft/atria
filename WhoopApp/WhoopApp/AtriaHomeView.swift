@@ -747,6 +747,10 @@ struct AtriaHomeView: View {
 
     private func presentCoexistenceModalIfNeeded(for risk: WhoopBLEManager.OfficialWhoopCoexistenceRisk) {
         guard risk == .suspected else { return }
+        // Never auto-interrupt the user when WHOOP isn't even installed — those
+        // drops are battery/range and are handled silently by auto-reconnect. The
+        // recovery steps stay available on demand via the "?" connection guide.
+        guard whoopAppInstalled else { return }
         Task { @MainActor in
             await Task.yield()
             let snoozed = coexistenceSnoozedUntil.map { Date() < $0 } ?? false
