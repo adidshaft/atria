@@ -257,6 +257,34 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, ble, needle)
 
+    def test_handoff_21_uniform_cards_avoid_clipping_and_nested_raised_chrome(self):
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "struct AtriaOverviewCollectionSection: View, Equatable",
+            "Label(\"Data\", systemImage: \"arrow.right.circle.fill\")",
+            ".frame(minWidth: 88)",
+            "AtriaInlineQuickStat(label: \"HRV window\", value: stats.rrPackageText)",
+            ".frame(maxWidth: .infinity, alignment: .leading)",
+            ".lineLimit(3)",
+            ".lineLimit(2)",
+        ]:
+            assert_contains(self, overview, needle)
+
+        assert_not_contains(self, overview, ".frame(maxWidth: 118)")
+
+        for needle in [
+            "private struct AtriaCollectionCoexistenceWarning: View, Equatable",
+            ".atriaInsetCard(tint: tint)",
+            "private struct AtriaCollectionProfilePicker: View, Equatable",
+            ".atriaInsetCard(tint: .purple)",
+            "private struct AtriaRecoveryStrainCard: View, Equatable",
+            "private struct AtriaProfileCard: View, Equatable",
+            ".atriaCard(emphasis: .soft)",
+        ]:
+            assert_contains(self, vitals, needle)
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)
