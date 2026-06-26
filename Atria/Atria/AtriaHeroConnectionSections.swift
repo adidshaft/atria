@@ -193,19 +193,19 @@ private struct AtriaHeroHeadlineHost: View {
 
 private struct AtriaHeroStatusCardHost: View, Equatable {
     let status: AtriaBLEManager.Status
-    let deviceName: String
+    let displayDeviceName: String
     let heartRateText: String
 
     static func == (lhs: AtriaHeroStatusCardHost, rhs: AtriaHeroStatusCardHost) -> Bool {
         lhs.status == rhs.status
-            && lhs.deviceName == rhs.deviceName
+            && lhs.displayDeviceName == rhs.displayDeviceName
             && lhs.heartRateText == rhs.heartRateText
     }
 
     var body: some View {
         switch status {
         case .connected:
-            AtriaConnectedPulseStatusCard(deviceName: deviceName,
+            AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName,
                                           heartRateText: heartRateText)
                 .equatable()
         case .connecting, .scanning:
@@ -237,17 +237,14 @@ private struct AtriaHeroStatusCardLiveHost: View {
 
     var body: some View {
         AtriaHeroStatusCardHost(status: statusStore.state.status,
-                                deviceName: liveStore.state.deviceName,
+                                displayDeviceName: liveStore.state.displayDeviceName,
                                 heartRateText: pulseStore.state.heartRateText)
             .equatable()
     }
 }
 
-private struct AtriaConnectedPulseStatusCard: View, Equatable {
-    let deviceName: String
-    let heartRateText: String
-
-    private var displayDeviceName: String {
+enum AtriaDeviceDisplayName {
+    static func shortName(for deviceName: String) -> String {
         let trimmed = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "Strap" }
 
@@ -269,6 +266,11 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
 
         return String(trimmed.prefix(12))
     }
+}
+
+private struct AtriaConnectedPulseStatusCard: View, Equatable {
+    let displayDeviceName: String
+    let heartRateText: String
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {

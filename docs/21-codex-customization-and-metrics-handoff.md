@@ -50,7 +50,9 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
   the card body/equality checks. The developer-only IMU audit card now follows the
   same pattern for `IMUAuditSummary`, so its view body/equality no longer reduces
   session history. `SessionDetail` now downsamples chart points once at init instead
-  of recomputing the downsampled series on every render.
+  of recomputing the downsampled series on every render. The connected pulse status
+  card now receives a precomputed display name from core live state, avoiding string
+  parsing during live HR updates.
 - **Part B radio trade-off surfaced:** Settings now has a user-facing **Battery
   saver** radio-mode toggle. It uses the existing reconnect-aware
   `setStandardHROnlyEnabled` path and explains that standard HR keeps heart rate

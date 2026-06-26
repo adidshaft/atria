@@ -304,6 +304,28 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
         )
 
+    def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+
+        for needle in [
+            "var displayDeviceName: String",
+            "displayDeviceName: AtriaDeviceDisplayName.shortName(for: deviceName)",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "enum AtriaDeviceDisplayName",
+            "static func shortName(for deviceName: String) -> String",
+            "displayDeviceName: liveStore.state.displayDeviceName",
+            "AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName",
+            "let displayDeviceName: String",
+            "Live heart rate \\(heartRateText) beats per minute from \\(displayDeviceName)",
+        ]:
+            assert_contains(self, hero, needle)
+
+        assert_not_contains(self, hero, "private var displayDeviceName: String")
+
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)
