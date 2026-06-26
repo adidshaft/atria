@@ -374,6 +374,10 @@ struct AtriaStateBadge: View, Equatable {
 }
 
 struct AtriaMetricTile: View, Equatable {
+    static let gridSpacing: CGFloat = 12
+    static let gridMinimumWidth: CGFloat = 142
+    static let gridColumns = [GridItem(.adaptive(minimum: gridMinimumWidth), spacing: gridSpacing)]
+
     private static let compactHeight: CGFloat = 104
     private static let sparklineHeight: CGFloat = 132
 

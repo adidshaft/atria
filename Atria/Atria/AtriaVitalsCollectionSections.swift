@@ -307,7 +307,7 @@ private struct AtriaCollectionCaptureCardHost: View {
 
             captureActions
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 captureStats
             }
 
@@ -344,7 +344,7 @@ private struct AtriaCollectionCaptureCardHost: View {
                         tint: .green)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 
     @ViewBuilder
     private var captureActions: some View {
@@ -561,7 +561,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                 AtriaStateBadge(state: hasEvidence ? .research : .learning)
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Blood oxygen",
                                 value: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames)" : "--",
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
@@ -596,7 +596,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         .atriaCard(emphasis: .soft)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionIMUAuditCard: View, Equatable {
@@ -614,7 +614,7 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                 AtriaStateBadge(state: summary.validatedFrames > 0 ? .validated : .learning)
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Frames",
                                 value: summary.frameText,
                                 state: summary.frameCount > 0 ? .research : .learning,
@@ -660,7 +660,7 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
         .atriaCard(emphasis: .soft)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaResearchManeuverMarkerCard: View, Equatable {
@@ -704,7 +704,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
                 }
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Markers",
                                 value: "\(markers.count)",
                                 state: markers.isEmpty ? .learning : .research,
@@ -742,7 +742,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
     }
 
     private static let buttonColumns = [GridItem(.flexible()), GridItem(.flexible())]
-    private static let statColumns = [GridItem(.adaptive(minimum: 128), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionControlsCardHost: View {
@@ -842,7 +842,7 @@ private struct AtriaCollectionStatusCardHost: View {
                 AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialAppCoexistenceRisk)
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 statusTiles
             }
         }
@@ -878,7 +878,7 @@ private struct AtriaCollectionStatusCardHost: View {
                         footnote: store.historicalArchiveStatus.detailText)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionCoexistenceWarning: View, Equatable {
@@ -1003,7 +1003,7 @@ private struct AtriaPulseCard: View, Equatable {
                 AtriaStateBadge(state: pulseState)
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Now",
                                 value: live.heartRateText,
                                 unit: "bpm",
@@ -1041,7 +1041,7 @@ private struct AtriaPulseCard: View, Equatable {
                         tint: .blue)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaHeartRateTimelineCard: View, Equatable {
@@ -1235,7 +1235,7 @@ private struct AtriaHRVCard: View, Equatable {
                 AtriaStateBadge(state: hrvState)
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 hrvStatTiles
             }
         }
@@ -1267,7 +1267,7 @@ private struct AtriaHRVCard: View, Equatable {
                         tint: .purple)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
@@ -1287,7 +1287,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     @ViewBuilder
     private var metricContent: some View {
-        LazyVGrid(columns: Self.statColumns, spacing: 12) {
+        LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
             recoveryStrainTiles
         }
     }
@@ -1309,7 +1309,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               narrative: hero.loadNarrative)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaSleepHistoryCard: View, Equatable {
@@ -1358,7 +1358,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                 tint: .cyan,
                                 footnote: emptyEvidenceFootnote)
             } else {
-                LazyVGrid(columns: Self.statColumns, spacing: 10) {
+                LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                     AtriaMetricTile(label: "Latest",
                                     value: snapshot.latest?.durationText ?? "--",
                                     state: snapshot.latest?.confirmed == true ? .validated : .research,
@@ -1431,7 +1431,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         .atriaInsetCard(tint: .cyan)
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 132), spacing: 10)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaSleepNightRow: View, Equatable {
@@ -1524,7 +1524,7 @@ private struct AtriaProfileCard: View, Equatable {
                 profileStepperTiles
             }
 
-            LazyVGrid(columns: Self.statColumns, spacing: 12) {
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaInlineQuickStat(label: "Active HRmax", value: "\(profile.maxHR)")
                 AtriaInlineQuickStat(label: "Observed peak", value: observedPeakHeartRateText)
                 AtriaInlineQuickStat(label: "Source", value: profile.maxHRSource.label)
@@ -1569,7 +1569,7 @@ private struct AtriaProfileCard: View, Equatable {
         }
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
@@ -1581,7 +1581,7 @@ private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
     let trailingDetail: String
 
     var body: some View {
-        LazyVGrid(columns: Self.statColumns, spacing: 12) {
+        LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
             AtriaCollectionReferenceSummaryTile(title: leadingTitle,
                                                 value: leadingValue,
                                                 detail: leadingDetail)
@@ -1591,7 +1591,7 @@ private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
         }
     }
 
-    private static let statColumns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
+    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
