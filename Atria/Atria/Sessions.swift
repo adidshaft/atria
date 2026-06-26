@@ -2208,6 +2208,9 @@ final class SessionStore: ObservableObject {
     /// History opens with this cached snapshot instead of recomputing activity
     /// detection, trend summaries, and daily rollups on the navigation path.
     @Published private(set) var historySnapshot = HistorySnapshot.empty
+    /// Sleep history is derived beside the expensive daily rollups and then read
+    /// directly by Vitals, so the tab never runs sleep clustering while rendering.
+    @Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty
     /// Overview trends are prepared outside SwiftUI render paths; the chart reads
     /// this O(1) array instead of filtering/sorting sessions or computing TRIMP.
     @Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []
@@ -2282,10 +2285,13 @@ final class SessionStore: ObservableObject {
         guard revision == historySnapshotRevision else { return }
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
+        let rollups = dailyRollups(rest: rest, maxHR: maxHR)
         historySnapshot = HistorySnapshot(sessions: sessions,
                                           detections: detectedActivities(rest: rest, maxHR: maxHR),
                                           trends: trendSummaries(rest: rest, maxHR: maxHR),
-                                          rollups: dailyRollups(rest: rest, maxHR: maxHR))
+                                          rollups: rollups)
+        sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,
+                                                    confirmedSleeps: cachedConfirmedSleeps)
     }
 
     private func refreshOverviewTrendPointsCache(deferred: Bool = true) {
@@ -2428,6 +2434,8 @@ final class SessionStore: ObservableObject {
         loadPersistedSessionsDeferred()
         refreshSessionDerivedCaches()
         recomputeCollectionResearchSummaries()
+        sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
+                                                    confirmedSleeps: cachedConfirmedSleeps)
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
     }
@@ -9157,6 +9165,117 @@ struct HistorySnapshot {
         self.detections = detections
         self.trends = trends
         self.rollups = rollups
+    }
+}
+
+struct SleepHistorySnapshot: Equatable {
+    struct Night: Identifiable, Equatable {
+        let id: String
+        let day: Date
+        let duration: TimeInterval
+        let restingHR: Int?
+        let hrv: Int?
+        let respiratoryRate: Double?
+        let confidence: String
+        let source: String
+        let confirmed: Bool
+
+        var durationHours: Double {
+            max(0, duration / 3_600)
+        }
+
+        var durationText: String {
+            SleepHistorySnapshot.formatDuration(duration)
+        }
+
+        var restingHRText: String {
+            restingHR.map { "\($0)" } ?? "--"
+        }
+
+        var hrvText: String {
+            hrv.map { "\($0)" } ?? "--"
+        }
+
+        var confidenceText: String {
+            confirmed ? "confirmed" : confidence.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    let nights: [Night]
+    let confirmedCount: Int
+    let candidateCount: Int
+
+    static let empty = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
+
+    init(nights: [Night], confirmedCount: Int, candidateCount: Int) {
+        self.nights = nights
+        self.confirmedCount = confirmedCount
+        self.candidateCount = candidateCount
+    }
+
+    init(rollups: [DailyRollup], confirmedSleeps: [UserConfirmedSleep], calendar: Calendar = .current) {
+        var nightsByDay: [Date: Night] = [:]
+        for sleep in confirmedSleeps {
+            let day = calendar.startOfDay(for: sleep.start)
+            nightsByDay[day] = Night(id: sleep.id,
+                                     day: day,
+                                     duration: sleep.duration,
+                                     restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
+                                     hrv: nil,
+                                     respiratoryRate: nil,
+                                     confidence: sleep.confidence,
+                                     source: sleep.source,
+                                     confirmed: true)
+        }
+
+        for rollup in rollups where rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
+            let day = calendar.startOfDay(for: rollup.day)
+            if let existing = nightsByDay[day], existing.confirmed {
+                continue
+            }
+            let sleepDuration = rollup.sleepReady > 0 ? rollup.duration : min(rollup.duration, 10 * 60 * 60)
+            nightsByDay[day] = Night(id: "sleep-history-\(Int(day.timeIntervalSince1970))",
+                                     day: day,
+                                     duration: sleepDuration,
+                                     restingHR: rollup.restingHR,
+                                     hrv: rollup.avgHRV,
+                                     respiratoryRate: rollup.avgRespiratoryRate,
+                                     confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
+                                     source: rollup.sleepReady > 0 ? "validated_sleep_window" : "sleep_candidate",
+                                     confirmed: false)
+        }
+
+        let sorted = nightsByDay.values.sorted { $0.day > $1.day }
+        self.nights = Array(sorted.prefix(14))
+        self.confirmedCount = confirmedSleeps.count
+        self.candidateCount = rollups.reduce(0) { $0 + $1.sleepCandidates }
+    }
+
+    var latest: Night? {
+        nights.first
+    }
+
+    var averageDurationText: String {
+        guard !nights.isEmpty else { return "--" }
+        let average = nights.reduce(0) { $0 + $1.duration } / Double(nights.count)
+        return Self.formatDuration(average)
+    }
+
+    var stateText: String {
+        if confirmedCount > 0 { return "\(confirmedCount) confirmed" }
+        if candidateCount > 0 { return "\(candidateCount) candidates" }
+        return "Learning"
+    }
+
+    private static func formatDuration(_ seconds: TimeInterval) -> String {
+        guard seconds > 0 else { return "--" }
+        let minutes = Int((seconds / 60).rounded())
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours > 0 {
+            return "\(hours)h \(remainder)m"
+        }
+        return "\(remainder)m"
     }
 }
 
