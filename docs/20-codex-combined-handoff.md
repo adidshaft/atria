@@ -64,6 +64,27 @@ Hard rules the user set — verify none regress:
 
 ## Remaining grunt work (in priority order)
 
+### A0′. CRITICAL LESSON — Debug builds are NOT representative (measured 2026-06-26)
+Tab-switch "lag + strap drops to Searching" was reported. On-device measurement
+(temporary autocycle + main-thread stall heartbeat) found the main thread blocked
+**~10 s switching to Vitals and ~18.7 s to Data** — past the 6 s HR-continuity
+watchdog (`hr_continuity_timeout_s=6`), which then fired
+`staged_read_reassert_then_fresh_scan` → status `.scanning` → "Searching". So the
+lag *causes* the disconnect; one bug, both symptoms.
+
+ROOT CAUSE: those numbers were from a **Debug (`-Onone`) build** (which is what
+`live_device_debug.sh` installs — `Debug-iphoneos`). The SAME switches in a
+**Release** build are **261–429 ms** (first visit) then ~270 ms — a 30–50× gap.
+iOS 26 Liquid Glass / SwiftUI chrome is pathologically slow under `-Onone`.
+TAKEAWAYS:
+- **Never judge UX perf from a Debug build.** Measure Release before optimizing or
+  ripping out glass. `xcodebuild -configuration Release -destination 'id=<dev>'`.
+- The user must run a **Release** build day-to-day; the harness's Debug build is a
+  diagnostic artifact, not the shipping experience.
+- Release first-visit render is still ~400 ms (cold glass). Optional Phase-0 polish:
+  precompute card inputs, lighten first-render glass. Not urgent — it's smooth.
+- The 6 s watchdog is correct for real drops; don't loosen it to paper over Debug lag.
+
 ### A0. CRITICAL LESSON — main-thread watchdog crash (fixed 2026-06-26)
 `SessionStore` is `@MainActor`. The Smart-Insights work called
 `behaviorCorrelationSummaries → dailyRollups` (workout/sleep clustering +
