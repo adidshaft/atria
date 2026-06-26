@@ -324,6 +324,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "taggedDays: store.behaviorJournalEntries.count",
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
+            "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
             "&& lhs.insights == rhs.insights",
             "private var insightsCard: some View",
             "AtriaGlanceMetricCard(title: \"Insights\"",
@@ -331,6 +332,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".draggable(metric.rawValue)",
             ".dropDestination(for: String.self)",
             "onMoveMetric(dragged, metric)",
+            ".accessibilityAction(named: Text(\"Move \\(metric.label) up\"))",
+            ".accessibilityAction(named: Text(\"Move \\(metric.label) down\"))",
+            "onShiftMetric(metric, -1)",
+            "onShiftMetric(metric, 1)",
+            "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
         ]:
             assert_contains(self, overview, needle)
 
