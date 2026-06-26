@@ -24,6 +24,8 @@ fileprivate struct AtriaGlanceGridSize: Equatable {
 
     static let compact = AtriaGlanceGridSize(rows: 1, columns: 1)
     static let wide = AtriaGlanceGridSize(rows: 1, columns: 2)
+
+    var isWide: Bool { columns == 2 }
 }
 
 struct AtriaOverviewTabContent: View {
@@ -536,7 +538,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     var glanceColumnSpan: Int { glanceGridSize.columns }
 
-    fileprivate var isWideGlanceCard: Bool { glanceGridSize == .wide }
+    fileprivate var isWideGlanceCard: Bool { glanceGridSize.isWide }
 
     /// Persisted as a comma-separated list of HIDDEN raw values, so the default
     /// (empty) shows everything.
@@ -632,7 +634,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .padding(12)
                     .atriaInsetCard(tint: .secondary)
             } else {
-                Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+                Grid(horizontalSpacing: Self.glanceGridSpacing, verticalSpacing: Self.glanceGridSpacing) {
                     ForEach(glanceRows, id: \.glanceRowID) { row in
                         GridRow {
                             ForEach(row) { metric in
@@ -648,7 +650,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                             }
 
                             if row.count == 1, row.first?.isWideGlanceCard == false {
-                                Color.clear
+                                AtriaGlanceMetricCard.placeholder
                                     .frame(maxWidth: .infinity, minHeight: AtriaGlanceMetricCard.cardHeight)
                                     .accessibilityHidden(true)
                             }
@@ -665,6 +667,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         // layers per frame.
         .drawingGroup()
     }
+
+    private static let glanceGridSpacing: CGFloat = 10
 
     private var glanceRows: [[AtriaTodayMetric]] {
         var rows: [[AtriaTodayMetric]] = []
@@ -781,6 +785,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 private struct AtriaGlanceMetricCard: View, Equatable {
     static let cardHeight: CGFloat = 154
     private static let markerSize: CGFloat = 42
+    private static let markerInnerSize: CGFloat = 28
+    private static let markerIconSize: CGFloat = 15
     private static let footerHeight: CGFloat = 34
     private static let markerRingLineWidth: CGFloat = 4
 
@@ -791,6 +797,11 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     let tint: Color
     var ringFraction: Double? = nil
     var sparklineValues: [Int]? = nil
+
+    static var placeholder: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: cardHeight, maxHeight: cardHeight)
+    }
 
     private var hasProgressSignal: Bool {
         title == "Recovery" || title == "Strain"
@@ -877,36 +888,44 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     private var marker: some View {
         ZStack {
             Circle()
-                .stroke(Color.primary.opacity(0.08), lineWidth: Self.markerRingLineWidth)
-
-            if hasProgressSignal, let ringFraction {
-                Circle()
-                    .trim(from: 0, to: min(max(ringFraction, 0), 1))
-                    .stroke(tint.gradient,
-                            style: StrokeStyle(lineWidth: Self.markerRingLineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            } else {
-                Circle()
-                    .stroke(tint.opacity(0.34),
-                            style: StrokeStyle(lineWidth: Self.markerRingLineWidth, lineCap: .round, dash: [3, 7]))
-            }
+                .fill(tint.opacity(0.11))
 
             Circle()
-                .fill(tint.opacity(0.14))
-                .padding(7)
+                .stroke(Color.primary.opacity(0.08), lineWidth: Self.markerRingLineWidth)
+
+            markerRing
+
+            Circle()
+                .fill(Color(.systemBackground).opacity(0.74))
+                .frame(width: Self.markerInnerSize, height: Self.markerInnerSize)
                 .overlay {
                     Circle()
-                        .stroke(tint.opacity(0.18), lineWidth: 1)
-                        .padding(7)
+                        .stroke(tint.opacity(0.22), lineWidth: 1)
                 }
 
             Image(systemName: systemImage)
-                .font(.callout.weight(.bold))
+                .font(.system(size: Self.markerIconSize, weight: .bold, design: .rounded))
                 .foregroundStyle(tint)
                 .symbolRenderingMode(.hierarchical)
+                .frame(width: Self.markerInnerSize, height: Self.markerInnerSize)
         }
         .frame(width: Self.markerSize, height: Self.markerSize)
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var markerRing: some View {
+        if hasProgressSignal, let ringFraction {
+            Circle()
+                .trim(from: 0, to: min(max(ringFraction, 0), 1))
+                .stroke(tint.gradient,
+                        style: StrokeStyle(lineWidth: Self.markerRingLineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        } else {
+            Circle()
+                .stroke(tint.opacity(0.36),
+                        style: StrokeStyle(lineWidth: Self.markerRingLineWidth, lineCap: .round, dash: [3, 7]))
+        }
     }
 }
 
