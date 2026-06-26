@@ -87,6 +87,21 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, text, "Tab(\"Vitals\"")
         assert_not_contains(self, text, "Tab(\"Data\"")
 
+    def test_project_declares_complete_ipad_orientations_without_forcing_iphone_fullscreen(self):
+        project = source(ROOT / "Atria" / "Atria.xcodeproj" / "project.pbxproj")
+
+        iphone_orientations = (
+            'INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = '
+            '"UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";'
+        )
+        ipad_orientations = (
+            'INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = '
+            '"UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";'
+        )
+        self.assertEqual(project.count(iphone_orientations), 2)
+        self.assertEqual(project.count(ipad_orientations), 2)
+        assert_not_contains(self, project, "INFOPLIST_KEY_UIRequiresFullScreen")
+
     def test_top_left_status_restores_original_chip_and_labels(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
