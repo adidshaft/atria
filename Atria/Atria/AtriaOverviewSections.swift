@@ -486,12 +486,17 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      subtitle: subtitle,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
-                                     onMoveMetric: moveMetric)
+                                     onMoveMetric: moveMetric,
+                                     onShiftMetric: shiftMetric)
             .equatable()
     }
 
     private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
         orderCSV = AtriaTodayMetric.moving(dragged, before: target, in: orderCSV)
+    }
+
+    private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int) {
+        orderCSV = AtriaTodayMetric.moving(metric, direction: direction, in: orderCSV)
     }
 
 }
@@ -604,6 +609,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let subtitle: String
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
+    let onShiftMetric: (AtriaTodayMetric, Int) -> Void
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -651,6 +657,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                               let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
                                         onMoveMetric(dragged, metric)
                                         return true
+                                    }
+                                    .accessibilityAction(named: Text("Move \(metric.label) up")) {
+                                        onShiftMetric(metric, -1)
+                                    }
+                                    .accessibilityAction(named: Text("Move \(metric.label) down")) {
+                                        onShiftMetric(metric, 1)
                                     }
                             }
 
