@@ -348,6 +348,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaInsetCard(tint: .purple)",
             "private struct AtriaRecoveryStrainCard: View, Equatable",
             "private struct AtriaProfileCard: View, Equatable",
+            "private struct AtriaCollectionResearchSignalsCard: View, Equatable",
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
             ".atriaCard(emphasis: .soft)",
@@ -1584,11 +1585,26 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "let developerModeEnabled: Bool",
+            "captureCard\n                        researchSignalsCard\n                        if developerModeEnabled",
+            "captureCard\n                    researchSignalsCard\n                    if developerModeEnabled",
             "if developerModeEnabled {\n                            rrReferenceCard",
             "if developerModeEnabled {\n                            rrReferenceCard\n                            hrReferenceCard\n                            imuAuditCard",
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
             "title: \"Standard HR radio\"",
             "subtitle: \"Advanced compatibility mode for heart-rate-only collection.\"",
+            "private var researchSignalsCard: some View",
+            "AtriaCollectionResearchSignalsCard(summary: store.imuAuditSummary,",
+            "sleepHistory: store.sleepHistorySnapshot",
+            "private struct AtriaCollectionResearchSignalsCard: View, Equatable",
+            "AtriaPanelSectionHeader(title: \"Research signals\", subtitle: \"\")",
+            "AtriaMetricTile(label: \"Blood oxygen\"",
+            "AtriaMetricTile(label: \"Skin temp\"",
+            "AtriaMetricTile(label: \"Resp rate\"",
+            "AtriaMetricTile(label: \"Strap steps\"",
+            "candidate frames; no Health export",
+            "baseline deviation only",
+            "RR-derived during sleep",
+            "Research only. Atria never shows absolute SpO2 or skin temperature until the sensor layout is validated.",
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Research only; compare with phone motion before steps or sleep.",
@@ -1604,6 +1620,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "struct IMUAuditSummary: Equatable",
+            "var respiratoryRateText: String",
             "@Published private(set) var imuAuditSummary",
             "private func recomputeCollectionResearchSummaries()",
             "imuAuditSummary = IMUAuditSummary(sessions: sessions)",
@@ -1617,6 +1634,19 @@ class HandoffStaticChecks(unittest.TestCase):
         )
         assert_not_contains(self, collection, "private struct IMUAuditSummary: Equatable")
         assert_not_contains(self, collection, "IMUAuditSummary(sessions: store.sessions)")
+
+        research_card = collection[
+            collection.index("private struct AtriaCollectionResearchSignalsCard"):
+            collection.index("private struct AtriaCollectionIMUAuditCard")
+        ]
+        for forbidden in [
+            "dailyRollups(",
+            "detectedActivity(",
+            "aggregateSleepCandidates(",
+            "IMUAuditSummary(sessions:",
+            "SleepHistorySnapshot(rollups:",
+        ]:
+            assert_not_contains(self, research_card, forbidden)
 
         for forbidden in [
             "title: \"Low radio HR\"",

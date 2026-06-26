@@ -9196,6 +9196,10 @@ struct SleepHistorySnapshot: Equatable {
             hrv.map { "\($0)" } ?? "--"
         }
 
+        var respiratoryRateText: String {
+            respiratoryRate.map { String(format: "%.1f", $0) } ?? "--"
+        }
+
         var confidenceText: String {
             confirmed ? "confirmed" : confidence.replacingOccurrences(of: "_", with: " ")
         }
