@@ -96,7 +96,7 @@ Requirements:
 Build and run:
 
 ```sh
-open WhoopApp/WhoopApp.xcodeproj
+open Atria/Atria.xcodeproj
 ```
 
 Select the Atria app target, choose your physical iPhone, set signing if needed, and run.
@@ -151,7 +151,7 @@ python3 tools/audit_handoff_status.py \
 
 | Path | Purpose |
 |---|---|
-| `WhoopApp/` | Native SwiftUI iOS app, widget, HealthKit, BLE, and local metrics code. |
+| `Atria/` | Native SwiftUI iOS app, widget, HealthKit, BLE, and local metrics code. |
 | `tools/` | Analysis helpers for captures, references, and protocol evidence. |
 | `docs/` | Technical notes, gate plans, evidence summaries, and protocol research. |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |

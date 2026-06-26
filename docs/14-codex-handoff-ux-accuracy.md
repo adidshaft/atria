@@ -22,7 +22,7 @@ in the background hits iOS scan throttling → long collection gaps; in the
 foreground churns connection state → UI lag; and can't restore data faster than
 re-subscribing anyway.
 
-**Fix** (`WhoopBLEManager.swift`, `performHRContinuityWatchdogAction` and
+**Fix** (`AtriaBLEManager.swift`, `performHRContinuityWatchdogAction` and
 `recoverAcceptedHRWatchdog`): while the peripheral is still `.connected`, re-assert
 the `2A37` notify subscription and **keep the connection**; reserve the
 fresh-scan teardown for a genuinely dead link (`peripheral.state != .connected`)
@@ -43,7 +43,7 @@ foreground** (to avoid radio churn during active viewing). But screen-on /
 auto-lock-off all-night collection keeps the app foreground, so a link that was
 nominally `.connected` but had gone completely silent had nothing to recover it.
 
-Fix (`WhoopBLEManager.swift`): `startForegroundKeepaliveWatchdog` — armed
+Fix (`AtriaBLEManager.swift`): `startForegroundKeepaliveWatchdog` — armed
 whenever foreground + long-wear (incl. cold launch). Idle while data flows; after
 75s of total `2A37` silence on a connected link it re-asserts the subscription,
 then after a further 75s escalates to a backoff-guarded `requestFreshScanReconnect`.
@@ -115,12 +115,12 @@ math, no BLE behavior changed. Static suite stays green (26/26).
 
 Files touched:
 
-- `WhoopApp/WhoopApp/AtriaOverviewSections.swift`
+- `Atria/Atria/AtriaOverviewSections.swift`
   — `AtriaDisconnectedOverviewPanel` title/detail/setupDetail strings.
-- `WhoopApp/WhoopApp/AtriaHeroConnectionSections.swift`
+- `Atria/Atria/AtriaHeroConnectionSections.swift`
   — `AtriaConnectionGuideSheet` title/subtitle/steps/automatic items/button
   labels/footer.
-- `WhoopApp/WhoopApp/AtriaHomeView.swift`
+- `Atria/Atria/AtriaHomeView.swift`
   — hero `Coach.Guidance` headlines/details for scanning/connecting/poweredOff/
   disconnected/connected fast-path states.
 
@@ -191,7 +191,7 @@ None of the above were changed because they need eyes on the running UI.
 > finished state for this project, and do not present "validated" as a pending
 > to-do to the user (see §3a).
 
-Current accuracy architecture lives in `WhoopBLEManager.record(_:)` and the
+Current accuracy architecture lives in `AtriaBLEManager.record(_:)` and the
 RR/HRV path (`HRV.swift`, `Metrics.swift`); see `docs/09-accuracy-and-learning.md`
 and `docs/12-validation.md`. Per README Gate A/B, the proprietary realtime stream
 is still diagnostic and the custom RR stream "is not reliable enough to be
@@ -221,7 +221,7 @@ second device**):
    threshold. Self-consistency only; no reference.
 4. **Reconnect/coverage robustness for workout detection (Gate E).** The blocker
    is sustained-coverage gaps, not the detection math. Improve BLE reconnect
-   continuity (watchdog timing in `WhoopBLEManager`) and re-run
+   continuity (watchdog timing in `AtriaBLEManager`) and re-run
    `tools/monitor_long_wear.py --preset overnight` until
    `acceptance_status=pass` / `acceptance_blockers=none`.
 

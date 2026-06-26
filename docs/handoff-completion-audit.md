@@ -102,7 +102,7 @@ Evidence present:
   cleanup. It also verifies that every CoreBluetooth `writeValue` call remains
   confined to the guarded `sendCommand` helper, preventing accidental new blind
   strap-write paths.
-- `WHOOPDBG` HealthKit/export diagnostics route through `WHOOPDebugLog`, so
+- `ATRIADBG` HealthKit/export diagnostics route through `AtriaDebugLog`, so
   normal end-user launches do not emit verbose diagnostic rows unless the
   harness/debug flags enable them.
 - Production notification identifiers are limited to recovery, strain, and
@@ -126,7 +126,7 @@ Evidence present:
 - `Info.plist` includes `processing` background mode and permitted BG task
   identifiers.
 - 2026-06-22 simulator compile check passed:
-  `xcodebuild -project WhoopApp/WhoopApp.xcodeproj -scheme WhoopApp -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath /tmp/atria-derived-data build`.
+  `xcodebuild -project Atria/Atria.xcodeproj -scheme Atria -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath /tmp/atria-derived-data build`.
 - 2026-06-22 end-user readiness smoke on the plugged-in iPhone launched with
   the worn WHOOP strap in standard-HR-only long-wear mode. The smoke log
   captured standard Heart Rate Measurement RR data before relaunching long-wear

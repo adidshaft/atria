@@ -5,7 +5,7 @@ genuinely useful over time.
 
 ## Accuracy (clean signal in)
 
-In `WhoopBLEManager.record(_:)`:
+In `AtriaBLEManager.record(_:)`:
 
 - **Skin-contact detection** — a `0` BPM means the optical sensor lost contact;
   it's flagged (`hasContact = false`, "no skin contact" shown) and **excluded**

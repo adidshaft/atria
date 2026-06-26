@@ -119,14 +119,14 @@ validated. This prevents HR-only sleep from satisfying Gate E.
 
 Harness note: when a physical-device run combines `--log-gate-status` with
 post-run pulls such as `--pull-sessions`, the launcher should detach after the
-requested in-app WHOOPDBG evidence is complete, then copy artifacts. For a sleep
+requested in-app ATRIADBG evidence is complete, then copy artifacts. For a sleep
 verification checkpoint, the required stop evidence is both `execution_priority`
-and `sleep_validation status=...`; the subsequent `WHOOPDBG_SESSIONS_PULL_FILE`
+and `sleep_validation status=...`; the subsequent `ATRIADBG_SESSIONS_PULL_FILE`
 proves the app container pull still happened after console detachment.
 
 Deep Gate Status on a large saved-session store must be bounded rather than
 allowed to kill the app before evidence is emitted. The harness resets its
-deadline when `WHOOPDBG gate_status_start` appears, and the app labels bounded
+deadline when `ATRIADBG gate_status_start` appears, and the app labels bounded
 deep replay as `workout_replay_scope=bounded_large_store` plus
 `gate_status_deep_detail status=skipped ... diagnostic_only=1` for the
 expensive detail dump. This is an evidence-path optimization only: the gate rows
@@ -163,10 +163,10 @@ That bundle is still only the WHOOP side; add the matched external RR/IBI export
 and run `gate_b_reference.sh` before calling Gate B complete.
 
 The helper builds, installs, and launches the app on adidshaft's physical iPhone with
-`devicectl --console`, then streams `WHOOPDBG` while the capture is performed on
+`devicectl --console`, then streams `ATRIADBG` while the capture is performed on
 device. `--auto-capture` passes a debug launch argument that starts Capture
 without tapping the UI; `--stop-when-ready` stops that capture at the first
-ready HRV window so the transcript includes `WHOOPDBG capture_summary ready=1`.
+ready HRV window so the transcript includes `ATRIADBG capture_summary ready=1`.
 `--auto-stop-after N` stops and saves the capture after N seconds even if HRV is
 still learning, so timeout runs preserve a CSV and `capture_summary ready=0`
 instead of only a live transcript.
@@ -183,13 +183,13 @@ Normal user launches still require manual Capture control. `--log auto` saves
 the transcript under `logs/live-device/` for later Gate B triage. That directory
 is git-ignored runtime output; preserve a specific transcript by copying it into
 `docs/evidence/gate-b/` when it belongs with a reference capture. `--until-ready`
-exits successfully only after `WHOOPDBG hrv ... ready=1` or
-`WHOOPDBG capture_summary ready=1`, which is the on-device proof that the
+exits successfully only after `ATRIADBG hrv ... ready=1` or
+`ATRIADBG capture_summary ready=1`, which is the on-device proof that the
 5-minute window became validation-ready. For a short smoke check, use
 `./live_device_debug.sh --until-realtime --seconds 45 --log auto`; that exits
 after the first `61080005` realtime frame and prints a summary of the notify,
 command-response, and realtime-frame flags.
-When `--pull-capture DIR` is present and the app logs `WHOOPDBG capture_file`,
+When `--pull-capture DIR` is present and the app logs `ATRIADBG capture_file`,
 the helper copies the saved WHOOP CSV from the app data container into `DIR`.
 Use that pulled CSV as the WHOOP input to `gate_b_reference.sh`.
 
@@ -214,10 +214,10 @@ improves clean 5-minute RR continuity.
 When realtime frames contain RR intervals, the app logs compact decode lines:
 
 ```text
-WHOOPDBG rr hr=<bpm> rrnum=<declared> decoded=<count> total_decoded=<session_count> truncated=<0|1> hr_mismatch=<count> implied_bpm=<bpm,...> values=<rr_ms,...>
+ATRIADBG rr hr=<bpm> rrnum=<declared> decoded=<count> total_decoded=<session_count> truncated=<0|1> hr_mismatch=<count> implied_bpm=<bpm,...> values=<rr_ms,...>
 ```
 
-Use these lines with `WHOOPDBG hrv ... reason=confidence` to decide whether a
+Use these lines with `ATRIADBG hrv ... reason=confidence` to decide whether a
 failed readiness run was caused by sparse/truncated realtime payloads or by
 artifact rejection of decoded RR values. The helper summary repeats this as
 `rr_frames`, `rr_values`, `rr_truncated_frames`, `rr_hr_mismatch_values`,
@@ -254,7 +254,7 @@ and keep the cabled iPhone evidence authoritative until that pairing state is
 repaired.
 
 The cabled iPhone helper also preserves command-response status details in
-`WHOOPDBG_SUMMARY`: `cmd_response_count`, `cmd_response_last_seq`,
+`ATRIADBG_SUMMARY`: `cmd_response_count`, `cmd_response_last_seq`,
 `cmd_response_last_cmd`, `cmd_response_last_status`, and
 `cmd_response_statuses`. Use those fields when comparing START, STOP, reassert,
 probe-command, and sniffer-derived command experiments. Existing logs can be
@@ -267,7 +267,7 @@ re-summarized without touching the phone:
 For Gate B continuity experiments, the primary decision variable is the fraction
 of `61080005` realtime frames whose decoded `rrnum >= 1`. EXP-1
 (`docs/evidence/gate-b/20260612T-exp1-full-realtime-payload-60s/README.md`)
-verified that the previous `WHOOPDBG frame` line was truncated, but the decoder
+verified that the previous `ATRIADBG frame` line was truncated, but the decoder
 was not hiding RR intervals: zero-RR frames carried only zero RR slots plus a
 fixed trailer, with `0` valid 300-2000 ms tail candidates. The 60-second still
 run measured `realtime_rr_fraction=0.361`, below the `>=0.900` Gate-B-ready bar.

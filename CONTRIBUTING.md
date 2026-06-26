@@ -12,7 +12,7 @@ Contributions are welcome when they preserve the project contract: local-only da
 
 ## Development Setup
 
-1. Open `WhoopApp/WhoopApp.xcodeproj` in Xcode.
+1. Open `Atria/Atria.xcodeproj` in Xcode.
 2. Configure signing for the app and widget targets.
 3. Run on a physical iPhone.
 4. Use `./live_device_debug.sh` for repeatable device verification when changing BLE, metrics, HealthKit, or app-state behavior.

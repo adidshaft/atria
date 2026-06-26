@@ -1,0 +1,61 @@
+2026-06-26 18:29:05.575 Atria[3728:451155] ATRIADBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=0 checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan
+2026-06-26 18:29:05.589 Atria[3728:451169] ATRIADBG ble_restore peripherals=1
+2026-06-26 18:29:05.627 Atria[3728:451155] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 18:29:05.668 Atria[3728:451155] ATRIADBG phone_steps status=started reason=today_home_appear source=phone_coremotion_pedometer validated=0 action=activity_adjunct_only
+2026-06-26 18:29:05.670 Atria[3728:451155] ATRIADBG home_launch_timing event=primary_ready elapsed_ms=4 status=disconnected tab=overview
+2026-06-26 18:29:05.670 Atria[3728:451155] ATRIADBG launch_timing event=on_appear elapsed_ms=111 scene=inactive
+2026-06-26 18:29:05.765 Atria[3728:451155] ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=1
+2026-06-26 18:29:05.767 Atria[3728:451155] ATRIADBG official_app_coexistence status=cleared reason=atria_observed_connected action=continue
+2026-06-26 18:29:05.767 Atria[3728:451155] ATRIADBG ble_link status=connected reason=state_restore_connected successes=1 attempts=0 disconnects=0 failures=0 name=ADIDSHAFT'S WHO
+2026-06-26 18:29:05.768 Atria[3728:451155] ATRIADBG ble_restore status=connected name=ADIDSHAFT'S WHO
+2026-06-26 18:29:05.768 Atria[3728:451155] ATRIADBG home_launch_timing event=connected elapsed_ms=102 status=connected tab=overview
+2026-06-26 18:29:05.769 Atria[3728:451155] ATRIADBG phone_steps_today status=ready reason=home_appear steps=302 distance_m=177.030 source=CMPedometer validated=1
+2026-06-26 18:29:05.769 Atria[3728:451155] ATRIADBG phone_steps status=sampled source=phone_coremotion_pedometer steps=302 distance_m=177.030 floors_up=0 floors_down=0 validated=0 action=activity_adjunct_only
+2026-06-26 18:29:05.831 Atria[3728:451155] ATRIADBG launch_timing event=fast_launch_begin elapsed_ms=272 scene=inactive
+2026-06-26 18:29:05.832 Atria[3728:451155] ATRIADBG foreground_keepalive armed=1 reason=scene_active silence_timeout_s=75 check_interval_s=20
+2026-06-26 18:29:05.832 Atria[3728:451155] ATRIADBG ble_notify_reassert status=discover_services reason=scene_active source=foreground_return action=keep_connection
+2026-06-26 18:29:05.832 Atria[3728:451155] ATRIADBG launch_timing event=fast_launch_complete elapsed_ms=273 scene=inactive
+2026-06-26 18:29:05.833 Atria[3728:451155] ATRIADBG model_gate status=assume_4_class reason=proprietary_service service=61080001-8D6D-82B8-614A-1C8CB0F8DCC6
+2026-06-26 18:29:05.833 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=0 tx_skipped=1 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.834 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=1 custom_notify_enabled=0 tx_skipped=1 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.834 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=2 custom_notify_enabled=0 tx_skipped=1 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.834 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=3 custom_notify_enabled=0 tx_skipped=1 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.835 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=4 custom_notify_enabled=0 tx_skipped=1 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.836 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=4 custom_notify_enabled=0 tx_skipped=2 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.837 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=5 custom_notify_enabled=0 tx_skipped=2 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.838 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=6 custom_notify_enabled=0 tx_skipped=2 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.839 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=7 custom_notify_enabled=0 tx_skipped=2 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.839 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=8 custom_notify_enabled=0 tx_skipped=2 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:05.984 Atria[3728:451155] ATRIADBG home_launch_timing event=secondary_ready elapsed_ms=318 status=connected tab=overview
+2026-06-26 18:29:05.985 Atria[3728:451155] ATRIADBG widget_snapshot status=ok reason=scene_active schema=2 recovery=learning confidence=learning hrv=learning strain=0.0 rhr=59 max_hr=189 bytes=322 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-06-26 18:29:05.985 Atria[3728:451155] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-06-26 18:29:05.987 Atria[3728:451155] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-06-26 18:29:05.987 Atria[3728:451155] ATRIADBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-06-26 18:29:06.005 Atria[3728:451155] ATRIADBG phone_steps_today status=ready reason=scene_active steps=302 distance_m=177.030 source=CMPedometer validated=1
+2026-06-26 18:29:06.207 Atria[3728:451155] ATRIADBG active_session_journal status=saved reason=first_accepted_hr_batch samples=1 rr_values=0 duration_s=0 dirty=0 label=Long wear
+2026-06-26 18:29:06.661 Atria[3728:451155] ATRIADBG session_store_load status=ok sessions=16 baseline_rebuilt=0 elapsed_ms=1077
+2026-06-26 18:29:07.189 Atria[3728:451170] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 18:29:10.182 Atria[3728:451176] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 18:29:12.180 Atria[3728:451155] ATRIADBG battery level=87 source=2A19 bytes=57 persisted=1
+2026-06-26 18:29:14.173 Atria[3728:451177] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 18:29:14.335 Atria[3728:451155] ATRIADBG active_session_journal status=saved reason=foreground_keepalive_crash_safety samples=9 rr_values=0 duration_s=8 dirty=0 label=Long wear
+2026-06-26 18:29:19.160 Atria[3728:451173] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 18:29:19.167 Atria[3728:451155] ATRIADBG rr_presence_watchdog status=segment_hr_only rr_gap_s=13.0 accepted_gap_s=0.0 timeout_s=12.0 samples=15 rr_values=0 consecutive=1 action=reassert_notify notifying=1 hrv_policy=learning_only label=Long wear
+2026-06-26 18:29:19.199 Atria[3728:451155] ATRIADBG active_session_journal status=saved reason=rr_presence_watchdog_checkpoint samples=15 rr_values=0 duration_s=13 dirty=0 label=Long wear
+2026-06-26 18:29:21.156 Atria[3728:451155] ATRIADBG battery level=87 source=2A19 bytes=57 persisted=1
+2026-06-26 18:29:23.151 Atria[3728:451176] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 18:29:24.148 Atria[3728:451170] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 18:29:24.153 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=8 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:24.156 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=9 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:24.158 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=10 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:24.161 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=11 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:24.162 Atria[3728:451155] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=12 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-06-26 18:29:27.141 Atria[3728:451173] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-06-26 18:29:31.130 Atria[3728:451170] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-06-26 18:29:32.130 Atria[3728:451155] ATRIADBG rr_presence_watchdog status=segment_hr_only rr_gap_s=25.9 accepted_gap_s=0.0 timeout_s=12.0 samples=28 rr_values=0 consecutive=2 action=reassert_notify notifying=1 hrv_policy=learning_only label=Long wear
+2026-06-26 18:29:32.141 Atria[3728:451155] ATRIADBG active_session_journal status=saved reason=rr_presence_watchdog_checkpoint samples=28 rr_values=0 duration_s=26 dirty=0 label=Long wear
+2026-06-26 18:29:33.126 Atria[3728:451155] ATRIADBG battery level=87 source=2A19 bytes=57 persisted=1
+2026-06-26 18:29:35.122 Atria[3728:451175] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate...
+App terminated due to signal 15.

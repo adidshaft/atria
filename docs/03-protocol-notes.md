@@ -107,7 +107,7 @@ rows, validated gravity, `706` Whoof-layout RR values, zero current-session
 overlap). The live transfer attempt produced `historical_2f_frames=0` because
 long-wear HR/RR watchdogs repeatedly forced fresh reconnects during the
 history-only init sequence (`0x14`, `0x60`, `0x16`). Atria now suppresses
-watchdog reconnect actions while `--whoop-history-only-probe` is active, so
+watchdog reconnect actions while `--atria-history-only-probe` is active, so
 future history/IMU protocol probes get a clean BLE window instead of being
 interrupted by the app's own recovery policy. This removes probe noise only; it
 does not make stale historical data metric-usable.
@@ -153,7 +153,7 @@ live-IMU trigger, or external official-app/sniffer evidence.
 Active-motion result-row verification, 2026-06-15:
 `docs/evidence/gate-h/20260615T-active-motion-result-row-device-verify/`.
 The active-motion preset now emits its own delayed
-`WHOOPDBG active_motion_imu_check` result row instead of requiring Gate Status
+`ATRIADBG active_motion_imu_check` result row instead of requiring Gate Status
 to be interpreted as the only outcome. The physical iPhone run built cleanly,
 installed and launched Atria on the cabled device, connected to the strap,
 enabled `61080003/04/05/07`, sent realtime START, and received
@@ -252,7 +252,7 @@ Minimum sniffer/protocol evidence if the iPhone probe path does not reproduce:
 4. Compare those commands with our current `0x03 enable=1`, STOP→START restart,
    and retry policies.
 5. Only add or change app commands after the candidate is reproduced in a
-   physical iPhone `WHOOPDBG` run that improves `realtime_rr_zero_frames`,
+   physical iPhone `ATRIADBG` run that improves `realtime_rr_zero_frames`,
    `max_rr_log_gap_s`, and the on-device HRV readiness reason without weakening
    correction rules.
 

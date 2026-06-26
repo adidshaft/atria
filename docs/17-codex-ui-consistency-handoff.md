@@ -10,8 +10,8 @@ preserve contrast under reduce-transparency.**
 This is the iterative, screenshot-driven pass. The connected state can only be
 seen on the cabled iPhone, so verify each change there. Build/verify constants +
 debug launch args are in `docs/15` and `docs/16`; useful QA args already exist:
-`--whoop-force-coexistence-risk <suspected|advisory|cleared>`,
-`--whoop-force-offline-sync`, `--atria-developer-mode --whoop-complete-onboarding`.
+`--atria-force-coexistence-risk <suspected|advisory|cleared>`,
+`--atria-force-offline-sync`, `--atria-developer-mode --atria-complete-onboarding`.
 
 ## North-star rules for this pass
 1. **One fact, one place.** A score/metric/status appears exactly once per screen.

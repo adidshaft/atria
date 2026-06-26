@@ -28,7 +28,7 @@ assignees: ""
 
 ## Evidence
 
-Attach relevant `WHOOPDBG` lines, screenshots, or redacted logs.
+Attach relevant `ATRIADBG` lines, screenshots, or redacted logs.
 
 ## Privacy Check
 

@@ -69,7 +69,7 @@ fraction**. Two possible wins:
 1. **Continuous-RR trigger:** if the official app's RR fraction is high (~≥90%),
    diff its write sequence against ours (we send only `aa0800a82300030199bce9cf`).
    The extra/different writes before sustained RR are the missing step → replicate
-   them in `WhoopBLEManager.armRealtime`.
+   them in `AtriaBLEManager.armRealtime`.
 2. **Historical transfer:** if `0x2f` frames appear, capture the exact `0x06`-family
    request bytes that preceded them → replicate to pull stored RR (clean 5-min
    windows without live continuity).

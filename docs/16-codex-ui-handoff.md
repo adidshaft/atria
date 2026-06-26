@@ -66,7 +66,7 @@ The manual "Sync missed data" button exists, but the user wants **automatic
 detection**: when `whoop.offlineSync.rangeLossBackfillPending == true` (or the
 strap clearly has data Atria lacks), show a dismissible home banner ("New data on
 your strap — Sync") that triggers the same `requestOfflineHistoricalSyncIfNeeded(force:true)`.
-Expose `rangeLossBackfillPending` as a `@Published` on `WhoopBLEManager` and gate
+Expose `rangeLossBackfillPending` as a `@Published` on `AtriaBLEManager` and gate
 the banner on it. Keep it out of the way during live viewing (the sync steals the
 live link ~180s — see `docs/14` §0b and the `deferred_live_link` logic).
 
