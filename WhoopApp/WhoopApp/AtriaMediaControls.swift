@@ -1,135 +1,32 @@
 import Foundation
-import MediaPlayer
 
+/// Atria deliberately does NOT touch the user's music. This controller is inert:
+/// no `MPMusicPlayerController`, no playback notifications, no now-playing polling.
+///
+/// Using `MPMusicPlayerController.systemMusicPlayer` (and `beginGenerating-
+/// PlaybackNotifications`) can grab the audio route / now-playing focus and only
+/// ever controls Apple Music — never the app the user is actually playing through
+/// AirPods or a speaker. That is interference + battery drain a strap reader has
+/// no business causing, so the whole feature is disabled. `hasNowPlayingInfo`
+/// stays false, which hides every media control in the UI / Live Activity.
 @MainActor
 final class AtriaMediaController: ObservableObject {
     struct State: Equatable {
-        var title: String = "Media"
-        var artist: String = "System player"
+        var title: String = ""
+        var artist: String = ""
         var isPlaying = false
         var hasNowPlayingInfo = false
-        var commandRoute = "system_music_player"
+        var commandRoute = "disabled"
 
-        var accessibilitySummary: String {
-            hasNowPlayingInfo ? "\(title), \(artist)" : "System media controls"
-        }
+        var accessibilitySummary: String { "" }
     }
 
     @Published private(set) var state = State()
 
-    private let player = MPMusicPlayerController.systemMusicPlayer
-    private var refreshTask: Task<Void, Never>?
-    private var isRefreshLoopActive = false
-
-    init() {
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(handleNowPlayingItemChanged),
-                                               name: .MPMusicPlayerControllerNowPlayingItemDidChange,
-                                               object: player)
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(handlePlaybackStateChanged),
-                                               name: .MPMusicPlayerControllerPlaybackStateDidChange,
-                                               object: player)
-        player.beginGeneratingPlaybackNotifications()
-        refresh()
-    }
-
-    deinit {
-        refreshTask?.cancel()
-        NotificationCenter.default.removeObserver(self)
-        player.endGeneratingPlaybackNotifications()
-    }
-
-    func setRefreshLoopActive(_ active: Bool) {
-        guard isRefreshLoopActive != active else { return }
-        isRefreshLoopActive = active
-        if active {
-            refresh()
-            startRefreshLoop()
-        } else {
-            refreshTask?.cancel()
-            refreshTask = nil
-        }
-    }
-
-    func refresh() {
-        let item = player.nowPlayingItem
-        let nowPlaying = MPNowPlayingInfoCenter.default().nowPlayingInfo
-        let title = nowPlaying?[MPMediaItemPropertyTitle] as? String ?? item?.title
-        let artist = nowPlaying?[MPMediaItemPropertyArtist] as? String ?? item?.artist
-        let playbackRate = nowPlaying?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber
-
-        state = State(title: title?.nonEmptyMediaText ?? "Media",
-                      artist: artist?.nonEmptyMediaText ?? "System player",
-                      isPlaying: playbackRate.map { $0.doubleValue > 0 } ?? (player.playbackState == .playing),
-                      hasNowPlayingInfo: title != nil || artist != nil,
-                      commandRoute: "system_music_player")
-    }
-
-    func playPause() {
-        if state.isPlaying {
-            player.pause()
-            WHOOPDebugLog("WHOOPDBG media_control command=pause route=%@ now_playing=%d local_only=1",
-                  state.commandRoute,
-                  state.hasNowPlayingInfo ? 1 : 0)
-        } else {
-            player.play()
-            WHOOPDebugLog("WHOOPDBG media_control command=play route=%@ now_playing=%d local_only=1",
-                  state.commandRoute,
-                  state.hasNowPlayingInfo ? 1 : 0)
-        }
-        refresh()
-    }
-
-    func stop() {
-        player.stop()
-        WHOOPDebugLog("WHOOPDBG media_control command=stop route=%@ now_playing=%d local_only=1",
-              state.commandRoute,
-              state.hasNowPlayingInfo ? 1 : 0)
-        refresh()
-    }
-
-    func nextTrack() {
-        player.skipToNextItem()
-        WHOOPDebugLog("WHOOPDBG media_control command=next route=%@ now_playing=%d local_only=1",
-              state.commandRoute,
-              state.hasNowPlayingInfo ? 1 : 0)
-        refresh()
-    }
-
-    func previousTrack() {
-        player.skipToPreviousItem()
-        WHOOPDebugLog("WHOOPDBG media_control command=previous route=%@ now_playing=%d local_only=1",
-              state.commandRoute,
-              state.hasNowPlayingInfo ? 1 : 0)
-        refresh()
-    }
-
-    @objc private func handleNowPlayingItemChanged() {
-        guard isRefreshLoopActive else { return }
-        refresh()
-    }
-
-    @objc private func handlePlaybackStateChanged() {
-        guard isRefreshLoopActive else { return }
-        refresh()
-    }
-
-    private func startRefreshLoop() {
-        refreshTask?.cancel()
-        refreshTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                guard let self, self.isRefreshLoopActive else { return }
-                self.refresh()
-            }
-        }
-    }
-}
-
-private extension String {
-    var nonEmptyMediaText: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
+    func setRefreshLoopActive(_ active: Bool) {}
+    func refresh() {}
+    func playPause() {}
+    func stop() {}
+    func nextTrack() {}
+    func previousTrack() {}
 }
