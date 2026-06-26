@@ -566,18 +566,18 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 value: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames)" : "--",
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: .blue,
-                                footnote: "candidate frames; no Health export")
+                                footnote: "candidate frame count only")
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
                                 state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
                                 tint: .orange,
-                                footnote: "skin-temp deviation only")
+                                footnote: "candidate frame count only")
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
                                 tint: .teal,
-                                footnote: "RR-derived during sleep")
+                                footnote: "RR-derived sleep research")
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
@@ -585,7 +585,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.agreementText)
             }
 
-            Text("Research only. Atria never shows absolute SpO2 or skin temperature until the sensor layout is validated.")
+            Text("Research only. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show absolute SpO2 or body temperature until the sensor layout is validated.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
