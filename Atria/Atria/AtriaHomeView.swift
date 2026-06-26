@@ -2730,6 +2730,9 @@ final class AtriaHomeModel {
 }
 
 private struct AtriaToolbarIcon: View, Equatable {
+    private static let visualSize: CGFloat = 34
+    private static let hitSize: CGFloat = 44
+
     let symbol: String
     @Environment(\.colorScheme) private var colorScheme
 
@@ -2742,7 +2745,7 @@ private struct AtriaToolbarIcon: View, Equatable {
             .font(.callout.weight(.semibold))
             .imageScale(.small)
             .foregroundStyle(.primary)
-            .frame(width: 34, height: 34)
+            .frame(width: Self.visualSize, height: Self.visualSize)
             .background {
                 Circle()
                     .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.84))
@@ -2752,7 +2755,8 @@ private struct AtriaToolbarIcon: View, Equatable {
                     }
                     .shadow(color: .black.opacity(0.07), radius: 10, y: 5)
             }
-            .contentShape(.circle)
+            .frame(width: Self.hitSize, height: Self.hitSize)
+            .contentShape(Rectangle())
     }
 }
 
@@ -2775,7 +2779,7 @@ private struct AtriaHomeTopChrome: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 7) {
+            HStack(spacing: 0) {
                 if showWorkout {
                     Button(action: onStartWorkout) {
                         AtriaToolbarIcon(symbol: "figure.run")
