@@ -539,33 +539,18 @@ class HandoffStaticChecks(unittest.TestCase):
                     self.assertNotIn(needle, body, f"{rel}:{start} keeps {needle} in a some View render block")
         self.assertGreater(checked, 60)
 
-        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
-        for needle in [
-            "@State private var summary = Summary.empty",
-            "@State private var summaryRevision = 0",
-            ".onAppear { refreshSummary(reason: \"appear\") }",
-            ".onReceive(store.$sessions) { _ in refreshSummary(reason: \"sessions_changed\") }",
-            "DispatchQueue.global(qos: .utility).async",
-            "private static func makeSummary(sessions: [SavedSession],",
-            "store.sleepEvidenceStatusFast(rest: rest, calendar: .current)",
-        ]:
-            assert_contains(self, content, needle)
-
         checks = source(ROOT / "test_handoff_static_checks.py")
         assert_contains(self, checks, "def swift_some_view_blocks(text):")
 
-        daily_card = content[content.index("private struct DailyEvidenceCard"):content.index("private struct CollectionReliabilityCard")]
-        body_start = daily_card.index("var body: some View")
-        body_end = daily_card.index("private func refreshSummary")
-        daily_body = daily_card[body_start:body_end]
-        for forbidden_body_token in [
-            "makeSummary(",
+        content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        for removed_legacy_token in [
+            "private struct DailyEvidenceCard",
+            "private struct CollectionReliabilityCard",
+            "ATRIADBG daily_evidence_ui",
+            "ATRIADBG collection_reliability_ui",
             "detectedActivity(",
-            ".compactMap(",
-            ".reduce(",
-            ".sorted(",
         ]:
-            assert_not_contains(self, daily_body, forbidden_body_token)
+            assert_not_contains(self, content, removed_legacy_token)
 
     def test_history_snapshot_is_cached_off_navigation_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
@@ -1970,8 +1955,8 @@ class HandoffStaticChecks(unittest.TestCase):
         intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
-        assert_contains(self, content, "Not counted as workout until activity evidence is stronger.")
-        assert_contains(self, content, "Current segment is HR-only; saved HRV window stays ready.")
+        assert_contains(self, content, "The official strap app can reclaim the strap and fragment readings.")
+        assert_contains(self, content, "Switch apps freely; don’t force quit.")
         assert_contains(self, hero, "Saved metrics and backup remain on device while Atria waits for the strap again.")
         assert_contains(self, hero, "Connection state: \\(context.userStatusLabel)")
         assert_contains(self, overview, "Saved metrics and backup remain available while the strap reconnects.")
