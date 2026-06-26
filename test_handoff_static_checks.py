@@ -106,7 +106,9 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
-            "ToolbarItem(placement: .topBarLeading)",
+            "private struct AtriaHomeTopChrome: View",
+            "AtriaHomeTopChrome(statusStore: model.statusStore",
+            ".toolbar(.hidden, for: .navigationBar)",
             # Genuine native Liquid Glass on the status chip (user-requested, verified
             # on device) — replaced the hand-drawn AtriaLiquidStatusPillBackground.
             ".glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)",
@@ -132,18 +134,51 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaToolbarIcon(symbol: \"gearshape\")",
             ".frame(width: 30, height: 30)",
             ".glassEffect(.regular.interactive(), in: .circle)",
+            ".frame(minWidth: 132, minHeight: 44)",
         ]:
             assert_contains(self, home, needle)
 
         for forbidden in [
+            "ToolbarItem(placement: .topBarLeading)",
+            "ToolbarItem(placement: .topBarTrailing)",
             "ble.startScan(reason: \"home_status_button\")",
             "case .connected: return \"Live/Connected\"",
             "case .connecting, .scanning: return \"Connecting...\"",
             "case .poweredOff, .disconnected: return \"Not Connected\"",
             ".buttonStyle(.glass)\n            .buttonBorderShape(.circle)",
             "case .connected where !pulse.hasContact:",
+            "guard let self, self.prefersPulseSparklineUpdates else { return }\n                self.publishPulseLive()",
         ]:
             assert_not_contains(self, home, forbidden)
+
+    def test_heart_rate_timeline_has_axes_and_fullscreen_explorer(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+
+        for needle in [
+            "struct HeartRateChartPoint: Identifiable, Equatable",
+            "chartPoints: compactHeartChartPoints(Array(ble.session.suffix(900)))",
+            "private static func compactHeartChartPoints(_ samples: [HRSample], targetCount: Int = 120)",
+            "private struct AtriaHeartRateTimelineCard: View, Equatable",
+            "private struct AtriaHeartRateExplorer: View",
+            "private struct AtriaHeartRateAxisChart: View, Equatable",
+            ".chartXAxis",
+            ".chartYAxis",
+            ".chartXSelection(value: $selectedTime)",
+            "Slider(value: $zoom, in: 1...6, step: 1)",
+            ".fullScreenCover(isPresented: $showHeartRateExplorer)",
+            "live.hasPulseSignal",
+        ]:
+            assert_contains(self, home + vitals, needle)
+
+        assert_contains(self, shared, "case conflict")
+        assert_contains(self, shared, 'return "App conflict"')
+        assert_contains(self, vitals, "officialAppCoexistenceRisk == .suspected ? .conflict : .local")
+        assert_contains(self, hero, "let hasPulseSignal: Bool")
+        assert_contains(self, hero, 'AtriaHeroStatusTile(title: "Connected, no pulse"')
+        assert_not_contains(self, vitals, "isConnected && live.hasPulseSignal")
 
     def test_settings_appearance_switcher_uses_shared_scroll_safe_chrome(self):
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
@@ -1697,12 +1732,20 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_diagnostic_notifications_are_not_production_active(self):
         notifications = source(ROOT / "Atria" / "Atria" / "LocalNotificationScheduler.swift")
 
-        assert_contains(self, notifications, "static let active = [recovery, strain, battery]")
+        assert_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff]")
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
         assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
+        assert_contains(self, notifications, 'static let bluetoothOff = "atria.bluetooth.off"')
+        assert_contains(self, notifications, 'kind: "bluetooth_off"')
+        assert_contains(self, notifications, 'title: "Bluetooth is off"')
+        assert_contains(self, notifications, 'body: ble.bluetoothPermissionDenied')
+        assert_contains(self, notifications, 'Turn on Bluetooth in Settings so Atria can read your strap.')
+        assert_contains(self, notifications, 'body: "Charge your strap. Battery is \\(battery.level)%."')
+        assert_contains(self, notifications, 'bluetooth_off=%d')
         assert_contains(self, notifications, "title: \"Atria notification test\"")
         assert_contains(self, notifications, "body: \"Local notification delivery is working.\"")
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, diagnostic]")
+        assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff, diagnostic]")
         assert_not_contains(self, notifications, "title: \"Atria diagnostic\"")
 
     def test_background_task_plumbing_is_present(self):

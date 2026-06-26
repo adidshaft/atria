@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct AtriaVitalsTabContent: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
@@ -758,7 +759,7 @@ private struct AtriaCollectionStatusCardHost: View {
 
                 Spacer(minLength: 0)
 
-                AtriaStateBadge(state: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .noContact : .local)
+                AtriaStateBadge(state: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .conflict : .local)
             }
 
             if collectionLiveStore.state.officialAppCoexistenceRisk != .cleared {
@@ -892,6 +893,7 @@ private struct AtriaPulseCard: View, Equatable {
     let live: AtriaHomeModel.PulseLiveState
     let sparklineStore: AtriaHomeModel.PulseSparklineStore
     let restingHeartRateText: String
+    @State private var showHeartRateExplorer = false
 
     static func == (lhs: AtriaPulseCard, rhs: AtriaPulseCard) -> Bool {
         lhs.isConnected == rhs.isConnected
@@ -899,8 +901,12 @@ private struct AtriaPulseCard: View, Equatable {
             && lhs.restingHeartRateText == rhs.restingHeartRateText
     }
 
-    private var hasLiveContact: Bool {
-        isConnected && live.hasPulseSignal
+    private var hasReadablePulse: Bool {
+        live.hasPulseSignal
+    }
+
+    private var pulseState: AtriaMetricState {
+        hasReadablePulse ? .live : .noContact
     }
 
     var body: some View {
@@ -910,32 +916,40 @@ private struct AtriaPulseCard: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                AtriaStateBadge(state: hasLiveContact ? .live : .noContact)
+                AtriaStateBadge(state: pulseState)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: 12) {
                 AtriaMetricTile(label: "Now",
                                 value: live.heartRateText,
                                 unit: "bpm",
-                                state: hasLiveContact ? .live : .noContact,
-                                tint: hasLiveContact ? .red : .orange,
+                                state: pulseState,
+                                tint: hasReadablePulse ? .red : .orange,
                                 sparklineValues: sparklineStore.state.values)
                 pulseStatTiles
             }
+
+            AtriaHeartRateTimelineCard(points: sparklineStore.state.chartPoints,
+                                       onOpen: { showHeartRateExplorer = true })
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
+        .fullScreenCover(isPresented: $showHeartRateExplorer) {
+            AtriaHeartRateExplorer(points: sparklineStore.state.chartPoints,
+                                   currentBPM: live.heartRate,
+                                   onDismiss: { showHeartRateExplorer = false })
+        }
     }
 
     @ViewBuilder
     private var pulseStatTiles: some View {
         AtriaMetricTile(label: "Average",
                         value: live.averageHeartRateText,
-                        state: hasLiveContact ? .live : .learning,
+                        state: hasReadablePulse ? .live : .learning,
                         tint: .pink)
         AtriaMetricTile(label: "Peak",
                         value: live.peakHeartRateText,
-                        state: hasLiveContact ? .live : .learning,
+                        state: hasReadablePulse ? .live : .learning,
                         tint: .red)
         AtriaMetricTile(label: "Resting",
                         value: restingHeartRateText,
@@ -946,12 +960,161 @@ private struct AtriaPulseCard: View, Equatable {
     private static let statColumns = [GridItem(.adaptive(minimum: 142), spacing: 12)]
 }
 
-private struct AtriaPulseSparklineHost: View {
-    @ObservedObject var sparklineStore: AtriaHomeModel.PulseSparklineStore
+private struct AtriaHeartRateTimelineCard: View, Equatable {
+    let points: [AtriaHomeModel.HeartRateChartPoint]
+    let onOpen: () -> Void
+
+    static func == (lhs: AtriaHeartRateTimelineCard, rhs: AtriaHeartRateTimelineCard) -> Bool {
+        lhs.points == rhs.points
+    }
 
     var body: some View {
-        Sparkline(values: sparklineStore.state.values)
-            .frame(height: 68)
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Live timeline")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+
+                AtriaHeartRateAxisChart(points: points, selectedTime: .constant(nil))
+                    .frame(height: 170)
+            }
+            .padding(12)
+            .atriaInsetCard(tint: .red)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open heart rate timeline")
+    }
+}
+
+private struct AtriaHeartRateExplorer: View {
+    let points: [AtriaHomeModel.HeartRateChartPoint]
+    let currentBPM: Int
+    let onDismiss: () -> Void
+    @State private var selectedTime: Date?
+    @State private var zoom: Double = 1
+
+    private var visiblePoints: [AtriaHomeModel.HeartRateChartPoint] {
+        guard zoom > 1, points.count > 8 else { return points }
+        let keep = max(8, Int(Double(points.count) / zoom))
+        return Array(points.suffix(keep))
+    }
+
+    private var selectedPoint: AtriaHomeModel.HeartRateChartPoint? {
+        guard let selectedTime else { return visiblePoints.last }
+        return visiblePoints.min { lhs, rhs in
+            abs(lhs.t.timeIntervalSince(selectedTime)) < abs(rhs.t.timeIntervalSince(selectedTime))
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
+                        .font(.system(size: 54, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text("bpm")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+
+                if let selectedPoint {
+                    Text(selectedPoint.t, format: .dateTime.hour().minute().second())
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                AtriaHeartRateAxisChart(points: visiblePoints, selectedTime: $selectedTime)
+                    .frame(maxHeight: .infinity)
+                    .frame(minHeight: 320)
+
+                HStack(spacing: 12) {
+                    Image(systemName: "minus.magnifyingglass")
+                    Slider(value: $zoom, in: 1...6, step: 1)
+                    Image(systemName: "plus.magnifyingglass")
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(20)
+            .background(AtriaBackdropLayer(isDark: false, reduceTransparency: false).ignoresSafeArea())
+            .navigationTitle("Heart rate")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", action: onDismiss)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+}
+
+private struct AtriaHeartRateAxisChart: View, Equatable {
+    let points: [AtriaHomeModel.HeartRateChartPoint]
+    @Binding var selectedTime: Date?
+
+    static func == (lhs: AtriaHeartRateAxisChart, rhs: AtriaHeartRateAxisChart) -> Bool {
+        lhs.points == rhs.points
+    }
+
+    private var yDomain: ClosedRange<Int> {
+        let values = points.map(\.bpm)
+        let low = max((values.min() ?? 60) - 8, 35)
+        let high = min((values.max() ?? 120) + 8, 220)
+        return low...max(high, low + 20)
+    }
+
+    var body: some View {
+        Chart(points) { point in
+            AreaMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+                .interpolationMethod(.catmullRom)
+                .foregroundStyle(.red.opacity(0.12).gradient)
+            LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+                .interpolationMethod(.catmullRom)
+                .foregroundStyle(.red.gradient)
+            if let selectedTime {
+                RuleMark(x: .value("Selected", selectedTime))
+                    .foregroundStyle(.secondary.opacity(0.55))
+                    .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
+            }
+        }
+        .chartYScale(domain: yDomain)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel(format: .dateTime.hour().minute())
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let bpm = value.as(Int.self) {
+                        Text("\(bpm)")
+                    }
+                }
+            }
+        }
+        .chartXSelection(value: $selectedTime)
+        .chartOverlay { proxy in
+            if points.isEmpty {
+                Text("Waiting for live heart-rate samples")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
