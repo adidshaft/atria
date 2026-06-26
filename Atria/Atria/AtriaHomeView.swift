@@ -1224,6 +1224,7 @@ final class AtriaHomeModel {
         var status: AtriaBLEManager.Status
         var bluetoothPermissionDenied: Bool
         var deviceName: String
+        var displayDeviceName: String
         var batteryLevel: Int
         var batteryIsCharging: Bool
         var rrContinuityState: String
@@ -1992,9 +1993,11 @@ final class AtriaHomeModel {
 
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
+        let deviceName = ble.resolvedDeviceName
         return CoreLiveState(status: ble.status,
                              bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
-                             deviceName: ble.resolvedDeviceName,
+                             deviceName: deviceName,
+                             displayDeviceName: AtriaDeviceDisplayName.shortName(for: deviceName),
                              batteryLevel: ble.batteryLevel,
                              batteryIsCharging: ble.batteryIsCharging,
                              rrContinuityState: ble.rrContinuityState,
