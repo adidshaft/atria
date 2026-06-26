@@ -2216,6 +2216,8 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_phone_motion_remains_adjunct_to_whoop_primary_data(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         pull = source(ROOT / "pull_atria_state.sh")
 
         for needle in [
@@ -2236,6 +2238,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "return (\"phone_coremotion_pedometer\", false",
         ]:
             assert_contains(self, ble, needle)
+
+        for needle in [
+            "var phoneMotionDetailText: String",
+            "if let meters = phoneDistanceTodayMeters, meters >= 100",
+            "parts.append(String(format: \"%.1f km\", meters / 1_000))",
+            "if let floors = phoneFloorsToday, floors > 0",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "&& lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText",
+            "detail: live.phoneMotionDetailText",
+            "Steps counted by iPhone motion \\(live.phoneStepsText), \\(live.phoneMotionDetailText)",
+        ]:
+            assert_contains(self, overview, needle)
 
         assert_contains(self, pull, "whoop_primary_data_source=saved_sessions_hr_rr")
         assert_not_contains(self, sessions, "phone motion is primary")

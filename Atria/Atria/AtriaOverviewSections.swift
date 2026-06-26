@@ -616,6 +616,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.phoneStepsText == rhs.live.phoneStepsText
+            && lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
@@ -732,10 +733,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .steps:
             AtriaGlanceMetricCard(title: "Steps",
                                   value: live.phoneStepsText,
-                                  detail: live.phoneStepsToday > 0 ? "iPhone motion" : "Building",
+                                  detail: live.phoneMotionDetailText,
                                   systemImage: metric.systemImage,
                                   tint: .green)
-                .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText)")
+                .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText), \(live.phoneMotionDetailText)")
         case .calories:
             AtriaGlanceMetricCard(title: "Calories",
                                   value: live.liveActiveCaloriesText,
