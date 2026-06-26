@@ -476,6 +476,36 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, sleep_card_source, forbidden)
 
+    def test_morning_journal_uses_cached_sleep_and_explicit_confirm(self):
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+
+        for needle in [
+            "AtriaOverviewMorningJournalHost(heroStore: heroStore,",
+            "struct AtriaOverviewMorningJournalHost: View",
+            "AtriaOverviewMorningJournalCard(hero: heroStore.state,",
+            "sleepHistory: store.sleepHistorySnapshot",
+            "todayEntry: store.behaviorJournalEntry()",
+            "taggedDays: store.behaviorJournalEntries.count",
+            "store.toggleBehaviorTag(tag)",
+            "store.confirmBestSleepCandidateForUI(rest: store.baseline.restingInt ?? 60,",
+            'source: "morning_journal"',
+            "struct AtriaOverviewMorningJournalCard: View, Equatable",
+            'AtriaPanelSectionHeader(title: "Morning journal", subtitle: "")',
+            'Label("Confirm sleep", systemImage: "checkmark.circle")',
+            '"Tags stay on device and power local insights."',
+        ]:
+            assert_contains(self, overview, needle)
+
+        morning_start = overview.index("struct AtriaOverviewMorningJournalCard")
+        morning_end = overview.index("struct AtriaInsightsCardHost")
+        morning_source = overview[morning_start:morning_end]
+        for forbidden in [
+            "dailyRollups(",
+            "detectedActivity(",
+            "aggregateSleepCandidates(",
+        ]:
+            assert_not_contains(self, morning_source, forbidden)
+
     def test_overview_trend_chart_points_are_cached_off_render_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         trend_chart = source(ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift")
