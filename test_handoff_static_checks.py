@@ -245,15 +245,33 @@ class HandoffStaticChecks(unittest.TestCase):
             "Tap or drag on the graph to inspect any sample.",
             "AtriaBackdropLayer(isDark: colorScheme == .dark,",
             "reduceTransparency: reduceTransparency",
+            "private struct AtriaHeartRateChartSeries: Equatable",
+            "let visiblePoints: [AtriaHomeModel.HeartRateChartPoint]",
+            "let yDomain: ClosedRange<Int>",
+            "static func make(points: [AtriaHomeModel.HeartRateChartPoint], zoom: Double) -> AtriaHeartRateChartSeries",
+            "static func yDomain(for points: [AtriaHomeModel.HeartRateChartPoint]) -> ClosedRange<Int>",
+            "func nearestPoint(to selectedTime: Date?) -> AtriaHomeModel.HeartRateChartPoint?",
+            "@State private var series: AtriaHeartRateChartSeries",
+            "_series = State(initialValue: AtriaHeartRateChartSeries.make(points: points, zoom: 1))",
+            "AtriaHeartRateAxisChart(points: series.visiblePoints,",
+            "yDomain: series.yDomain,",
+            "series = AtriaHeartRateChartSeries.make(points: points, zoom: newValue)",
+            "series = AtriaHeartRateChartSeries.make(points: newValue, zoom: zoom)",
             "private struct AtriaHeartRateAxisChart: View, Equatable",
+            "let yDomain: ClosedRange<Int>",
+            "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain",
             ".chartXAxis",
             ".chartYAxis",
             ".chartXSelection(value: $selectedTime)",
             "Slider(value: $zoom, in: 1...6, step: 1)",
+            "Label(\"Done\", systemImage: \"xmark\")",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
             ".fullScreenCover(isPresented: $showHeartRateExplorer)",
             "live.hasPulseSignal",
         ]:
             assert_contains(self, home + vitals, needle)
+        assert_not_contains(self, vitals, "Button(\"Done\", action: onDismiss)")
+        assert_not_contains(self, vitals, ".buttonStyle(.borderedProminent)")
 
         assert_contains(self, shared, "case conflict")
         assert_contains(self, shared, 'return "App conflict"')
