@@ -2226,7 +2226,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            return "\(rows) saved · metrics gated"
+            return "\(rows) saved · reference gated"
         }
 
         var userFootnoteText: String {
@@ -2234,7 +2234,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Archive needs repair." }
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
-            return "\(rows) saved locally; RR validation gates metrics."
+            return "\(rows) saved locally; external RR reference gates HRV, Recovery and Sleep metrics."
         }
 
         var metricReady: Bool {
