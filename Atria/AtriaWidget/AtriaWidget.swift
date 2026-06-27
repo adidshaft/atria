@@ -513,7 +513,7 @@ private func elapsedText(since start: Date) -> String {
     return "\(minutes)m"
 }
 
-// MARK: - Single-metric Lock Screen widgets (Steps / Strain / HRV / BPM)
+// MARK: - Single-metric widgets (Home Screen + Lock Screen)
 
 enum AtriaWidgetMetric {
     case steps, strain, hrv, bpm
@@ -542,6 +542,24 @@ enum AtriaWidgetMetric {
         case .strain: return "bolt.fill"
         case .hrv: return "waveform.path.ecg"
         case .bpm: return "heart.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .steps: return .blue
+        case .strain: return .orange
+        case .hrv: return .pink
+        case .bpm: return .red
+        }
+    }
+
+    var unit: String {
+        switch self {
+        case .steps: return "today"
+        case .strain: return "day load"
+        case .hrv: return "ms"
+        case .bpm: return "live"
         }
     }
 
@@ -590,6 +608,8 @@ struct AtriaMetricWidgetEntryView: View {
                     Spacer(minLength: 0)
                 }
                 .containerBackground(.clear, for: .widget)
+            case .systemSmall:
+                systemSmallMetric
             default:
                 VStack(spacing: 0) {
                     Image(systemName: metric.icon)
@@ -606,6 +626,57 @@ struct AtriaMetricWidgetEntryView: View {
         }
         .widgetURL(metric.deepLinkURL)
     }
+
+    private var systemSmallMetric: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: metric.icon)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(metric.tint)
+                    .frame(width: 30, height: 30)
+                    .background(metric.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                Spacer(minLength: 0)
+
+                Text(metric.unit.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(value)
+                .font(.system(size: 42, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.45)
+
+            Text(metric.title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            Text(metricFooterText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .containerBackground(.background, for: .widget)
+        .accessibilityLabel("\(metric.title) \(value), \(metricFooterText)")
+    }
+
+    private var metricFooterText: String {
+        guard let snapshot = entry.snapshot else { return "Open Atria" }
+        let age = max(0, Int(Date().timeIntervalSince(snapshot.createdAt) / 60))
+        if age < 1 { return "Updated now" }
+        if age < 60 { return "Updated \(age)m ago" }
+        return "Open Atria to refresh"
+    }
 }
 
 struct AtriaStepsWidget: Widget {
@@ -614,8 +685,8 @@ struct AtriaStepsWidget: Widget {
             AtriaMetricWidgetEntryView(metric: .steps, entry: entry)
         }
         .configurationDisplayName("Atria Steps")
-        .description("Today's steps on your Lock Screen.")
-        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .description("Today's steps on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -625,8 +696,8 @@ struct AtriaStrainWidget: Widget {
             AtriaMetricWidgetEntryView(metric: .strain, entry: entry)
         }
         .configurationDisplayName("Atria Strain")
-        .description("Today's strain on your Lock Screen.")
-        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .description("Today's strain on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -636,8 +707,8 @@ struct AtriaHRVWidget: Widget {
             AtriaMetricWidgetEntryView(metric: .hrv, entry: entry)
         }
         .configurationDisplayName("Atria HRV")
-        .description("Latest HRV on your Lock Screen.")
-        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .description("Latest HRV on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -647,8 +718,8 @@ struct AtriaBPMWidget: Widget {
             AtriaMetricWidgetEntryView(metric: .bpm, entry: entry)
         }
         .configurationDisplayName("Atria BPM")
-        .description("Latest heart rate on your Lock Screen.")
-        .supportedFamilies([.accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .description("Latest heart rate on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
