@@ -299,14 +299,16 @@ enum LocalNotificationScheduler {
         }
 
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
-        AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d",
+        let batteryIsCharging = ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full
+        AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d charge=%@",
               battery.level,
               battery.source,
               battery.age,
               battery.usable ? 1 : 0,
-              Self.actionableBatteryThreshold)
+              Self.actionableBatteryThreshold,
+              ble.batteryChargeStatus.rawValue)
         let batteryDecision: NotificationDecision
-        if battery.usable && battery.level <= Self.actionableBatteryThreshold {
+        if battery.usable && battery.level <= Self.actionableBatteryThreshold && !batteryIsCharging {
             batteryDecision = NotificationDecision(
                 kind: "battery",
                 identifier: Identifier.battery,
@@ -317,9 +319,14 @@ enum LocalNotificationScheduler {
                 delay: 9
             )
         } else {
-            let reason = battery.usable
-                ? "battery_\(battery.level)_not_low_source_\(battery.source)"
-                : "battery_learning_source_\(battery.source)"
+            let reason: String
+            if battery.usable && batteryIsCharging {
+                reason = "battery_\(battery.level)_charging_\(ble.batteryChargeStatus.rawValue)_source_\(battery.source)"
+            } else {
+                reason = battery.usable
+                    ? "battery_\(battery.level)_not_low_source_\(battery.source)"
+                    : "battery_learning_source_\(battery.source)"
+            }
             batteryDecision = NotificationDecision(
                 kind: "battery",
                 identifier: Identifier.battery,
