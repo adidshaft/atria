@@ -287,7 +287,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, vitals, "officialAppCoexistenceRisk == .suspected ? .conflict : .local")
         assert_contains(self, hero, "let hasPulseSignal: Bool")
         assert_contains(self, hero, "let needsContactCoach: Bool")
-        assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Connected, no pulse"')
+        assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Waiting for pulse"')
         assert_contains(self, hero, "Strap is connected; adjust fit so Atria can read pulse.")
         assert_contains(self, hero, "Waiting for the next live heart-rate sample.")
         assert_contains(self, hero, "needsContactCoach: pulseStore.state.needsContactCoach")
@@ -375,9 +375,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)",
             "glanceCardCell(metric,\n                                   width: glanceCardWidth(for: metric, containerWidth: proxy.size.width))",
             "private struct AtriaGlanceMetricCard: View, Equatable",
-            "static let cardHeight: CGFloat = 154",
-            "private static let headerHeight: CGFloat = 44",
-            "private static let valueHeight: CGFloat = 38",
+            "static let cardHeight: CGFloat = 166",
+            "private static let headerHeight: CGFloat = 48",
+            "private static let valueHeight: CGFloat = 40",
             "private struct AtriaGlanceMetricMarker: View, Equatable",
             "private static let size: CGFloat = 44",
             "private static let iconCircleSize: CGFloat = 30",
@@ -512,6 +512,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
             "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
+            "let onHideMetric: (AtriaTodayMetric) -> Void",
             "let onStartWorkout: () -> Void",
             "&& lhs.insights == rhs.insights",
             "AtriaGlanceMetricCard(title: \"Workout\"",
@@ -533,6 +534,13 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityAction(named: downLabel)",
             "onShiftMetric(metric, -1)",
             "onShiftMetric(metric, 1)",
+            "private func hideMetric(_ metric: AtriaTodayMetric)",
+            "hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)",
+            "Menu {",
+            "Button(role: .destructive)",
+            "Label(\"Remove \\(metric.label)\", systemImage: \"minus.circle\")",
+            ".background(Color(.systemBackground).opacity(0.82), in: Circle())",
+            ".accessibilityLabel(\"Widget options for \\(metric.label)\")",
             "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
             ".sensoryFeedback(.selection, trigger: orderCSV)",
         ]:
@@ -634,7 +642,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "live.bluetoothPermissionDenied",
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "case .connected where pulse.needsContactCoach:",
-            "return AtriaConnectionDiagnosis(title: \"Connected, no pulse\"",
+            "return AtriaConnectionDiagnosis(title: \"Fit check needed\"",
             "case .connected where live.needsRRQualityCoach && !pulse.hasPulseSignal:",
             "Beat-to-beat waiting",
             "Atria needs pulse before it can build HRV and Recovery.",
@@ -663,6 +671,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "forget it in Bluetooth and reconnect",
         ]:
             assert_contains(self, home, needle)
+        assert_not_contains(self, home, "Connected, no pulse")
 
         diagnosis = re.search(
             r"static func derive\(live: AtriaHomeModel\.CoreLiveState,\n                       pulse: AtriaHomeModel\.PulseLiveState,\n                       officialAppInstalled: Bool\) -> AtriaConnectionDiagnosis\? \{(?P<body>.*?)\n    \}",

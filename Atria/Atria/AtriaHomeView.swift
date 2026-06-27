@@ -3087,7 +3087,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "battery.25percent",
                                             tint: .yellow)
         case .connected where pulse.needsContactCoach:
-            return AtriaConnectionDiagnosis(title: "Connected, no pulse",
+            return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Adjust the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
