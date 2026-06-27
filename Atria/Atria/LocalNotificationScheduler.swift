@@ -298,15 +298,16 @@ enum LocalNotificationScheduler {
             return [bluetoothDecision]
         }
 
-        let battery = batterySnapshot(liveLevel: ble.batteryLevel)
-        let batteryIsCharging = ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full
+        let battery = batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)
+        let effectiveChargeStatus = battery.chargeStatus
+        let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full
         AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d charge=%@",
               battery.level,
               battery.source,
               battery.age,
               battery.usable ? 1 : 0,
               Self.actionableBatteryThreshold,
-              ble.batteryChargeStatus.rawValue)
+              effectiveChargeStatus.rawValue)
         let batteryDecision: NotificationDecision
         if battery.usable && battery.level <= Self.actionableBatteryThreshold && !batteryIsCharging {
             batteryDecision = NotificationDecision(
@@ -321,7 +322,7 @@ enum LocalNotificationScheduler {
         } else {
             let reason: String
             if battery.usable && batteryIsCharging {
-                reason = "battery_\(battery.level)_charging_\(ble.batteryChargeStatus.rawValue)_source_\(battery.source)"
+                reason = "battery_\(battery.level)_charging_\(effectiveChargeStatus.rawValue)_source_\(battery.source)"
             } else {
                 reason = battery.usable
                     ? "battery_\(battery.level)_not_low_source_\(battery.source)"
@@ -376,15 +377,19 @@ enum LocalNotificationScheduler {
         }
     }
 
-    private static func batterySnapshot(liveLevel: Int) -> (level: Int, source: String, age: TimeInterval, usable: Bool) {
+    private static func batterySnapshot(liveLevel: Int,
+        liveChargeStatus: AtriaBLEManager.BatteryChargeStatus) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool) {
         if liveLevel >= 0 {
-            return (liveLevel, "live_2A19", 0, true)
+            let cached = AtriaBLEManager.cachedBattery(maxAge: 10 * 60)
+            let chargeStatus = liveChargeStatus == .levelOnly && cached.usable ? cached.chargeStatus : liveChargeStatus
+            let source = chargeStatus == liveChargeStatus ? "live_2A19" : "live_2A19_cached_charge"
+            return (liveLevel, source, 0, chargeStatus, true)
         }
         let cached = AtriaBLEManager.cachedBattery()
         if cached.usable {
-            return cached
+            return (cached.level, cached.source, cached.age, cached.chargeStatus, true)
         }
-        return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, false)
+        return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, cached.chargeStatus, false)
     }
 
     private static func add(decision: NotificationDecision,
