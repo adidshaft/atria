@@ -268,6 +268,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".toolbar(.hidden, for: .navigationBar)",
             "private static func liveHeartRate(ble: AtriaBLEManager) -> Int",
             "Date().timeIntervalSince(latest.t) <= 180",
+            "ble.status == .connected,\n           let windowRate = ble.liveHeartWindow.sparkline.last(where: { $0 > 0 })",
+            "ble.status == .connected,\n           let average = ble.liveHeartWindow.average",
             ".onTapGesture",
             "ble.startScan(reason: \"home_status_chip\")",
             "var bluetoothPermissionDenied: Bool",
@@ -437,6 +439,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "struct HeroPulseState: Equatable")
         assert_contains(self, home, "var hasPulseSignal: Bool { heartRate > 0 || hasContact }")
         assert_contains(self, home, "return HeroPulseState(heartRate: reconciledHeartRate,")
+        assert_contains(self, home, "let windowRate = ble.liveHeartWindow.sparkline.last(where: { $0 > 0 })")
+        assert_contains(self, home, "return windowRate")
         assert_contains(self, home, "ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher()")
         assert_contains(self, source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift"), "@Published private(set) var sessionSampleCount = 0")
         assert_not_contains(self, vitals, "isConnected && live.hasPulseSignal")

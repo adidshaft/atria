@@ -2377,11 +2377,20 @@ final class AtriaHomeModel {
 
     private static func liveHeartRate(ble: AtriaBLEManager) -> Int {
         if ble.heartRate > 0 { return ble.heartRate }
-        guard let latest = ble.session.last, latest.bpm > 0,
-              Date().timeIntervalSince(latest.t) <= 180 else {
-            return 0
+        if let latest = ble.session.last, latest.bpm > 0,
+           Date().timeIntervalSince(latest.t) <= 180 {
+            return latest.bpm
         }
-        return latest.bpm
+        if ble.status == .connected,
+           let windowRate = ble.liveHeartWindow.sparkline.last(where: { $0 > 0 }) {
+            return windowRate
+        }
+        if ble.status == .connected,
+           let average = ble.liveHeartWindow.average,
+           average > 0 {
+            return average
+        }
+        return 0
     }
 
     private static func compactHeartChartPoints(_ samples: [HRSample], targetCount: Int = 120) -> [HeartRateChartPoint] {
