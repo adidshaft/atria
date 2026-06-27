@@ -3053,7 +3053,7 @@ private struct AtriaHomeTopChrome: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 6) {
+            HStack(spacing: AtriaHeaderControlMetrics.iconSpacing) {
                 AtriaHeaderBatteryIndicator(liveStore: coreLiveStore)
 
                 if showWorkout {
@@ -3097,7 +3097,9 @@ private struct AtriaHomeTopChrome: View {
 }
 
 private enum AtriaHeaderControlMetrics {
-    static let height: CGFloat = 42
+    static let height: CGFloat = 44
+    static let statusMinWidth: CGFloat = 152
+    static let iconSpacing: CGFloat = 6
 }
 
 private struct AtriaHeaderBatteryIndicator: View {
@@ -3146,8 +3148,8 @@ private struct AtriaTopStatusChip: View {
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
-        .padding(.horizontal, 22)
-        .frame(minWidth: 148,
+        .padding(.horizontal, 18)
+        .frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
         .atriaChromeCapsule(tint: tint)
