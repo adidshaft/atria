@@ -1849,16 +1849,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard status != .poweredOff else { return }
             let backfillReason = UserDefaults.standard.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? reason
             let protectedLiveStream = shouldProtectLiveStreamForOfflineSync()
-            AtriaDebugLog("ATRIADBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=%@ live_protected=%d",
+            let forceStaleBackfill = shouldForceStaleRangeLossBackfill()
+            AtriaDebugLog("ATRIADBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=%@ live_protected=%d stale_force=%d",
                   backfillReason,
                   reason,
-                  protectedLiveStream ? "defer_live_stream" : "sync_when_available",
-                  protectedLiveStream ? 1 : 0)
-            if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false) {
+                  forceStaleBackfill ? "force_stale_backfill" : (protectedLiveStream ? "defer_live_stream" : "sync_when_available"),
+                  protectedLiveStream ? 1 : 0,
+                  forceStaleBackfill ? 1 : 0)
+            if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: forceStaleBackfill) {
                 UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
                 assignIfChanged(\.rangeLossBackfillPending, false)
-            } else if protectedLiveStream && UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+            } else if UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 scheduleRangeLossBackfillRetry(reason: reason)
             }
         }
@@ -1871,6 +1873,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard !Task.isCancelled else { return }
             scheduleRangeLossBackfillIfNeeded(reason: "\(reason)_retry")
         }
+    }
+
+    private func shouldForceStaleRangeLossBackfill(now: Date = Date()) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
+              let requestedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double else {
+            return false
+        }
+        return now.timeIntervalSince1970 - requestedAt >= rangeLossBackfillRetryInterval
     }
 
     private func shouldProtectLiveStreamForOfflineSync(now: Date = Date()) -> Bool {
