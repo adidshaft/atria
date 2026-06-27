@@ -450,7 +450,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     // HR session: every BPM sample since connection, for stats + chart.
     private(set) var session: [HRSample] = []
-    private(set) var sessionSampleCount = 0
+    @Published private(set) var sessionSampleCount = 0
     private var sessionOriginTime: Date?
     private var sessionPointsCache: [SavedSession.Point] = []
     private var rrPointsCache: [SavedSession.RRPoint] = []

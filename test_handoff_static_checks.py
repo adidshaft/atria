@@ -276,6 +276,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "var needsContactCoach: Bool { !hasPulseSignal && !sensorHasContact }",
             "var contactText: String { hasPulseSignal ? \"Live\" : \"No signal\" }",
             "hasContact: ble.hasContact || reconciledHeartRate > 0",
+            "ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher()",
             "return hasPulseSignal ? \"Live\" : \"No signal\"",
             "case .connecting: return \"Connecting\"",
             "case .scanning: return \"Searching\"",
@@ -431,6 +432,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "struct HeroPulseState: Equatable")
         assert_contains(self, home, "var hasPulseSignal: Bool { heartRate > 0 || hasContact }")
         assert_contains(self, home, "return HeroPulseState(heartRate: reconciledHeartRate,")
+        assert_contains(self, home, "ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher()")
+        assert_contains(self, source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift"), "@Published private(set) var sessionSampleCount = 0")
         assert_not_contains(self, vitals, "isConnected && live.hasPulseSignal")
 
     def test_settings_appearance_switcher_uses_shared_scroll_safe_chrome(self):
@@ -927,8 +930,14 @@ class HandoffStaticChecks(unittest.TestCase):
         diagnosis_body = diagnosis.group("body")
         powered_off_index = diagnosis_body.find("case .poweredOff:")
         low_battery_index = diagnosis_body.find("case _ where live.batteryLevel >= 0")
+        contact_index = diagnosis_body.find("case .connected where pulse.needsContactCoach:")
+        hrv_settling_index = diagnosis_body.find("case .connected where live.needsRRQualityCoach && pulse.hasPulseSignal:")
         self.assertGreaterEqual(powered_off_index, 0)
+        self.assertGreaterEqual(contact_index, 0)
+        self.assertGreaterEqual(hrv_settling_index, 0)
         self.assertGreater(low_battery_index, powered_off_index)
+        self.assertGreater(low_battery_index, contact_index)
+        self.assertGreater(low_battery_index, hrv_settling_index)
 
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         for needle in [

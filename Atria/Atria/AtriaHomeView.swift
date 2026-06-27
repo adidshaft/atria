@@ -1941,6 +1941,7 @@ final class AtriaHomeModel {
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneFloorsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanRequestedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -1984,6 +1985,7 @@ final class AtriaHomeModel {
         let throttledPulseLiveChanges = Publishers.MergeMany([
             pulseRateChanges,
             pulseContactChanges,
+            ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             pulseSummaryChanges
         ])
         .throttle(for: .milliseconds(650), scheduler: RunLoop.main, latest: true)
@@ -3122,11 +3124,6 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red)
-        case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && !live.batteryIsCharging:
-            return AtriaConnectionDiagnosis(title: "Strap battery low",
-                                            action: "Charge your strap before a workout or overnight wear.",
-                                            systemImage: "battery.25percent",
-                                            tint: .yellow)
         case .connected where pulse.needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
@@ -3142,6 +3139,11 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Heart rate is live. Keep wearing normally while HRV settles.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .green)
+        case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && !live.batteryIsCharging:
+            return AtriaConnectionDiagnosis(title: "Strap battery low",
+                                            action: "Charge your strap before a workout or overnight wear.",
+                                            systemImage: "battery.25percent",
+                                            tint: .yellow)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",
