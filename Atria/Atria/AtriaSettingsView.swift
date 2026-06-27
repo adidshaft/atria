@@ -49,6 +49,8 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
+    @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
+    @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -144,6 +146,8 @@ struct AtriaSettingsView: View {
             skinTemperatureYellowDelta,
             Double(biologicalAgeGreenOlderDelta),
             Double(biologicalAgeYellowOlderDelta),
+            vo2GreenDelta,
+            vo2RedDelta,
         ]
         .map { String(format: "%.3f", $0) }
         .joined(separator: "|")
@@ -160,6 +164,7 @@ struct AtriaSettingsView: View {
         normalizeRespiratoryTargets()
         normalizeSkinTemperatureTargets()
         normalizeBiologicalAgeTargets()
+        normalizeVO2Targets()
     }
 
     private func normalizeRecoveryTargets() {
@@ -208,6 +213,11 @@ struct AtriaSettingsView: View {
     private func normalizeBiologicalAgeTargets() {
         biologicalAgeGreenOlderDelta = min(max(biologicalAgeGreenOlderDelta, -10), 10)
         biologicalAgeYellowOlderDelta = min(max(biologicalAgeYellowOlderDelta, biologicalAgeGreenOlderDelta + 1), 20)
+    }
+
+    private func normalizeVO2Targets() {
+        vo2GreenDelta = min(max(vo2GreenDelta, 0.0), 2.0)
+        vo2RedDelta = max(min(vo2RedDelta, -0.05), -2.0)
     }
 
     // MARK: Appearance
@@ -523,6 +533,28 @@ struct AtriaSettingsView: View {
                     Label("Reset body-age target", systemImage: "figure.stand")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
+
+                Stepper(value: $vo2GreenDelta, in: 0.0...2.0, step: 0.1) {
+                    LabeledContent("VO2 green gain") {
+                        Text(String(format: "+%.1f", vo2GreenDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $vo2RedDelta, in: -2.0 ... -0.05, step: 0.1) {
+                    LabeledContent("VO2 red decline") {
+                        Text(String(format: "%.1f", vo2RedDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    vo2GreenDelta = 0.2
+                    vo2RedDelta = -0.2
+                } label: {
+                    Label("Reset VO2 trend target", systemImage: "lungs.fill")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")

@@ -553,6 +553,8 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
+    @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
+    @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -586,6 +588,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      skinTemperatureYellowDelta: skinTemperatureYellowDelta,
                                      biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
                                      biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
+                                     vo2GreenDelta: vo2GreenDelta,
+                                     vo2RedDelta: vo2RedDelta,
                                      stepsGoal: stepsGoal,
                                      sleepGoalHours: sleepGoalHours,
                                      sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
@@ -813,7 +817,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .bioAge, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .vo2max, .bioAge, .bodyTemp:
             return true
         default:
             return false
@@ -881,6 +885,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let skinTemperatureYellowDelta: Double
     let biologicalAgeGreenOlderDelta: Int
     let biologicalAgeYellowOlderDelta: Int
+    let vo2GreenDelta: Double
+    let vo2RedDelta: Double
     let stepsGoal: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
@@ -952,6 +958,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.skinTemperatureYellowDelta == rhs.skinTemperatureYellowDelta
             && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
             && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
+            && lhs.vo2GreenDelta == rhs.vo2GreenDelta
+            && lhs.vo2RedDelta == rhs.vo2RedDelta
             && lhs.stepsGoal == rhs.stepsGoal
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
@@ -1546,7 +1554,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var vo2TrendZone: AtriaMetricZone? {
-        Metrics.vo2TrendZone(vo2MaxEstimate)
+        Metrics.vo2TrendZone(vo2MaxEstimate,
+                             greenDelta: vo2GreenDelta,
+                             redDelta: vo2RedDelta)
     }
 
     private var biologicalAgeZone: AtriaMetricZone? {
@@ -1740,6 +1750,8 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
+    @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
+    @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
     var body: some View {
         let summary = metric.targetEditorSummary
@@ -1806,6 +1818,8 @@ private struct AtriaGlanceTargetEditorSheet: View {
             skinTemperatureYellowDelta,
             Double(biologicalAgeGreenOlderDelta),
             Double(biologicalAgeYellowOlderDelta),
+            vo2GreenDelta,
+            vo2RedDelta,
         ]
         .map { String(format: "%.3f", $0) }
         .joined(separator: "|")
@@ -1822,6 +1836,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
         normalizeRespiratoryTargets()
         normalizeSkinTemperatureTargets()
         normalizeBiologicalAgeTargets()
+        normalizeVO2Targets()
     }
 
     @ViewBuilder
@@ -1996,6 +2011,28 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
             }
+        case .vo2max:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $vo2GreenDelta, in: 0.0...2.0, step: 0.1) {
+                    LabeledContent("Green gain") {
+                        Text(String(format: "+%.1f", vo2GreenDelta))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $vo2RedDelta, in: -2.0 ... -0.05, step: 0.1) {
+                    LabeledContent("Red decline") {
+                        Text(String(format: "%.1f", vo2RedDelta))
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    vo2GreenDelta = 0.2
+                    vo2RedDelta = -0.2
+                } label: {
+                    Label("Reset VO2 trend target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
+            }
         case .steps:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
@@ -2087,6 +2124,11 @@ private struct AtriaGlanceTargetEditorSheet: View {
         biologicalAgeGreenOlderDelta = min(max(biologicalAgeGreenOlderDelta, -10), 10)
         biologicalAgeYellowOlderDelta = min(max(biologicalAgeYellowOlderDelta, biologicalAgeGreenOlderDelta + 1), 20)
     }
+
+    private func normalizeVO2Targets() {
+        vo2GreenDelta = min(max(vo2GreenDelta, 0.0), 2.0)
+        vo2RedDelta = max(min(vo2RedDelta, -0.05), -2.0)
+    }
 }
 
 private extension AtriaTodayMetric {
@@ -2097,6 +2139,7 @@ private extension AtriaTodayMetric {
         case .hrv: return .pink
         case .rhr: return .red
         case .bioAge: return .purple
+        case .vo2max: return .blue
         case .respiratoryRate, .bodyTemp: return .teal
         case .sleep, .sleepEfficiency: return .cyan
         default: return .blue
@@ -2121,6 +2164,8 @@ private extension AtriaTodayMetric {
             return "Adjust the relative sleep skin-temperature deviation allowed around baseline."
         case .bioAge:
             return "Adjust the younger/older delta bands for the body-age estimate."
+        case .vo2max:
+            return "Adjust the VO2max trend gain or decline needed for target colors."
         case .steps:
             return "Adjust the daily step goal used by the steps card."
         case .sleepEfficiency:
