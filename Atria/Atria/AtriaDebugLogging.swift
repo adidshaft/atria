@@ -24,6 +24,7 @@ enum AtriaDebugLogging {
             "--atria-healthkit-export",
             "--atria-healthkit-reference-audit",
             "--atria-healthkit-reset-rebuild-atria-hr",
+            "--atria-analytics-calibration-audit",
             "--atria-full-protocol-mode",
             "--atria-long-wear-mode",
             "--atria-standard-hr-only",

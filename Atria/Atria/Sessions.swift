@@ -7706,34 +7706,34 @@ final class SessionStore: ObservableObject {
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
         let chronologicalAge = profile.age
         var blockers: [String] = []
-        guard profile.biologicalSex != .unspecified else {
-            return .building(chronologicalAge: chronologicalAge, blockers: ["Add sex in profile"])
+        if profile.biologicalSex == .unspecified {
+            blockers.append("Add sex in profile")
         }
-        guard let vo2Max = vo2MaxEstimate.value else {
+        if vo2MaxEstimate.value == nil {
             blockers.append("VO2max estimate")
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard let restingHR = baseline.restingInt, baseline.hasTrustedRestingBaseline() else {
+        if baseline.restingInt == nil || !baseline.hasTrustedRestingBaseline() {
             blockers.append("14 fresh RHR baseline nights")
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard let hrv = baseline.hrvInt, baseline.hasTrustedHRVBaseline() else {
+        if baseline.hrvInt == nil || !baseline.hasTrustedHRVBaseline() {
             blockers.append("14 fresh HRV baseline nights")
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
         let sleepNights = sleepHistorySnapshot.nights
             .filter { !$0.isNapEvidence }
             .prefix(14)
-        guard sleepNights.count >= 3 else {
+        if sleepNights.count < 3 {
             blockers.append("3 sleep night records")
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard profile.heightCm > 0, profile.weightKg > 0 else {
+        if profile.heightCm <= 0 || profile.weightKg <= 0 {
             blockers.append("height and weight")
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard trainingLoadSummarySnapshot.confidence == "local", trainingLoadSummarySnapshot.chronicLoad > 0 else {
+        if trainingLoadSummarySnapshot.confidence != "local" || trainingLoadSummarySnapshot.chronicLoad <= 0 {
             blockers.append("14 activity load days")
+        }
+        guard blockers.isEmpty,
+              let vo2Max = vo2MaxEstimate.value,
+              let restingHR = baseline.restingInt,
+              let hrv = baseline.hrvInt else {
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
 

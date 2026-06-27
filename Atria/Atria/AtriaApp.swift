@@ -232,6 +232,7 @@ struct AtriaApp: App {
             || arguments.contains("--atria-healthkit-export")
             || arguments.contains("--atria-healthkit-reference-audit")
             || arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
+            || arguments.contains("--atria-analytics-calibration-audit")
             || arguments.contains("--atria-confirm-best-workout-candidate")
             || arguments.contains("--atria-confirm-best-sleep-candidate")
         guard requestedLaunchDiagnostics else {
@@ -254,6 +255,7 @@ struct AtriaApp: App {
             store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)
             store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
             store.logGateStatusFromLaunchIfRequested(arguments: arguments)
+            logAnalyticsCalibrationAuditIfRequested(arguments: arguments)
             scheduleLaunchExportsIfRequested(store: store, arguments: arguments)
             LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store, ble: ble)
             WidgetSnapshotPublisher.publishFromLaunchIfRequested(store: store, ble: ble)
@@ -273,6 +275,31 @@ struct AtriaApp: App {
             guard argument.hasPrefix("--atria-") else { return false }
             return argument != "--atria-enable-debug-logs"
         }
+    }
+
+    private func logAnalyticsCalibrationAuditIfRequested(arguments: [String]) {
+        guard arguments.contains("--atria-analytics-calibration-audit") else { return }
+        let numericChecks = AtriaAnalytics.CalibrationExamples.numericChecks
+        let labelChecks = AtriaAnalytics.CalibrationExamples.labelChecks
+        for check in numericChecks {
+            AtriaDebugLog("ATRIADBG analytics_calibration_check kind=numeric name=%@ actual=%.3f expected=%.3f tolerance=%.3f passed=%d",
+                          check.name,
+                          check.actual,
+                          check.expected,
+                          check.tolerance,
+                          check.passed ? 1 : 0)
+        }
+        for check in labelChecks {
+            AtriaDebugLog("ATRIADBG analytics_calibration_check kind=label name=%@ actual=%@ expected=%@ passed=%d",
+                          check.name,
+                          check.actual,
+                          check.expected,
+                          check.passed ? 1 : 0)
+        }
+        AtriaDebugLog("ATRIADBG analytics_calibration_audit status=%@ numeric_checks=%d label_checks=%d",
+                      AtriaAnalytics.CalibrationExamples.allPassed ? "ok" : "failed",
+                      numericChecks.count,
+                      labelChecks.count)
     }
 
     private func logLaunchTiming(event: String) {
