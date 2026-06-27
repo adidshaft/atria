@@ -151,6 +151,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "var sensorHasContact: Bool",
             "sensorHasContact: ble.hasContact",
             "var needsContactCoach: Bool { !hasPulseSignal && !sensorHasContact }",
+            "var contactText: String { hasPulseSignal ? \"Live\" : \"No signal\" }",
             "hasContact: ble.hasContact || reconciledHeartRate > 0",
             "return hasPulseSignal ? \"Live\" : \"No signal\"",
             "case .connecting: return \"Connecting\"",
