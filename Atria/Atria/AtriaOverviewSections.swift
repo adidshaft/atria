@@ -1235,7 +1235,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange)
                 .accessibilityLabel(sensorSummary.skinTemperatureDeviation.isReady
-                                    ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) degrees Celsius from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)"
+                                    ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)"
                                     : "Body temperature research is building a sleep baseline and does not show an absolute temperature")
         case .trend:
             trendCard
@@ -2059,21 +2059,22 @@ struct AtriaInsightsCardHost: View {
 }
 
 /// Smart insights: actionable, effect-size-ranked findings from behavior tags vs
-/// recovery/HRV (e.g. "Alcohol · Recovery 12% lower"). Local, never medical.
+/// validated local metrics. Recovery correlations stay hidden until Recovery is
+/// built from real baseline-gated inputs. Local, never medical.
 struct AtriaInsightsCard: View, Equatable {
     let insights: [AtriaInsight]
     let taggedDays: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Insights", subtitle: "What moves your recovery")
+            AtriaPanelSectionHeader(title: "Insights", subtitle: "What moves your HRV")
 
             if insights.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .foregroundStyle(.secondary)
                     Text(taggedDays == 0
-                         ? "Tag your days (sleep, alcohol, training…) and Atria learns what moves your recovery."
+                         ? "Tag your days (sleep, alcohol, training…) and Atria learns what moves your HRV."
                          : "Keep tagging — clear patterns appear after a few matched days.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)

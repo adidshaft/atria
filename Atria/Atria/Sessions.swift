@@ -5876,7 +5876,7 @@ final class SessionStore: ObservableObject {
               entry.tags.map(\.rawValue).joined(separator: ","))
     }
 
-    private struct InsightDayMetrics { let recovery: Double; let hrv: Double? }
+    private struct InsightDayMetrics { let recovery: Double?; let hrv: Double? }
 
     func behaviorCorrelationSummaries(rest: Int,
                                       maxHR: Int,
@@ -5893,11 +5893,14 @@ final class SessionStore: ObservableObject {
                                                                      rest: Int,
                                                                      maxHR: Int,
                                                                      calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
-        // LIGHT per-day rollup: only strain (→ recovery proxy) + avg HRV. This
+        // LIGHT per-day rollup: only externally validated recovery + avg HRV. This
         // deliberately does NOT call dailyRollups(), which runs workout/sleep
         // clustering + detectedActivity twice per session and was blocking the
         // main thread (SessionStore is @MainActor) — the cause of the launch /
         // workout hang + watchdog crash. Insights never needed that detection.
+        // Recovery correlations stay fail-closed until they can use real
+        // baseline-gated Recovery inputs; strain-derived recovery proxies would
+        // violate the honest-metrics tiering in docs/21.
         let grouped = Dictionary(grouping: sessions) { calendar.startOfDay(for: $0.start) }
         guard !grouped.isEmpty else {
             return BehaviorJournalEntry.Tag.allCases.map {
@@ -5905,11 +5908,9 @@ final class SessionStore: ObservableObject {
             }
         }
         let metricsByDay: [Date: InsightDayMetrics] = grouped.mapValues { daySessions in
-            let trimp = daySessions.reduce(0.0) { $0 + $1.trimp(rest: rest, max: maxHR) }
-            let recovery = max(0, 100 - Metrics.strain(fromTRIMP: trimp) * 4)
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
             let hrv = hrvs.isEmpty ? nil : Double(hrvs.reduce(0, +)) / Double(hrvs.count)
-            return InsightDayMetrics(recovery: recovery, hrv: hrv)
+            return InsightDayMetrics(recovery: nil, hrv: hrv)
         }
 
         return BehaviorJournalEntry.Tag.allCases.map { tag in
@@ -5921,8 +5922,8 @@ final class SessionStore: ObservableObject {
             let tagged = metricsByDay.filter { taggedDayKeys.contains($0.key) }.map(\.value)
             let untagged = metricsByDay.filter { !taggedDayKeys.contains($0.key) }.map(\.value)
 
-            let taggedRecovery = averageDoubleSnapshot(tagged.map(\.recovery))
-            let untaggedRecovery = averageDoubleSnapshot(untagged.map(\.recovery))
+            let taggedRecovery = averageDoubleSnapshot(tagged.compactMap(\.recovery))
+            let untaggedRecovery = averageDoubleSnapshot(untagged.compactMap(\.recovery))
             let taggedHRV = averageDoubleSnapshot(tagged.compactMap(\.hrv))
             let untaggedHRV = averageDoubleSnapshot(untagged.compactMap(\.hrv))
 
