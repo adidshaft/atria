@@ -716,6 +716,12 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
 }
 
 private struct AtriaResearchManeuverMarkerCard: View, Equatable {
+    private static let relativeMarkerFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
     let markers: [ResearchManeuverMarker]
     let correlationSummary: ResearchManeuverProbeCorrelationSummary
     let onMark: (ResearchManeuverMarker.Kind) -> Void
@@ -790,7 +796,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
 
     private var latestMarkerDetail: String? {
         guard let marker = markers.first else { return nil }
-        return RelativeDateTimeFormatter().localizedString(for: marker.timestamp, relativeTo: Date())
+        return Self.relativeMarkerFormatter.localizedString(for: marker.timestamp, relativeTo: Date())
     }
 
     private static let buttonColumns = [GridItem(.flexible()), GridItem(.flexible())]

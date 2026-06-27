@@ -1683,6 +1683,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaResearchManeuverMarkerCard(markers: store.researchManeuverMarkers",
             "correlationSummary: store.researchManeuverProbeCorrelationSummary",
             "private struct AtriaResearchManeuverMarkerCard: View, Equatable",
+            "private static let relativeMarkerFormatter: RelativeDateTimeFormatter",
+            "formatter.unitsStyle = .short",
             "AtriaPanelSectionHeader(title: \"Probe markers\", subtitle: \"\")",
             "ForEach(ResearchManeuverMarker.Kind.allCases)",
             ".atriaCardAction(prominent: false, tint: .teal)",
@@ -1690,9 +1692,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: markers.isEmpty ? .learning : .research",
             "state: correlationSummary.matchedMarkers > 0 ? .research : .learning",
             "Markers stay on device and help compare probe timing.",
+            "Self.relativeMarkerFormatter.localizedString(for: marker.timestamp, relativeTo: Date())",
         ]:
             assert_contains(self, collection, needle)
 
+        assert_not_contains(self, collection, "RelativeDateTimeFormatter().localizedString")
         assert_not_contains(
             self,
             collection,
