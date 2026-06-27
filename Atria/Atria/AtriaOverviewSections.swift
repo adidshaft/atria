@@ -55,6 +55,11 @@ struct AtriaOverviewTabContent: View {
 
     @State private var segment: AtriaTodaySegment = .today
 
+    private func openTrendsSegment() {
+        guard hasUnlockedSecondarySections else { return }
+        withAnimation(.snappy(duration: 0.22)) { segment = .trends }
+    }
+
     private var segmentPicker: some View {
         HStack(spacing: 6) {
             ForEach(AtriaTodaySegment.allCases) { item in
@@ -104,6 +109,7 @@ struct AtriaOverviewTabContent: View {
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                              onOpenVitals: onOpenVitals,
                                              onOpenCollection: onOpenCollection,
+                                             onOpenInsights: openTrendsSegment,
                                              onStartWorkout: onStartWorkout)
                     AtriaLoadingPanel(title: "Preparing saved insights",
                                       subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
@@ -128,6 +134,7 @@ struct AtriaOverviewTabContent: View {
                                                      onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                                      onOpenVitals: onOpenVitals,
                                                      onOpenCollection: onOpenCollection,
+                                                     onOpenInsights: openTrendsSegment,
                                                      onStartWorkout: onStartWorkout)
                         }
                         .frame(maxWidth: .infinity, alignment: .top)
@@ -161,6 +168,7 @@ struct AtriaOverviewTabContent: View {
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                              onOpenVitals: onOpenVitals,
                                              onOpenCollection: onOpenCollection,
+                                             onOpenInsights: openTrendsSegment,
                                              onStartWorkout: onStartWorkout)
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
@@ -393,6 +401,7 @@ private struct AtriaOverviewLeadingHost: View {
     let onDeleteAICoachAPIKey: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onOpenInsights: () -> Void
     let onStartWorkout: () -> Void
 
     var body: some View {
@@ -411,6 +420,7 @@ private struct AtriaOverviewLeadingHost: View {
                                    onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                    onOpenVitals: onOpenVitals,
                                    onOpenCollection: onOpenCollection,
+                                   onOpenInsights: onOpenInsights,
                                    onStartWorkout: onStartWorkout)
     }
 }
@@ -449,6 +459,7 @@ struct AtriaOverviewLeadingSection: View {
     let onDeleteAICoachAPIKey: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onOpenInsights: () -> Void
     let onStartWorkout: () -> Void
 
     var body: some View {
@@ -462,6 +473,7 @@ struct AtriaOverviewLeadingSection: View {
                                                  subtitle: "",
                                                  onOpenVitals: onOpenVitals,
                                                  onOpenCollection: onOpenCollection,
+                                                 onOpenInsights: onOpenInsights,
                                                  onStartWorkout: onStartWorkout)
 
                 // Simple one-line "what to do today" guidance. No AI coach, no
@@ -496,6 +508,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     let subtitle: String
     var onOpenVitals: () -> Void = {}
     var onOpenCollection: () -> Void = {}
+    var onOpenInsights: () -> Void = {}
     var onStartWorkout: () -> Void = {}
 
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
@@ -519,6 +532,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      onShiftMetric: shiftMetric,
                                      onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
+                                     onOpenInsights: onOpenInsights,
                                      onStartWorkout: onStartWorkout)
             .equatable()
             .sensoryFeedback(.selection, trigger: orderCSV)
@@ -667,6 +681,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onOpenInsights: () -> Void
     let onStartWorkout: () -> Void
 
     // Compare ONLY the values this card actually displays. The full `live` state
@@ -1011,14 +1026,17 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var insightsCard: some View {
         let topInsight = insights.first
-        return AtriaGlanceMetricCard(title: "Insights",
-                                     value: insights.isEmpty ? "--" : "\(insights.count)",
-                                     detail: topInsight?.tagLabel ?? (taggedDays > 0 ? "Learning patterns" : "Tag today"),
-                                     systemImage: AtriaTodayMetric.insights.systemImage,
-                                     tint: topInsight?.isPositive == false ? .red : .purple)
-            .accessibilityLabel(insights.isEmpty
-                                ? "Insights building from \(taggedDays) tagged days"
-                                : "\(insights.count) local insights ready")
+        return Button(action: onOpenInsights) {
+            AtriaGlanceMetricCard(title: "Insights",
+                                  value: insights.isEmpty ? "--" : "\(insights.count)",
+                                  detail: topInsight?.tagLabel ?? (taggedDays > 0 ? "Learning patterns" : "Tag today"),
+                                  systemImage: AtriaTodayMetric.insights.systemImage,
+                                  tint: topInsight?.isPositive == false ? .red : .purple)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(insights.isEmpty
+                            ? "Open Trends. Insights building from \(taggedDays) tagged days"
+                            : "Open Trends. \(insights.count) local insights ready")
     }
 
     private var hrvLearningState: AtriaMetricState {
