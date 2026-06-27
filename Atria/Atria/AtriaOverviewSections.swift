@@ -610,17 +610,31 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var isWideGlanceCard: Bool { glanceGridSize.isWide }
 
-    /// Persisted as a comma-separated list of HIDDEN raw values, so the default
-    /// (empty) shows everything.
+    /// Persisted as a comma-separated list of HIDDEN raw values. Empty storage is
+    /// the product default, which keeps research-only probes off the main Today
+    /// surface until the user explicitly enables them.
     static let storageKey = "atriaTodayHiddenMetrics"
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
+    static let noHiddenMetricsSentinel = "__atria_all_today_cards_visible__"
+
+    static var defaultHiddenMetrics: Set<String> {
+        let metrics: [AtriaTodayMetric] = [.respiratoryRate, .strapSteps, .bloodOxygen, .bodyTemp]
+        return Set(metrics.map(\.rawValue))
+    }
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
         [.recovery, .strain, .workout, .backfill, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
-        Set(csv.split(separator: ",").map(String.init))
+        let trimmed = csv.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return defaultHiddenMetrics }
+        if trimmed == noHiddenMetricsSentinel { return [] }
+        return Set(trimmed.split(separator: ",").map(String.init))
+    }
+
+    static func hiddenStorageValue(for hidden: Set<String>) -> String {
+        hidden.isEmpty ? noHiddenMetricsSentinel : hidden.sorted().joined(separator: ",")
     }
 
     static func ordered(from csv: String) -> [AtriaTodayMetric] {
