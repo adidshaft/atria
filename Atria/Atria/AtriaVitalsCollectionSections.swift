@@ -1505,7 +1505,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     state: .local,
                                     tint: .blue,
                                     footnote: snapshot.averageFootnoteText)
-                    AtriaMetricTile(label: "Sleep RHR",
+                    AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") RHR",
                                     value: snapshot.latest?.restingHRText ?? "--",
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
                                     state: snapshot.latest?.restingHR == nil ? .learning : .personalBaseline,
@@ -1515,18 +1515,18 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     state: snapshot.latest?.sleepEfficiency == nil ? .learning : .research,
                                     tint: .cyan,
                                     footnote: "Duration-based estimate")
-                    AtriaMetricTile(label: "Sleep HRV",
+                    AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") HRV",
                                     value: snapshot.latest?.hrvText ?? "--",
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
                                     tint: .purple,
-                                    footnote: "Sleep-only estimate")
-                    AtriaMetricTile(label: "Sleep resp",
+                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate")
+                    AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
                                     tint: .teal,
-                                    footnote: "Sleep-only estimate")
+                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate")
                 }
 
                 if chartNights.count > 1 {

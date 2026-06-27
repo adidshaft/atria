@@ -9404,6 +9404,10 @@ struct SleepHistorySnapshot: Equatable {
             isNapEvidence ? "Nap" : "Sleep"
         }
 
+        var evidenceOnlyFootnote: String {
+            isNapEvidence ? "Nap-only estimate" : "Sleep-only estimate"
+        }
+
         var confirmationText: String {
             if confirmed {
                 return isNapEvidence ? "Confirmed nap" : "Confirmed sleep"
