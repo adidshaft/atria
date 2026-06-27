@@ -217,6 +217,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))",
             "func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View",
             "self.buttonStyle(AtriaCardActionButtonStyle(prominent: prominent, tint: tint))",
+            "struct AtriaGlassIconButtonStyle: ButtonStyle",
+            "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View",
+            "self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))",
         ]:
             assert_contains(self, text, needle)
 
@@ -229,6 +232,14 @@ class HandoffStaticChecks(unittest.TestCase):
         for scroll_surface in [overview, vitals, settings]:
             assert_not_contains(self, scroll_surface, "GlassEffectContainer")
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
+        shared_chrome = source(ROOT / "Atria" / "Atria" / "AtriaSharedChrome.swift")
+        icon_style = re.search(
+            r"struct AtriaGlassIconButtonStyle: ButtonStyle \{(?P<body>.*?)\n\}",
+            shared_chrome,
+            re.S,
+        )
+        self.assertIsNotNone(icon_style)
+        self.assertNotIn(".glassEffect(", icon_style.group("body"))
         assert_not_contains(self, text, "Tab(\"Today\"")
         assert_not_contains(self, text, "Tab(\"Vitals\"")
         assert_not_contains(self, text, "Tab(\"Data\"")

@@ -92,7 +92,14 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(foreground)
             .frame(width: size, height: size)
-            .glassEffect(.regular.tint(tint.opacity(colorScheme == .light ? 0.16 : 0.24)).interactive(), in: .circle)
+            .background {
+                Circle()
+                    .fill(fill)
+                    .overlay {
+                        Circle()
+                            .stroke(stroke, lineWidth: 1)
+                    }
+            }
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.snappy(duration: 0.12), value: configuration.isPressed)
@@ -100,6 +107,19 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         tint == .secondary ? .secondary : tint
+    }
+
+    private var fill: AnyShapeStyle {
+        AnyShapeStyle(
+            LinearGradient(colors: [
+                colorScheme == .dark ? Color.white.opacity(0.075) : Color.white.opacity(0.72),
+                colorScheme == .dark ? tint.opacity(0.18) : tint.opacity(0.10)
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+    }
+
+    private var stroke: Color {
+        colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.10)
     }
 }
 
