@@ -1468,9 +1468,20 @@ class HandoffStaticChecks(unittest.TestCase):
             "let sleepEfficiency: Double?",
             "var sleepEfficiencyText: String",
             "var isNapEvidence: Bool",
-            'if source == "manual_nap" { return true }',
-            'if source == "manual_sleep" { return false }',
-            'source == "nap_candidate"',
+            "if Self.explicitNapSources.contains(source) { return true }",
+            "if Self.explicitSleepSources.contains(source) { return false }",
+            "return !confirmed && duration <= AggregateSleepCandidate.napMaximumSpan",
+            "private static let explicitNapSources: Set<String>",
+            "\"manual_nap\"",
+            "\"nap_candidate\"",
+            "\"hr_only_nap\"",
+            "private static let explicitSleepSources: Set<String>",
+            "\"manual_sleep\"",
+            "\"validated_sleep_window\"",
+            "\"overnight_sleep\"",
+            "\"sleep_candidate\"",
+            "\"single_session_sleep_candidate\"",
+            "\"incomplete_fragmented_sleep\"",
             'var evidenceLabel: String',
             'isNapEvidence ? "Nap" : "Sleep"',
             'var evidenceOnlyFootnote: String',
@@ -2823,19 +2834,41 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "case personalBaseline = \"personal baseline\"",
-            "external reference validation upgrades the confidence tier",
+            "with resting-HR z-score and saved sleep evidence",
+            "external reference validation upgrades the",
             "but does not block in-app display",
+            "sleepEfficiency: Double? = nil",
+            "sleepDurationHours: Double? = nil",
+            "guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,",
+            "detail: \"learning: need saved sleep\"",
+            "0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ",
+            "Sleep z %.1f",
+            "private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double?",
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
             assert_contains(self, text, needle)
 
         for needle in [
             "let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD",
+            "let latestSleep = store.sleepHistorySnapshot.latest",
             "fallbackRMSSD: fallbackHRV",
             "hrvReferenceValidated: validatedHRV != nil",
+            "sleepEfficiency: latestSleep?.sleepEfficiency",
+            "sleepDurationHours: latestSleep?.durationHours",
             "hrvState = recovery.confidence == .validated ? \"validated\" : \"personal_baseline\"",
         ]:
             assert_contains(self, widget, needle)
+
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        notifications = source(ROOT / "Atria" / "Atria" / "LocalNotificationScheduler.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        assert_contains(self, home, "sleepEfficiency: latestSleep?.sleepEfficiency")
+        assert_contains(self, home, "sleepDurationHours: latestSleep?.durationHours")
+        assert_contains(self, notifications, "sleepEfficiency: latestSleep?.sleepEfficiency")
+        assert_contains(self, notifications, "sleepDurationHours: latestSleep?.durationHours")
+        assert_contains(self, sessions, "private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double?")
+        assert_contains(self, sessions, "sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,")
+        assert_contains(self, sessions, "sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 }")
 
         for needle in [
             "private var recoveryState: AtriaMetricState",

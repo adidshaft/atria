@@ -2617,12 +2617,18 @@ final class SessionStore: ObservableObject {
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
-            let recoveries = recent.compactMap {
-                Metrics.recoveryV2(hrvSnapshot: nil,
-                                   fallbackRMSSD: $0.localRMSSD,
-                                   restingNow: $0.restingStable,
-                                   baseline: baseline,
-                                   hrvReferenceValidated: $0.hrvReferenceValidated == true).percent
+            let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (calendar.startOfDay(for: $0.day), $0) })
+            let recoveries: [Int] = recent.compactMap { session in
+                let sleepRollup = rollupsByDay[calendar.startOfDay(for: session.start)]
+                let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
+                                                  fallbackRMSSD: session.localRMSSD,
+                                                  restingNow: session.restingStable,
+                                                  baseline: baseline,
+                                                  hrvReferenceValidated: session.hrvReferenceValidated == true,
+                                                  sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
+                                                                                        span: sleepRollup?.sleepSpan),
+                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 })
+                return recovery.percent
             }
             let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
             let hrvState = hrvs.isEmpty
@@ -2667,6 +2673,13 @@ final class SessionStore: ObservableObject {
     private nonisolated static func averageIntSnapshot(_ values: [Int]) -> Int? {
         guard !values.isEmpty else { return nil }
         return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
+    }
+
+    private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
+        guard let duration, duration > 0 else { return nil }
+        let denominator = max(span ?? duration, duration)
+        guard denominator > 0 else { return nil }
+        return min(max(duration / denominator, 0), 1)
     }
 
     private nonisolated static func trendRequiredCoverageDaysSnapshot(windowDays: Int) -> Int {
@@ -7220,12 +7233,17 @@ final class SessionStore: ObservableObject {
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
-            let recoveries = recent.compactMap {
+            let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (Calendar.current.startOfDay(for: $0.day), $0) })
+            let recoveries: [Int] = recent.compactMap { session in
+                let sleepRollup = rollupsByDay[Calendar.current.startOfDay(for: session.start)]
                 let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                                  fallbackRMSSD: $0.localRMSSD,
-                                                  restingNow: $0.restingStable,
+                                                  fallbackRMSSD: session.localRMSSD,
+                                                  restingNow: session.restingStable,
                                                   baseline: baseline,
-                                                  hrvReferenceValidated: $0.hrvReferenceValidated == true)
+                                                  hrvReferenceValidated: session.hrvReferenceValidated == true,
+                                                  sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
+                                                                                        span: sleepRollup?.sleepSpan),
+                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 })
                 return recovery.percent
             }
 
@@ -7393,12 +7411,15 @@ final class SessionStore: ObservableObject {
         let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
         let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
         let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let latestSleep = sleepHistorySnapshot.latest
         let recoveries = recent.compactMap {
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
                                               fallbackRMSSD: $0.localRMSSD,
                                               restingNow: $0.restingStable,
                                               baseline: baseline,
-                                              hrvReferenceValidated: $0.hrvReferenceValidated == true)
+                                              hrvReferenceValidated: $0.hrvReferenceValidated == true,
+                                              sleepEfficiency: latestSleep?.sleepEfficiency,
+                                              sleepDurationHours: latestSleep?.durationHours)
             return recovery.percent
         }
         let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
@@ -10007,9 +10028,9 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         var isNapEvidence: Bool {
-            if source == "manual_nap" { return true }
-            if source == "manual_sleep" { return false }
-            return source == "nap_candidate" || (!confirmed && duration <= AggregateSleepCandidate.napMaximumSpan)
+            if Self.explicitNapSources.contains(source) { return true }
+            if Self.explicitSleepSources.contains(source) { return false }
+            return !confirmed && duration <= AggregateSleepCandidate.napMaximumSpan
         }
 
         var evidenceLabel: String {
@@ -10063,6 +10084,21 @@ struct SleepHistorySnapshot: Equatable {
                                          stage: item.0)
             }
         }
+
+        private static let explicitNapSources: Set<String> = [
+            "manual_nap",
+            "nap_candidate",
+            "hr_only_nap"
+        ]
+
+        private static let explicitSleepSources: Set<String> = [
+            "manual_sleep",
+            "validated_sleep_window",
+            "overnight_sleep",
+            "sleep_candidate",
+            "single_session_sleep_candidate",
+            "incomplete_fragmented_sleep"
+        ]
     }
 
     let nights: [Night]

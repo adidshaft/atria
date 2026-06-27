@@ -176,11 +176,14 @@ enum LocalNotificationScheduler {
     private static func makeMetricDecisions(store: SessionStore,
                                             ble: AtriaBLEManager) -> [NotificationDecision] {
         let validatedHRV = store.latestReferenceValidatedHRV
+        let latestSleep = store.sleepHistorySnapshot.latest
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
                                           fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
                                           baseline: store.baseline,
-                                          hrvReferenceValidated: validatedHRV != nil)
+                                          hrvReferenceValidated: validatedHRV != nil,
+                                          sleepEfficiency: latestSleep?.sleepEfficiency,
+                                          sleepDurationHours: latestSleep?.durationHours)
         let recoveryDecision: NotificationDecision
         if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(
