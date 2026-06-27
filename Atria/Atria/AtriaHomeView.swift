@@ -1203,21 +1203,18 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     .minimumScaleFactor(0.82)
                     .frame(minWidth: protectsLiveStream ? 76 : 48)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.small)
+            .atriaCardAction(tint: .cyan)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 34, height: 34)
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityLabel("Dismiss missed data banner")
         }
         .padding(12)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+        .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .contain)
     }
 }
@@ -3220,14 +3217,13 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
 
             Button(action: onHelp) {
                 Image(systemName: "questionmark.circle")
-                    .frame(width: 34, height: 34)
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .atriaCardAction(prominent: false, tint: diagnosis.tint)
             .accessibilityLabel("Connection help")
         }
         .padding(12)
-        .glassEffect(.regular.tint(diagnosis.tint.opacity(0.10)).interactive(), in: .rect(cornerRadius: 18))
+        .atriaInsetCard(tint: diagnosis.tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(diagnosis.title). \(diagnosis.action)")
     }
