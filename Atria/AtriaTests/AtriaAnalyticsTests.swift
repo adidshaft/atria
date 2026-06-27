@@ -164,11 +164,132 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(balanced.targetBand)
     }
 
+    func testHistoricalArchiveStatusFailsClosedUntilArchiveIsParseable() {
+        let parseFailed = SessionStore.HistoricalArchiveStatus(exists: true,
+                                                               parseOK: false,
+                                                               rows: 12,
+                                                               metricUsableRows: 4,
+                                                               currentSessionUsableRows: 4,
+                                                               reason: "invalid_jsonl_row_12")
+        XCTAssertFalse(parseFailed.metricReady)
+        XCTAssertEqual(parseFailed.valueText, "Repair")
+        XCTAssertEqual(parseFailed.metricGateText, "Metric gated")
+        XCTAssertEqual(parseFailed.userFootnoteText, "Archive needs repair.")
+
+        let gated = SessionStore.HistoricalArchiveStatus(exists: true,
+                                                         parseOK: true,
+                                                         rows: 12,
+                                                         metricUsableRows: 0,
+                                                         currentSessionUsableRows: 8,
+                                                         reason: "ok")
+        XCTAssertFalse(gated.metricReady)
+        XCTAssertEqual(gated.valueText, "Gated")
+        XCTAssertEqual(gated.metricGateText, "Metric gated")
+        XCTAssertTrue(gated.userFootnoteText.contains("HRV, Recovery and Sleep stay gated"))
+
+        let ready = SessionStore.HistoricalArchiveStatus(exists: true,
+                                                         parseOK: true,
+                                                         rows: 12,
+                                                         metricUsableRows: 3,
+                                                         currentSessionUsableRows: 3,
+                                                         reason: "ok")
+        XCTAssertTrue(ready.metricReady)
+        XCTAssertEqual(ready.valueText, "Ready")
+        XCTAssertEqual(ready.metricGateText, "Metric-ready")
+    }
+
+    func testHistoricalArchiveDiagnosticsCountRowsWithoutPromotingMetrics() throws {
+        try withCleanHistoricalArchive {
+            let payload = historicalPayloadWithGravity(x: 0, y: 0, z: 1)
+            let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
+                                                  capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                                                  source: "0x2f",
+                                                  layoutVersion: HistoricalArchive.layoutVersion,
+                                                  sequence: 7,
+                                                  command: 0x16,
+                                                  unix7: 1_800_000_000,
+                                                  subsec11: 0,
+                                                  flash13: 42,
+                                                  payloadLength: payload.count,
+                                                  whoofHR17: 61,
+                                                  whoofRRNum18: 2,
+                                                  whoofRR19: [980, 1_010],
+                                                  kRR64: [980, 1_010],
+                                                  gravityX36: 0,
+                                                  gravityY40: 0,
+                                                  gravityZ44: 1,
+                                                  gravityMagnitude: 1,
+                                                  gravityValidated: true,
+                                                  candidateRR: ["whoof19", "k64"],
+                                                  rawPayloadHex: HistoricalArchive.hex(payload),
+                                                  clockDeviceRef: 1_800_000_000,
+                                                  clockWallRef: 1_800_000_000,
+                                                  clockDriftSeconds: 0,
+                                                  clockCorrectedUnix7: 1_800_000_000,
+                                                  clockCorrectionStatus: "corrected",
+                                                  currentSessionUsable: true,
+                                                  metricUsable: false,
+                                                  usabilityReason: "provisional_historical_layout_old_or_unvalidated")
+
+            _ = try HistoricalArchive.append(record)
+
+            let diagnostics = HistoricalArchive.diagnostics()
+            XCTAssertTrue(diagnostics.exists)
+            XCTAssertTrue(diagnostics.parseOK)
+            XCTAssertEqual(diagnostics.rows, 1)
+            XCTAssertEqual(diagnostics.rawPayloadRows, 1)
+            XCTAssertEqual(diagnostics.gravityRows, 1)
+            XCTAssertEqual(diagnostics.gravityValidatedRows, 1)
+            XCTAssertEqual(diagnostics.currentSessionUsableRows, 1)
+            XCTAssertEqual(diagnostics.metricUsableRows, 0)
+            XCTAssertEqual(diagnostics.reason, "ok")
+
+            let status = SessionStore.HistoricalArchiveStatus(diagnostics: diagnostics)
+            XCTAssertEqual(status.valueText, "Gated")
+            XCTAssertFalse(status.metricReady)
+        }
+    }
+
     private func baselineSamples(count: Int, now: Date) -> [PersonalBaseline.BaselineSample] {
         (0..<count).map { index in
             PersonalBaseline.BaselineSample(date: now.addingTimeInterval(Double(-index * 86_400)),
                                             restingHR: [58.0, 60.0, 62.0][index % 3],
                                             rmssd: [48.0, 52.0, 56.0][index % 3])
         }
+    }
+
+    private func withCleanHistoricalArchive(_ body: () throws -> Void) throws {
+        let fileManager = FileManager.default
+        let url = HistoricalArchive.fileURL
+        let directory = url.deletingLastPathComponent()
+        let existing = try? Data(contentsOf: url)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: url)
+            if let existing {
+                try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try? existing.write(to: url, options: .atomic)
+            }
+        }
+        try body()
+    }
+
+    private func historicalPayloadWithGravity(x: Float, y: Float, z: Float) -> [UInt8] {
+        var payload = Array(repeating: UInt8(0), count: 80)
+        writeFloat32LE(x, into: &payload, at: 36)
+        writeFloat32LE(y, into: &payload, at: 40)
+        writeFloat32LE(z, into: &payload, at: 44)
+        return payload
+    }
+
+    private func writeFloat32LE(_ value: Float, into payload: inout [UInt8], at offset: Int) {
+        let raw = value.bitPattern
+        payload[offset] = UInt8(raw & 0xff)
+        payload[offset + 1] = UInt8((raw >> 8) & 0xff)
+        payload[offset + 2] = UInt8((raw >> 16) & 0xff)
+        payload[offset + 3] = UInt8((raw >> 24) & 0xff)
     }
 }

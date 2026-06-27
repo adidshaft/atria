@@ -2535,7 +2535,7 @@ final class SessionStore: ObservableObject {
         }
 
         var metricReady: Bool {
-            metricUsableRows > 0 && currentSessionUsableRows > 0
+            hasArchiveRows && metricUsableRows > 0 && currentSessionUsableRows > 0
         }
 
         var hasArchiveRows: Bool {
