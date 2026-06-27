@@ -297,6 +297,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let heartRateMeasure   = CBUUID(string: "2A37")
         static let batteryService     = CBUUID(string: "180F")
         static let batteryLevel       = CBUUID(string: "2A19")
+        static let batteryLevelStatus = CBUUID(string: "2A1B")
         static let deviceInfoService  = CBUUID(string: "180A")
         static let manufacturerName   = CBUUID(string: "2A29")
         static let modelNumber        = CBUUID(string: "2A24")
@@ -1043,7 +1044,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case UUIDs.heartRateService:
             return [UUIDs.heartRateMeasure]
         case UUIDs.batteryService:
-            return [UUIDs.batteryLevel]
+            return [UUIDs.batteryLevel, UUIDs.batteryLevelStatus]
         case UUIDs.deviceInfoService:
             return [UUIDs.manufacturerName, UUIDs.modelNumber,
                     UUIDs.firmwareRevision, UUIDs.hardwareRevision]
@@ -1052,6 +1053,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         default:
             return nil
         }
+    }
+
+    private nonisolated static func parseBatteryChargeStatus(_ data: Data) -> BatteryChargeStatus? {
+        let bytes = [UInt8](data)
+        guard let powerState = batteryPowerStateByte(fromBatteryLevelStatus: bytes) else { return nil }
+        let wiredExternalPower = (powerState >> 2) & 0x03
+        let wirelessExternalPower = (powerState >> 4) & 0x03
+        let chargeState = (powerState >> 6) & 0x03
+        if chargeState == 0x03 { return .charging }
+        if chargeState == 0x02 { return .notCharging }
+        if wiredExternalPower == 0x03 || wirelessExternalPower == 0x03 { return .charging }
+        if wiredExternalPower == 0x02 && wirelessExternalPower == 0x02 { return .notCharging }
+        return nil
+    }
+
+    private nonisolated static func batteryPowerStateByte(fromBatteryLevelStatus bytes: [UInt8]) -> UInt8? {
+        guard let flags = bytes.first else { return nil }
+        if bytes.count >= 3 { return bytes[2] }
+        if bytes.count == 2, flags & 0x01 == 0 { return bytes[1] }
+        return nil
     }
 
     private struct HistoryClockRef {
@@ -9232,9 +9253,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         var requestedCustomNotifyCount = 0
         for ch in service.characteristics ?? [] {
             switch ch.uuid {
-            case UUIDs.heartRateMeasure, UUIDs.batteryLevel:
-                peripheral.setNotifyValue(true, for: ch)
-                if ch.uuid == UUIDs.batteryLevel { peripheral.readValue(for: ch) }
+            case UUIDs.heartRateMeasure, UUIDs.batteryLevel, UUIDs.batteryLevelStatus:
+                if ch.properties.contains(.notify) || ch.properties.contains(.indicate) {
+                    peripheral.setNotifyValue(true, for: ch)
+                }
+                if ch.uuid == UUIDs.batteryLevel || ch.uuid == UUIDs.batteryLevelStatus {
+                    peripheral.readValue(for: ch)
+                }
                 if ch.uuid == UUIDs.heartRateMeasure {
                     foundHeartRateCharacteristic = ch
                 }
@@ -9364,6 +9389,23 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 persistBatteryLevel(batteryLevel, source: "live_2A19")
                 AtriaDebugLog("ATRIADBG battery level=%d source=2A19 bytes=%@ persisted=1",
                       batteryLevel,
+                      Self.hex([UInt8](data)))
+            }
+            return
+        }
+        if uuid == UUIDs.batteryLevelStatus {
+            Task { @MainActor in
+                self.lastGattActivityAt = Date()
+                if central.state == .poweredOn, peripheral.state == .connected, self.status != .connected {
+                    self.recomputeConnectionStatus(reason: "event")
+                }
+                if let parsedStatus = Self.parseBatteryChargeStatus(data) {
+                    let status: BatteryChargeStatus = batteryLevel >= 100 && parsedStatus == .charging ? .full : parsedStatus
+                    assignIfChanged(\.batteryIsCharging, status == .charging)
+                    assignIfChanged(\.batteryChargeStatus, status)
+                }
+                AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=%@ bytes=%@",
+                      self.batteryChargeStatus.rawValue,
                       Self.hex([UInt8](data)))
             }
             return
