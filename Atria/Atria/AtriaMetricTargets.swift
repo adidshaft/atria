@@ -88,63 +88,17 @@ struct AtriaMetricZone: Equatable {
 
 extension Metrics {
     static func recoveryZone(_ pct: Int?, target: AtriaMetricTarget = .recoveryRecommended) -> AtriaMetricZone? {
-        guard let pct else { return nil }
-        let level: AtriaMetricZoneLevel
-        if Double(pct) >= target.greenLower {
-            level = .green
-        } else if Double(pct) >= target.yellowLower {
-            level = .yellow
-        } else {
-            level = .red
-        }
-
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Recovery is inside your target zone. Match training load to how you feel."
-        case .yellow:
-            recommendation = "Low recovery -- keep today light, hydrate, and get to bed earlier."
-        case .red:
-            recommendation = "Very low recovery -- prioritize rest, hydration, and an easy day."
-        }
-
-        return AtriaMetricZone(level: level,
-                               title: "Recovery target",
-                               current: "\(pct)% recovery is \(level.label.lowercased()).",
-                               targetSummary: target.summaryText,
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        AtriaAnalytics.TargetZones.recovery(pct, target: target)
     }
 
     static func strainZone(strain: Double,
                            target: Double?,
                            greenBand: Double = 1.5,
                            yellowBand: Double = 3.0) -> AtriaMetricZone? {
-        guard let target else { return nil }
-        let delta = strain - target
-        let absDelta = abs(delta)
-        let safeGreenBand = min(max(greenBand, 0.5), 5.0)
-        let safeYellowBand = min(max(yellowBand, safeGreenBand + 0.5), 8.0)
-        let level: AtriaMetricZoneLevel = absDelta <= safeGreenBand ? .green : (absDelta <= safeYellowBand ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Strain is inside today's recovery-scaled target band."
-        case .yellow where delta > 0:
-            recommendation = "You're past today's suggested strain for your recovery -- ease off to protect tomorrow."
-        case .red where delta > 0:
-            recommendation = "You're far past today's suggested strain. Keep the rest of the day light."
-        case .yellow:
-            recommendation = "Room to add load if you feel good."
-        case .red:
-            recommendation = "Well under today's target. Add easy movement or training only if it fits how you feel."
-        }
-        return AtriaMetricZone(level: level,
-                               title: "Strain target",
-                               current: String(format: "Strain %.1f vs target %.1f.", strain, target),
-                               targetSummary: String(format: "Green within +/-%.1f, yellow within +/-%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        AtriaAnalytics.TargetZones.strain(strain: strain,
+                                          target: target,
+                                          greenBand: greenBand,
+                                          yellowBand: yellowBand)
     }
 
     static func hrvZone(_ rmssd: Int?,

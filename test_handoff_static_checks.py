@@ -4173,6 +4173,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_recovery_target_zone_first_slice_is_user_visible(self):
         targets = source(ROOT / "Atria" / "Atria" / "AtriaMetricTargets.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
@@ -4189,12 +4190,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func strainZone(strain: Double,",
             "greenBand: Double = 1.5",
             "yellowBand: Double = 3.0",
-            "safeGreenBand",
-            "safeYellowBand",
-            "absDelta <= safeGreenBand",
-            "absDelta <= safeYellowBand",
-            "Strain is inside today's recovery-scaled target band.",
-            "You're past today's suggested strain for your recovery -- ease off to protect tomorrow.",
+            "AtriaAnalytics.TargetZones.recovery(pct, target: target)",
+            "AtriaAnalytics.TargetZones.strain(strain: strain,",
+            "target: target,",
+            "greenBand: greenBand,",
+            "yellowBand: yellowBand)",
             "static func hrvZone(_ rmssd: Int?,",
             "greenRatio: Double = 0.95",
             "yellowRatio: Double = 0.85",
@@ -4247,7 +4247,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research relative sleep-only deviation; not an absolute temperature.",
             "exclamationmark.circle",
             "exclamationmark.triangle.fill",
-            "Low recovery -- keep today light, hydrate, and get to bed earlier.",
             "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load.",
             "Resting HR is up vs your norm",
             "Restless night -- cut late caffeine or alcohol",
@@ -4256,6 +4255,23 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct AtriaMetricZoneInfoSheet: View",
         ]:
             assert_contains(self, targets, needle)
+
+        for needle in [
+            "enum TargetZones",
+            "static func recovery(_ pct: Int?,",
+            "target: AtriaMetricTarget = .recoveryRecommended",
+            "Double(pct) >= target.greenLower",
+            "Double(pct) >= target.yellowLower",
+            "Low recovery -- keep today light, hydrate, and get to bed earlier.",
+            "static func strain(strain: Double,",
+            "safeGreenBand",
+            "safeYellowBand",
+            "absDelta <= safeGreenBand",
+            "absDelta <= safeYellowBand",
+            "Strain is inside today's recovery-scaled target band.",
+            "You're past today's suggested strain for your recovery -- ease off to protect tomorrow.",
+        ]:
+            assert_contains(self, analytics, needle)
 
         for needle in [
             "var zone: AtriaMetricZone? = nil",
