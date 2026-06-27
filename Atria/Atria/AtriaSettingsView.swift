@@ -30,6 +30,7 @@ struct AtriaSettingsView: View {
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
     @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
     @AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
+    @AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -311,6 +312,7 @@ struct AtriaSettingsView: View {
     private func resetTodayLayout() {
         todayOrderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
         todayHiddenCSV = ""
+        todaySizeCSV = ""
     }
 
     private var todayLayoutSection: some View {
@@ -357,7 +359,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Today screen")
         } footer: {
-            Text("Choose and reorder the cards shown at a glance.")
+            Text("Choose, reorder, and reset the cards shown at a glance.")
         }
     }
 

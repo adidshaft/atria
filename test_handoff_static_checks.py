@@ -772,6 +772,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
+            "@AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = \"\"",
             "ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV))",
             "private func canHideTodayMetric(_ metric: AtriaTodayMetric,",
             "AtriaTodayMetric.defaultGlanceOrder.filter { !activeHidden.contains($0.rawValue) }.count > 1",
@@ -779,11 +780,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func resetTodayLayout()",
             "todayOrderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\\.rawValue).joined(separator: \",\")",
             "todayHiddenCSV = \"\"",
+            "todaySizeCSV = \"\"",
             "todayHiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)",
             "Label(\"Reset Today layout\", systemImage: \"arrow.counterclockwise\")",
             "AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)",
             "AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)",
-            "Choose and reorder the cards shown at a glance.",
+            "Choose, reorder, and reset the cards shown at a glance.",
         ]:
             assert_contains(self, settings, needle)
         assert_not_contains(self, overview, "AtriaInsightsCardHost(store: store)")
