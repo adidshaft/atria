@@ -2268,7 +2268,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            return "\(rows) saved locally"
+            return "\(rows) saved · metric gated"
         }
 
         var userFootnoteText: String {
