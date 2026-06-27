@@ -193,6 +193,36 @@ staging, Readiness/ACWR, and Target zones — all already specced here, so build
 Parts B/D to the methods above puts Atria at or beyond parity. NOOP's protocol is
 private, so Atria's RR-stream (§B-RR) must be solved with our own reverse-engineering.
 
+### B-ADOPT — objectively-better engineering from NOOP (build these into Atria)
+Beyond the formulas, these NOOP choices are objectively cleaner/stronger — adopt them
+(re-implement from the public methods; do NOT copy NOOP's source — respect its license):
+1. **A pure, unit-tested analytics module.** NOOP isolates ALL scoring in
+   `StrandAnalytics` (zero BLE/UI deps) with **calibration tests per metric**
+   (RecoveryCalibration, SleepStager, StrainScorer, HRV, SkinTemp, RespRateRsa,
+   StepsDaily, DayCalories…). Extract Atria's metric math out of `Sessions.swift`
+   into an `AtriaAnalytics` Swift package/target with deterministic unit + calibration
+   tests (fixed RR/HR fixtures → asserted scores). This is what makes "honest metrics"
+   actually verifiable and regression-proof — Atria's biggest structural gap.
+2. **One rigorous personal-baseline engine.** NOOP's `Baselines.foldHistory` builds a
+   per-metric baseline (mean + spread), marks it **trusted only after ≥14 valid nights
+   and not stale**, and scores via **z-score deviation**. Make EVERY personal feature
+   (Recovery, Part-D vital bands, Readiness, Bio Age, "(i)" coaching) read from this
+   ONE engine; until trusted, fall back to population ranges — never a red alert on
+   thin data. (Atria has a baseline but no trust/staleness/z model.)
+3. **ReadinessEngine with training-load science.** Add **ACWR** (acute 7-day : chronic
+   28-day strain — the injury/overtraining ratio) and **monotony**, surfaced as
+   primed/balanced/strained/rundown with per-signal good/neutral/watch/bad flags and a
+   one-line plain-English read each. Atria has nothing here today; it's the single
+   biggest "coach" upgrade and feeds Recovery + the Part-D "(i)" sheets.
+4. **Respiratory rate from RSA.** Derive resp rate from respiratory sinus arrhythmia in
+   the sleep RR series (NOOP's `RespRateRsa`) — concrete, validated, sleep-only.
+5. **Premium visualizations.** Adopt equivalents of NOOP's `Hypnogram` (sleep-stage
+   chart), `RecoveryRing`, `StrainGauge`, and `YearHeatStrip` (a GitHub-style year
+   heatmap of a metric) — they read "premium," are cheap to draw, and differentiate.
+6. **Tested, pure daily aggregations.** `StepsDaily` / `DayCalories` / `HRZones` are
+   tiny pure tested functions — mirror that for Atria's day rollups so they live in
+   `AtriaAnalytics` (tested) and are never recomputed ad-hoc in a `body` (no-lag rule).
+
 ### B-RR — the gating dependency (do this first; it unblocks HRV/Recovery/Sleep)
 On-device finding: in low-radio mode the strap sends ~1 Hz HR but **zero RR** at
 rest; RR flowed at HR ~108 (activity) and shows `rr_quality state=poor_contact` when
