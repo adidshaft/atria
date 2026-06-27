@@ -1474,6 +1474,7 @@ final class AtriaHomeModel {
         var batteryLevel: Int
         var batteryIsCharging: Bool
         var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
+        var batteryRecentlyDropping: Bool
         var rrContinuityState: String
         var sessionSampleCount: Int
         var liveTRIMP: Double
@@ -1995,6 +1996,7 @@ final class AtriaHomeModel {
             ble.$bluetoothPermissionDenied.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryChargeStatus.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryRecentlyDropping.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -2341,6 +2343,7 @@ final class AtriaHomeModel {
                              batteryLevel: ble.batteryLevel,
                              batteryIsCharging: ble.batteryIsCharging,
                              batteryChargeStatus: ble.batteryChargeStatus,
+                             batteryRecentlyDropping: ble.batteryRecentlyDropping,
                              rrContinuityState: ble.rrContinuityState,
                              sessionSampleCount: liveSessionDerived.sampleCount,
                              liveTRIMP: liveSessionDerived.trimp,
@@ -3269,7 +3272,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Heart rate is live. Keep wearing normally while HRV settles.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .green)
-        case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && !live.batteryIsCharging:
+        case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && live.batteryRecentlyDropping && !live.batteryIsCharging:
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
                                             systemImage: "battery.25percent",

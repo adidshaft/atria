@@ -389,6 +389,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// that limitation.
     @Published var batteryIsCharging: Bool = false
     @Published var batteryChargeStatus: BatteryChargeStatus = .levelOnly
+    @Published private(set) var batteryRecentlyDropping: Bool = false
     @Published private(set) var phoneStepsToday: Int = 0
     @Published private(set) var phoneDistanceTodayMeters: Double?
     @Published private(set) var phoneFloorsToday: Int?
@@ -666,6 +667,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let source = "atria.battery.source"
         static let chargeStatus = "atria.battery.chargeStatus"
         static let chargeAt = "atria.battery.chargeAt"
+        static let previousLevel = "atria.battery.previousLevel"
+        static let previousAt = "atria.battery.previousAt"
+        static let dropAt = "atria.battery.dropAt"
+        static let dropDelta = "atria.battery.dropDelta"
     }
     private struct WorkoutCaptureEvidence {
         let diagnosis: String
@@ -1211,6 +1216,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         batteryLevel = cached.level
         batteryChargeStatus = cached.chargeStatus
         batteryIsCharging = cached.chargeStatus == .charging
+        batteryRecentlyDropping = Self.cachedBatteryDrop().recent
     }
 
     private func resetProductionCaptureDefaultsForDebug() {
@@ -2026,11 +2032,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return (level, source, age, chargeStatus, chargeAge, level >= 0 && age >= 0 && age <= maxAge && chargeFresh)
     }
 
+    static func cachedBatteryDrop(maxAge: TimeInterval = 6 * 60 * 60) -> (recent: Bool, delta: Int, age: TimeInterval) {
+        let defaults = UserDefaults.standard
+        let delta = defaults.object(forKey: BatteryDefaults.dropDelta) as? Int ?? 0
+        let at = defaults.object(forKey: BatteryDefaults.dropAt) as? Double
+        let age = at.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
+        return (delta > 0 && age >= 0 && age <= maxAge, delta, age)
+    }
+
     static func batteryEvidence() -> String {
         let battery = cachedBattery()
+        let drop = cachedBatteryDrop()
         let ageText = battery.age >= 0 ? String(format: "%.0f", battery.age) : "learning"
         let chargeAgeText = battery.chargeAge >= 0 ? String(format: "%.0f", battery.chargeAge) : "learning"
-        return "battery_level=\(battery.level); battery_source=\(battery.source); battery_age_s=\(ageText); battery_charge_status=\(battery.chargeStatus.rawValue); battery_charge_age_s=\(chargeAgeText); battery_usable=\(battery.usable ? 1 : 0)"
+        let dropAgeText = drop.age >= 0 ? String(format: "%.0f", drop.age) : "learning"
+        return "battery_level=\(battery.level); battery_source=\(battery.source); battery_age_s=\(ageText); battery_charge_status=\(battery.chargeStatus.rawValue); battery_charge_age_s=\(chargeAgeText); battery_usable=\(battery.usable ? 1 : 0); battery_drop_recent=\(drop.recent ? 1 : 0); battery_drop_delta=\(drop.delta); battery_drop_age_s=\(dropAgeText)"
     }
 
     private static func currentSampleStatusAndReason() -> (status: String, reason: String) {
@@ -9402,15 +9418,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     if newLevel >= 100 {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .full)
+                        assignIfChanged(\.batteryRecentlyDropping, false)
+                        clearBatteryDropMarker()
                     } else if delta > 0 && delta <= 5 {
                         assignIfChanged(\.batteryIsCharging, true)
                         assignIfChanged(\.batteryChargeStatus, .charging)
+                        assignIfChanged(\.batteryRecentlyDropping, false)
+                        clearBatteryDropMarker()
                     } else if delta < 0 {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .notCharging)
+                        assignIfChanged(\.batteryRecentlyDropping, true)
                     }
                 } else if newLevel >= 100 {
                     assignIfChanged(\.batteryChargeStatus, .full)
+                    assignIfChanged(\.batteryRecentlyDropping, false)
+                    clearBatteryDropMarker()
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19", chargeStatus: batteryChargeStatus)
@@ -9430,6 +9453,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     let status: BatteryChargeStatus = batteryLevel >= 100 && parsedStatus == .charging ? .full : parsedStatus
                     assignIfChanged(\.batteryIsCharging, status == .charging)
                     assignIfChanged(\.batteryChargeStatus, status)
+                    if status == .charging || status == .full {
+                        assignIfChanged(\.batteryRecentlyDropping, false)
+                        clearBatteryDropMarker()
+                    }
                     persistBatteryChargeStatus(status, source: "live_2A1B")
                 }
                 AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=%@ bytes=%@",
@@ -9509,12 +9536,20 @@ extension AtriaBLEManager: CBPeripheralDelegate {
     private func persistBatteryLevel(_ level: Int, source: String, chargeStatus: BatteryChargeStatus? = nil) {
         guard level >= 0 && level <= 100 else { return }
         let defaults = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        let previous = defaults.object(forKey: BatteryDefaults.level) as? Int
+        if let previous, previous > level {
+            defaults.set(previous, forKey: BatteryDefaults.previousLevel)
+            defaults.set(defaults.object(forKey: BatteryDefaults.at) as? Double ?? now, forKey: BatteryDefaults.previousAt)
+            defaults.set(previous - level, forKey: BatteryDefaults.dropDelta)
+            defaults.set(now, forKey: BatteryDefaults.dropAt)
+        }
         defaults.set(level, forKey: BatteryDefaults.level)
-        defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.at)
+        defaults.set(now, forKey: BatteryDefaults.at)
         defaults.set(source, forKey: BatteryDefaults.source)
         if let chargeStatus {
             defaults.set(chargeStatus.rawValue, forKey: BatteryDefaults.chargeStatus)
-            defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.chargeAt)
+            defaults.set(now, forKey: BatteryDefaults.chargeAt)
         }
     }
 
@@ -9522,9 +9557,18 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         let defaults = UserDefaults.standard
         defaults.set(status.rawValue, forKey: BatteryDefaults.chargeStatus)
         defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.chargeAt)
+        if status == .charging || status == .full {
+            clearBatteryDropMarker()
+        }
         if batteryLevel >= 0 {
             persistBatteryLevel(batteryLevel, source: source, chargeStatus: status)
         }
+    }
+
+    private func clearBatteryDropMarker() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: BatteryDefaults.dropDelta)
+        defaults.removeObject(forKey: BatteryDefaults.dropAt)
     }
 
     // Heart Rate Measurement per BLE spec: flags byte, uint8/uint16 BPM,
