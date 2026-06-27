@@ -520,7 +520,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "store.refreshHistoricalArchiveStatus(reason: \"data_status_appear\")",
             "AtriaMetricTile(label: \"Backfill\"",
             "value: store.historicalArchiveStatus.valueText",
-            "state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .research : .learning)",
+            "state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .local : .learning)",
             "footnote: store.historicalArchiveStatus.userFootnoteText",
             "AtriaMetricTile(label: \"App\"",
             "value: coexistenceValue",
