@@ -3593,7 +3593,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "Sleep",
             "Activity",
             "BMI",
+            "let trendDeltaYears: Int?",
+            "vo2MaxEstimate.trendDelta",
+            "prior VO2max",
             "AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,",
+            "trendDeltaYears: trendDeltaYears",
         ]:
             assert_contains(self, sessions, needle)
         assert_not_contains(self, sessions, "3 sleep or nap records")
@@ -3604,9 +3608,12 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "enum BiologicalAge",
-            "static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary",
+            "trendDeltaYears: Int? = nil",
+            "static func estimatedAge(chronologicalAge: Int, factors: [BioAgeFactor]) -> Int",
             "min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)",
             "static func agingPace(biologicalAge: Int,",
+            "trendDeltaYears: Int? = nil",
+            "cached fitness trend",
             "weekly trend unlocks after more local estimates",
             "static func factor(id: String,",
             "direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older)",
@@ -5251,7 +5258,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "enum BiologicalAge",
-            "static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary",
+            "trendDeltaYears: Int? = nil",
+            "static func estimatedAge(chronologicalAge: Int, factors: [BioAgeFactor]) -> Int",
             "static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int",
             "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
             "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
