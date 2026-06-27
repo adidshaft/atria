@@ -769,35 +769,58 @@ enum AtriaAnalytics {
 
         static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int {
             let reference = sex == .female ? femaleVO2AgeReference : maleVO2AgeReference
-            return interpolatedAgeEquivalent(for: vo2, reference: reference)
+            return interpolatedAgeEquivalent(for: vo2,
+                                             reference: reference,
+                                             higherIsYounger: true)
         }
 
-        // Compact local VO2max age-equivalent reference tables adapted from
-        // ACSM/Cooper-style population fitness norms. Values are approximate
-        // median ml/kg/min anchors by decade; interpolation keeps the estimate
-        // monotonic while avoiding a fake precision curve.
-        private static let maleVO2AgeReference: [(age: Int, vo2: Double)] = [
+        // Compact local age-equivalent reference tables adapted from ACSM/Cooper
+        // VO2max norms, resting-HR norms, and age-related RMSSD decline. Values are
+        // approximate decade anchors; interpolation keeps the estimate monotonic
+        // while avoiding a fake precision curve.
+        private static let maleVO2AgeReference: [(age: Int, value: Double)] = [
             (20, 52.0), (30, 48.5), (40, 45.0), (50, 41.5),
             (60, 38.0), (70, 34.5), (80, 31.0), (90, 27.5)
         ]
 
-        private static let femaleVO2AgeReference: [(age: Int, vo2: Double)] = [
+        private static let femaleVO2AgeReference: [(age: Int, value: Double)] = [
             (20, 44.0), (30, 41.0), (40, 38.0), (50, 35.0),
             (60, 32.0), (70, 29.0), (80, 26.0), (90, 23.0)
         ]
 
+        private static let restingHRAgeReference: [(age: Int, value: Double)] = [
+            (20, 58), (30, 60), (40, 62), (50, 64),
+            (60, 66), (70, 68), (80, 70), (90, 72)
+        ]
+
+        private static let rmssdAgeReference: [(age: Int, value: Double)] = [
+            (20, 70), (30, 58), (40, 46), (50, 36),
+            (60, 28), (70, 22), (80, 18), (90, 14)
+        ]
+
         private static func interpolatedAgeEquivalent(for value: Double,
-                                                      reference: [(age: Int, vo2: Double)]) -> Int {
+                                                      reference: [(age: Int, value: Double)],
+                                                      higherIsYounger: Bool) -> Int {
             guard let youngest = reference.first,
                   let oldest = reference.last else { return 90 }
-            if value >= youngest.vo2 { return 18 }
-            if value <= oldest.vo2 { return 90 }
+            if higherIsYounger {
+                if value >= youngest.value { return 18 }
+                if value <= oldest.value { return 90 }
+            } else {
+                if value <= youngest.value { return 18 }
+                if value >= oldest.value { return 90 }
+            }
 
             for index in 1..<reference.count {
                 let previous = reference[index - 1]
                 let next = reference[index]
-                guard value <= previous.vo2, value >= next.vo2 else { continue }
-                let fraction = (previous.vo2 - value) / max(previous.vo2 - next.vo2, 0.01)
+                let insideBand = higherIsYounger
+                    ? (value <= previous.value && value >= next.value)
+                    : (value >= previous.value && value <= next.value)
+                guard insideBand else { continue }
+                let numerator = higherIsYounger ? previous.value - value : value - previous.value
+                let denominator = abs(previous.value - next.value)
+                let fraction = numerator / max(denominator, 0.01)
                 let age = Double(previous.age) + fraction * Double(next.age - previous.age)
                 return min(max(Int(age.rounded()), 18), 90)
             }
@@ -805,12 +828,15 @@ enum AtriaAnalytics {
         }
 
         static func rhrAgeEquivalent(_ restingHR: Int) -> Int {
-            min(max(Int((30 + Double(restingHR - 60) * 0.8).rounded()), 18), 90)
+            interpolatedAgeEquivalent(for: Double(restingHR),
+                                      reference: restingHRAgeReference,
+                                      higherIsYounger: false)
         }
 
         static func hrvAgeEquivalent(_ rmssd: Int) -> Int {
-            let safe = max(8, Double(rmssd))
-            return min(max(Int((20 - log(safe / 70.0) / 0.018).rounded()), 18), 90)
+            interpolatedAgeEquivalent(for: Double(rmssd),
+                                      reference: rmssdAgeReference,
+                                      higherIsYounger: true)
         }
 
         static func sleepAgeEquivalent(durationHours: Double,

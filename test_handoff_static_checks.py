@@ -3398,9 +3398,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older)",
             "ACSM/Cooper VO2max percentile tables",
             "static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int",
-            "private static let maleVO2AgeReference: [(age: Int, vo2: Double)]",
-            "private static let femaleVO2AgeReference: [(age: Int, vo2: Double)]",
+            "private static let maleVO2AgeReference: [(age: Int, value: Double)]",
+            "private static let femaleVO2AgeReference: [(age: Int, value: Double)]",
+            "private static let restingHRAgeReference: [(age: Int, value: Double)]",
+            "private static let rmssdAgeReference: [(age: Int, value: Double)]",
             "private static func interpolatedAgeEquivalent(for value: Double,",
+            "higherIsYounger: Bool",
             "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
             "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
             "static func sleepAgeEquivalent(durationHours: Double,",
@@ -4865,30 +4868,40 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
 
+        def interpolated_age(value, reference, higher_is_younger):
+            if higher_is_younger:
+                if value >= reference[0][1]:
+                    return 18
+                if value <= reference[-1][1]:
+                    return 90
+            else:
+                if value <= reference[0][1]:
+                    return 18
+                if value >= reference[-1][1]:
+                    return 90
+            for index in range(1, len(reference)):
+                previous_age, previous_value = reference[index - 1]
+                next_age, next_value = reference[index]
+                inside = previous_value >= value >= next_value if higher_is_younger else previous_value <= value <= next_value
+                if inside:
+                    numerator = previous_value - value if higher_is_younger else value - previous_value
+                    fraction = numerator / max(abs(previous_value - next_value), 0.01)
+                    return min(max(round(previous_age + fraction * (next_age - previous_age)), 18), 90)
+            return 90
+
         def vo2_age(vo2, sex):
             reference = (
                 [(20, 44.0), (30, 41.0), (40, 38.0), (50, 35.0), (60, 32.0), (70, 29.0), (80, 26.0), (90, 23.0)]
                 if sex == "female"
                 else [(20, 52.0), (30, 48.5), (40, 45.0), (50, 41.5), (60, 38.0), (70, 34.5), (80, 31.0), (90, 27.5)]
             )
-            if vo2 >= reference[0][1]:
-                return 18
-            if vo2 <= reference[-1][1]:
-                return 90
-            for index in range(1, len(reference)):
-                previous_age, previous_vo2 = reference[index - 1]
-                next_age, next_vo2 = reference[index]
-                if previous_vo2 >= vo2 >= next_vo2:
-                    fraction = (previous_vo2 - vo2) / max(previous_vo2 - next_vo2, 0.01)
-                    return min(max(round(previous_age + fraction * (next_age - previous_age)), 18), 90)
-            return 90
+            return interpolated_age(vo2, reference, True)
 
         def rhr_age(resting_hr):
-            return min(max(round(30 + (resting_hr - 60) * 0.8), 18), 90)
+            return interpolated_age(resting_hr, [(20, 58), (30, 60), (40, 62), (50, 64), (60, 66), (70, 68), (80, 70), (90, 72)], False)
 
         def hrv_age(rmssd):
-            safe = max(8.0, rmssd)
-            return min(max(round(20 - math.log(safe / 70.0) / 0.018), 18), 90)
+            return interpolated_age(rmssd, [(20, 70), (30, 58), (40, 46), (50, 36), (60, 28), (70, 22), (80, 18), (90, 14)], True)
 
         def sleep_age(duration_hours, efficiency, chronological_age, consistency_percent=None):
             duration_penalty = abs(duration_hours - 7.5) * 2.0
