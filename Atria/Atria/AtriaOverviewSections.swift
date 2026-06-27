@@ -886,27 +886,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .atriaInsetCard(tint: .secondary)
             } else {
                 VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
-                    if isEditingGlance {
-                        HStack(spacing: 8) {
-                            Label("Editing widgets", systemImage: "rectangle.grid.2x2")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                            Button {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    isEditingGlance = false
-                                }
-                            } label: {
-                                Image(systemName: "checkmark")
-                                    .font(.caption.weight(.bold))
-                                    .frame(width: 18, height: 18)
-                            }
-                            .atriaCardAction(prominent: false, tint: .green)
-                            .accessibilityLabel("Finish editing widgets")
-                        }
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-
                     VStack(spacing: Self.glanceGridSpacing) {
                         ForEach(glanceRows, id: \.glanceRowID) { row in
                             HStack(spacing: Self.glanceGridSpacing) {
@@ -938,36 +917,53 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var addWidgetMenu: some View {
-        Menu {
-            if !hiddenMetrics.isEmpty {
-                Section("Add widget") {
-                    ForEach(hiddenMetrics) { metric in
-                        Button {
-                            onShowMetric(metric)
-                            withAnimation(.snappy(duration: 0.2)) {
-                                isEditingGlance = false
-                            }
-                        } label: {
-                            Label(metric.label, systemImage: metric.systemImage)
-                        }
+        HStack(spacing: 8) {
+            if isEditingGlance {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isEditingGlance = false
                     }
+                } label: {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 18, height: 18)
                 }
-            } else {
-                Section("Add widget") {
-                    Label("All widgets added", systemImage: "checkmark.circle")
-                }
+                .atriaGlassIconAction(tint: .green, size: 38)
+                .accessibilityLabel("Finish editing widgets")
+                .transition(.scale.combined(with: .opacity))
             }
 
-        } label: {
-            Image(systemName: "plus")
-                .font(.callout.weight(.semibold))
-                .frame(width: 20, height: 20)
+            Menu {
+                if !hiddenMetrics.isEmpty {
+                    Section("Add widget") {
+                        ForEach(hiddenMetrics) { metric in
+                            Button {
+                                onShowMetric(metric)
+                                withAnimation(.snappy(duration: 0.2)) {
+                                    isEditingGlance = false
+                                }
+                            } label: {
+                                Label(metric.label, systemImage: metric.systemImage)
+                            }
+                        }
+                    }
+                } else {
+                    Section("Add widget") {
+                        Label("All widgets added", systemImage: "checkmark.circle")
+                    }
+                }
+
+            } label: {
+                Image(systemName: "plus")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 20, height: 20)
+            }
+            .atriaGlassIconAction(tint: .secondary, size: 38)
+            .accessibilityLabel("Add Today widget")
+            .accessibilityHint(hiddenMetrics.isEmpty
+                               ? "All Today widgets are already visible."
+                               : "Opens the list of hidden Today widgets.")
         }
-        .atriaGlassIconAction(tint: .secondary, size: 38)
-        .accessibilityLabel("Add Today widget")
-        .accessibilityHint(hiddenMetrics.isEmpty
-                           ? "All Today widgets are already visible."
-                           : "Opens the list of hidden Today widgets.")
     }
 
     private static let glanceGridSpacing: CGFloat = 10
@@ -1038,7 +1034,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceEditControls(for: metric)
-                        .padding(7)
+                        .padding(6)
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
@@ -1087,7 +1083,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Button {
                 onToggleMetricSize(metric)
             } label: {
@@ -1096,7 +1092,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                       : "rectangle.expand.horizontal")
                     .font(.caption.weight(.bold))
             }
-            .atriaGlassIconAction(tint: .secondary, size: 34)
+            .atriaGlassIconAction(tint: .secondary, size: 30)
             .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
                                 ? "Make \(metric.label) compact"
                                 : "Make \(metric.label) wide")
@@ -1112,10 +1108,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
             }
-            .atriaGlassIconAction(tint: .red, size: 34)
+            .atriaGlassIconAction(tint: .red, size: 30)
             .accessibilityLabel("Remove \(metric.label)")
         }
         .fixedSize()
+        .padding(3)
+        .background(Color(.systemBackground).opacity(0.74), in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
         .accessibilityElement(children: .contain)
     }
 
@@ -1618,11 +1620,11 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
         if let latest, !latest.displayStageSegments.isEmpty {
             HStack(spacing: 6) {
                 ForEach(SleepStageKind.allCases) { stage in
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
-                            .labelStyle(.iconOnly)
-                            .font(.caption2.weight(.bold))
-                            .frame(width: 14, height: 14, alignment: .leading)
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.64)
                         Text(latest.stageText(stage))
                             .font(.caption2.weight(.bold).monospacedDigit())
                             .lineLimit(1)
