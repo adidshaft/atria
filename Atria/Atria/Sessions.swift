@@ -393,6 +393,7 @@ struct DailyRollup {
     let duration: TimeInterval
     let sleepDuration: TimeInterval?
     let sleepSpan: TimeInterval?
+    let sleepSource: String?
     let strain: Double
     let avgHRV: Int?
     let restingHR: Int?
@@ -6057,6 +6058,7 @@ final class SessionStore: ObservableObject {
                                duration: duration,
                                sleepDuration: aggregateSleep?.duration ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
                                sleepSpan: aggregateSleep?.span ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
+                               sleepSource: aggregateSleep?.kind,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
                                restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min(),
@@ -9459,7 +9461,7 @@ struct SleepHistorySnapshot: Equatable {
                                      respiratoryRate: rollup.avgRespiratoryRate,
                                      sleepEfficiency: Self.efficiency(duration: sleepDuration, span: rollup.sleepSpan),
                                      confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
-                                     source: rollup.sleepReady > 0 ? "validated_sleep_window" : "sleep_candidate",
+                                     source: rollup.sleepReady > 0 ? "validated_sleep_window" : (rollup.sleepSource ?? "sleep_candidate"),
                                      confirmed: false)
         }
 
