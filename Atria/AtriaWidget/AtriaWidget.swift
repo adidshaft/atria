@@ -87,6 +87,8 @@ struct AtriaWidgetEntryView: View {
                 systemSmallWidget
             case .systemMedium:
                 systemMediumWidget
+            case .systemLarge:
+                systemLargeWidget
             default:
                 systemMediumWidget
             }
@@ -158,6 +160,55 @@ struct AtriaWidgetEntryView: View {
                     widgetMetricLink(.steps, tint: .blue)
                 }
             }
+        }
+    }
+
+    private var systemLargeWidget: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            widgetHeader
+
+            HStack(alignment: .center, spacing: 16) {
+                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
+                    .frame(width: 118, height: 118)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(secondaryText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+                    Text(footerText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+                    if entry.snapshot != nil {
+                        Label(largeBatteryText, systemImage: batterySymbol)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(batteryTint)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                widgetMetricLink(.strain, tint: .orange)
+                widgetMetricLink(.bpm, tint: .red)
+                widgetMetricLink(.hrv, tint: .pink)
+                widgetMetricLink(.steps, tint: .blue)
+            }
+
+            Spacer(minLength: 0)
+
+            controlButtons
+
+            Text(largeFooterText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
         }
     }
 
@@ -271,6 +322,14 @@ struct AtriaWidgetEntryView: View {
         }
     }
 
+    private var largeBatteryText: String {
+        guard let snapshot = entry.snapshot else { return "Battery unknown" }
+        if let chargeText = snapshot.batteryChargeText, !chargeText.isEmpty {
+            return chargeText
+        }
+        return snapshot.batteryLevel.map { "Battery \($0)%" } ?? "Battery unknown"
+    }
+
     private func recoveryColor(_ percent: Int) -> Color {
         if percent >= 67 { return .green }
         if percent >= 34 { return .yellow }
@@ -348,6 +407,14 @@ struct AtriaWidgetEntryView: View {
         guard let snapshot = entry.snapshot else { return "LRN" }
         return String(format: "%.0f", snapshot.strain)
     }
+
+    private var largeFooterText: String {
+        guard let snapshot = entry.snapshot else { return "Open Atria to start local tracking" }
+        let age = max(0, Int(Date().timeIntervalSince(snapshot.createdAt) / 60))
+        if age < 1 { return "Updated now · local snapshot" }
+        if age < 60 { return "Updated \(age)m ago · local snapshot" }
+        return "Open Atria to refresh the local snapshot"
+    }
 }
 
 private struct AtriaWidgetRecoveryGauge: View {
@@ -395,7 +462,7 @@ struct AtriaStatusWidget: Widget {
         }
         .configurationDisplayName("Atria")
         .description("Shows local recovery and strain status when shared widget storage is enabled.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
