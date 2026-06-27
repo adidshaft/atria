@@ -1374,6 +1374,49 @@ class HandoffStaticChecks(unittest.TestCase):
         app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
         assert_contains(self, app, 'arguments.contains("--atria-log-daily-rollups-deep")')
 
+    def test_launch_validation_flags_are_wired_to_deferred_diagnostics(self):
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            'arguments.contains("--atria-verify-sleep")',
+            'arguments.contains("--atria-schedule-sleep-validation")',
+            'arguments.contains("--atria-verify-workout-label")',
+            'arguments.contains("--atria-schedule-workout-validation")',
+            "store.scheduleSleepValidationFromLaunchIfRequested(arguments: arguments)",
+            "store.scheduleWorkoutValidationFromLaunchIfRequested(arguments: arguments)",
+        ]:
+            assert_contains(self, app, needle)
+
+        sleep_scheduler = re.search(
+            r"func scheduleSleepValidationFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(sleep_scheduler)
+        sleep_body = sleep_scheduler.group("body")
+        for needle in [
+            'arguments.contains("--atria-verify-sleep") || arguments.contains("--atria-schedule-sleep-validation")',
+            'value(after: "--atria-verify-sleep-label", in: arguments)',
+            'doubleValue(after: "--atria-verify-sleep-after"',
+        ]:
+            assert_contains(self, sleep_body, needle)
+
+        workout_scheduler = re.search(
+            r"func scheduleWorkoutValidationFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(workout_scheduler)
+        workout_body = workout_scheduler.group("body")
+        for needle in [
+            'arguments.contains("--atria-schedule-workout-validation")',
+            'value(after: "--atria-verify-workout-label", in: arguments) != nil',
+            'value(after: "--atria-verify-workout-label", in: arguments)',
+            'doubleValue(after: "--atria-verify-workout-after"',
+        ]:
+            assert_contains(self, workout_body, needle)
+
     def test_sleep_validation_reuses_aggregate_candidates(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
