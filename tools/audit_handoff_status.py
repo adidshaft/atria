@@ -47,6 +47,12 @@ MIN_OVERNIGHT_COVERAGE_PERCENT = 85.0
 MAX_OVERNIGHT_GAP_S = 30.0
 MAX_OVERNIGHT_BATTERY_DROP_PERCENT = 35.0
 ALLOWED_OVERNIGHT_THERMAL = {"nominal", "fair"}
+PROOF_ONLY_PREFIXES = (
+    "docs/evidence/",
+    "logs/live-device/",
+    "test_",
+    "tools/",
+)
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -70,6 +76,47 @@ def current_git_commit(repo: Path) -> str:
     except (OSError, subprocess.CalledProcessError):
         return ""
     return result.stdout.strip()
+
+
+def git_command(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+
+
+def commit_is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    if not ancestor or not descendant:
+        return False
+    if ancestor == descendant:
+        return True
+    result = git_command(repo, ["merge-base", "--is-ancestor", ancestor, descendant])
+    return result is not None and result.returncode == 0
+
+
+def changed_files_between(repo: Path, older: str, newer: str) -> list[str]:
+    if not older or not newer or older == newer:
+        return []
+    result = git_command(repo, ["diff", "--name-only", f"{older}..{newer}"])
+    if result is None or result.returncode != 0:
+        return ["<git-diff-unavailable>"]
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def proof_only_changes_since_app_commit(repo: Path, app_commit: str, expected_commit: str) -> bool:
+    if app_commit == expected_commit:
+        return True
+    if not commit_is_ancestor(repo, app_commit, expected_commit):
+        return False
+    changed = changed_files_between(repo, app_commit, expected_commit)
+    return bool(changed) and all(path.startswith(PROOF_ONLY_PREFIXES) for path in changed)
 
 
 def is_utc_timestamp(value: str) -> bool:
@@ -135,10 +182,11 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
     if not isinstance(diagnostics, dict) or not diagnostics:
         diagnostics = synthesized_long_wear_diagnostics(data, criteria)
     app_commit = str(data.get("app_commit", "")).strip()
+    monitor_commit = str(data.get("monitor_commit", "")).strip()
     expected_commit = current_git_commit(repo)
     if not app_commit:
         audit_blockers.append("missing_long_wear_app_commit")
-    elif expected_commit and app_commit != expected_commit:
+    elif expected_commit and not proof_only_changes_since_app_commit(repo, app_commit, expected_commit):
         audit_blockers.append("long_wear_app_commit_mismatch")
     monitor_started_at = str(data.get("monitor_started_at", "")).strip()
     if not monitor_started_at:
@@ -166,6 +214,7 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "planned_samples": data.get("planned_samples", "missing"),
         "planned_duration_s": data.get("planned_duration_s", "missing"),
         "app_commit": app_commit or "missing",
+        "monitor_commit": monitor_commit or "missing",
         "expected_app_commit": expected_commit or "missing",
         "monitor_started_at": monitor_started_at or "missing",
         "monitor_finished_at": monitor_finished_at or "missing",
