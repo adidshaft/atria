@@ -665,10 +665,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "Sleep efficiency is building from saved sleep duration",
             "private var sleepHistoryCard: some View",
             "Button(action: onOpenVitals)",
-            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory)",
+            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,\n                                            sleepGoalHours: sleepGoalHours)",
             "private struct AtriaSleepHistoryGlanceCard: View, Equatable",
             "Text(\"Sleep history\")",
-            "return \"\\(latest.evidenceLabel) · \\(snapshot.evidenceCountText)\"",
+            "return \"\\(latest.evidenceLabel) · debt \\(snapshot.sleepDebtText(goalHours: sleepGoalHours))\"",
             "if let latest, !latest.displayStageSegments.isEmpty",
             "AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,",
             "private struct AtriaSleepMiniHypnogram: View, Equatable",
@@ -678,6 +678,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Awake \\(latest.stageText(.awake))",
             "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap.",
             "sleepHistory.averageFootnoteText",
+            "snapshot.sleepConsistencyText",
+            "snapshot.sleepDebtText(goalHours: sleepGoalHours)",
             "AtriaGlanceMetricCard(title: \"Resp rate\"",
             "value: sleepHistory.latest?.respiratoryRateText ?? \"--\"",
             "Sleep research",
@@ -1836,6 +1838,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".disabled(!canSave)",
             "ForEach(SleepStageKind.allCases)",
             "AtriaSleepStageSummary(night: latest)",
+            "AtriaMetricTile(label: \"Consistency\"",
+            "value: snapshot.sleepConsistencyText",
+            "AtriaMetricTile(label: \"Debt\"",
+            "value: snapshot.sleepDebtText(goalHours: sleepGoalHours)",
+            "footnote: snapshot.sleepDebtFootnote(goalHours: sleepGoalHours)",
             "!latest.displayStageSegments.isEmpty",
             "private var heatStripNights: [SleepHistorySnapshot.Night]",
             "Array(snapshot.nights.prefix(84).reversed())",
@@ -1906,7 +1913,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityLabel(\"Add sleep manually\")",
             "Text(latest?.stageEvidence.label ?? \"Stages not ready\")",
             "guard !latest.displayStageSegments.isEmpty else",
-            "return \"Sleep history \\(valueText). \\(latest.evidenceLabel). \\(latest.stageEvidence.label).\"",
+            "Consistency \\(snapshot.sleepConsistencyText)",
+            "Debt \\(snapshot.sleepDebtText(goalHours: sleepGoalHours))",
+            "Sleep debt \\(snapshot.sleepDebtText(goalHours: sleepGoalHours))",
         ]:
             assert_contains(self, overview, needle)
 
@@ -3345,6 +3354,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
             "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
             "static func sleepAgeEquivalent(durationHours: Double,",
+            "consistencyPercent: Int?",
             "static func activityAgeEquivalent(_ chronicLoad: Double,",
             "static func bmiAgeEquivalent(_ bmi: Double,",
         ]:
@@ -4781,6 +4791,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
             "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
             "static func sleepAgeEquivalent(durationHours: Double,",
+            "consistencyPercent: Int?",
             "static func activityAgeEquivalent(_ chronicLoad: Double,",
             "static func bmiAgeEquivalent(_ bmi: Double,",
             "static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
@@ -4810,11 +4821,12 @@ class HandoffStaticChecks(unittest.TestCase):
             safe = max(8.0, rmssd)
             return min(max(round(20 - math.log(safe / 70.0) / 0.018), 18), 90)
 
-        def sleep_age(duration_hours, efficiency, chronological_age):
+        def sleep_age(duration_hours, efficiency, chronological_age, consistency_percent=None):
             duration_penalty = abs(duration_hours - 7.5) * 2.0
             efficiency_penalty = max(0, 0.85 - efficiency) * 35
-            bonus = -4.0 if duration_penalty < 1.0 and efficiency >= 0.88 else 0
-            return min(max(round(chronological_age + duration_penalty + efficiency_penalty + bonus), 18), 90)
+            consistency_penalty = max(0, 80 - consistency_percent) / 8.0 if consistency_percent is not None else 0
+            bonus = -4.0 if duration_penalty < 1.0 and efficiency >= 0.88 and (consistency_percent or 80) >= 85 else 0
+            return min(max(round(chronological_age + duration_penalty + efficiency_penalty + consistency_penalty + bonus), 18), 90)
 
         def activity_age(chronic_load, chronological_age):
             delta = min(max((chronic_load - 25) / 3.0, -8), 8)
@@ -4834,7 +4846,7 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertLess(vo2_age(48, "female"), vo2_age(34, "female"))
         self.assertLess(hrv_age(80), hrv_age(30))
         self.assertLess(rhr_age(52), rhr_age(75))
-        self.assertLess(sleep_age(7.6, 0.91, 38), sleep_age(5.5, 0.78, 38))
+        self.assertLess(sleep_age(7.6, 0.91, 38, 92), sleep_age(5.5, 0.78, 38, 55))
         self.assertLess(activity_age(40, 38), activity_age(8, 38))
         self.assertLess(bmi_age(22.0, 38), bmi_age(32.0, 38))
 
@@ -4842,7 +4854,7 @@ class HandoffStaticChecks(unittest.TestCase):
             (vo2_age(55, "male"), 0.30),
             (rhr_age(55), 0.20),
             (hrv_age(70), 0.20),
-            (sleep_age(7.5, 0.90, 38), 0.15),
+            (sleep_age(7.5, 0.90, 38, 92), 0.15),
             (activity_age(36, 38), 0.10),
             (bmi_age(22.0, 38), 0.05),
         ]
@@ -4850,7 +4862,7 @@ class HandoffStaticChecks(unittest.TestCase):
             (vo2_age(28, "male"), 0.30),
             (rhr_age(82), 0.20),
             (hrv_age(16), 0.20),
-            (sleep_age(5.2, 0.74, 38), 0.15),
+            (sleep_age(5.2, 0.74, 38, 50), 0.15),
             (activity_age(3, 38), 0.10),
             (bmi_age(35.0, 38), 0.05),
         ]

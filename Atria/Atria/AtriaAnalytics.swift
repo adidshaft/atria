@@ -784,11 +784,13 @@ enum AtriaAnalytics {
 
         static func sleepAgeEquivalent(durationHours: Double,
                                        efficiency: Double,
+                                       consistencyPercent: Int?,
                                        chronologicalAge: Int) -> Int {
             let durationPenalty = abs(durationHours - 7.5) * 2.0
             let efficiencyPenalty = max(0, 0.85 - efficiency) * 35
-            let bonus = durationPenalty < 1.0 && efficiency >= 0.88 ? -4.0 : 0
-            return min(max(Int((Double(chronologicalAge) + durationPenalty + efficiencyPenalty + bonus).rounded()), 18), 90)
+            let consistencyPenalty = consistencyPercent.map { max(0, 80 - Double($0)) / 8.0 } ?? 0
+            let bonus = durationPenalty < 1.0 && efficiency >= 0.88 && (consistencyPercent ?? 80) >= 85 ? -4.0 : 0
+            return min(max(Int((Double(chronologicalAge) + durationPenalty + efficiencyPenalty + consistencyPenalty + bonus).rounded()), 18), 90)
         }
 
         static func activityAgeEquivalent(_ chronicLoad: Double,

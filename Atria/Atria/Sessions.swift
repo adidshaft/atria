@@ -7728,10 +7728,14 @@ final class SessionStore: ObservableObject {
                                                 label: "Sleep",
                                                 ageEquivalent: AtriaAnalytics.BiologicalAge.sleepAgeEquivalent(durationHours: sleepDurationHours,
                                                                                                               efficiency: sleepEfficiency,
+                                                                                                              consistencyPercent: sleepHistorySnapshot.sleepConsistencyPercent,
                                                                                                               chronologicalAge: chronologicalAge),
                                                 chronologicalAge: chronologicalAge,
                                                 weight: 0.15,
-                                                detail: String(format: "%.1fh · %.0f%% eff", sleepDurationHours, sleepEfficiency * 100)),
+                                                detail: String(format: "%.1fh · %.0f%% eff · %@ consistent",
+                                                               sleepDurationHours,
+                                                               sleepEfficiency * 100,
+                                                               sleepHistorySnapshot.sleepConsistencyText)),
             AtriaAnalytics.BiologicalAge.factor(id: "activity",
                                                 label: "Activity",
                                                 ageEquivalent: AtriaAnalytics.BiologicalAge.activityAgeEquivalent(trainingLoadSummarySnapshot.chronicLoad,
@@ -10595,6 +10599,60 @@ struct SleepHistorySnapshot: Equatable {
 
     var averageFootnoteText: String {
         "Average across \(evidenceCountText)"
+    }
+
+    private var recentSleepNights: [Night] {
+        nights.filter { !$0.isNapEvidence }
+    }
+
+    var sleepConsistencyText: String {
+        guard let score = sleepConsistencyPercent else { return "--" }
+        return "\(score)%"
+    }
+
+    var sleepConsistencyFootnote: String {
+        guard let score = sleepConsistencyPercent else {
+            return "Needs 2 sleep nights."
+        }
+        if score >= 85 { return "Very steady recent sleep duration." }
+        if score >= 70 { return "Mostly steady recent sleep duration." }
+        return "Variable sleep duration; keep bed and wake times consistent."
+    }
+
+    var sleepConsistencyPercent: Int? {
+        let records = recentSleepNights.prefix(7)
+        guard records.count >= 2 else { return nil }
+        let durations = records.map(\.durationHours)
+        let average = durations.reduce(0, +) / Double(durations.count)
+        let meanAbsoluteDeviation = durations.reduce(0) { $0 + abs($1 - average) } / Double(durations.count)
+        let score = 100 - min(60, Int((meanAbsoluteDeviation / 1.5 * 60).rounded()))
+        return min(max(score, 0), 100)
+    }
+
+    func sleepDebtText(goalHours: Double) -> String {
+        guard let debt = sleepDebtHours(goalHours: goalHours) else { return "--" }
+        if debt < 0.05 { return "Met" }
+        return String(format: "%.1fh", debt)
+    }
+
+    func sleepDebtFootnote(goalHours: Double) -> String {
+        guard let debt = sleepDebtHours(goalHours: goalHours) else {
+            return "Needs recent sleep records."
+        }
+        if debt < 0.05 {
+            return String(format: "Recent sleep meets %.1fh goal.", goalHours)
+        }
+        return String(format: "Average shortfall vs %.1fh goal.", goalHours)
+    }
+
+    private func sleepDebtHours(goalHours: Double) -> Double? {
+        let records = recentSleepNights.prefix(7)
+        guard !records.isEmpty else { return nil }
+        let safeGoal = min(max(goalHours, 4), 12)
+        let totalDebt = records.reduce(0) { total, night in
+            total + max(0, safeGoal - night.durationHours)
+        }
+        return totalDebt / Double(records.count)
     }
 
     var emptyEvidenceLabel: String {

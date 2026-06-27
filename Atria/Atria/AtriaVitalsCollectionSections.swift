@@ -2003,6 +2003,16 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     state: .local,
                                     tint: .blue,
                                     footnote: snapshot.averageFootnoteText)
+                    AtriaMetricTile(label: "Consistency",
+                                    value: snapshot.sleepConsistencyText,
+                                    state: snapshot.sleepConsistencyText == "--" ? .learning : .local,
+                                    tint: .mint,
+                                    footnote: snapshot.sleepConsistencyFootnote)
+                    AtriaMetricTile(label: "Debt",
+                                    value: snapshot.sleepDebtText(goalHours: sleepGoalHours),
+                                    state: snapshot.sleepDebtText(goalHours: sleepGoalHours) == "--" ? .learning : .local,
+                                    tint: .indigo,
+                                    footnote: snapshot.sleepDebtFootnote(goalHours: sleepGoalHours))
                     AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") RHR",
                                     value: snapshot.latest?.restingHRText ?? "--",
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
