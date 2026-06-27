@@ -4002,6 +4002,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "private var systemSmallWidget: some View",
             "private var systemMediumWidget: some View",
+            "case .systemLarge:\n                systemLargeWidget",
+            "private var systemLargeWidget: some View",
             "private var widgetHeader: some View",
             "private func compactMetric(_ title: String,",
             "private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View",
@@ -4010,10 +4012,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)",
             ".frame(width: 72, height: 72)",
             ".frame(width: 92, height: 92)",
+            ".frame(width: 118, height: 118)",
+            "private var largeBatteryText: String",
+            "controlButtons",
+            "private var largeFooterText: String",
             "widgetMetricLink(.strain, tint: .orange)",
             "widgetMetricLink(.bpm, tint: .red)",
             "widgetMetricLink(.hrv, tint: .pink)",
             "widgetMetricLink(.steps, tint: .blue)",
+            ".supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular, .accessoryInline])",
             ".accessibilityLabel(percent.map { \"Recovery \\($0) percent\" } ?? \"Recovery learning\")",
         ]:
             assert_contains(self, widget, needle)
