@@ -1170,10 +1170,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: summary.probeFrameCount > 0 ? .research : .learning",
             "unit: summary.spo2CandidateFrames > 0 ? \"frames\" : nil",
             "unit: summary.skinTempCandidateFrames > 0 ? \"frames\" : nil",
-            "footnote: \"Evidence only; not a SpO2 value.\"",
-            "footnote: \"Evidence only; not body temperature.\"",
-            "footnote: \"Sleep beat-to-beat research; reference gated.\"",
-            "Oxygen and skin-temperature rows are evidence counts, not measurements",
+            "footnote: \"Early signal; not a SpO2 value.\"",
+            "footnote: \"Early signal; not body temperature.\"",
+            "footnote: \"Sleep-only estimate; needs comparison data.\"",
+            "Early sensor rows show evidence counts, not measurements.",
         ]:
             assert_contains(self, collection, needle)
 
@@ -1365,7 +1365,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Probe match\"",
             "state: markers.isEmpty ? .learning : .research",
             "state: correlationSummary.matchedMarkers > 0 ? .research : .learning",
-            "Research only; timestamps stay on device for probe correlation.",
+            "Markers stay on device and help compare probe timing.",
         ]:
             assert_contains(self, collection, needle)
 
@@ -2015,13 +2015,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Body temp\"",
             "AtriaMetricTile(label: \"Resp rate\"",
             "AtriaMetricTile(label: \"Strap steps\"",
-            "Evidence only; not a SpO2 value.",
-            "Evidence only; not body temperature.",
-            "Sleep beat-to-beat research; reference gated.",
-            "Experimental. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show SpO2 or body-temperature values until the sensor layout is validated against a reference.",
+            "Early signal; not a SpO2 value.",
+            "Early signal; not body temperature.",
+            "Sleep-only estimate; needs comparison data.",
+            "Early sensor rows show evidence counts, not measurements. Atria will not show SpO2 or body-temperature values until the sensor layout is proven against comparison data.",
             "private struct AtriaCollectionIMUAuditCard: View, Equatable",
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
-            "Research only; compare with phone motion before steps or sleep.",
+            "Early motion signals stay separate until they match phone motion reliably.",
             ".lineLimit(2)",
             "AtriaMetricTile(label: \"Strap steps\"",
             "AtriaMetricTile(label: \"Sleep/wake\"",
