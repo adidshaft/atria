@@ -1427,7 +1427,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var sleepHistoryCard: some View {
         ZStack(alignment: .topTrailing) {
             Button(action: onOpenVitals) {
-                AtriaSleepHistoryGlanceCard(snapshot: sleepHistory)
+                AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,
+                                            sleepGoalHours: sleepGoalHours)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(sleepHistory.nights.isEmpty
@@ -2276,6 +2277,7 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
 
 private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
+    let sleepGoalHours: Double
 
     private var latest: SleepHistorySnapshot.Night? {
         snapshot.latest
@@ -2292,11 +2294,11 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
 
     private var detailText: String {
         guard let latest else { return "Wear strap overnight or nap" }
-        return "\(latest.evidenceLabel) · \(snapshot.evidenceCountText)"
+        return "\(latest.evidenceLabel) · debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours))"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 AtriaGlanceMetricMarker(systemImage: AtriaTodayMetric.sleepHistory.systemImage,
                                         tint: tint,
@@ -2325,7 +2327,22 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                     .minimumScaleFactor(0.58)
                 Spacer(minLength: 0)
             }
-            .frame(height: 38, alignment: .bottom)
+            .frame(height: 32, alignment: .bottom)
+
+            HStack(spacing: 8) {
+                Text("Consistency \(snapshot.sleepConsistencyText)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Spacer(minLength: 0)
+                Text("Debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours))")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(tint.opacity(0.82))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(height: 14, alignment: .center)
 
             stageStrip
         }
@@ -2345,12 +2362,12 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
         if let latest, !latest.displayStageSegments.isEmpty {
             AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
                                     duration: latest.duration)
-            .frame(height: 30, alignment: .center)
+            .frame(height: 18, alignment: .center)
         } else {
             Text(latest?.stageEvidence.label ?? "Stages not ready")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
-                .frame(height: 30, alignment: .center)
+                .frame(height: 18, alignment: .center)
         }
     }
 
@@ -2359,9 +2376,9 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             return "Sleep history building. Wear the strap overnight or during a nap."
         }
         guard !latest.displayStageSegments.isEmpty else {
-            return "Sleep history \(valueText). \(latest.evidenceLabel). \(latest.stageEvidence.label)."
+            return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(latest.stageEvidence.label)."
         }
-        return "Sleep history \(valueText). \(latest.evidenceLabel). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
+        return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
     }
 }
 
