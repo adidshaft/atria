@@ -324,6 +324,14 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(minWidth: 148,\n               minHeight: AtriaHeaderControlMetrics.height,\n               maxHeight: AtriaHeaderControlMetrics.height)",
             "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.",
             "HRV-grade beat-to-beat data is ready as personal-baseline HRV.",
+            "private static func hrvSettlingText(quality: String, liveHeartRate: Int) -> String",
+            "guard liveHeartRate > 0 else { return quality }",
+            "normalized.contains(\"stable contact\")",
+            "normalized.contains(\"poor contact\")",
+            "normalized.contains(\"poor_contact\")",
+            "return \"HRV settling\"",
+            "hrvSettlingText(quality: ble.hrvQuality,",
+            "liveHeartRate: liveHeartRate(ble: ble))",
         ]:
             assert_contains(self, home, needle)
 

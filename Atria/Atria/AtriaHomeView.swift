@@ -2564,7 +2564,8 @@ final class AtriaHomeModel {
         } else if store.latestLocalRMSSD != nil {
             detail = "personal baseline"
         } else {
-            detail = ble.hrvQuality
+            detail = hrvSettlingText(quality: ble.hrvQuality,
+                                     liveHeartRate: liveHeartRate(ble: ble))
         }
 
         let narrative: String
@@ -2593,6 +2594,17 @@ final class AtriaHomeModel {
                                     detail: detail,
                                     narrative: narrative,
                                     packageText: packageText)
+    }
+
+    private static func hrvSettlingText(quality: String, liveHeartRate: Int) -> String {
+        guard liveHeartRate > 0 else { return quality }
+        let normalized = quality.lowercased()
+        if normalized.contains("stable contact")
+            || normalized.contains("poor contact")
+            || normalized.contains("poor_contact") {
+            return "HRV settling"
+        }
+        return quality
     }
 
     private static func defaultHeroHeadline(status: AtriaBLEManager.Status) -> String {
@@ -2777,7 +2789,8 @@ final class AtriaHomeModel {
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             hrvDetail = "personal baseline"
         } else {
-            hrvDetail = ble.hrvQuality
+            hrvDetail = hrvSettlingText(quality: ble.hrvQuality,
+                                        liveHeartRate: liveHeartRate(ble: ble))
         }
 
         let hrvNarrative: String
@@ -2788,7 +2801,8 @@ final class AtriaHomeModel {
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."
         } else {
-            hrvNarrative = ble.hrvQuality
+            hrvNarrative = hrvSettlingText(quality: ble.hrvQuality,
+                                           liveHeartRate: liveHeartRate(ble: ble))
         }
 
         let sleepValue: String
