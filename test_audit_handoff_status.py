@@ -335,6 +335,14 @@ class AuditHandoffStatusTests(unittest.TestCase):
             write_passing_long_wear_summary(old_summary)
             running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
             running.parent.mkdir(parents=True)
+            (running.parent / "run.json").write_text(json.dumps({
+                "preset": "overnight",
+                "planned_samples": 11,
+                "planned_duration_s": 36_000,
+                "app_commit": "installed-app",
+                "monitor_commit": "monitor-tooling",
+                "monitor_started_at": "2026-06-27T23:19:29Z",
+            }), encoding="utf-8")
             running.write_text(json.dumps({
                 "sample": 0,
                 "captured_at": "20260627T231930Z",
@@ -350,6 +358,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("overnight_summary_pending", physical["audit_blockers"])
         self.assertEqual(physical["running_samples"], 1)
         self.assertEqual(physical["latest_recent_session_span_s"], 43578.6)
+        self.assertEqual(physical["app_commit"], "installed-app")
+        self.assertEqual(physical["monitor_commit"], "monitor-tooling")
+        self.assertEqual(physical["monitor_started_at"], "2026-06-27T23:19:29Z")
 
     def test_markdown_summary_includes_current_blocking_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

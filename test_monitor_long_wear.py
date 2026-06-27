@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import subprocess
 import tempfile
 import unittest
@@ -182,6 +183,33 @@ class MonitorLongWearTests(unittest.TestCase):
 
         self.assertEqual(final["app_commit"], "installed-app")
         self.assertEqual(final["monitor_commit"], monitor_commit)
+
+    def test_write_run_metadata_records_planned_provenance_before_samples_finish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Initial"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            namespace = args(preset="overnight", label="night", app_commit="installed-app")
+            metadata = repo / "run.json"
+
+            monitor_long_wear.write_run_metadata(metadata,
+                                                 repo,
+                                                 namespace,
+                                                 samples_count=11,
+                                                 interval_seconds=3600,
+                                                 monitor_started_at="2026-06-22T00:00:00Z")
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+
+        self.assertEqual(data["label"], "night")
+        self.assertEqual(data["preset"], "overnight")
+        self.assertEqual(data["planned_samples"], 11)
+        self.assertEqual(data["planned_duration_s"], 36000)
+        self.assertEqual(data["app_commit"], "installed-app")
+        self.assertTrue(data["monitor_commit"])
 
     def test_detached_launchctl_command_preserves_monitor_arguments(self):
         with tempfile.TemporaryDirectory() as tmp:
