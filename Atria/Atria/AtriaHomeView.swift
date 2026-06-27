@@ -2541,7 +2541,7 @@ final class AtriaHomeModel {
         }
         guard let stats = baseline.lnRMSSDStats, stats.count >= 3 else {
             return StressState(value: "Learning",
-                               detail: "\(baseline.hrvSampleCount)/3 baseline",
+                               detail: "\(baseline.freshHRVSampleCount())/3 fresh baseline",
                                narrative: "Atria needs a few personal HRV samples before comparing stress to your norm.")
         }
 
@@ -2768,7 +2768,7 @@ final class AtriaHomeModel {
         return SavedAggregate(savedTodayTRIMP: aggregate.savedTodayTRIMP,
                               hasSavedToday: aggregate.hasSavedToday,
                               sessionsCount: aggregate.sessionsCount,
-                              baselineSamples: store.baseline.hrvSampleCount,
+                              baselineSamples: store.baseline.freshHRVSampleCount(),
                               confirmedWorkouts: store.confirmedWorkouts.count,
                               confirmedSleeps: store.confirmedSleeps.count)
     }
@@ -2888,7 +2888,7 @@ final class AtriaHomeModel {
             rrPackageText = "Learning"
         }
 
-        let referenceText = baselineMaturityText(sampleCount: store.baseline.hrvSampleCount)
+        let referenceText = baselineMaturityText(sampleCount: store.baseline.freshHRVSampleCount())
 
         let headline: String
         if ble.status == .connected {

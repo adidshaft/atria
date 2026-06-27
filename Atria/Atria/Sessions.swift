@@ -7714,7 +7714,7 @@ final class SessionStore: ObservableObject {
     func vo2MaxEstimateSummary(rest: Int, maxHR: Int) -> VO2MaxEstimateSummary {
         AtriaAnalytics.VO2Max.summary(rest: rest,
                                       maxHR: maxHR,
-                                      restingSamples: baseline.restingSampleCount,
+                                      restingSamples: baseline.freshRestingSampleCount(),
                                       maxHRMeasured: profile.maxHRSource == .measured,
                                       restingTrend: restingTrend14)
     }
@@ -9767,7 +9767,7 @@ final class SessionStore: ObservableObject {
                                  rest: rest,
                                  maxHR: profile.maxHR,
                                  profile: profile,
-                                 restingBaselineSamples: baseline.restingSampleCount,
+                                 restingBaselineSamples: baseline.freshRestingSampleCount(),
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
     }
@@ -9780,7 +9780,7 @@ final class SessionStore: ObservableObject {
                                  rest: rest,
                                  maxHR: profile.maxHR,
                                  profile: profile,
-                                 restingBaselineSamples: baseline.restingSampleCount,
+                                 restingBaselineSamples: baseline.freshRestingSampleCount(),
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
     }
