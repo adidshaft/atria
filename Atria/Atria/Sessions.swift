@@ -5293,6 +5293,7 @@ final class SessionStore: ObservableObject {
         let mean = sorted.map(\.ms).reduce(0, +) / Double(sorted.count)
         let sdnn = sqrt(sorted.map { pow($0.ms - mean, 2) }.reduce(0, +) / Double(sorted.count - 1))
         let pnn50 = Double(diffs.filter { abs($0) > 50 }.count) / Double(diffs.count) * 100
+        let respiratoryRate = AtriaAnalytics.RespRateRsa.estimate(samples: sorted, now: windowEnd)
         return HRVSnapshot(rmssd: rmssd,
                            sdnn: sdnn,
                            pnn50: pnn50,
@@ -5306,7 +5307,7 @@ final class SessionStore: ObservableObject {
                            interpolated: 0,
                            windowSeconds: windowEnd.timeIntervalSince(windowStart),
                            maxRRGapSeconds: strictGap,
-                           respiratoryRate: nil)
+                           respiratoryRate: respiratoryRate)
     }
 
     private func replayReason(snapshot: HRVSnapshot, strictGap: TimeInterval) -> String {

@@ -186,67 +186,7 @@ enum HRVAnalyzer {
     }
 
     private static func respiratoryRate(from kept: [RRInterval], now: Date) -> Double? {
-        guard let recentStartIndex = kept.firstIndex(where: { $0.t >= now.addingTimeInterval(-90) }) else {
-            return nil
-        }
-        let recent = kept[recentStartIndex...]
-        guard recent.count >= 20,
-              let first = recent.first?.t,
-              let last = recent.last?.t else { return nil }
-        let duration = last.timeIntervalSince(first)
-        guard duration >= 45 else { return nil }
-
-        let start = first.timeIntervalSinceReferenceDate
-        let relative = recent.map { ($0.t.timeIntervalSinceReferenceDate - start, $0.ms) }
-        let sampleRate = 4.0
-        let step = 1.0 / sampleRate
-        let count = Int(duration / step) + 1
-        guard count >= Int(45 * sampleRate) else { return nil }
-
-        var resampled: [Double] = []
-        resampled.reserveCapacity(count)
-        var sourceIndex = 0
-        for index in 0..<count {
-            let t = Double(index) * step
-            while sourceIndex + 1 < relative.count && relative[sourceIndex + 1].0 < t {
-                sourceIndex += 1
-            }
-            guard sourceIndex + 1 < relative.count else { break }
-            let a = relative[sourceIndex]
-            let b = relative[sourceIndex + 1]
-            let span = b.0 - a.0
-            guard span > 0 else { continue }
-            let fraction = (t - a.0) / span
-            resampled.append(a.1 + (b.1 - a.1) * fraction)
-        }
-        guard resampled.count >= Int(45 * sampleRate) else { return nil }
-
-        let mean = resampled.reduce(0, +) / Double(resampled.count)
-        let centered = resampled.map { $0 - mean }
-        let totalPower = centered.map { $0 * $0 }.reduce(0, +)
-        guard totalPower > 0 else { return nil }
-
-        var bestRate = 0.0
-        var bestPower = 0.0
-        var bandPower = 0.0
-        for breathsPerMinute in stride(from: 6.0, through: 30.0, by: 0.5) {
-            let frequency = breathsPerMinute / 60.0
-            var real = 0.0
-            var imaginary = 0.0
-            for (index, value) in centered.enumerated() {
-                let angle = 2.0 * Double.pi * frequency * Double(index) / sampleRate
-                real += value * cos(angle)
-                imaginary -= value * sin(angle)
-            }
-            let power = real * real + imaginary * imaginary
-            bandPower += power
-            if power > bestPower {
-                bestPower = power
-                bestRate = breathsPerMinute
-            }
-        }
-        guard bestPower > 0, bestPower / max(bandPower, bestPower) >= 0.18 else { return nil }
-        return bestRate
+        AtriaAnalytics.RespRateRsa.estimate(samples: kept.map { (t: $0.t, ms: $0.ms) }, now: now)
     }
 }
 
