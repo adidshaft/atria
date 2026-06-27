@@ -1757,6 +1757,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Coach", subtitle: "")
 
+            recoveryStrainVisuals
             metricContent
             AtriaSleepHistoryCard(snapshot: sleepHistory,
                                   hrvBaseline: hrvBaseline,
@@ -1783,6 +1784,38 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
             recoveryStrainTiles
         }
+    }
+
+    private var recoveryStrainVisuals: some View {
+        HStack(spacing: 14) {
+            AtriaMetricRing(label: "Recovery",
+                            value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? "--",
+                            fraction: recoveryFraction,
+                            tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
+                            size: 112)
+            AtriaMetricRing(label: "Strain",
+                            value: String(format: "%.1f", hero.strain),
+                            fraction: strainFraction,
+                            tint: strainZone?.tint ?? Metrics.strainColor(hero.strain),
+                            size: 112)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(hero.guidance.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(hero.loadSignalSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .atriaInsetCard(tint: recoveryZone?.tint ?? .green)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Recovery \(hero.recoveryEstimate.percent.map { "\($0) percent" } ?? "learning"), strain \(String(format: "%.1f", hero.strain)). \(hero.loadSignalSummaryText)")
     }
 
     @ViewBuilder
@@ -1820,6 +1853,14 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                            target: hero.guidance.target,
                            greenBand: strainGreenBand,
                            yellowBand: strainYellowBand)
+    }
+
+    private var recoveryFraction: Double? {
+        hero.recoveryEstimate.percent.map { min(max(Double($0) / 100, 0), 1) }
+    }
+
+    private var strainFraction: Double? {
+        min(max(hero.strain / 21, 0), 1)
     }
 }
 
