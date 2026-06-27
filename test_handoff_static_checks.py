@@ -3067,13 +3067,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "let trend = vo2MaxTrendText(currentEstimate: boundedEstimate, maxHR: maxHR)",
             "trendText: trend.text",
             "trendDetail: trend.detail",
+            "trendDelta: trend.delta",
         ]:
             assert_contains(self, body, needle)
         self.assertGreater(body.find("let rawEstimate = 15.3"), body.find("guard profile.maxHRSource == .measured else"))
-        assert_contains(self, sessions, "private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String)")
+        assert_contains(self, sessions, "let trendDelta: Double?")
+        assert_contains(self, sessions, "private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String, delta: Double?)")
         assert_contains(self, sessions, "let rests = restingTrend14.filter { $0 > 0 }")
         assert_contains(self, sessions, "guard rests.count >= 2, let oldestRest = rests.first else")
         assert_contains(self, sessions, "let previousEstimate = min(max(15.3 * Double(maxHR) / Double(oldestRest), 20), 80)")
+        assert_contains(self, sessions, "return (String(format: \"%+.1f\", delta), \"vs \\(rests.count)-point RHR trend.\", delta)")
 
         for needle in [
             "profile.maxHRSource == .measured",
@@ -4144,9 +4147,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "Under your sleep need -- aim for about",
             "static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone?",
             "steps >= safeGoal / 2",
-            "static func vo2TrendZone(_ summary: VO2MaxEstimateSummary) -> AtriaMetricZone?",
-            "summary.value != nil, summary.trendText != \"Learning\"",
-            "Green improving, yellow flat, red declining.",
+            "static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,",
+            "greenDelta: Double = 0.2",
+            "redDelta: Double = -0.2",
+            "let trendDelta = summary.trendDelta",
+            "trendDelta >= safeGreenDelta",
+            "trendDelta <= safeRedDelta",
             "Trending the wrong way -- consistent cardio, Zone 2, intervals, and sleep move this most.",
             "static func biologicalAgeZone(_ summary: BiologicalAgeSummary,",
             "greenOlderDelta: Int = 0",
@@ -4206,6 +4212,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AppStorage(\"atria.target.skinTemp.yellowDelta\")",
             "@AppStorage(\"atria.target.bioAge.greenOlderDelta\")",
             "@AppStorage(\"atria.target.bioAge.yellowOlderDelta\")",
+            "@AppStorage(\"atria.target.vo2.greenDelta\")",
+            "@AppStorage(\"atria.target.vo2.redDelta\")",
             "recoveryTarget: AtriaMetricTarget.recovery",
             "strainGreenBand: strainGreenBand",
             "strainYellowBand: strainYellowBand",
@@ -4223,6 +4231,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "skinTemperatureYellowDelta: skinTemperatureYellowDelta",
             "biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta",
             "biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta",
+            "vo2GreenDelta: vo2GreenDelta",
+            "vo2RedDelta: vo2RedDelta",
             "stepsGoal: stepsGoal",
             "sleepGoalHours: sleepGoalHours",
             "sleepEfficiencyGreenLower: sleepEfficiencyGreenLower",
@@ -4254,7 +4264,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenLower: sleepEfficiencyGreenLower",
             "yellowLower: sleepEfficiencyYellowLower",
             "Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,",
-            "Metrics.vo2TrendZone(vo2MaxEstimate)",
+            "Metrics.vo2TrendZone(vo2MaxEstimate,",
+            "greenDelta: vo2GreenDelta",
+            "redDelta: vo2RedDelta",
             "Metrics.biologicalAgeZone(biologicalAgeSummary,",
             "greenOlderDelta: biologicalAgeGreenOlderDelta",
             "yellowOlderDelta: biologicalAgeYellowOlderDelta",
@@ -4309,7 +4321,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.hrvZone(snapshot.latest?.hrv,",
             "greenRatio: hrvGreenRatio",
             "yellowRatio: hrvYellowRatio",
-            "Metrics.vo2TrendZone(vo2MaxEstimate)",
+            "Metrics.vo2TrendZone(vo2MaxEstimate,",
+            "greenDelta: vo2GreenDelta",
+            "redDelta: vo2RedDelta",
             "Metrics.biologicalAgeZone(biologicalAgeSummary,",
             "greenOlderDelta: biologicalAgeGreenOlderDelta",
             "yellowOlderDelta: biologicalAgeYellowOlderDelta",
@@ -4343,12 +4357,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "Stepper(value: $skinTemperatureYellowDelta",
             "Stepper(value: $biologicalAgeGreenOlderDelta",
             "Stepper(value: $biologicalAgeYellowOlderDelta",
+            "Stepper(value: $vo2GreenDelta",
+            "Stepper(value: $vo2RedDelta",
             "Reset to recommended",
             "Reset strain band",
             "Reset sleep targets",
             "Reset baseline targets",
             "Reset research targets",
             "Reset body-age target",
+            "Reset VO2 trend target",
             "recoveryGreenLower = 67",
             "recoveryYellowLower = 34",
             "strainGreenBand = 1.5",
@@ -4366,6 +4383,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "skinTemperatureYellowDelta = 1.0",
             "biologicalAgeGreenOlderDelta = 0",
             "biologicalAgeYellowOlderDelta = 3",
+            "vo2GreenDelta = 0.2",
+            "vo2RedDelta = -0.2",
             "normalizeRecoveryTargets()",
             "normalizeStrainTargets()",
             "normalizeStepsGoal()",
@@ -4376,6 +4395,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "normalizeRespiratoryTargets()",
             "normalizeSkinTemperatureTargets()",
             "normalizeBiologicalAgeTargets()",
+            "normalizeVO2Targets()",
             "HRV and resting HR zones personalize from your 7-night baseline before warning.",
             "Guidance is general wellness information, not medical advice.",
         ]:

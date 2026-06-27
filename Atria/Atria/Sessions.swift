@@ -1549,6 +1549,7 @@ struct VO2MaxEstimateSummary: Equatable {
     let narrative: String
     let trendText: String
     let trendDetail: String
+    let trendDelta: Double?
 
     var valueText: String {
         value.map { String(format: "%.1f", $0) } ?? "Learning"
@@ -7685,7 +7686,8 @@ final class SessionStore: ObservableObject {
                                          detail: "Need RHR",
                                          narrative: "Atria needs resting HR and HRmax before estimating VO2max.",
                                          trendText: "Learning",
-                                         trendDetail: "Needs resting baseline.")
+                                         trendDetail: "Needs resting baseline.",
+                                         trendDelta: nil)
         }
         guard restingSamples >= 7 else {
             return VO2MaxEstimateSummary(value: nil,
@@ -7693,7 +7695,8 @@ final class SessionStore: ObservableObject {
                                          detail: "\(restingSamples)/7 RHR",
                                          narrative: "Atria needs 7 resting nights before estimating VO2max.",
                                          trendText: "Learning",
-                                         trendDetail: "\(restingSamples)/7 RHR nights.")
+                                         trendDetail: "\(restingSamples)/7 RHR nights.",
+                                         trendDelta: nil)
         }
         guard profile.maxHRSource == .measured else {
             return VO2MaxEstimateSummary(value: nil,
@@ -7701,7 +7704,8 @@ final class SessionStore: ObservableObject {
                                          detail: "Need HRmax",
                                          narrative: "Atria needs a measured HRmax before estimating VO2max.",
                                          trendText: "Learning",
-                                         trendDetail: "Needs measured HRmax.")
+                                         trendDetail: "Needs measured HRmax.",
+                                         trendDelta: nil)
         }
 
         let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
@@ -7714,7 +7718,8 @@ final class SessionStore: ObservableObject {
                                      detail: detail,
                                      narrative: "Rough estimate from measured max HR and resting baseline.",
                                      trendText: trend.text,
-                                     trendDetail: trend.detail)
+                                     trendDetail: trend.detail,
+                                     trendDelta: trend.delta)
     }
 
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
@@ -7863,17 +7868,17 @@ final class SessionStore: ObservableObject {
         return min(max(Int((Double(chronologicalAge) + penalty).rounded()), 18), 90)
     }
 
-    private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String) {
+    private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String, delta: Double?) {
         let rests = restingTrend14.filter { $0 > 0 }
         guard rests.count >= 2, let oldestRest = rests.first else {
-            return ("Learning", "Needs 2 cached RHR points.")
+            return ("Learning", "Needs 2 cached RHR points.", nil)
         }
         let previousEstimate = min(max(15.3 * Double(maxHR) / Double(oldestRest), 20), 80)
         let delta = currentEstimate - previousEstimate
         if abs(delta) < 0.2 {
-            return ("Stable", "vs \(rests.count)-point RHR trend.")
+            return ("Stable", "vs \(rests.count)-point RHR trend.", delta)
         }
-        return (String(format: "%+.1f", delta), "vs \(rests.count)-point RHR trend.")
+        return (String(format: "%+.1f", delta), "vs \(rests.count)-point RHR trend.", delta)
     }
 
     func trendSummaryFast(rest: Int,

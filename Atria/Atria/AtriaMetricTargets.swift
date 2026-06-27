@@ -279,18 +279,22 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
-    static func vo2TrendZone(_ summary: VO2MaxEstimateSummary) -> AtriaMetricZone? {
-        guard summary.value != nil, summary.trendText != "Learning" else { return nil }
+    static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,
+                             greenDelta: Double = 0.2,
+                             redDelta: Double = -0.2) -> AtriaMetricZone? {
+        guard summary.value != nil,
+              summary.trendText != "Learning",
+              let trendDelta = summary.trendDelta else { return nil }
         let trimmedTrend = summary.trendText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeGreenDelta = min(max(greenDelta, 0.0), 2.0)
+        let safeRedDelta = max(min(redDelta, -0.05), -2.0)
         let level: AtriaMetricZoneLevel
-        if trimmedTrend.localizedCaseInsensitiveContains("stable") {
-            level = .yellow
-        } else if trimmedTrend.hasPrefix("+") {
+        if trendDelta >= safeGreenDelta {
             level = .green
-        } else if trimmedTrend.hasPrefix("-") {
+        } else if trendDelta <= safeRedDelta {
             level = .red
         } else {
-            return nil
+            level = .yellow
         }
 
         let recommendation: String
@@ -306,7 +310,7 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "VO2max trend",
                                current: "Trend \(trimmedTrend), \(summary.trendDetail)",
-                               targetSummary: "Green improving, yellow flat, red declining.",
+                               targetSummary: String(format: "Green >= +%.1f, yellow %.1f to %.1f, red <= %.1f.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
                                recommendation: recommendation,
                                disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
     }

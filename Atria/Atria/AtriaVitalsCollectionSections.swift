@@ -388,6 +388,8 @@ private struct AtriaVitalsProfileCardHost: View {
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
+    @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
+    @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
 
     var body: some View {
@@ -397,6 +399,8 @@ private struct AtriaVitalsProfileCardHost: View {
                          biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
                          biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
                          biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
+                         vo2GreenDelta: vo2GreenDelta,
+                         vo2RedDelta: vo2RedDelta,
                          onUpdateProfile: onUpdateProfile)
             .equatable()
     }
@@ -2171,6 +2175,8 @@ private struct AtriaProfileCard: View, Equatable {
     let biologicalAgeSummary: BiologicalAgeSummary
     let biologicalAgeGreenOlderDelta: Int
     let biologicalAgeYellowOlderDelta: Int
+    let vo2GreenDelta: Double
+    let vo2RedDelta: Double
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2181,6 +2187,8 @@ private struct AtriaProfileCard: View, Equatable {
             && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
             && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
             && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
+            && lhs.vo2GreenDelta == rhs.vo2GreenDelta
+            && lhs.vo2RedDelta == rhs.vo2RedDelta
     }
 
     var body: some View {
@@ -2304,7 +2312,9 @@ private struct AtriaProfileCard: View, Equatable {
     }
 
     private var vo2TrendZone: AtriaMetricZone? {
-        Metrics.vo2TrendZone(vo2MaxEstimate)
+        Metrics.vo2TrendZone(vo2MaxEstimate,
+                             greenDelta: vo2GreenDelta,
+                             redDelta: vo2RedDelta)
     }
 
     private var biologicalAgeZone: AtriaMetricZone? {
