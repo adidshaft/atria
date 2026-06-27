@@ -2303,6 +2303,7 @@ class HandoffStaticChecks(unittest.TestCase):
         metrics = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
         trend_chart = source(ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
             "@Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []",
@@ -2335,6 +2336,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct PhoneMotionSample: Equatable",
             "struct PhoneMotionSummary: Equatable",
             "static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary",
+            "struct HeartRateEnergySample: Equatable",
+            "static func dayCalories(_ samples: [HeartRateEnergySample],",
+            "private static func energyKcalPerMinute(heartRate: Int, profile: AthleteProfile) -> Double",
             "enum Strain",
             "enum TrainingLoad",
             "static func trimp(_ series: [(t: Double, bpm: Int)],",
@@ -2372,7 +2376,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary",
             "typealias PhoneMotionSample = AtriaAnalytics.Daily.PhoneMotionSample",
             "typealias PhoneMotionSummary = AtriaAnalytics.Daily.PhoneMotionSummary",
+            "typealias HeartRateEnergySample = AtriaAnalytics.Daily.HeartRateEnergySample",
             "AtriaAnalytics.Daily.stepsDaily(samples)",
+            "AtriaAnalytics.Daily.dayCalories(samples, rest: rest, profile: profile)",
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)",
             "AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)",
@@ -2395,8 +2401,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "phoneStepDistanceMeters: phoneMotion.distanceMeters",
             "phoneStepFloorsAscended: phoneMotion.floorsAscended",
             "phoneStepFloorsDescended: phoneMotion.floorsDescended",
+            "Metrics.dayCalories(samples.map",
+            "Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)",
+            "activeCalories += Metrics.dayCalories([",
         ]:
-            assert_contains(self, trend_chart + sessions, needle)
+            assert_contains(self, trend_chart + sessions + home, needle)
 
         for forbidden in [
             "private var trendPoints",
@@ -2413,7 +2422,6 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "AtriaOverviewTrendChartHost(store: store, maxHR:")
         assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
 
-        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         assert_contains(self, home, "let load = store.trainingLoadSummarySnapshot")
         assert_contains(self, home, "let loadReadinessText: String")
@@ -5282,6 +5290,23 @@ class HandoffStaticChecks(unittest.TestCase):
                 "down": floors_down if has_down else None,
             }
 
+        def day_calories(samples, rest, sex, age, weight):
+            def kcal_per_min(hr):
+                if sex == "male":
+                    return max(0, (-55.0969 + 0.6309 * hr + 0.1988 * weight + 0.2017 * age) / 4.184)
+                if sex == "female":
+                    return max(0, (-20.4022 + 0.4472 * hr - 0.1263 * weight + 0.0740 * age) / 4.184)
+                return 0
+
+            resting = kcal_per_min(rest)
+            total = 0
+            for previous, current in zip(samples, samples[1:]):
+                dt_min = (current[0] - previous[0]) / 60
+                if dt_min <= 0 or dt_min >= 5 or current[1] <= 0:
+                    continue
+                total += max(0, kcal_per_min(current[1]) - resting) * dt_min
+            return total
+
         def resp_rate_rsa(resampled, sample_rate=4.0):
             mean = sum(resampled) / len(resampled)
             centered = [value - mean for value in resampled]
@@ -5330,6 +5355,8 @@ class HandoffStaticChecks(unittest.TestCase):
             {"steps": -20, "distance": None, "up": None, "down": 2},
             {"steps": 380, "distance": 220, "up": 3, "down": -1},
         ]), {"steps": 500, "distance": 300, "up": 4, "down": 2})
+        self.assertGreater(day_calories([(0, 60), (60, 130), (120, 150)], 60, "male", 35, 75), 4.0)
+        self.assertEqual(day_calories([(0, 60), (600, 150)], 60, "male", 35, 75), 0)
         synthetic_rr = [800 + 45 * math.sin(2 * math.pi * (15 / 60) * index / 4) for index in range(4 * 90)]
         self.assertEqual(resp_rate_rsa(synthetic_rr), 15)
 

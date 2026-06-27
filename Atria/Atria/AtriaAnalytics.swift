@@ -447,6 +447,11 @@ enum AtriaAnalytics {
             var hasStepEvidence: Bool { steps > 0 }
         }
 
+        struct HeartRateEnergySample: Equatable {
+            let t: Date
+            let bpm: Int
+        }
+
         static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
             var steps = 0
             var distance = 0.0
@@ -476,6 +481,35 @@ enum AtriaAnalytics {
                                       distanceMeters: hasDistance ? distance : nil,
                                       floorsAscended: hasFloorsAscended ? floorsAscended : nil,
                                       floorsDescended: hasFloorsDescended ? floorsDescended : nil)
+        }
+
+        static func dayCalories(_ samples: [HeartRateEnergySample],
+                                rest: Int,
+                                profile: AthleteProfile) -> Double? {
+            guard samples.count > 1, rest > 0, profile.hasEnergyProfile else { return nil }
+            let resting = energyKcalPerMinute(heartRate: rest, profile: profile)
+            var total = 0.0
+            for index in 1..<samples.count {
+                let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
+                guard dtMin > 0, dtMin < 5, samples[index].bpm > 0 else { continue }
+                let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
+                total += max(0, gross - resting) * dtMin
+            }
+            return total
+        }
+
+        private static func energyKcalPerMinute(heartRate: Int, profile: AthleteProfile) -> Double {
+            let hr = Double(heartRate)
+            let weight = profile.weightKg
+            let age = Double(profile.age)
+            switch profile.biologicalSex {
+            case .male:
+                return max(0, (-55.0969 + 0.6309 * hr + 0.1988 * weight + 0.2017 * age) / 4.184)
+            case .female:
+                return max(0, (-20.4022 + 0.4472 * hr - 0.1263 * weight + 0.0740 * age) / 4.184)
+            case .unspecified:
+                return 0
+            }
         }
     }
 
@@ -700,16 +734,9 @@ enum AtriaAnalytics {
         }
 
         static func activeCalories(_ samples: [HRSample], rest: Int, profile: AthleteProfile) -> Double? {
-            guard samples.count > 1, rest > 0, profile.hasEnergyProfile else { return nil }
-            let resting = energyKcalPerMinute(heartRate: rest, profile: profile)
-            var total = 0.0
-            for index in 1..<samples.count {
-                let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
-                guard dtMin > 0, dtMin < 5, samples[index].bpm > 0 else { continue }
-                let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
-                total += max(0, gross - resting) * dtMin
-            }
-            return total
+            Daily.dayCalories(samples.map { Daily.HeartRateEnergySample(t: $0.t, bpm: $0.bpm) },
+                              rest: rest,
+                              profile: profile)
         }
 
         /// HR-reserve zone seconds for auditing Strain behavior across rest to max.
@@ -769,19 +796,6 @@ enum AtriaAnalytics {
             return min(21.0 * (1 - exp(-trimp / 40.0)), 21.0)
         }
 
-        private static func energyKcalPerMinute(heartRate: Int, profile: AthleteProfile) -> Double {
-            let hr = Double(heartRate)
-            let weight = profile.weightKg
-            let age = Double(profile.age)
-            switch profile.biologicalSex {
-            case .male:
-                return max(0, (-55.0969 + 0.6309 * hr + 0.1988 * weight + 0.2017 * age) / 4.184)
-            case .female:
-                return max(0, (-20.4022 + 0.4472 * hr - 0.1263 * weight + 0.0740 * age) / 4.184)
-            case .unspecified:
-                return 0
-            }
-        }
     }
 
     enum Recovery {

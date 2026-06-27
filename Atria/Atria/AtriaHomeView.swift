@@ -2939,7 +2939,9 @@ final class AtriaHomeModel {
                            rest: rest,
                            maxHR: maxHR,
                            trimp: liveSessionTRIMP(samples, rest: rest, max: maxHR),
-                           activeCalories: Metrics.activeCalories(samples, rest: rest, profile: profile))
+                           activeCalories: Metrics.dayCalories(samples.map {
+                               Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
+                           }, rest: rest, profile: profile))
     }
 
     private static func nextLiveSessionDerived(previous: LiveSessionDerived,
@@ -2984,7 +2986,10 @@ final class AtriaHomeModel {
             let hrr = Swift.min(Swift.max((Double(samples[index].bpm) - Double(rest)) / span, 0), 1)
             total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
             if profile.hasEnergyProfile {
-                activeCalories += Metrics.activeCalories([samples[index - 1], samples[index]], rest: rest, profile: profile) ?? 0
+                activeCalories += Metrics.dayCalories([
+                    Metrics.HeartRateEnergySample(t: samples[index - 1].t, bpm: samples[index - 1].bpm),
+                    Metrics.HeartRateEnergySample(t: samples[index].t, bpm: samples[index].bpm),
+                ], rest: rest, profile: profile) ?? 0
             }
         }
         return LiveSessionDerived(sampleCount: samples.count,
