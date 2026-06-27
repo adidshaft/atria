@@ -505,6 +505,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      sensorSummary: store.imuAuditSummary,
                                      sleepHistory: store.sleepHistorySnapshot,
+                                     historicalArchiveStatus: store.historicalArchiveStatus,
                                      insights: store.behaviorInsights,
                                      taggedDays: store.behaviorJournalEntries.count,
                                      subtitle: subtitle,
@@ -529,13 +530,14 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, workout, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, workout, backfill, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recovery: return "Recovery"
         case .strain: return "Strain"
         case .workout: return "Workout"
+        case .backfill: return "Backfill"
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
         case .sleepHistory: return "Sleep history"
@@ -557,6 +559,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .recovery: return "gauge.with.dots.needle.67percent"
         case .strain: return "figure.run"
         case .workout: return "stopwatch.fill"
+        case .backfill: return "arrow.triangle.2.circlepath"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
         case .sleepHistory: return "moon.zzz.fill"
@@ -593,7 +596,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .backfill, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -649,6 +652,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let trendValues: [Int]
     let sensorSummary: IMUAuditSummary
     let sleepHistory: SleepHistorySnapshot
+    let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus
     let insights: [AtriaInsight]
     let taggedDays: Int
     let subtitle: String
@@ -677,6 +681,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.sensorSummary == rhs.sensorSummary
             && lhs.sleepHistory == rhs.sleepHistory
+            && lhs.historicalArchiveStatus == rhs.historicalArchiveStatus
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
@@ -827,6 +832,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1))
         case .workout:
             workoutCard(metric)
+        case .backfill:
+            backfillCard(metric)
         case .hrv:
             AtriaGlanceMetricCard(title: "HRV",
                                   value: metricDisplayValue(hero.hrvValue),
@@ -934,6 +941,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .accessibilityLabel(live.status == .connected
                             ? "Start live workout"
                             : "Connect strap before starting live workout")
+    }
+
+    private func backfillCard(_ metric: AtriaTodayMetric) -> some View {
+        AtriaGlanceMetricCard(title: "Backfill",
+                              value: historicalArchiveStatus.valueText,
+                              detail: historicalArchiveStatus.detailText,
+                              systemImage: metric.systemImage,
+                              tint: backfillTint)
+            .accessibilityLabel("Backfill \(historicalArchiveStatus.valueText). \(historicalArchiveStatus.userFootnoteText)")
+    }
+
+    private var backfillTint: Color {
+        if historicalArchiveStatus.metricReady { return .green }
+        if historicalArchiveStatus.hasArchiveRows { return .cyan }
+        if !historicalArchiveStatus.parseOK { return .red }
+        return .orange
     }
 
     private var sleepHistoryCard: some View {
