@@ -114,6 +114,14 @@ struct SavedSession: Codable, Identifiable {
         guard let hrv, hrv > 0 else { return nil }
         return hrv
     }
+    func sleepRespiratoryRate(rest: Int, maxHR: Int, calendar: Calendar = .current) -> Double? {
+        guard let respiratoryRate, respiratoryRate > 0 else { return nil }
+        if sleepWakeResearchState == "sleep_research" { return respiratoryRate }
+        if detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate {
+            return respiratoryRate
+        }
+        return nil
+    }
     var referenceValidatedSDNN: Double? {
         guard hrvReferenceValidated == true else { return nil }
         if let hrvSDNN, hrvSDNN > 0 {
@@ -2797,7 +2805,9 @@ final class SessionStore: ObservableObject {
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
-            let respiratoryRates = daySessions.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let respiratoryRates = daySessions.compactMap {
+                $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR, calendar: calendar)
+            }
             let sleepRHRs = daySessions.compactMap { session -> Int? in
                 guard session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate else {
                     return nil
@@ -2845,7 +2855,9 @@ final class SessionStore: ObservableObject {
             }
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
-            let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let respiratoryRates = recent.compactMap {
+                $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
+            }
             let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (calendar.startOfDay(for: $0.day), $0) })
             let recoveries: [Int] = recent.compactMap { session in
                 let sleepRollup = rollupsByDay[calendar.startOfDay(for: session.start)]
@@ -6786,7 +6798,9 @@ final class SessionStore: ObservableObject {
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
-            let respiratoryRates = daySessions.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let respiratoryRates = daySessions.compactMap {
+                $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR, calendar: calendar)
+            }
             let sleepRHRs = daySessions.compactMap { session -> Int? in
                 guard session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate else {
                     return nil
@@ -7567,7 +7581,9 @@ final class SessionStore: ObservableObject {
             }
             let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
-            let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let respiratoryRates = recent.compactMap {
+                $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
+            }
             let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (Calendar.current.startOfDay(for: $0.day), $0) })
             let recoveries: [Int] = recent.compactMap { session in
                 let sleepRollup = rollupsByDay[Calendar.current.startOfDay(for: session.start)]
@@ -7739,7 +7755,9 @@ final class SessionStore: ObservableObject {
         }
         let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
         let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
-        let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let respiratoryRates = recent.compactMap {
+            $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
+        }
         let latestSleep = sleepHistorySnapshot.latest
         let recoveries = recent.compactMap {
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,

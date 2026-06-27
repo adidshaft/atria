@@ -3105,6 +3105,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_healthkit_rhr_and_respiratory_rate_export_use_correct_types(self):
         text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
         for needle in [
             "private var restingHeartRateType",
@@ -3113,11 +3114,17 @@ class HandoffStaticChecks(unittest.TestCase):
             ".respiratoryRate",
             "session.restingStable > 0",
             "HKQuantitySample(type: restingHeartRateType",
-            "let respiratoryRate = session.respiratoryRate",
+            "func sleepRespiratoryRate(rest: Int, maxHR: Int, calendar: Calendar = .current) -> Double?",
+            "sleepWakeResearchState == \"sleep_research\"",
+            "detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate",
+            "let respiratoryRate = session.sleepRespiratoryRate(rest: rest, maxHR: maxHR)",
             "HKQuantitySample(type: respiratoryRateType",
             "HKUnit.count().unitDivided(by: .minute())",
         ]:
-            assert_contains(self, text, needle)
+            assert_contains(self, text + sessions, needle)
+        assert_not_contains(self, text, "let respiratoryRate = session.respiratoryRate")
+        assert_not_contains(self, text, "respiratoryRateExported: (session.respiratoryRate ?? 0) > 0")
+        assert_not_contains(self, sessions, "compactMap(\\.respiratoryRate)")
 
     def test_healthkit_step_count_is_read_only(self):
         text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
