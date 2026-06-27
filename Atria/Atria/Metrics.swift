@@ -32,6 +32,14 @@ enum Metrics {
         AtriaAnalytics.Strain.activeCalories(samples, rest: rest, profile: profile)
     }
 
+    typealias MaxHeartRateZoneSeconds = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds
+
+    static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
+                                        maxHR: Int,
+                                        maxGap: TimeInterval = 5 * 60) -> MaxHeartRateZoneSeconds {
+        AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, maxGap: maxGap)
+    }
+
     typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary
 
     /// HR-reserve zone seconds for auditing Strain behavior across rest to max.
