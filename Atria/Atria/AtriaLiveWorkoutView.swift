@@ -102,7 +102,7 @@ struct AtriaLiveWorkoutView: View {
                      value: String(format: "%.1f", strain),
                      tint: .orange)
             statTile(title: "Calories",
-                     value: liveStore.state.liveActiveCalories.map { "\($0)" } ?? "--",
+                     value: liveStore.state.liveActiveCaloriesText,
                      tint: .pink)
         }
     }

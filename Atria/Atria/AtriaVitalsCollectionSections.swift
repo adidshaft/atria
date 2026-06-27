@@ -641,7 +641,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.")
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTemperatureDeviation.valueText,
-                                unit: summary.skinTemperatureDeviation.isReady ? "deg C" : nil,
+                                unit: summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
                                 state: summary.skinTemperatureDeviation.isReady ? .research : .learning,
                                 tint: summary.skinTemperatureDeviation.isReady ? .teal : .orange,
                                 footnote: summary.skinTemperatureDeviation.footnoteText)

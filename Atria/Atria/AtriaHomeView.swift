@@ -2373,7 +2373,7 @@ final class AtriaHomeModel {
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = savedAggregate.savedTodayTRIMP + liveTRIMP
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
-        let load = store.trainingLoadSummary(rest: rest, maxHR: maxHR)
+        let load = store.trainingLoadSummarySnapshot
         let strainConfidence: String
         if maxHR <= rest {
             strainConfidence = "learning"

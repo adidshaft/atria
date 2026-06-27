@@ -1195,6 +1195,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, content, "Text(primaryButtonTitle)\n                            .frame(maxWidth: .infinity)")
         assert_contains(self, content, ".atriaCardAction(tint: .blue)")
         assert_contains(self, live_workout, ".atriaCardAction(tint: .red)")
+        assert_contains(self, live_workout, "value: liveStore.state.liveActiveCaloriesText")
+        assert_not_contains(self, live_workout, "liveStore.state.liveActiveCalories.map { \"\\($0)\" }")
 
     def test_live_workout_end_checkpoints_and_confirms_honestly(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
@@ -1961,12 +1963,19 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "@Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []",
+            "@Published private(set) var trainingLoadSummarySnapshot = TrainingLoadSummary.learning",
             "private var overviewTrendPointsRevision = 0",
+            "private var trainingLoadSummaryRevision = 0",
             "private func refreshOverviewTrendPointsCache(deferred: Bool = true)",
+            "private func refreshTrainingLoadSummaryCache(deferred: Bool = true)",
             "DispatchQueue.global(qos: .utility).async",
             "Self.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)",
+            "Self.makeTrainingLoadSummary(sessions: source,",
             "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
+            "private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession]",
             "Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))",
+            "trainingLoadSummarySnapshot",
+            "func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {\n        trainingLoadSummarySnapshot\n    }",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -1990,6 +1999,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, overview, "store.overviewTrendPoints.count >= 2")
         assert_not_contains(self, overview, "AtriaOverviewTrendChartHost(store: store, maxHR:")
         assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
+
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        assert_contains(self, home, "let load = store.trainingLoadSummarySnapshot")
+        assert_not_contains(self, home, "store.trainingLoadSummary(rest:")
 
     def test_behavior_insights_compute_from_snapshots_off_actor_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
@@ -2273,7 +2286,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: summary.probeFrameCount > 0 ? .research : .learning",
             "value: summary.spo2CandidateFrames > 0 ? \"Research\" : \"--\"",
             "value: summary.skinTemperatureDeviation.valueText",
-            "unit: summary.skinTemperatureDeviation.isReady ? \"deg C\" : nil",
+            "unit: summary.skinTemperatureDeviation.isReady ? \"delta C\" : nil",
             "state: summary.skinTemperatureDeviation.isReady ? .research : .learning",
             "footnote: summary.spo2CandidateFrames > 0 ? \"\\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value.\" : \"Early signal; not a SpO2 value.\"",
             "footnote: summary.skinTemperatureDeviation.footnoteText",
@@ -3215,7 +3228,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: summary.spo2CandidateFrames > 0 ? \"Research\" : \"--\"",
             "AtriaMetricTile(label: \"Body temp\"",
             "value: summary.skinTemperatureDeviation.valueText",
-            "unit: summary.skinTemperatureDeviation.isReady ? \"deg C\" : nil",
+            "unit: summary.skinTemperatureDeviation.isReady ? \"delta C\" : nil",
             "footnote: summary.skinTemperatureDeviation.footnoteText",
             "AtriaMetricTile(label: \"Resp rate\"",
             "AtriaMetricTile(label: \"Strap steps\"",
