@@ -1252,10 +1252,13 @@ struct BaselineLearningEvidence {
 
 struct AggregateSleepCandidate {
     static let minimumFragmentDuration: TimeInterval = 5 * 60
+    static let napMinimumDuration: TimeInterval = 20 * 60
+    static let napMaximumSpan: TimeInterval = 3 * 60 * 60
     static let strictMinimumDuration: TimeInterval = 3 * 60 * 60
     static let fragmentedMinimumDuration: TimeInterval = 2.5 * 60 * 60
     static let fragmentedMinimumSpan: TimeInterval = 3 * 60 * 60
 
+    let kind: String
     let day: Date
     let sessions: Int
     let start: Date
@@ -5120,8 +5123,10 @@ final class SessionStore: ObservableObject {
                   rest)
             return nil
         }
-        let confirmable = best.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
-            && best.span >= AggregateSleepCandidate.fragmentedMinimumSpan
+        let confirmable = best.kind == "nap_candidate"
+            ? best.duration >= AggregateSleepCandidate.napMinimumDuration
+            : (best.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+               && best.span >= AggregateSleepCandidate.fragmentedMinimumSpan)
         guard confirmable else {
             AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=candidate_too_short source=%@ duration_s=%.0f span_s=%.0f sessions=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
@@ -5131,7 +5136,10 @@ final class SessionStore: ObservableObject {
             return nil
         }
         var existing = cachedConfirmedSleeps
-        let id = confirmedSleepID(start: best.start, end: best.end, source: best.sessions > 1 ? "aggregate_sleep" : "sleep_window")
+        let sleepSource = best.kind == "nap_candidate"
+            ? "nap_candidate"
+            : (best.sessions > 1 ? "aggregate_sleep" : "sleep_window")
+        let id = confirmedSleepID(start: best.start, end: best.end, source: sleepSource)
         if let already = existing.first(where: { $0.id == id }) {
             AtriaDebugLog("ATRIADBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   already.id,
@@ -5144,13 +5152,12 @@ final class SessionStore: ObservableObject {
                   already.motionValidated ? 1 : 0)
             return already
         }
-        let candidateSource = best.sessions > 1 ? "aggregate_sleep" : "sleep_window"
         let confidence = best.motionEvidenceValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only"
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: best.start,
                                            end: best.end,
-                                           source: candidateSource,
+                                           source: sleepSource,
                                            confidence: confidence,
                                            sessions: best.sessions,
                                            samples: best.samples,
@@ -6385,9 +6392,15 @@ final class SessionStore: ObservableObject {
             let startHour = calendar.component(.hour, from: session.start)
             let endHour = calendar.component(.hour, from: session.end)
             let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
+            let daytimeNapWindow = !overnight && startHour >= 11 && endHour <= 20
+            let napLike = daytimeNapWindow
+                && session.duration >= AggregateSleepCandidate.napMinimumDuration
+                && session.duration <= AggregateSleepCandidate.napMaximumSpan
+                && session.avg <= rest + 12
+                && session.peak <= rest + 35
             let lowHR = session.avg <= rest + 18 && session.peak <= rest + 55
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
-            return overnight && lowHR && notWorkout
+            return ((overnight && lowHR) || napLike) && notWorkout
         }
         let grouped = Dictionary(grouping: eligible) { session in
             aggregateSleepDay(for: session, calendar: calendar)
@@ -6410,7 +6423,13 @@ final class SessionStore: ObservableObject {
                     && span >= AggregateSleepCandidate.fragmentedMinimumSpan
                     && totalDuration >= AggregateSleepCandidate.fragmentedMinimumDuration
                     && maxGap <= 2 * 60 * 60
-                guard strictDurationReady || fragmentedFallbackReady else { return nil }
+                let clusterStartHour = calendar.component(.hour, from: start)
+                let clusterEndHour = calendar.component(.hour, from: end)
+                let napCandidateReady = clusterStartHour >= 11
+                    && clusterEndHour <= 20
+                    && span <= AggregateSleepCandidate.napMaximumSpan
+                    && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                guard strictDurationReady || fragmentedFallbackReady || napCandidateReady else { return nil }
                 let avg = allHR.reduce(0, +) / allHR.count
                 let peak = allHR.max() ?? 0
                 let resting = percentileHR(0.05, values: allHR)
@@ -6432,12 +6451,16 @@ final class SessionStore: ObservableObject {
                 let reason: String
                 if fragmentedFallbackReady && !strictDurationReady {
                     reason = "HR-only interrupted overnight low-HR aggregate; below strict 3h low-HR total but span supports broken sleep fallback; \(motionReason)"
+                } else if napCandidateReady {
+                    reason = "HR-only daytime nap candidate; user confirmation required; \(motionReason)"
                 } else if cluster.count > 1 {
                     reason = "HR-only broken overnight low-HR aggregate; \(motionReason)"
                 } else {
                     reason = "HR-only overnight low-HR window; \(motionReason)"
                 }
-                return AggregateSleepCandidate(day: day,
+                let kind = napCandidateReady ? "nap_candidate" : "overnight_sleep"
+                return AggregateSleepCandidate(kind: kind,
+                                               day: day,
                                                sessions: cluster.count,
                                                start: start,
                                                end: end,
@@ -6516,7 +6539,7 @@ final class SessionStore: ObservableObject {
                                        motionSource: best.motionEvidenceSource,
                                        motionValidated: best.motionEvidenceValidated,
                                        fallbackAvailable: true,
-                                       fallbackSource: best.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep",
+                                       fallbackSource: sleepFallbackSource(for: best),
                                        fallbackReason: best.reason,
                                        fallbackDuration: best.duration,
                                        fallbackSpan: best.span,
@@ -6575,7 +6598,7 @@ final class SessionStore: ObservableObject {
                                        motionSource: best.motionEvidenceSource,
                                        motionValidated: best.motionEvidenceValidated,
                                        fallbackAvailable: true,
-                                       fallbackSource: best.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep",
+                                       fallbackSource: sleepFallbackSource(for: best),
                                        fallbackReason: best.reason,
                                        fallbackDuration: best.duration,
                                        fallbackSpan: best.span,
@@ -6629,6 +6652,11 @@ final class SessionStore: ObservableObject {
         return "sleep_low_confidence"
     }
 
+    private func sleepFallbackSource(for candidate: AggregateSleepCandidate) -> String {
+        if candidate.kind == "nap_candidate" { return "hr_only_nap" }
+        return candidate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep"
+    }
+
     func aggregateSleepDiagnostics(rest: Int, calendar: Calendar = .current) -> (evaluated: Int, eligible: Int, tooShort: Int, notOvernight: Int, hrTooHigh: Int, workoutLike: Int, candidates: Int) {
         var evaluated = 0
         var eligible = 0
@@ -6646,11 +6674,18 @@ final class SessionStore: ObservableObject {
             let startHour = calendar.component(.hour, from: session.start)
             let endHour = calendar.component(.hour, from: session.end)
             let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
-            if !overnight {
+            let napLike = !overnight
+                && startHour >= 11
+                && endHour <= 20
+                && session.duration >= AggregateSleepCandidate.napMinimumDuration
+                && session.duration <= AggregateSleepCandidate.napMaximumSpan
+                && session.avg <= rest + 12
+                && session.peak <= rest + 35
+            if !overnight && !napLike {
                 notOvernight += 1
                 continue
             }
-            let lowHR = session.avg <= rest + 18 && session.peak <= rest + 55
+            let lowHR = napLike || (session.avg <= rest + 18 && session.peak <= rest + 55)
             if !lowHR {
                 hrTooHigh += 1
                 continue
