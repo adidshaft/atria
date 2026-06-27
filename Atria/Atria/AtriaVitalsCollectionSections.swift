@@ -1586,10 +1586,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                 } label: {
                     Image(systemName: "plus")
                         .font(.caption.weight(.bold))
-                        .frame(width: 34, height: 34)
+                        .frame(width: 18, height: 18)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .atriaCardAction(prominent: false, tint: .cyan)
                 .accessibilityLabel("Add sleep manually")
                 AtriaStateBadge(state: snapshot.confirmedCount > 0 ? .validated : (snapshot.candidateCount > 0 ? .research : .learning))
             }
