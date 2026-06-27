@@ -10356,6 +10356,8 @@ struct SleepHistorySnapshot: Equatable {
     struct Night: Identifiable, Equatable {
         let id: String
         let day: Date
+        let start: Date?
+        let end: Date?
         let duration: TimeInterval
         let restingHR: Int?
         let hrv: Int?
@@ -10371,6 +10373,8 @@ struct SleepHistorySnapshot: Equatable {
 
         init(id: String,
              day: Date,
+             start: Date? = nil,
+             end: Date? = nil,
              duration: TimeInterval,
              restingHR: Int?,
              hrv: Int?,
@@ -10382,6 +10386,8 @@ struct SleepHistorySnapshot: Equatable {
              stageSegments: [SleepStageSegment]) {
             self.id = id
             self.day = day
+            self.start = start
+            self.end = end
             self.duration = duration
             self.restingHR = restingHR
             self.hrv = hrv
@@ -10512,6 +10518,8 @@ struct SleepHistorySnapshot: Equatable {
             let day = calendar.startOfDay(for: sleep.start)
             nightsByDay[day] = Night(id: sleep.id,
                                      day: day,
+                                     start: sleep.start,
+                                     end: sleep.end,
                                      duration: sleep.duration,
                                      restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
                                      hrv: nil,
@@ -10552,6 +10560,8 @@ struct SleepHistorySnapshot: Equatable {
     private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
         Night(id: night.id,
               day: night.day,
+              start: night.start,
+              end: night.end,
               duration: night.duration,
               restingHR: night.restingHR ?? rollup.restingHR,
               hrv: night.hrv ?? rollup.avgHRV,
@@ -10614,12 +10624,19 @@ struct SleepHistorySnapshot: Equatable {
         guard let score = sleepConsistencyPercent else {
             return "Needs 2 sleep nights."
         }
-        if score >= 85 { return "Very steady recent sleep duration." }
-        if score >= 70 { return "Mostly steady recent sleep duration." }
-        return "Variable sleep duration; keep bed and wake times consistent."
+        let basis = sleepScheduleConsistencyPercent == nil ? "recent sleep duration" : "sleep timing and duration"
+        if score >= 85 { return "Very steady \(basis)." }
+        if score >= 70 { return "Mostly steady \(basis)." }
+        return "Variable \(basis); keep bed and wake times consistent."
     }
 
     var sleepConsistencyPercent: Int? {
+        guard let durationScore = sleepDurationConsistencyPercent else { return nil }
+        guard let scheduleScore = sleepScheduleConsistencyPercent else { return durationScore }
+        return min(max(Int((Double(durationScore) * 0.55 + Double(scheduleScore) * 0.45).rounded()), 0), 100)
+    }
+
+    private var sleepDurationConsistencyPercent: Int? {
         let records = recentSleepNights.prefix(7)
         guard records.count >= 2 else { return nil }
         let durations = records.map(\.durationHours)
@@ -10627,6 +10644,39 @@ struct SleepHistorySnapshot: Equatable {
         let meanAbsoluteDeviation = durations.reduce(0) { $0 + abs($1 - average) } / Double(durations.count)
         let score = 100 - min(60, Int((meanAbsoluteDeviation / 1.5 * 60).rounded()))
         return min(max(score, 0), 100)
+    }
+
+    private var sleepScheduleConsistencyPercent: Int? {
+        let midpointSeconds = recentSleepNights
+            .prefix(7)
+            .compactMap(Self.sleepMidpointTimeOfDaySeconds)
+        guard midpointSeconds.count >= 2 else { return nil }
+        let deviationHours = Self.circularMeanAbsoluteDeviationHours(midpointSeconds)
+        let score = 100 - min(60, Int((deviationHours / 2.0 * 60).rounded()))
+        return min(max(score, 0), 100)
+    }
+
+    private static func sleepMidpointTimeOfDaySeconds(_ night: Night) -> TimeInterval? {
+        guard let start = night.start, let end = night.end, end > start else { return nil }
+        let midpoint = start.addingTimeInterval(end.timeIntervalSince(start) / 2)
+        let components = Calendar.current.dateComponents([.hour, .minute, .second], from: midpoint)
+        guard let hour = components.hour, let minute = components.minute, let second = components.second else { return nil }
+        return TimeInterval(hour * 3_600 + minute * 60 + second)
+    }
+
+    private static func circularMeanAbsoluteDeviationHours(_ seconds: [TimeInterval]) -> Double {
+        let daySeconds = 24.0 * 60.0 * 60.0
+        let angles = seconds.map { ($0 / daySeconds) * 2.0 * Double.pi }
+        let sinMean = angles.reduce(0) { $0 + sin($1) } / Double(angles.count)
+        let cosMean = angles.reduce(0) { $0 + cos($1) } / Double(angles.count)
+        var meanAngle = atan2(sinMean, cosMean)
+        if meanAngle < 0 { meanAngle += 2.0 * Double.pi }
+        let meanSeconds = (meanAngle / (2.0 * Double.pi)) * daySeconds
+        let totalDeviation = seconds.reduce(0) { total, value in
+            let raw = abs(value - meanSeconds)
+            return total + min(raw, daySeconds - raw)
+        }
+        return (totalDeviation / Double(seconds.count)) / 3_600
     }
 
     func sleepDebtText(goalHours: Double) -> String {
