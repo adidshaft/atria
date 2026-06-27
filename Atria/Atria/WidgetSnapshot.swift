@@ -17,6 +17,9 @@ struct WidgetSnapshot: Codable {
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
     let steps: Int?
     let heartRate: Int?
+    let batteryLevel: Int?
+    let batteryChargeStatus: String?
+    let batteryChargeText: String?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -104,6 +107,9 @@ enum WidgetSnapshotPublisher {
                                       maxHR: store.profile.maxHR,
                                       steps: ble.phoneStepsToday > 0 ? ble.phoneStepsToday : nil,
                                       heartRate: ble.heartRate > 0 ? ble.heartRate : nil,
+                                      batteryLevel: ble.batteryLevel >= 0 ? ble.batteryLevel : nil,
+                                      batteryChargeStatus: ble.batteryChargeStatus.rawValue,
+                                      batteryChargeText: ble.batteryChargeStatus.label,
                                       storage: widgetDiagnostics.storage,
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
@@ -113,7 +119,7 @@ enum WidgetSnapshotPublisher {
                 ? (UserDefaults(suiteName: appGroupID) ?? .standard)
                 : .standard
             defaults.set(data, forKey: key)
-            AtriaDebugLog("ATRIADBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
+            AtriaDebugLog("ATRIADBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d battery=%@ charge=%@ bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
                           reason,
                           snapshot.schema,
                           formatInt(snapshot.recoveryPercent),
@@ -122,6 +128,8 @@ enum WidgetSnapshotPublisher {
                           snapshot.strain,
                           formatInt(snapshot.restingHR),
                           snapshot.maxHR,
+                          formatInt(snapshot.batteryLevel),
+                          snapshot.batteryChargeStatus ?? "unknown",
                           data.count,
                           snapshot.storage,
                           snapshot.appGroupEnabled ? 1 : 0,

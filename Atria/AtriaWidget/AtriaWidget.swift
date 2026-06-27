@@ -22,6 +22,9 @@ struct AtriaWidgetSnapshot: Codable {
     // Optional so schema-1 payloads still decode (missing keys -> nil).
     let steps: Int?
     let heartRate: Int?
+    let batteryLevel: Int?
+    let batteryChargeStatus: String?
+    let batteryChargeText: String?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -164,6 +167,14 @@ struct AtriaWidgetEntryView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
+            if let battery = batteryHeaderText {
+                Label(battery, systemImage: batterySymbol)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(batteryTint)
+                    .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
             if let recovery = entry.snapshot?.recoveryPercent {
                 Text("\(recovery)%")
                     .font(.caption.weight(.bold))
@@ -229,6 +240,35 @@ struct AtriaWidgetEntryView: View {
     private var stepsText: String {
         guard let steps = entry.snapshot?.steps else { return "--" }
         return steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
+    }
+
+    private var batteryHeaderText: String? {
+        guard let level = entry.snapshot?.batteryLevel else { return nil }
+        if entry.snapshot?.batteryChargeStatus == "levelOnly" {
+            return "\(level)%"
+        }
+        return "\(level)%"
+    }
+
+    private var batterySymbol: String {
+        guard let snapshot = entry.snapshot else { return "battery.0percent" }
+        if snapshot.batteryChargeStatus == "charging" { return "battery.100percent.bolt" }
+        if snapshot.batteryChargeStatus == "full" { return "battery.100percent" }
+        guard let level = snapshot.batteryLevel else { return "battery.0percent" }
+        switch level {
+        case ..<13: return "battery.0percent"
+        case ..<38: return "battery.25percent"
+        case ..<63: return "battery.50percent"
+        case ..<88: return "battery.75percent"
+        default: return "battery.100percent"
+        }
+    }
+
+    private var batteryTint: Color {
+        switch entry.snapshot?.batteryChargeStatus {
+        case "charging", "full": return .green
+        default: return .secondary
+        }
     }
 
     private func recoveryColor(_ percent: Int) -> Color {
