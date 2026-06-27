@@ -1470,7 +1470,7 @@ final class AtriaHomeModel {
         var heartRateText: String { heartRate > 0 ? "\(heartRate)" : "--" }
         var hasPulseSignal: Bool { heartRate > 0 || hasContact }
         var needsContactCoach: Bool { !hasPulseSignal && !sensorHasContact }
-        var contactText: String { hasPulseSignal ? "Live" : "No contact" }
+        var contactText: String { hasPulseSignal ? "Live" : "No signal" }
         var averageHeartRateText: String { averageHeartRate.map(String.init) ?? "--" }
         var peakHeartRateText: String { peakHeartRate.map(String.init) ?? "--" }
     }
