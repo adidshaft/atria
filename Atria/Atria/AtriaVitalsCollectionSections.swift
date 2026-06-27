@@ -603,7 +603,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Research signals", subtitle: "")
+                AtriaPanelSectionHeader(title: "Sensor signals", subtitle: "")
                 Spacer(minLength: 0)
                 AtriaStateBadge(state: hasEvidence ? .research : .learning)
             }
@@ -634,7 +634,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.agreementText)
             }
 
-            Text("Research only. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show SpO2 or body-temperature values until the sensor layout is validated against a reference.")
+            Text("Experimental. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show SpO2 or body-temperature values until the sensor layout is validated against a reference.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
