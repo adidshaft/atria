@@ -92,6 +92,29 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertGreaterThan(sparse?.maxRRGapSeconds ?? 0, HRVSnapshot.maxReadyRRGapSeconds)
     }
 
+    func testHRVAnalyzerDoesNotCascadeRejectAfterEarlyArtifact() {
+        let now = Date()
+        var values = (0...300).map { index in
+            index.isMultiple(of: 2) ? 1_000.0 : 1_040.0
+        }
+        values[0] = 480
+        values[1] = 830
+        values[10] = 520
+        values[11] = 610
+
+        let samples = values.enumerated().map { index, value in
+            RRInterval(t: now.addingTimeInterval(Double(index - 300)),
+                       ms: value,
+                       expectedHR: nil)
+        }
+
+        let snapshot = HRVAnalyzer.analyze(samples, now: now, includeTachogram: false).0
+        XCTAssertEqual(snapshot?.readinessReason, "ready")
+        XCTAssertGreaterThanOrEqual(snapshot?.kept ?? 0, 295)
+        XCTAssertLessThanOrEqual(snapshot?.rejectedDeltaOver20Percent ?? 999, 4)
+        XCTAssertTrue(snapshot?.isReady == true)
+    }
+
     func testHRVAnalyzerRejectsOutOfRangeAndHeartRateMismatch() {
         let now = Date()
         var samples = (0...300).map { index in

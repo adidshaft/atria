@@ -92,7 +92,9 @@ enum HRVAnalyzer {
         var maxRRGapSeconds: TimeInterval = 0
         var previousWindowSample: RRInterval?
 
-        for rr in window {
+        let windowArray = Array(window)
+        for index in windowArray.indices {
+            let rr = windowArray[index]
             if let previousWindowSample {
                 maxRRGapSeconds = max(maxRRGapSeconds, rr.t.timeIntervalSince(previousWindowSample.t))
             }
@@ -115,8 +117,8 @@ enum HRVAnalyzer {
                     continue
                 }
             }
-            if let previous = kept.last {
-                let delta = abs(rr.ms - previous.ms) / previous.ms
+            if let localMedian = localMedianRR(in: windowArray, around: index), localMedian > 0 {
+                let delta = abs(rr.ms - localMedian) / localMedian
                 guard delta <= 0.20 else {
                     rejectedDeltaOver20Percent += 1
                     if includeTachogram {
@@ -187,6 +189,22 @@ enum HRVAnalyzer {
 
     private static func respiratoryRate(from kept: [RRInterval], now: Date) -> Double? {
         AtriaAnalytics.RespRateRsa.estimate(samples: kept.map { (t: $0.t, ms: $0.ms) }, now: now)
+    }
+
+    private static func localMedianRR(in samples: [RRInterval], around index: Int) -> Double? {
+        let radius = 2
+        let lower = max(samples.startIndex, index - radius)
+        let upper = min(samples.index(before: samples.endIndex), index + radius)
+        let values = samples[lower...upper]
+            .map(\.ms)
+            .filter { (300...2000).contains($0) }
+            .sorted()
+        guard values.count >= 3 else { return nil }
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
     }
 }
 

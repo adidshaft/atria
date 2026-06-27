@@ -5318,13 +5318,14 @@ final class SessionStore: ObservableObject {
         var kept: [(t: Date, ms: Double)] = []
         var rejectedOutOfRange = 0
         var rejectedDeltaOver20Percent = 0
-        for rr in samples {
+        for index in samples.indices {
+            let rr = samples[index]
             guard (300...2000).contains(rr.ms) else {
                 rejectedOutOfRange += 1
                 continue
             }
-            if let previous = kept.last {
-                let delta = abs(rr.ms - previous.ms) / previous.ms
+            if let localMedian = Self.localMedianRR(samples: samples, around: index), localMedian > 0 {
+                let delta = abs(rr.ms - localMedian) / localMedian
                 guard delta <= 0.20 else {
                     rejectedDeltaOver20Percent += 1
                     continue
@@ -5369,6 +5370,22 @@ final class SessionStore: ObservableObject {
                            windowSeconds: windowEnd.timeIntervalSince(windowStart),
                            maxRRGapSeconds: strictGap,
                            respiratoryRate: respiratoryRate)
+    }
+
+    private nonisolated static func localMedianRR(samples: [(t: Date, ms: Double)], around index: Int) -> Double? {
+        let radius = 2
+        let lower = max(samples.startIndex, index - radius)
+        let upper = min(samples.index(before: samples.endIndex), index + radius)
+        let values = samples[lower...upper]
+            .map(\.ms)
+            .filter { (300...2000).contains($0) }
+            .sorted()
+        guard values.count >= 3 else { return nil }
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
     }
 
     private func replayReason(snapshot: HRVSnapshot, strictGap: TimeInterval) -> String {
@@ -9384,12 +9401,15 @@ final class SessionStore: ObservableObject {
         var kept: [Double] = []
         var rejectedRange = 0
         var rejectedDelta = 0
-        for point in window {
+        for index in window.indices {
+            let point = window[index]
             guard 300...2000 ~= point.ms else {
                 rejectedRange += 1
                 continue
             }
-            if let previous = kept.last, abs(point.ms - previous) / previous > 0.20 {
+            if let localMedian = Self.localMedianExternalRR(points: window, around: index),
+               localMedian > 0,
+               abs(point.ms - localMedian) / localMedian > 0.20 {
                 rejectedDelta += 1
                 continue
             }
@@ -9422,6 +9442,22 @@ final class SessionStore: ObservableObject {
                                 rmssd: rmssdValue,
                                 ready: ready,
                                 reason: reason)
+    }
+
+    private nonisolated static func localMedianExternalRR(points: [ExternalRRPoint], around index: Int) -> Double? {
+        let radius = 2
+        let lower = max(points.startIndex, index - radius)
+        let upper = min(points.index(before: points.endIndex), index + radius)
+        let values = points[lower...upper]
+            .map(\.ms)
+            .filter { 300...2000 ~= $0 }
+            .sorted()
+        guard values.count >= 3 else { return nil }
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
     }
 
     private func rrReferenceFailureReason(strap: RRSavedReferenceWindow,

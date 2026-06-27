@@ -447,15 +447,27 @@ def rr_window_audit(prefix, rr, relative_times=False, emit=True):
     rr_span = max(0.0, rr_times[-1] - rr_times[0]) if len(rr_times) > 1 else 0.0
     rr_coverage_3 = min(100, max(0, round((rr_observed_3 / rr_span) * 100))) if rr_span > 0 else 0
     bounded_rr = [value for value in rr_values if 300 <= value <= 2000]
+    def local_median_rr(values, index, radius=2):
+        lower = max(0, index - radius)
+        upper = min(len(values), index + radius + 1)
+        local = sorted(v for v in values[lower:upper] if 300 <= v <= 2000)
+        if len(local) < 3:
+            return None
+        middle = len(local) // 2
+        if len(local) % 2 == 0:
+            return (local[middle - 1] + local[middle]) / 2
+        return local[middle]
+
     corrected_rr = []
     dropped_delta = 0
-    previous_kept = None
-    for value in bounded_rr:
-        if previous_kept is not None and previous_kept > 0 and abs(value - previous_kept) / previous_kept > 0.20:
+    for index, value in enumerate(rr_values):
+        if not (300 <= value <= 2000):
+            continue
+        local_median = local_median_rr(rr_values, index)
+        if local_median is not None and local_median > 0 and abs(value - local_median) / local_median > 0.20:
             dropped_delta += 1
             continue
         corrected_rr.append(value)
-        previous_kept = value
     rr_duration = sum(rr_values) / 1000.0
     kept_percent = round((len(corrected_rr) / len(rr_values)) * 100) if rr_values else 0
     gate_b_ready = (
