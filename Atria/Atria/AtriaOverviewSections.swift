@@ -1140,12 +1140,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .vo2max:
             AtriaGlanceMetricCard(title: "VO2max",
                                   value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
-                                  detail: vo2MaxEstimate.value == nil ? "Building" : "Estimate",
+                                  detail: vo2MaxEstimate.value == nil ? "Building" : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
                                   tint: vo2MaxEstimate.value == nil ? .orange : .blue)
                 .accessibilityLabel(vo2MaxEstimate.value == nil
                                     ? "VO2max building from resting baseline and measured HR max"
-                                    : "VO2max estimate \(vo2MaxEstimate.valueText), \(vo2MaxEstimate.confidence)")
+                                    : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail)")
         case .bloodOxygen:
             AtriaGlanceMetricCard(title: "Blood oxygen",
                                   value: sensorSummary.spo2CandidateFrames > 0 ? "Research" : "--",
@@ -1257,6 +1257,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if detail.contains("validated") { return "Validated" }
         if detail.contains("personal baseline") || detail.contains("% kept") { return "Personal baseline" }
         return "Building"
+    }
+
+    private var vo2MaxDetailText: String {
+        let confidence = vo2MaxEstimate.confidence.capitalized
+        guard vo2MaxEstimate.trendText != "Learning" else { return confidence }
+        return "\(confidence) · \(vo2MaxEstimate.trendText)"
     }
 
     private var recoveryDetailText: String {
