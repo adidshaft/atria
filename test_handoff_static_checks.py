@@ -303,6 +303,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "maxHeight: Self.glanceRowHeight",
             "private func glanceRowContent(_ row: [AtriaTodayMetric]) -> some View",
             ".layoutPriority(metric.isWideGlanceCard ? 2 : 1)",
+            "GeometryReader { proxy in",
+            "private func glanceCardCell(_ metric: AtriaTodayMetric, width: CGFloat) -> some View",
+            "private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat",
+            "let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)",
+            "glanceCardCell(metric,\n                                   width: glanceCardWidth(for: metric, containerWidth: proxy.size.width))",
             "private struct AtriaGlanceMetricCard: View, Equatable",
             "static let cardHeight: CGFloat = 154",
             "private static let headerHeight: CGFloat = 44",
@@ -329,11 +334,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var markerRing: some View",
             "StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round)",
             "case .recovery: return \"gauge.with.dots.needle.67percent\"",
-            "case .strain: return \"figure.run.circle.fill\"",
+            "case .strain: return \"figure.run\"",
             "case .hrv: return \"waveform.path.ecg\"",
             "case .sleep: return \"moon.zzz.fill\"",
-            "case .rhr: return \"heart.text.square.fill\"",
+            "case .rhr: return \"heart.fill\"",
             "case .steps: return \"shoeprints.fill\"",
+            "case .calories: return \"flame.fill\"",
             "case .insights: return \"sparkles\"",
             "[.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]",
             "insights: store.behaviorInsights",
@@ -348,8 +354,10 @@ class HandoffStaticChecks(unittest.TestCase):
             ".draggable(metric.rawValue)",
             ".dropDestination(for: String.self)",
             "onMoveMetric(dragged, metric)",
-            ".accessibilityAction(named: Text(\"Move \\(metric.label) up\"))",
-            ".accessibilityAction(named: Text(\"Move \\(metric.label) down\"))",
+            "let upLabel = Text(\"Move \\(metric.label) up\")",
+            "let downLabel = Text(\"Move \\(metric.label) down\")",
+            ".accessibilityAction(named: upLabel)",
+            ".accessibilityAction(named: downLabel)",
             "onShiftMetric(metric, -1)",
             "onShiftMetric(metric, 1)",
             "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
@@ -359,6 +367,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
         assert_not_contains(self, overview, "row.map(\\.glanceColumnSpan).reduce")
+        assert_not_contains(self, overview, "figure.run.circle.fill")
+        assert_not_contains(self, overview, "heart.text.square.fill")
+        assert_not_contains(self, overview, "flame.circle.fill")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
