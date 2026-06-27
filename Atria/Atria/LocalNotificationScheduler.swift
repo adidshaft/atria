@@ -238,7 +238,7 @@ enum LocalNotificationScheduler {
             bluetoothDecision = NotificationDecision(
                 kind: "bluetooth_off",
                 identifier: Identifier.bluetoothOff,
-                title: "Bluetooth is off",
+                title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off",
                 body: ble.bluetoothPermissionDenied
                     ? "Allow Bluetooth for Atria in Settings."
                     : "Turn on Bluetooth in Settings so Atria can read your strap.",
