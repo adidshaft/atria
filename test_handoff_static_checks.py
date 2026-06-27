@@ -916,10 +916,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "var sendsLocalNotification: Bool",
             "next.sendsLocalNotification && visibleConnectionDiagnosis != next",
             "live.batteryLevel <= Self.lowBatteryThreshold",
+            "live.batteryRecentlyDropping",
             "var bluetoothPermissionDenied: Bool",
             "bluetoothPermissionDenied: ble.bluetoothPermissionDenied",
             "private var bluetoothPermissionDenied: Bool { statusStore.state.bluetoothPermissionDenied }",
             "var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk",
+            "var batteryRecentlyDropping: Bool",
             "var lastScanRequestedAt: Date?",
             "var lastScanMatchAt: Date?",
             "var pendingKnownReconnectStartedAt: Date?",
@@ -927,12 +929,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval?",
             "var needsRRQualityCoach: Bool { rrContinuityState == \"poor_contact\" }",
             "ble.$bluetoothPermissionDenied.removeDuplicates()",
+            "ble.$batteryRecentlyDropping.removeDuplicates()",
             "ble.$officialAppCoexistenceRisk.removeDuplicates()",
             "ble.$lastScanRequestedAt.removeDuplicates()",
             "ble.$lastScanMatchAt.removeDuplicates()",
             "ble.$pendingKnownReconnectStartedAt.removeDuplicates()",
             "ble.$pendingKnownReconnectReason.removeDuplicates()",
             "live.bluetoothPermissionDenied",
+            "batteryRecentlyDropping: ble.batteryRecentlyDropping",
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "lastScanRequestedAt: ble.lastScanRequestedAt",
             "lastScanMatchAt: ble.lastScanMatchAt",
@@ -1004,9 +1008,16 @@ class HandoffStaticChecks(unittest.TestCase):
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         for needle in [
             "@Published private(set) var bluetoothPermissionDenied = false",
+            "@Published private(set) var batteryRecentlyDropping: Bool = false",
             "case .unauthorized:",
             "assignIfChanged(\\.bluetoothPermissionDenied, true)",
             "recomputeConnectionStatus(reason: \"central_unauthorized\")",
+            "static let dropAt = \"atria.battery.dropAt\"",
+            "static let dropDelta = \"atria.battery.dropDelta\"",
+            "static func cachedBatteryDrop(maxAge: TimeInterval = 6 * 60 * 60) -> (recent: Bool, delta: Int, age: TimeInterval)",
+            "battery_drop_recent=\\(drop.recent ? 1 : 0)",
+            "assignIfChanged(\\.batteryRecentlyDropping, true)",
+            "clearBatteryDropMarker()",
         ]:
             assert_contains(self, ble, needle)
 
@@ -4349,15 +4360,20 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "if ble.status == .poweredOff")
         assert_contains(self, notifications, "return [bluetoothDecision]")
         assert_contains(self, notifications, "threshold=%d")
+        assert_contains(self, notifications, "drop_recent=%d")
         assert_contains(self, notifications, "let effectiveChargeStatus = battery.chargeStatus")
         assert_contains(self, notifications, "let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full")
         assert_contains(self, notifications, "charge=%@")
         assert_contains(self, notifications, "effectiveChargeStatus.rawValue")
+        assert_contains(self, notifications, "battery.recentDrop ? 1 : 0")
         assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold")
-        assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold && !batteryIsCharging")
+        assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold && battery.recentDrop && !batteryIsCharging")
         assert_contains(self, notifications, "batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)")
         assert_contains(self, notifications, "cachedBattery(maxAge: 10 * 60)")
+        assert_contains(self, notifications, "AtriaBLEManager.cachedBatteryDrop()")
         assert_contains(self, notifications, "live_2A19_cached_charge")
+        assert_contains(self, notifications, "battery_\\(battery.level)_drop_source_\\(battery.source)")
+        assert_contains(self, notifications, "battery_\\(battery.level)_low_no_recent_drop_source_\\(battery.source)")
         assert_contains(self, notifications, "battery_\\(battery.level)_charging_\\(effectiveChargeStatus.rawValue)_source_\\(battery.source)")
         assert_contains(self, notifications, 'body: "Charge your strap before a workout or overnight wear. Battery is \\(battery.level)%."')
         assert_contains(self, notifications, 'bluetooth_off=%d')
