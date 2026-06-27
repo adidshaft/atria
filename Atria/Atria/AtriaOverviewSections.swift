@@ -2343,23 +2343,8 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     @ViewBuilder
     private var stageStrip: some View {
         if let latest, !latest.displayStageSegments.isEmpty {
-            HStack(spacing: 6) {
-                ForEach(SleepStageKind.allCases) { stage in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
-                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.64)
-                        Text(latest.stageText(stage))
-                            .font(.caption2.weight(.bold).monospacedDigit())
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.68)
-                    }
-                    .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
-                    .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-                    .clipped()
-                }
-            }
+            AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
+                                    duration: latest.duration)
             .frame(height: 30, alignment: .center)
         } else {
             Text(latest?.stageEvidence.label ?? "Stages not ready")
@@ -2377,6 +2362,47 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             return "Sleep history \(valueText). \(latest.evidenceLabel). \(latest.stageEvidence.label)."
         }
         return "Sleep history \(valueText). \(latest.evidenceLabel). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
+    }
+}
+
+private struct AtriaSleepMiniHypnogram: View, Equatable {
+    let segments: [SleepStageSegment]
+    let duration: TimeInterval
+
+    var body: some View {
+        Canvas { context, size in
+            guard duration > 0, !segments.isEmpty else { return }
+            let laneHeight = max(4, size.height / 6)
+            var elapsed: TimeInterval = 0
+            for segment in segments {
+                let width = max(1, size.width * segment.duration / duration)
+                let x = size.width * elapsed / duration
+                let y = stageY(segment.stage, height: size.height) - laneHeight / 2
+                let rect = CGRect(x: x,
+                                  y: y,
+                                  width: min(width, max(0, size.width - x)),
+                                  height: laneHeight)
+                context.fill(Path(roundedRect: rect, cornerRadius: laneHeight / 2),
+                             with: .color(AtriaSleepStageGlyph.color(for: segment.stage)))
+                elapsed += segment.duration
+            }
+        }
+        .background(Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func stageY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
+        switch stage {
+        case .awake: return height * 0.18
+        case .light: return height * 0.40
+        case .sws: return height * 0.62
+        case .deep: return height * 0.84
+        }
     }
 }
 
