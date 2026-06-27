@@ -956,22 +956,55 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_session_detail_downsamples_once_for_render_perf(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        insights = source(ROOT / "Atria" / "Atria" / "Insights.swift")
 
         for needle in [
             "struct SessionDetail: View",
             "private let displayedPoints: [SavedSession.Point]",
+            "private let summary: SessionDetailSummary",
             "init(session: SavedSession)",
             "self.displayedPoints = Self.downsampledPoints(session.points)",
+            "self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)",
             "private static func downsampledPoints",
             "Chart(Array(displayedPoints.enumerated()), id: \\.offset)",
+            "private struct SessionDetailSummary",
+            "let zoneRows: [TimeInZoneRow]",
+            "let zoneTotal: Double",
+            "TimeInZoneView(rows: summary.zoneRows, total: summary.zoneTotal)",
         ]:
             assert_contains(self, sessions, needle)
 
-        assert_not_contains(
-            self,
-            sessions,
+        for forbidden in [
             "private var displayedPoints: [SavedSession.Point] {\n        downsampledPoints(session.points)",
+            "private var maxHR: Int { AthleteProfile.load().maxHR }",
+            "Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable, max: maxHR))",
+            "TimeInZoneView(session: session, maxHR: maxHR)",
+        ]:
+            assert_not_contains(self, sessions, forbidden)
+
+        for needle in [
+            "struct TimeInZoneRow: Identifiable",
+            "let rows: [TimeInZoneRow]",
+            "let total: Double",
+            "ForEach(rows) { row in",
+        ]:
+            assert_contains(self, insights, needle)
+
+        time_in_zone = re.search(
+            r"struct TimeInZoneView: View \{(?P<body>.*?)\n\}",
+            insights,
+            re.S,
         )
+        self.assertIsNotNone(time_in_zone)
+        time_in_zone_body = time_in_zone.group("body")
+        for forbidden in [
+            "let session: SavedSession",
+            "let maxHR: Int",
+            "session.timeInZone",
+            ".sorted",
+            ".reduce",
+        ]:
+            assert_not_contains(self, time_in_zone_body, forbidden)
 
     def test_swiftui_render_blocks_do_not_run_session_derivations(self):
         forbidden = [
