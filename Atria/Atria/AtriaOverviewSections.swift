@@ -522,12 +522,12 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .recovery: return "gauge.with.dots.needle.67percent"
-        case .strain: return "figure.run.circle.fill"
+        case .strain: return "figure.run"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "moon.zzz.fill"
-        case .rhr: return "heart.text.square.fill"
+        case .rhr: return "heart.fill"
         case .steps: return "shoeprints.fill"
-        case .calories: return "flame.circle.fill"
+        case .calories: return "flame.fill"
         case .trend: return "chart.line.uptrend.xyaxis"
         case .insights: return "sparkles"
         }
@@ -711,35 +711,53 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     @ViewBuilder
     private func glanceRowContent(_ row: [AtriaTodayMetric]) -> some View {
-        ForEach(row) { metric in
-            glanceCard(metric)
-                .frame(maxWidth: .infinity,
-                       minHeight: Self.glanceRowHeight,
-                       maxHeight: Self.glanceRowHeight,
-                       alignment: .topLeading)
-                .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
-                .draggable(metric.rawValue)
-                .dropDestination(for: String.self) { items, _ in
-                    guard let raw = items.first,
-                          let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
-                    onMoveMetric(dragged, metric)
-                    return true
+        GeometryReader { proxy in
+            HStack(spacing: Self.glanceGridSpacing) {
+                ForEach(row) { metric in
+                    glanceCardCell(metric,
+                                   width: glanceCardWidth(for: metric, containerWidth: proxy.size.width))
                 }
-                .accessibilityAction(named: Text("Move \(metric.label) up")) {
-                    onShiftMetric(metric, -1)
-                }
-                .accessibilityAction(named: Text("Move \(metric.label) down")) {
-                    onShiftMetric(metric, 1)
-                }
-        }
 
-        if row.count == 1, row.first?.isWideGlanceCard == false {
-            AtriaGlanceMetricCard.placeholder
-                .frame(maxWidth: .infinity,
-                       minHeight: Self.glanceRowHeight,
-                       maxHeight: Self.glanceRowHeight)
-                .accessibilityHidden(true)
+                if row.count == 1, row.first?.isWideGlanceCard == false {
+                    AtriaGlanceMetricCard.placeholder
+                        .frame(width: glanceCardWidth(for: .recovery, containerWidth: proxy.size.width),
+                               height: Self.glanceRowHeight)
+                        .accessibilityHidden(true)
+                }
+            }
         }
+    }
+
+    private func glanceCardCell(_ metric: AtriaTodayMetric, width: CGFloat) -> some View {
+        let upLabel = Text("Move \(metric.label) up")
+        let downLabel = Text("Move \(metric.label) down")
+
+        return glanceCard(metric)
+            .frame(width: width,
+                   height: Self.glanceRowHeight,
+                   alignment: .topLeading)
+            .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
+            .draggable(metric.rawValue)
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first,
+                      let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
+                onMoveMetric(dragged, metric)
+                return true
+            }
+            .accessibilityAction(named: upLabel) {
+                onShiftMetric(metric, -1)
+            }
+            .accessibilityAction(named: downLabel) {
+                onShiftMetric(metric, 1)
+            }
+    }
+
+    private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
+        let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)
+        if metric.isWideGlanceCard {
+            return (columnWidth * CGFloat(Self.glanceGridColumnCount)) + Self.glanceGridSpacing
+        }
+        return columnWidth
     }
 
     @ViewBuilder
