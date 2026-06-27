@@ -13,9 +13,16 @@ enum Metrics {
 
     typealias PhoneMotionSample = AtriaAnalytics.Daily.PhoneMotionSample
     typealias PhoneMotionSummary = AtriaAnalytics.Daily.PhoneMotionSummary
+    typealias HeartRateEnergySample = AtriaAnalytics.Daily.HeartRateEnergySample
 
     static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
         AtriaAnalytics.Daily.stepsDaily(samples)
+    }
+
+    static func dayCalories(_ samples: [HeartRateEnergySample],
+                            rest: Int,
+                            profile: AthleteProfile) -> Double? {
+        AtriaAnalytics.Daily.dayCalories(samples, rest: rest, profile: profile)
     }
 
     // MARK: Strain (0–21)
