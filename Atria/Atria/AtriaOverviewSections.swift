@@ -672,6 +672,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence
             && lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail
             && lhs.hero.recoveryValue == rhs.hero.recoveryValue
+            && lhs.hero.strain == rhs.hero.strain
             && lhs.hero.strainValue == rhs.hero.strainValue
             && lhs.hero.hrvValue == rhs.hero.hrvValue
             && lhs.hero.hrvDetail == rhs.hero.hrvDetail
