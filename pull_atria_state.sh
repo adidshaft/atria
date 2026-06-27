@@ -86,6 +86,30 @@ copy_from_container() {
   return 1
 }
 
+copy_first_from_container() {
+  local destination_path=$1
+  local label=$2
+  shift 2
+
+  local source_path
+  for source_path in "$@"; do
+    if xcrun devicectl device copy from \
+      --device "$device_id" \
+      --domain-type appDataContainer \
+      --domain-identifier "$bundle_id" \
+      --source "$source_path" \
+      --destination "$destination_path" >> "$summary" 2>&1; then
+      printf '%s_status=ok\n' "$label" | tee -a "$summary"
+      printf '%s_source=%s\n' "$label" "$source_path" | tee -a "$summary"
+      printf '%s_file=%s\n' "$label" "$destination_path" | tee -a "$summary"
+      return 0
+    fi
+  done
+  printf '%s_status=missing\n' "$label" | tee -a "$summary"
+  printf '%s_sources=%s\n' "$label" "$*" | tee -a "$summary"
+  return 1
+}
+
 printf 'pull_mode=non_disruptive_copy_only\n' | tee -a "$summary"
 printf 'device_id=%s\n' "$device_id" | tee -a "$summary"
 printf 'bundle_id=%s\n' "$bundle_id" | tee -a "$summary"
@@ -162,7 +186,9 @@ if [[ "$active_status" != "ok" ]]; then
   printf 'active_journal_file_status=missing\n' | tee -a "$summary"
 fi
 
-copy_from_container "Documents/whoop-historical/historical-archive.jsonl" "$evidence_dir/historical-archive.jsonl" "historical_archive" || true
+copy_first_from_container "$evidence_dir/historical-archive.jsonl" "historical_archive" \
+  "Documents/atria-historical/historical-archive.jsonl" \
+  "Documents/whoop-historical/historical-archive.jsonl" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
 python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
@@ -189,6 +215,19 @@ def app_time(value):
 def bool_int(value):
     return 1 if bool(value) else 0
 
+def pref(prefs, suffix, default=None):
+    for namespace in ("atria", "whoop"):
+        key = f"{namespace}.{suffix}"
+        if key in prefs:
+            return prefs.get(key)
+    return default
+
+def pref_namespace(prefs, suffix):
+    for namespace in ("atria", "whoop"):
+        if f"{namespace}.{suffix}" in prefs:
+            return namespace
+    return "missing"
+
 def emit_offline_sync_preferences():
     prefs_path = evidence / "preferences.plist"
     if not prefs_path.exists():
@@ -200,21 +239,23 @@ def emit_offline_sync_preferences():
         print(f"preferences_summary_error={type(exc).__name__}:{exc}")
         return
     now = time.time()
-    requested_at = prefs.get("atria.offlineSync.rangeLossBackfillRequestedAt")
-    started_at = prefs.get("atria.offlineSync.rangeLossBackfillStartedAt")
+    requested_at = pref(prefs, "offlineSync.rangeLossBackfillRequestedAt")
+    started_at = pref(prefs, "offlineSync.rangeLossBackfillStartedAt")
     requested_age = max(0.0, now - float(requested_at)) if isinstance(requested_at, (int, float)) and requested_at > 0 else -1.0
     started_age = max(0.0, now - float(started_at)) if isinstance(started_at, (int, float)) and started_at > 0 else -1.0
-    print(f"offline_sync_enabled={bool_int(prefs.get('whoop.offlineSync.enabled'))}")
-    print(f"offline_sync_attempts={int(prefs.get('whoop.offlineSync.attempts') or 0)}")
-    print(f"offline_sync_last_status={prefs.get('whoop.offlineSync.lastStatus') or 'none'}")
-    print(f"offline_sync_last_reason={prefs.get('whoop.offlineSync.lastReason') or 'none'}")
-    print(f"offline_range_loss_backfill_pending={bool_int(prefs.get('whoop.offlineSync.rangeLossBackfillPending'))}")
-    print(f"offline_range_loss_backfill_reason={prefs.get('whoop.offlineSync.rangeLossBackfillReason') or 'none'}")
+    print(f"offline_sync_namespace={pref_namespace(prefs, 'offlineSync.lastStatus')}")
+    print(f"offline_sync_enabled={bool_int(pref(prefs, 'offlineSync.enabled'))}")
+    print(f"offline_sync_attempts={int(pref(prefs, 'offlineSync.attempts', 0) or 0)}")
+    print(f"offline_sync_last_status={pref(prefs, 'offlineSync.lastStatus', 'none') or 'none'}")
+    print(f"offline_sync_last_reason={pref(prefs, 'offlineSync.lastReason', 'none') or 'none'}")
+    print(f"offline_range_loss_backfill_pending={bool_int(pref(prefs, 'offlineSync.rangeLossBackfillPending'))}")
+    print(f"offline_range_loss_backfill_reason={pref(prefs, 'offlineSync.rangeLossBackfillReason', 'none') or 'none'}")
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
-    print(f"link_last_auto_save_status={prefs.get('whoop.link.lastAutoSaveStatus') or 'none'}")
-    print(f"link_last_auto_save_samples={int(prefs.get('whoop.link.lastAutoSaveSamples') or 0)}")
-    print(f"link_last_auto_save_duration_s={int(prefs.get('whoop.link.lastAutoSaveDuration') or 0)}")
+    print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
+    print(f"link_last_auto_save_status={pref(prefs, 'link.lastAutoSaveStatus', 'none') or 'none'}")
+    print(f"link_last_auto_save_samples={int(pref(prefs, 'link.lastAutoSaveSamples', 0) or 0)}")
+    print(f"link_last_auto_save_duration_s={int(pref(prefs, 'link.lastAutoSaveDuration', 0) or 0)}")
 
 emit_offline_sync_preferences()
 
