@@ -17,6 +17,7 @@ LOCAL_CHECK_FILES = [
     Path("test_monitor_long_wear.py"),
     Path("test_prepare_accessibility_performance_evidence.sh"),
     Path("test_prepare_accessibility_performance_evidence.py"),
+    Path("tools/capture_accessibility_visual_evidence.sh"),
     Path("tools/monitor_long_wear.py"),
     Path("tools/prepare_accessibility_performance_evidence.py"),
 ]
