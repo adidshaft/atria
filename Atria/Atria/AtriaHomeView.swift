@@ -768,6 +768,10 @@ struct AtriaHomeView: View {
                 AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream) {
                     missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)
                 } onSync: {
+                    guard !missedDataBackfillIsDeferredForLiveStream else {
+                        missedDataBannerDismissedUntil = Date().addingTimeInterval(15 * 60)
+                        return
+                    }
                     missedDataBannerDismissedUntil = nil
                     _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "home_missed_data_banner",
                                                                  force: true)
@@ -1226,7 +1230,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             Spacer(minLength: 0)
 
             Button(action: onSync) {
-                Text(protectsLiveStream ? "Sync now" : "Sync")
+                Text(protectsLiveStream ? "Queued" : "Sync")
                     .font(.caption.weight(.bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
