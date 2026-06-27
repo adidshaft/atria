@@ -920,6 +920,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
         .atriaCardAction(prominent: false, tint: .secondary)
         .accessibilityLabel("Add Today widget")
+        .accessibilityHint(hiddenMetrics.isEmpty
+                           ? "All Today widgets are already visible."
+                           : "Opens the list of hidden Today widgets.")
     }
 
     private static let glanceGridSpacing: CGFloat = 10
@@ -1012,6 +1015,21 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .accessibilityAction(named: downLabel) {
                 onShiftMetric(metric, 1)
             }
+            .accessibilityAction(named: Text("Edit \(metric.label) widget")) {
+                isEditingGlance = true
+            }
+            .accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                                            ? "Make \(metric.label) compact"
+                                            : "Make \(metric.label) wide")) {
+                onToggleMetricSize(metric)
+            }
+            .accessibilityAction(named: Text("Remove \(metric.label) widget")) {
+                onHideMetric(metric)
+                if visibleMetrics.count <= 2 {
+                    isEditingGlance = false
+                }
+            }
+            .accessibilityHint("Long press to edit, drag to reorder, or use actions to resize and remove.")
     }
 
     private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
