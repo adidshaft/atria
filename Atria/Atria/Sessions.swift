@@ -1536,6 +1536,14 @@ struct TrainingLoadSummary: Equatable {
         readiness.capitalized
     }
 
+    var acwrSignalText: String {
+        acwrSignal.capitalized
+    }
+
+    var monotonySignalText: String {
+        monotonySignal.capitalized
+    }
+
     var signalSummaryText: String {
         guard confidence != "learning" else { return "Learning" }
         return "ACWR \(ratioText) \(acwrSignal), monotony \(monotonyText) \(monotonySignal)"

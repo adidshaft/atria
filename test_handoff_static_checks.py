@@ -2063,6 +2063,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "let readiness: String",
             "let acwrSignal: String",
             "let monotonySignal: String",
+            "var acwrSignalText: String",
+            "var monotonySignalText: String",
             "var signalSummaryText: String",
             "private var overviewTrendPointsRevision = 0",
             "private var trainingLoadSummaryRevision = 0",
@@ -2113,16 +2115,23 @@ class HandoffStaticChecks(unittest.TestCase):
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         assert_contains(self, home, "let load = store.trainingLoadSummarySnapshot")
         assert_contains(self, home, "let loadReadinessText: String")
+        assert_contains(self, home, "let loadACWRSignalText: String")
+        assert_contains(self, home, "let loadMonotonySignalText: String")
         assert_contains(self, home, "let loadSignalSummaryText: String")
         assert_contains(self, home, "loadReadinessText: load.readinessText")
+        assert_contains(self, home, "loadACWRSignalText: load.acwrSignalText")
+        assert_contains(self, home, "loadMonotonySignalText: load.monotonySignalText")
         assert_contains(self, home, "loadSignalSummaryText: load.signalSummaryText")
         assert_not_contains(self, home, "store.trainingLoadSummary(rest:")
         for needle in [
             "readiness: hero.loadReadinessText",
+            "acwrSignal: hero.loadACWRSignalText",
+            "monotonySignal: hero.loadMonotonySignalText",
             "signalSummary: hero.loadSignalSummaryText",
-            "AtriaMetricTile(label: \"Readiness\"",
-            "value: readiness",
-            "footnote: \"\\(signalSummary) · target \\(target)\"",
+            "private struct AtriaTrainingSignalChip: View, Equatable",
+            "AtriaTrainingSignalChip(title: \"ACWR\", value: ratio, signal: acwrSignal)",
+            "AtriaTrainingSignalChip(title: \"Monotony\", value: monotonySignal, signal: monotonySignal)",
+            "Text(\"Target \\(target)\")",
         ]:
             assert_contains(self, vitals, needle)
 
