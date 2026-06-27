@@ -1291,15 +1291,20 @@ class HandoffStaticChecks(unittest.TestCase):
             "ATRIADBG offline_sync status=armed",
             "live_realtime=skipped metrics_fail_closed=1",
             "deferred_live_link",
-            "detail=live_link_connected action=keep_ble_stream",
-            "detail=live_link_connected_late action=keep_ble_stream",
+            "offlineSyncLiveAcceptedHRProtectionWindow",
+            "private func shouldProtectLiveStreamForOfflineSync(now: Date = Date()) -> Bool",
+            "detail=live_hr_recent action=keep_ble_stream",
+            "detail=live_hr_recent_late action=keep_ble_stream",
             "static let rangeLossBackfillPending",
             "private func markRangeLossBackfillRequired(reason: String)",
             "private func preserveLongWearRangeLossRecovery(reason: String)",
             "private func scheduleRangeLossBackfillIfNeeded(reason: String)",
+            "private func scheduleRangeLossBackfillRetry(reason: String)",
+            "rangeLossBackfillRetryInterval",
+            "offline_sync_stale_peripheral",
             "ATRIADBG offline_sync status=pending_range_loss_backfill",
             "ATRIADBG offline_sync status=requesting_range_loss_backfill",
-            "action=defer_if_live_link_connected",
+            "protectedLiveStream ? \"defer_live_stream\" : \"sync_when_available\"",
             "requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false)",
             "static func offlineSyncEvidence() -> String",
             "offline_range_loss_backfill_pending",
@@ -1377,7 +1382,7 @@ class HandoffStaticChecks(unittest.TestCase):
         )
         self.assertIsNotNone(request_sync)
         request_body = request_sync.group("body")
-        live_defer_index = request_body.find("longWearModeEnabled, let peripheral, peripheral.state == .connected")
+        live_defer_index = request_body.find("shouldProtectLiveStreamForOfflineSync(now: now)")
         start_index = request_body.find("startOfflineHistoricalSync(reason: reason, force: force)")
         self.assertGreaterEqual(live_defer_index, 0)
         self.assertGreater(start_index, live_defer_index)
@@ -1390,10 +1395,29 @@ class HandoffStaticChecks(unittest.TestCase):
         )
         self.assertIsNotNone(start_sync)
         start_body = start_sync.group("body")
-        late_defer_index = start_body.find("force || !longWearModeEnabled || peripheral.state != .connected")
+        late_defer_index = start_body.find("force || !shouldProtectLiveStreamForOfflineSync(now: Date())")
         cancel_index = start_body.find("central.cancelPeripheralConnection(peripheral)")
+        stale_index = start_body.find("recomputeConnectionStatus(reason: \"offline_sync_stale_peripheral\")")
         self.assertGreaterEqual(late_defer_index, 0)
         self.assertGreater(cancel_index, late_defer_index)
+        self.assertGreater(stale_index, cancel_index)
+
+        protect_helper = re.search(
+            r"private func shouldProtectLiveStreamForOfflineSync\(now: Date = Date\(\)\) -> Bool \{(?P<body>.*?)\n    \}",
+            ble,
+            re.S,
+        )
+        self.assertIsNotNone(protect_helper)
+        protect_body = protect_helper.group("body")
+        for needle in [
+            "guard longWearModeEnabled else { return false }",
+            "guard let peripheral, peripheral.state == .connected else { return false }",
+            "guard hasContact else { return false }",
+            "guard session.count >= autoSaveMinSamples else { return false }",
+            "guard let lastAcceptedHRAt else { return false }",
+            "<= offlineSyncLiveAcceptedHRProtectionWindow",
+        ]:
+            assert_contains(self, protect_body, needle)
 
         for needle in [
             "AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream)",

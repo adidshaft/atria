@@ -816,6 +816,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncInProgress = false
     private var pendingOfflineHistoricalSyncReason: String?
     private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
+    private let offlineSyncLiveAcceptedHRProtectionWindow: TimeInterval = 45
+    private let rangeLossBackfillRetryInterval: TimeInterval = 10 * 60
     private var rangeLossBackfillTask: Task<Void, Never>?
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
@@ -1607,6 +1609,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     func requestOfflineHistoricalSyncIfNeeded(reason: String, force: Bool = false) -> Bool {
         let defaults = UserDefaults.standard
+        let now = Date()
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else {
             defaults.set("disabled", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
@@ -1620,15 +1623,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG offline_sync status=coalesced reason=%@", reason)
             return false
         }
-        if !force, longWearModeEnabled, let peripheral, peripheral.state == .connected {
+        if !force, shouldProtectLiveStreamForOfflineSync(now: now) {
             pendingOfflineHistoricalSyncReason = reason
             defaults.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_link_connected action=keep_ble_stream",
-                  reason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_hr_recent action=keep_ble_stream accepted_age_s=%.1f samples=%d",
+                  reason,
+                  lastAcceptedHRAt.map { now.timeIntervalSince($0) } ?? -1,
+                  session.count)
             return false
         }
-        let now = Date()
         let lastAttempt = defaults.object(forKey: OfflineSyncDefaults.lastAttemptAt) as? Date
         if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < offlineHistoricalSyncMinimumInterval {
             defaults.set("throttled", forKey: OfflineSyncDefaults.lastStatus)
@@ -1680,7 +1684,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               reason)
 
         if let peripheral {
-            guard force || !longWearModeEnabled || peripheral.state != .connected else {
+            guard force || !shouldProtectLiveStreamForOfflineSync(now: Date()) else {
                 offlineHistoricalSyncInProgress = false
                 historyOnlyProbeEnabled = false
                 historyOnlyProbeMode = false
@@ -1692,12 +1696,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 pendingOfflineHistoricalSyncReason = reason
                 UserDefaults.standard.set("deferred_live_link", forKey: OfflineSyncDefaults.lastStatus)
                 UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-                AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_link_connected_late action=keep_ble_stream",
-                      reason)
+                AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=live_hr_recent_late action=keep_ble_stream samples=%d",
+                      reason,
+                      session.count)
                 return
             }
             dbgLast = "offline sync reconnect"
-            central.cancelPeripheralConnection(peripheral)
+            switch peripheral.state {
+            case .connected, .connecting:
+                central.cancelPeripheralConnection(peripheral)
+            default:
+                self.peripheral = nil
+                recomputeConnectionStatus(reason: "offline_sync_stale_peripheral")
+                if central.state == .poweredOn {
+                    startScan(reason: "offline_sync_\(reason)")
+                }
+            }
         } else if central.state == .poweredOn {
             startScan(reason: "offline_sync_\(reason)")
         }
@@ -1770,17 +1784,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
             guard UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
-            guard status == .connected else { return }
+            guard status != .poweredOff else { return }
             let backfillReason = UserDefaults.standard.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? reason
-            AtriaDebugLog("ATRIADBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=defer_if_live_link_connected",
+            let protectedLiveStream = shouldProtectLiveStreamForOfflineSync()
+            AtriaDebugLog("ATRIADBG offline_sync status=requesting_range_loss_backfill reason=%@ trigger=%@ action=%@ live_protected=%d",
                   backfillReason,
-                  reason)
+                  reason,
+                  protectedLiveStream ? "defer_live_stream" : "sync_when_available",
+                  protectedLiveStream ? 1 : 0)
             if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: false) {
                 UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
                 assignIfChanged(\.rangeLossBackfillPending, false)
+            } else if protectedLiveStream && UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+                scheduleRangeLossBackfillRetry(reason: reason)
             }
         }
+    }
+
+    private func scheduleRangeLossBackfillRetry(reason: String) {
+        rangeLossBackfillTask?.cancel()
+        rangeLossBackfillTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(rangeLossBackfillRetryInterval))
+            guard !Task.isCancelled else { return }
+            scheduleRangeLossBackfillIfNeeded(reason: "\(reason)_retry")
+        }
+    }
+
+    private func shouldProtectLiveStreamForOfflineSync(now: Date = Date()) -> Bool {
+        guard longWearModeEnabled else { return false }
+        guard let peripheral, peripheral.state == .connected else { return false }
+        guard hasContact else { return false }
+        guard session.count >= autoSaveMinSamples else { return false }
+        guard let lastAcceptedHRAt else { return false }
+        return now.timeIntervalSince(lastAcceptedHRAt) <= offlineSyncLiveAcceptedHRProtectionWindow
     }
 
     private func resumeForegroundScanIfNeeded(reason: String) {
