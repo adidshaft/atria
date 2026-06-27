@@ -672,6 +672,7 @@ struct AtriaHomeView: View {
                                     liveStore: model.coreLiveStore,
                                     heroStore: model.heroStore,
                                     homeStatsStore: model.homeStatsStore,
+                                    profileMetricsStore: model.profileMetricsStore,
                                     snapshotStore: model.snapshotStore,
                                     store: store,
                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections,

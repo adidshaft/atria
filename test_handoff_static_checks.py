@@ -274,6 +274,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_handoff_21_customizable_layout_is_persisted_and_reorderable(self):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
 
@@ -344,8 +345,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .rhr: return \"heart.fill\"",
             "case .steps: return \"shoeprints.fill\"",
             "case .calories: return \"flame.fill\"",
+            "case .vo2max: return \"lungs.fill\"",
             "case .insights: return \"sparkles\"",
-            "[.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]",
+            "[.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .trend, .insights]",
+            "let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
+            "@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
+            "vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate",
+            "let vo2MaxEstimate: VO2MaxEstimateSummary",
+            "&& lhs.vo2MaxEstimate == rhs.vo2MaxEstimate",
+            "AtriaGlanceMetricCard(title: \"VO2max\"",
+            "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
+            "VO2max building from resting baseline and measured HR max",
             "insights: store.behaviorInsights",
             "taggedDays: store.behaviorJournalEntries.count",
             "let insights: [AtriaInsight]",
@@ -368,6 +378,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".sensoryFeedback(.selection, trigger: orderCSV)",
         ]:
             assert_contains(self, overview, needle)
+
+        assert_contains(self, home, "profileMetricsStore: model.profileMetricsStore")
 
         assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
         assert_not_contains(self, overview, "row.map(\\.glanceColumnSpan).reduce")

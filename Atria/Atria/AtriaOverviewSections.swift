@@ -37,6 +37,7 @@ struct AtriaOverviewTabContent: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let hasUnlockedSecondarySections: Bool
@@ -77,6 +78,7 @@ struct AtriaOverviewTabContent: View {
                                                  liveStore: liveStore,
                                                  heroStore: heroStore,
                                                  homeStatsStore: homeStatsStore,
+                                                 profileMetricsStore: profileMetricsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  context: connectionContext,
@@ -89,6 +91,7 @@ struct AtriaOverviewTabContent: View {
                     AtriaOverviewLeadingHost(liveStore: liveStore,
                                              heroStore: heroStore,
                                              homeStatsStore: homeStatsStore,
+                                             profileMetricsStore: profileMetricsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
                                              segment: .today,
@@ -111,6 +114,7 @@ struct AtriaOverviewTabContent: View {
                             AtriaOverviewLeadingHost(liveStore: liveStore,
                                                      heroStore: heroStore,
                                                      homeStatsStore: homeStatsStore,
+                                                     profileMetricsStore: profileMetricsStore,
                                                      snapshotStore: snapshotStore,
                                                      store: store,
                                                      segment: segment,
@@ -142,6 +146,7 @@ struct AtriaOverviewTabContent: View {
                     AtriaOverviewLeadingHost(liveStore: liveStore,
                                              heroStore: heroStore,
                                              homeStatsStore: homeStatsStore,
+                                             profileMetricsStore: profileMetricsStore,
                                              snapshotStore: snapshotStore,
                                              store: store,
                                              segment: segment,
@@ -170,6 +175,7 @@ private struct AtriaDisconnectedOverviewHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
     let context: AtriaConnectionGuideContext
@@ -207,6 +213,7 @@ private struct AtriaDisconnectedOverviewHost: View {
                 // no second "Waiting for your strap" panel here.
                 AtriaOverviewReadinessSectionHost(liveStore: liveStore,
                                                  heroStore: heroStore,
+                                                 profileMetricsStore: profileMetricsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "Last saved readiness")
@@ -370,6 +377,7 @@ private struct AtriaOverviewLeadingHost: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let segment: AtriaTodaySegment
@@ -386,6 +394,7 @@ private struct AtriaOverviewLeadingHost: View {
         AtriaOverviewLeadingSection(liveStore: liveStore,
                                    heroStore: heroStore,
                                    homeStatsStore: homeStatsStore,
+                                   profileMetricsStore: profileMetricsStore,
                                    snapshotStore: snapshotStore,
                                    store: store,
                                    segment: segment,
@@ -422,6 +431,7 @@ struct AtriaOverviewLeadingSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
     let segment: AtriaTodaySegment
@@ -439,6 +449,7 @@ struct AtriaOverviewLeadingSection: View {
             if segment == .today {
                 AtriaOverviewReadinessSectionHost(liveStore: liveStore,
                                                  heroStore: heroStore,
+                                                 profileMetricsStore: profileMetricsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "")
@@ -469,6 +480,7 @@ struct AtriaOverviewLeadingSection: View {
 struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
     let subtitle: String
@@ -479,6 +491,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
                                      live: liveStore.state,
+                                     vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      insights: store.behaviorInsights,
@@ -504,7 +517,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, steps, calories, trend, insights
+    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -515,6 +528,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .rhr: return "Resting HR"
         case .steps: return "Steps"
         case .calories: return "Calories"
+        case .vo2max: return "VO2max"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
         }
@@ -528,6 +542,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .rhr: return "heart.fill"
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
+        case .vo2max: return "lungs.fill"
         case .trend: return "chart.line.uptrend.xyaxis"
         case .insights: return "sparkles"
         }
@@ -552,7 +567,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -603,6 +618,7 @@ private extension Array where Element == AtriaTodayMetric {
 struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let live: AtriaHomeModel.CoreLiveState
+    let vo2MaxEstimate: VO2MaxEstimateSummary
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let insights: [AtriaInsight]
@@ -629,6 +645,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.live.phoneStepsText == rhs.live.phoneStepsText
             && lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
+            && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
@@ -809,6 +826,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: .orange)
                 .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+        case .vo2max:
+            AtriaGlanceMetricCard(title: "VO2max",
+                                  value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
+                                  detail: vo2MaxEstimate.value == nil ? "Building" : "Estimate",
+                                  systemImage: metric.systemImage,
+                                  tint: vo2MaxEstimate.value == nil ? .orange : .blue)
+                .accessibilityLabel(vo2MaxEstimate.value == nil
+                                    ? "VO2max building from resting baseline and measured HR max"
+                                    : "VO2max estimate \(vo2MaxEstimate.valueText), \(vo2MaxEstimate.confidence)")
         case .trend:
             trendCard
         case .insights:
