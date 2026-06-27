@@ -1516,7 +1516,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
             parts.append("Resp \(latestNight.respiratoryRateText)")
         }
         parts.append(latestNight.confidenceText)
-        parts.append(latestNight.confirmed ? "Confirmed" : "Candidate")
+        parts.append(latestNight.confirmationText)
         return parts.joined(separator: " · ")
     }
 
@@ -1585,7 +1585,8 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
             HStack(spacing: 10) {
                 if shouldShowConfirmSleep {
                     Button(action: onConfirmSleep) {
-                        Label("Confirm sleep", systemImage: "checkmark.circle")
+                        Label(latestNight?.isNapEvidence == true ? "Confirm nap" : "Confirm sleep",
+                              systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                     }
