@@ -79,7 +79,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Strain target",
                                    current: String(format: "Strain %.1f vs target %.1f.", strain, target),
-                                   targetSummary: String(format: "Green within +/-%.1f, yellow within +/-%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
+                                   targetSummary: String(format: "Recovery-scaled target · Green within +/-%.1f, yellow within +/-%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -165,7 +165,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Sleep efficiency target",
                                    current: "\(pct)% sleep efficiency.",
-                                   targetSummary: "Green >= \(Int(safeGreen.rounded()))%, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
+                                   targetSummary: "Editable target · Green >= \(Int(safeGreen.rounded()))%, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
