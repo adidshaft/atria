@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -417,6 +418,63 @@ def accessibility_performance_summary(repo: Path, explicit: Path | None = None) 
     return candidate if candidate.exists() else None
 
 
+def trace_toc_sidecar(path: Path) -> Path:
+    return path.with_name(path.name + ".toc.xml")
+
+
+def parse_xctrace_toc(xml_text: str) -> dict[str, object]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return {"status": "invalid_xml"}
+    device = root.find(".//target/device")
+    process = root.find(".//target/process")
+    template_name = root.findtext(".//summary/template-name", default="")
+    duration_text = root.findtext(".//summary/duration", default="")
+    try:
+        duration = float(duration_text)
+    except ValueError:
+        duration = 0.0
+    return {
+        "status": "ok",
+        "device_model": device.attrib.get("model", "") if device is not None else "",
+        "process_name": process.attrib.get("name", "") if process is not None else "",
+        "template_name": template_name,
+        "duration_s": duration,
+    }
+
+
+def export_xctrace_toc(path: Path) -> str:
+    sidecar = trace_toc_sidecar(path)
+    if sidecar.exists():
+        return sidecar.read_text(encoding="utf-8", errors="replace")
+    result = subprocess.run(
+        ["xcrun", "xctrace", "export", "--input", str(path), "--toc"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def evaluate_instruments_trace(path: Path) -> dict[str, object]:
+    metadata = parse_xctrace_toc(export_xctrace_toc(path))
+    blockers: list[str] = []
+    if metadata.get("status") != "ok":
+        blockers.append("invalid_instruments_trace_toc")
+    if metadata.get("device_model") not in {"iPhone 15 Pro", ""}:
+        blockers.append("instruments_trace_device")
+    if metadata.get("process_name") not in {"Atria", ""}:
+        blockers.append("instruments_trace_process")
+    if metadata.get("template_name") not in {"Time Profiler", ""}:
+        blockers.append("instruments_trace_template")
+    duration = metadata.get("duration_s")
+    if isinstance(duration, (int, float)) and duration <= 0:
+        blockers.append("instruments_trace_duration")
+    return {"metadata": metadata, "blockers": blockers}
+
+
 def latest_device_pull_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     if explicit is not None:
         candidate = explicit if explicit.is_absolute() else repo / explicit
@@ -517,6 +575,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
 
     instruments_trace = str(data.get("instruments_trace", "")).strip()
     resolved_trace: Path | None = None
+    trace_metadata: dict[str, object] = {}
     if not instruments_trace:
         blockers.append("missing_instruments_trace")
     else:
@@ -524,6 +583,10 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         resolved_trace = trace_path if trace_path.is_absolute() else repo / trace_path
         if not resolved_trace.exists():
             blockers.append("missing_instruments_trace_file")
+        else:
+            trace_evaluation = evaluate_instruments_trace(resolved_trace)
+            trace_metadata = trace_evaluation["metadata"]
+            blockers.extend(str(item) for item in trace_evaluation["blockers"])
 
     measured_at = str(data.get("measured_at", "")).strip()
     if not measured_at:
@@ -552,6 +615,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         "dashboard_scroll_fps": scroll_fps if isinstance(scroll_fps, (int, float)) else "missing",
         "instruments_trace": instruments_trace or "missing",
         "instruments_trace_exists": resolved_trace.exists() if resolved_trace else False,
+        "instruments_trace_metadata": trace_metadata,
         "measured_at": measured_at or "missing",
         "app_commit": app_commit or "missing",
         "expected_app_commit": expected_commit or "missing",
@@ -709,6 +773,15 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- App commit: `{accessibility.get('app_commit', 'missing')}`",
         f"- App build: `{accessibility.get('app_build', 'missing')}`",
     ])
+    trace_metadata = accessibility.get("instruments_trace_metadata", {})
+    if isinstance(trace_metadata, dict) and trace_metadata:
+        lines.append(
+            "- Trace metadata: "
+            f"`device={trace_metadata.get('device_model', 'missing')}; "
+            f"process={trace_metadata.get('process_name', 'missing')}; "
+            f"template={trace_metadata.get('template_name', 'missing')}; "
+            f"duration_s={format_diagnostic_value(trace_metadata.get('duration_s', 'missing'))}`"
+        )
     accessibility_blockers = accessibility.get("blockers", [])
     if isinstance(accessibility_blockers, list) and accessibility_blockers:
         lines.extend(["", "### Accessibility Blockers"])

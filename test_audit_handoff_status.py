@@ -47,6 +47,23 @@ def write_passing_accessibility_performance(path: Path) -> None:
     trace = path.parent / "trace.trace"
     trace.parent.mkdir(parents=True, exist_ok=True)
     trace.write_text("placeholder trace artifact", encoding="utf-8")
+    audit_handoff_status.trace_toc_sidecar(trace).write_text("""
+<?xml version="1.0"?>
+<trace-toc>
+  <run number="1">
+    <info>
+      <target>
+        <device platform="iOS" model="iPhone 15 Pro" name="Aman's iPhone" os-version="27.0" uuid="DEVICE"/>
+        <process type="attached" return-exit-status="0" name="Atria" pid="20471" termination-reason="exit(0)"/>
+      </target>
+      <summary>
+        <duration>11.3</duration>
+        <template-name>Time Profiler</template-name>
+      </summary>
+    </info>
+  </run>
+</trace-toc>
+""".strip(), encoding="utf-8")
     path.write_text(json.dumps({
         "device": "iPhone 15 Pro",
         "accessibility_checks": {
@@ -568,6 +585,48 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
+
+    def test_accessibility_performance_trace_toc_must_match_device_app_and_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            trace = repo / "docs/evidence/accessibility-performance/trace.trace"
+            audit_handoff_status.trace_toc_sidecar(trace).write_text("""
+<?xml version="1.0"?>
+<trace-toc>
+  <run number="1">
+    <info>
+      <target>
+        <device model="iPhone 14"/>
+        <process name="OtherApp"/>
+      </target>
+      <summary>
+        <duration>0</duration>
+        <template-name>Allocations</template-name>
+      </summary>
+    </info>
+  </run>
+</trace-toc>
+""".strip(), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "fail")
+        self.assertIn("instruments_trace_device", report["blockers"])
+        self.assertIn("instruments_trace_process", report["blockers"])
+        self.assertIn("instruments_trace_template", report["blockers"])
+        self.assertIn("instruments_trace_duration", report["blockers"])
 
     def test_accessibility_performance_trace_file_must_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
