@@ -2230,7 +2230,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Repair" }
             if rows <= 0 { return "Empty" }
             if metricReady { return "Ready" }
-            return "\(rows)"
+            return "Archived"
         }
 
         var detailText: String {
@@ -2238,7 +2238,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            return "\(rows) saved · reference gated"
+            return "\(rows) saved · not metric-ready"
         }
 
         var userFootnoteText: String {
@@ -2246,7 +2246,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Archive needs repair." }
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
-            return "\(rows) saved locally; external beat-to-beat reference gates HRV, Recovery and Sleep metrics."
+            return "Backfill archived locally; HRV, Recovery and Sleep stay gated until historical RR is validated."
         }
 
         var metricReady: Bool {
