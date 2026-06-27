@@ -198,7 +198,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(ready.metricGateText, "Metric-ready")
     }
 
-    func testHistoricalArchiveDiagnosticsCountRowsWithoutPromotingMetrics() throws {
+    func testHistoricalArchiveDiagnosticsInferReplayRowsWithoutPromotingMetrics() throws {
         try withCleanHistoricalArchive {
             let payload = historicalPayloadWithGravity(x: 0, y: 0, z: 1)
             let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
@@ -227,7 +227,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                   clockDriftSeconds: 0,
                                                   clockCorrectedUnix7: 1_800_000_000,
                                                   clockCorrectionStatus: "corrected",
-                                                  currentSessionUsable: true,
+                                                  currentSessionUsable: false,
                                                   metricUsable: false,
                                                   usabilityReason: "provisional_historical_layout_old_or_unvalidated")
 
@@ -247,6 +247,47 @@ final class AtriaAnalyticsTests: XCTestCase {
             let status = SessionStore.HistoricalArchiveStatus(diagnostics: diagnostics)
             XCTAssertEqual(status.valueText, "Gated")
             XCTAssertFalse(status.metricReady)
+        }
+    }
+
+    func testHistoricalArchiveDiagnosticsRejectIncidentalRRWithoutValidatedMotion() throws {
+        try withCleanHistoricalArchive {
+            let payload = historicalPayloadWithGravity(x: 0, y: 0, z: 0)
+            let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
+                                                  capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                                                  source: "0x2f",
+                                                  layoutVersion: HistoricalArchive.layoutVersion,
+                                                  sequence: 8,
+                                                  command: 0x16,
+                                                  unix7: 1_800_000_000,
+                                                  subsec11: 0,
+                                                  flash13: 43,
+                                                  payloadLength: payload.count,
+                                                  whoofHR17: 61,
+                                                  whoofRRNum18: 2,
+                                                  whoofRR19: [980, 1_010],
+                                                  kRR64: [],
+                                                  gravityX36: 0,
+                                                  gravityY40: 0,
+                                                  gravityZ44: 0,
+                                                  gravityMagnitude: 0,
+                                                  gravityValidated: false,
+                                                  candidateRR: ["whoof19", "k64"],
+                                                  rawPayloadHex: HistoricalArchive.hex(payload),
+                                                  clockDeviceRef: 1_800_000_000,
+                                                  clockWallRef: 1_800_000_000,
+                                                  clockDriftSeconds: 0,
+                                                  clockCorrectedUnix7: 1_800_000_000,
+                                                  clockCorrectionStatus: "corrected",
+                                                  currentSessionUsable: false,
+                                                  metricUsable: false,
+                                                  usabilityReason: "provisional_historical_layout_old_or_unvalidated")
+
+            _ = try HistoricalArchive.append(record)
+
+            let diagnostics = HistoricalArchive.diagnostics()
+            XCTAssertEqual(diagnostics.currentSessionUsableRows, 0)
+            XCTAssertEqual(diagnostics.metricUsableRows, 0)
         }
     }
 

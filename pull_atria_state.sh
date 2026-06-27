@@ -284,6 +284,20 @@ def decode_historical_gravity(payload_hex):
     magnitude = math.sqrt(x * x + y * y + z * z)
     return magnitude, 0.8 <= magnitude <= 1.2, version
 
+def historical_current_session_usable(row):
+    unix = row.get("clockCorrectedUnix7") or row.get("unix7") or 0
+    if not isinstance(unix, int) or unix <= 0:
+        return False
+    payload_hex = row.get("rawPayloadHex")
+    if not isinstance(payload_hex, str) or not payload_hex:
+        return False
+    gravity = decode_historical_gravity(payload_hex)
+    if gravity is None or gravity[1] is not True:
+        return False
+    direct_rr_count = len(row.get("whoofRR19") or []) + len(row.get("kRR64") or [])
+    candidate_rr_count = len(row.get("candidateRR") or [])
+    return direct_rr_count > 0 or candidate_rr_count >= 2
+
 def emit_historical_archive_summary():
     archive_path = evidence / "historical-archive.jsonl"
     if not archive_path.exists():
@@ -329,7 +343,7 @@ def emit_historical_archive_summary():
                 payload_lengths.add(int(row["payloadLength"]))
             if row.get("metricUsable") is True:
                 metric_usable_rows += 1
-            if row.get("currentSessionUsable") is True:
+            if row.get("currentSessionUsable") is True or historical_current_session_usable(row):
                 current_usable_rows += 1
             if row.get("source") == "0x2f" and "layoutVersion" not in row:
                 undecodable_rows += 1
