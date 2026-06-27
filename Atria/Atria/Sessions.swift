@@ -3098,10 +3098,12 @@ final class SessionStore: ObservableObject {
         let sourceSessions = cachedCanonicalSessions
         let journalEntries = cachedBehaviorJournalEntries
         DispatchQueue.global(qos: .utility).async {
-            let summaries = Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,
-                                                                  journalEntries: journalEntries,
-                                                                  rest: rest,
-                                                                  maxHR: maxHR)
+            let summaries = Self.sortedBehaviorCorrelationSummaries(
+                Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,
+                                                      journalEntries: journalEntries,
+                                                      rest: rest,
+                                                      maxHR: maxHR)
+            )
             let insights = Self.deriveInsights(from: summaries)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -6044,11 +6046,13 @@ final class SessionStore: ObservableObject {
     func behaviorCorrelationSummaries(rest: Int,
                                       maxHR: Int,
                                       calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
-        Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),
-                                              journalEntries: cachedBehaviorJournalEntries,
-                                              rest: rest,
-                                              maxHR: maxHR,
-                                              calendar: calendar)
+        Self.sortedBehaviorCorrelationSummaries(
+            Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),
+                                                  journalEntries: cachedBehaviorJournalEntries,
+                                                  rest: rest,
+                                                  maxHR: maxHR,
+                                                  calendar: calendar)
+        )
     }
 
     private nonisolated static func makeBehaviorCorrelationSummaries(sessions: [SavedSession],
@@ -6112,6 +6116,13 @@ final class SessionStore: ObservableObject {
     private nonisolated static func averageDoubleSnapshot(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    private nonisolated static func sortedBehaviorCorrelationSummaries(_ summaries: [BehaviorCorrelationSummary]) -> [BehaviorCorrelationSummary] {
+        summaries.sorted { lhs, rhs in
+            if lhs.days != rhs.days { return lhs.days > rhs.days }
+            return lhs.tag.rawValue < rhs.tag.rawValue
+        }
     }
 
     private static func readBehaviorJournalEntries() -> [BehaviorJournalEntry] {
