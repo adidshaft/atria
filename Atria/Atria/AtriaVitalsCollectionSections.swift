@@ -712,14 +712,16 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
                 AtriaMetricTile(label: "Body age",
                                 value: summary.valueText,
                                 state: summary.isReady ? .estimate : .learning,
-                                tint: summary.isReady ? .purple : .orange,
-                                footnote: summary.isReady ? summary.detailText : "Building baseline")
+                                tint: biologicalAgeZone?.tint ?? (summary.isReady ? .purple : .orange),
+                                footnote: summary.isReady ? summary.detailText : "Building baseline",
+                                zone: biologicalAgeZone)
                 AtriaMetricTile(label: "Delta",
                                 value: summary.ageDelta.map { "\($0 > 0 ? "+" : "")\($0)" } ?? "--",
                                 unit: summary.ageDelta == nil ? nil : "yr",
                                 state: summary.isReady ? .estimate : .learning,
-                                tint: deltaTint,
-                                footnote: summary.isReady ? summary.detailText : "Needs baseline")
+                                tint: biologicalAgeZone?.tint ?? deltaTint,
+                                footnote: summary.isReady ? summary.detailText : "Needs baseline",
+                                zone: biologicalAgeZone)
             }
 
             if summary.factors.isEmpty {
@@ -779,6 +781,10 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
         guard let ageDelta = summary.ageDelta else { return .orange }
         if ageDelta == 0 { return .blue }
         return ageDelta < 0 ? .green : .orange
+    }
+
+    private var biologicalAgeZone: AtriaMetricZone? {
+        Metrics.biologicalAgeZone(summary)
     }
 
     private func tint(for direction: BioAgeFactor.Direction) -> Color {
@@ -2070,18 +2076,21 @@ private struct AtriaProfileCard: View, Equatable {
                 AtriaMetricTile(label: "VO2max",
                                 value: vo2MaxEstimate.valueText,
                                 state: vo2MaxEstimate.value == nil ? .learning : .estimate,
-                                tint: .orange,
-                                footnote: vo2MaxEstimate.confidence)
+                                tint: vo2TrendZone?.tint ?? .orange,
+                                footnote: vo2MaxEstimate.confidence,
+                                zone: vo2TrendZone)
                 AtriaMetricTile(label: "VO2 trend",
                                 value: vo2MaxEstimate.trendText,
                                 state: vo2MaxEstimate.value == nil || vo2MaxEstimate.trendText == "Learning" ? .learning : .estimate,
-                                tint: .orange,
-                                footnote: vo2MaxEstimate.trendDetail)
+                                tint: vo2TrendZone?.tint ?? .orange,
+                                footnote: vo2MaxEstimate.trendDetail,
+                                zone: vo2TrendZone)
                 AtriaMetricTile(label: "Body age",
                                 value: biologicalAgeSummary.valueText,
                                 state: biologicalAgeSummary.isReady ? .estimate : .learning,
-                                tint: biologicalAgeSummary.isReady ? .purple : .orange,
-                                footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building your body-age baseline")
+                                tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? .purple : .orange),
+                                footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building your body-age baseline",
+                                zone: biologicalAgeZone)
             }
 
             Text(vo2MaxEstimate.narrative)
@@ -2148,6 +2157,14 @@ private struct AtriaProfileCard: View, Equatable {
         } increment: {
             onUpdateProfile { $0.measuredMaxHR = min(220, $0.measuredMaxHR + 1) }
         }
+    }
+
+    private var vo2TrendZone: AtriaMetricZone? {
+        Metrics.vo2TrendZone(vo2MaxEstimate)
+    }
+
+    private var biologicalAgeZone: AtriaMetricZone? {
+        Metrics.biologicalAgeZone(biologicalAgeSummary)
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns

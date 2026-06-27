@@ -1249,7 +1249,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
                                   detail: vo2MaxEstimate.value == nil ? "Building" : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: vo2MaxEstimate.value == nil ? .orange : .blue)
+                                  tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
+                                  zone: vo2TrendZone)
                 .accessibilityLabel(vo2MaxEstimate.value == nil
                                     ? "VO2max building from resting baseline and measured HR max"
                                     : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail)")
@@ -1258,7 +1259,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: biologicalAgeSummary.valueText,
                                   detail: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building baseline",
                                   systemImage: metric.systemImage,
-                                  tint: biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange)
+                                  tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange),
+                                  zone: biologicalAgeZone)
                 .accessibilityLabel(biologicalAgeSummary.isReady
                                     ? "Biological age estimate \(biologicalAgeSummary.valueText), \(biologicalAgeSummary.detailText). \(biologicalAgeSummary.footnote)"
                                     : "Building your body-age baseline. \(biologicalAgeSummary.blockerText). \(biologicalAgeSummary.footnote)")
@@ -1439,6 +1441,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var stepsZone: AtriaMetricZone? {
         Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,
                           goal: stepsGoal)
+    }
+
+    private var vo2TrendZone: AtriaMetricZone? {
+        Metrics.vo2TrendZone(vo2MaxEstimate)
+    }
+
+    private var biologicalAgeZone: AtriaMetricZone? {
+        Metrics.biologicalAgeZone(biologicalAgeSummary)
     }
 
     private func parseInt(_ value: String) -> Int? {

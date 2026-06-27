@@ -228,6 +228,67 @@ extension Metrics {
                                recommendation: recommendation,
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
+
+    static func vo2TrendZone(_ summary: VO2MaxEstimateSummary) -> AtriaMetricZone? {
+        guard summary.value != nil, summary.trendText != "Learning" else { return nil }
+        let trimmedTrend = summary.trendText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let level: AtriaMetricZoneLevel
+        if trimmedTrend.localizedCaseInsensitiveContains("stable") {
+            level = .yellow
+        } else if trimmedTrend.hasPrefix("+") {
+            level = .green
+        } else if trimmedTrend.hasPrefix("-") {
+            level = .red
+        } else {
+            return nil
+        }
+
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "VO2max trend is improving. Keep the cardio and recovery habits consistent."
+        case .yellow:
+            recommendation = "VO2max trend is flat -- consistent cardio, Zone 2, intervals, and sleep move this most."
+        case .red:
+            recommendation = "Trending the wrong way -- consistent cardio, Zone 2, intervals, and sleep move this most."
+        }
+
+        return AtriaMetricZone(level: level,
+                               title: "VO2max trend",
+                               current: "Trend \(trimmedTrend), \(summary.trendDetail)",
+                               targetSummary: "Green improving, yellow flat, red declining.",
+                               recommendation: recommendation,
+                               disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
+    }
+
+    static func biologicalAgeZone(_ summary: BiologicalAgeSummary) -> AtriaMetricZone? {
+        guard summary.isReady, let delta = summary.ageDelta else { return nil }
+        let level: AtriaMetricZoneLevel
+        if delta <= 0 {
+            level = .green
+        } else if delta <= 3 {
+            level = .yellow
+        } else {
+            level = .red
+        }
+
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Body age is on the younger side for your profile. Keep the fitness, sleep, HRV, and recovery habits consistent."
+        case .yellow:
+            recommendation = "Body age is slightly older than your profile. Consistent cardio, sleep, HRV, and recovery habits move this estimate most."
+        case .red:
+            recommendation = "Body age is older than your profile. Prioritize consistent cardio, sleep regularity, recovery, and easier days when strain is high."
+        }
+
+        return AtriaMetricZone(level: level,
+                               title: "Body age target",
+                               current: "\(summary.valueText), \(summary.detailText).",
+                               targetSummary: "Green younger than chronological age, yellow slightly older, red older.",
+                               recommendation: recommendation,
+                               disclaimer: summary.footnote)
+    }
 }
 
 struct AtriaMetricZoneInfoSheet: View {
