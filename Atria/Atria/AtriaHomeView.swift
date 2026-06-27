@@ -3054,13 +3054,6 @@ private struct AtriaConnectionDiagnosis: Equatable {
         let officialAppRiskActive = officialAppInstalled && live.officialAppCoexistenceRisk != .cleared
         let stalePairingSuspected = !officialAppInstalled && live.officialAppCoexistenceRisk == .suspected
 
-        if live.batteryLevel >= 0, live.batteryLevel <= Self.lowBatteryThreshold, !live.batteryIsCharging {
-            return AtriaConnectionDiagnosis(title: "Strap battery low",
-                                            action: "Charge your strap before a workout or overnight wear.",
-                                            systemImage: "battery.25percent",
-                                            tint: .yellow)
-        }
-
         switch live.status {
         case .poweredOff:
             if live.bluetoothPermissionDenied {
@@ -3073,6 +3066,11 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red)
+        case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && !live.batteryIsCharging:
+            return AtriaConnectionDiagnosis(title: "Strap battery low",
+                                            action: "Charge your strap before a workout or overnight wear.",
+                                            systemImage: "battery.25percent",
+                                            tint: .yellow)
         case .connected where pulse.needsContactCoach:
             return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Fit check needed" : "Connected, no pulse",
                                             action: "Tighten the strap fit or wet the sensor.",
