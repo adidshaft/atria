@@ -4,6 +4,7 @@ struct AtriaManualSleepSheet: View {
     let onSave: (Date, Date, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var isNap = false
+    @State private var typeWasManuallyEdited = false
     @State private var start = Date().addingTimeInterval(-8 * 60 * 60)
     @State private var end = Date()
 
@@ -22,6 +23,40 @@ struct AtriaManualSleepSheet: View {
                 && duration <= AggregateSleepCandidate.napMaximumSpan
         }
         return duration >= AggregateSleepCandidate.strictMinimumDuration
+    }
+
+    private var inferredIsNap: Bool {
+        guard end > start else { return isNap }
+        if duration >= AggregateSleepCandidate.strictMinimumDuration {
+            return false
+        }
+        guard duration >= AggregateSleepCandidate.napMinimumDuration,
+              duration <= AggregateSleepCandidate.napMaximumSpan else {
+            return isNap
+        }
+        let calendar = Calendar.current
+        let startHour = calendar.component(.hour, from: start)
+        let endHour = calendar.component(.hour, from: end)
+        let daytimeWindow = startHour >= 11 && endHour <= 20
+        return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration
+    }
+
+    private var typeBinding: Binding<Bool> {
+        Binding(
+            get: { isNap },
+            set: { next in
+                typeWasManuallyEdited = true
+                isNap = next
+            }
+        )
+    }
+
+    private var typeSuggestionText: String {
+        let suggested = inferredIsNap ? "Nap" : "Sleep"
+        if typeWasManuallyEdited {
+            return "Suggested by the window: \(suggested). Your manual choice is kept."
+        }
+        return "Atria suggested \(suggested) from duration and time of day."
     }
 
     private var validationText: String {
@@ -44,11 +79,15 @@ struct AtriaManualSleepSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Type", selection: $isNap) {
+                Picker("Type", selection: typeBinding) {
                     Text("Sleep").tag(false)
                     Text("Nap").tag(true)
                 }
                 .pickerStyle(.segmented)
+
+                Text(typeSuggestionText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
                 DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
@@ -81,6 +120,9 @@ struct AtriaManualSleepSheet: View {
                 }
             }
             .navigationTitle("Add \(isNap ? "Nap" : "Sleep")")
+            .onAppear(perform: applyInferredTypeIfNeeded)
+            .onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }
+            .onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
@@ -93,6 +135,11 @@ struct AtriaManualSleepSheet: View {
                 }
             }
         }
+    }
+
+    private func applyInferredTypeIfNeeded() {
+        guard !typeWasManuallyEdited else { return }
+        isNap = inferredIsNap
     }
 
     private func stagePreviewText(_ stage: SleepStageKind) -> String {
