@@ -529,7 +529,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, workout, hrv, sleep, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, workout, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -538,6 +538,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .workout: return "Workout"
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
+        case .sleepHistory: return "Sleep history"
         case .sleepEfficiency: return "Sleep eff"
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
@@ -558,6 +559,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .workout: return "stopwatch.fill"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
+        case .sleepHistory: return "moon.zzz.fill"
         case .sleepEfficiency: return "percent"
         case .rhr: return "heart.fill"
         case .respiratoryRate: return "lungs"
@@ -574,7 +576,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var glanceGridSize: AtriaGlanceGridSize {
         switch self {
-        case .trend, .insights:
+        case .sleepHistory, .trend, .insights:
             return .wide
         default:
             return .compact
@@ -591,7 +593,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -837,6 +839,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: metricIsPending(snapshot.sleepValue) ? "Learning" : "Last sleep",
                                   systemImage: metric.systemImage,
                                   tint: .cyan)
+        case .sleepHistory:
+            sleepHistoryCard
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
                                   value: sleepHistory.latest?.sleepEfficiencyText ?? "--",
@@ -930,6 +934,27 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .accessibilityLabel(live.status == .connected
                             ? "Start live workout"
                             : "Connect strap before starting live workout")
+    }
+
+    private var sleepHistoryCard: some View {
+        let values = sleepHistorySparklineValues
+        return AtriaGlanceMetricCard(title: "Sleep history",
+                                     value: sleepHistory.nights.isEmpty ? "--" : sleepHistory.averageDurationText,
+                                     detail: sleepHistory.nights.isEmpty ? "Wear strap overnight" : "\(sleepHistory.nights.count) nights",
+                                     systemImage: AtriaTodayMetric.sleepHistory.systemImage,
+                                     tint: sleepHistory.nights.isEmpty ? .orange : .cyan,
+                                     sparklineValues: values.isEmpty ? [0, 0] : values)
+            .accessibilityLabel(sleepHistory.nights.isEmpty
+                                ? "Sleep history is building. Wear the strap overnight."
+                                : "Sleep history average \(sleepHistory.averageDurationText) across \(sleepHistory.nights.count) nights")
+    }
+
+    private var sleepHistorySparklineValues: [Int] {
+        var values: [Int] = []
+        for night in sleepHistory.nights.reversed() {
+            values.append(Int((night.durationHours * 10).rounded()))
+        }
+        return values
     }
 
     private var trendCard: some View {
