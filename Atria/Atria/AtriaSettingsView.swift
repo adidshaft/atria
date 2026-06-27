@@ -205,11 +205,9 @@ struct AtriaSettingsView: View {
 
     private var alertsSection: some View {
         Section {
-            Toggle("Heart-rate zone alerts", isOn: $haptics.heartRateZones)
-            Toggle("Strain target reached", isOn: $haptics.strainTarget)
-            Toggle("Recovery is ready", isOn: $haptics.recoveryReady)
-            Toggle("Incoming calls", isOn: $haptics.incomingCalls)
-            Toggle("Low strap battery", isOn: $haptics.lowBattery)
+            AtriaHapticAlertSettingsCard(settings: haptics) { next in
+                haptics = next
+            }
         } header: {
             Text("Alerts")
         } footer: {

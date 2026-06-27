@@ -654,6 +654,7 @@ class HandoffStaticChecks(unittest.TestCase):
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         live_workout = source(ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift")
         haptics = source(ROOT / "Atria" / "Atria" / "AtriaHapticAlerts.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
 
         for needle in [
             "struct AtriaOverviewCollectionSection: View, Equatable",
@@ -707,6 +708,21 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, haptics, needle)
         assert_not_contains(self, haptics, ".atriaRaisedCard(")
+
+        for needle in [
+            "AtriaHapticAlertSettingsCard(settings: haptics) { next in",
+            "haptics = next",
+            "Text(\"Phone-side alerts only.\")",
+        ]:
+            assert_contains(self, settings, needle)
+        for forbidden in [
+            "Toggle(\"Heart-rate zone alerts\", isOn: $haptics.heartRateZones)",
+            "Toggle(\"Strain target reached\", isOn: $haptics.strainTarget)",
+            "Toggle(\"Recovery is ready\", isOn: $haptics.recoveryReady)",
+            "Toggle(\"Incoming calls\", isOn: $haptics.incomingCalls)",
+            "Toggle(\"Low strap battery\", isOn: $haptics.lowBattery)",
+        ]:
+            assert_not_contains(self, settings, forbidden)
 
         for needle in [
             "Text(\"I’ll handle it\")\n                        .frame(maxWidth: .infinity)",
