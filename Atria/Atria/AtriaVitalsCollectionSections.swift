@@ -674,6 +674,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     let sleepHistory: SleepHistorySnapshot
     @AppStorage("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
+    @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
     @State private var showResearchInfo = false
@@ -704,6 +705,18 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation,
                                              greenDelta: skinTemperatureGreenDelta,
                                              yellowDelta: skinTemperatureYellowDelta)
+    }
+
+    private var strapStepsZone: AtriaMetricZone? {
+        Metrics.stepsZone(summary.strapStepCount > 0 ? summary.strapStepCount : nil,
+                          goal: stepsGoal).map {
+            AtriaMetricZone(level: $0.level,
+                            title: "Strap step research goal",
+                            current: $0.current,
+                            targetSummary: $0.targetSummary,
+                            recommendation: "\($0.recommendation) Strap steps remain research-tier until motion agreement is validated.",
+                            disclaimer: "Research strap-step estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        }
     }
 
     var body: some View {
@@ -747,8 +760,9 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
-                                tint: .green,
-                                footnote: summary.agreementText)
+                                tint: strapStepsZone?.tint ?? .green,
+                                footnote: summary.agreementText,
+                                zone: strapStepsZone)
             }
 
             Text("Early sensor rows show evidence counts, not measurements. Atria shows skin temperature only as a sleep-baseline deviation, never as an absolute body-temperature value.")
