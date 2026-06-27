@@ -642,6 +642,18 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         sleepHistory.nights.first?.respiratoryRateText ?? "--"
     }
 
+    private var respiratoryRateZone: AtriaMetricZone? {
+        let baselineValues = sleepHistory.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
+        return Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,
+                                           baseline: baseline,
+                                           baselineSamples: baselineValues.count)
+    }
+
+    private var skinTemperatureDeviationZone: AtriaMetricZone? {
+        Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
@@ -661,14 +673,16 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 value: summary.skinTemperatureDeviation.valueText,
                                 unit: summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
                                 state: summary.skinTemperatureDeviation.isReady ? .research : .learning,
-                                tint: summary.skinTemperatureDeviation.isReady ? .teal : .orange,
-                                footnote: summary.skinTemperatureDeviation.footnoteText)
+                                tint: skinTemperatureDeviationZone?.tint ?? (summary.skinTemperatureDeviation.isReady ? .teal : .orange),
+                                footnote: summary.skinTemperatureDeviation.footnoteText,
+                                zone: skinTemperatureDeviationZone)
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
-                                tint: .teal,
-                                footnote: "Sleep-only estimate; needs comparison data.")
+                                tint: respiratoryRateZone?.tint ?? .teal,
+                                footnote: "Sleep-only estimate; needs comparison data.",
+                                zone: respiratoryRateZone)
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
@@ -1788,6 +1802,14 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                         baselineSamples: hrvBaselineSamples)
     }
 
+    private var respiratoryRateZone: AtriaMetricZone? {
+        let baselineValues = snapshot.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
+        return Metrics.respiratoryRateZone(snapshot.latest?.respiratoryRate,
+                                           baseline: baseline,
+                                           baselineSamples: baselineValues.count)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -1853,8 +1875,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
-                                    tint: .teal,
-                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate")
+                                    tint: respiratoryRateZone?.tint ?? .teal,
+                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate",
+                                    zone: respiratoryRateZone)
                 }
 
                 if chartNights.count > 1 {
