@@ -347,6 +347,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "hidden.isEmpty ? noHiddenMetricsSentinel : hidden.sorted().joined(separator: \",\")",
             "static var defaultGlanceOrder: [AtriaTodayMetric]",
             "static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric]",
+            "static func hiddenOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric]",
             "static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String",
             "fileprivate struct AtriaGlanceGridSize: Equatable",
             "static let compact = AtriaGlanceGridSize(rows: 1, columns: 1)",
@@ -511,10 +512,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "taggedDays: store.behaviorJournalEntries.count",
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
+            "let hiddenMetrics: [AtriaTodayMetric]",
             "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
             "let onHideMetric: (AtriaTodayMetric) -> Void",
+            "let onShowMetric: (AtriaTodayMetric) -> Void",
+            "let onResetMetrics: () -> Void",
             "let onStartWorkout: () -> Void",
             "&& lhs.insights == rhs.insights",
+            "&& lhs.hiddenMetrics == rhs.hiddenMetrics",
             "AtriaGlanceMetricCard(title: \"Workout\"",
             "value: live.status == .connected ? \"Start\" : \"Connect\"",
             "detail: live.sessionSampleCount > 0 ? \"\\(live.sessionSampleCount) readings\" : \"Live mode\"",
@@ -535,12 +540,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "onShiftMetric(metric, -1)",
             "onShiftMetric(metric, 1)",
             "private func hideMetric(_ metric: AtriaTodayMetric)",
+            "private func showMetric(_ metric: AtriaTodayMetric)",
+            "private func resetMetrics()",
             "hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)",
+            "private var customizeMenu: some View",
+            "Section(\"Add widget\")",
+            "Section(\"Hide widget\")",
+            "Label(\"Reset widgets\", systemImage: \"arrow.counterclockwise\")",
+            "Image(systemName: \"slider.horizontal.3\")",
+            ".buttonStyle(.glass)",
+            ".buttonBorderShape(.circle)",
+            ".accessibilityLabel(\"Customize Today widgets\")",
             "Menu {",
             "Button(role: .destructive)",
-            "Label(\"Remove \\(metric.label)\", systemImage: \"minus.circle\")",
-            ".background(Color(.systemBackground).opacity(0.82), in: Circle())",
-            ".accessibilityLabel(\"Widget options for \\(metric.label)\")",
             "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
             ".sensoryFeedback(.selection, trigger: orderCSV)",
         ]:
@@ -558,6 +570,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "flame.circle.fill")
         assert_not_contains(self, overview, "detail: hrvLearningState == .learning ? \"Building\" : \"Baseline\"")
         assert_not_contains(self, overview, "private var hrvLearningState: AtriaMetricState")
+        assert_not_contains(self, overview, "Label(\"Remove \\(metric.label)\", systemImage: \"minus.circle\")")
+        assert_not_contains(self, overview, ".accessibilityLabel(\"Widget options for \\(metric.label)\")")
+        assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Circle())")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
