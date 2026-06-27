@@ -166,8 +166,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .disconnected: return .blue",
             "HStack(spacing: 5)",
             "private struct AtriaToolbarIcon: View, Equatable",
-            "private static let visualSize: CGFloat = 44",
-            "private static let hitSize: CGFloat = 44",
+            "private static let visualSize: CGFloat = AtriaHeaderControlMetrics.height",
+            "private static let hitSize: CGFloat = AtriaHeaderControlMetrics.height",
             "AtriaToolbarIcon(symbol: \"figure.run\")",
             "AtriaToolbarIcon(symbol: \"questionmark.circle\")",
             "AtriaToolbarIcon(symbol: \"clock.arrow.circlepath\")",
@@ -176,12 +176,17 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(width: Self.hitSize, height: Self.hitSize)",
             ".contentShape(Rectangle())",
             "HStack(spacing: 6)",
-            ".frame(height: 44, alignment: .center)",
-            ".frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .center)",
+            ".frame(height: AtriaHeaderControlMetrics.height, alignment: .center)",
+            "private enum AtriaHeaderControlMetrics",
+            "static let height: CGFloat = 44",
+            "minHeight: AtriaHeaderControlMetrics.height",
+            "maxHeight: AtriaHeaderControlMetrics.height",
             ".fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.84))",
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
             "Capsule()\n                .fill(tint.opacity(colorScheme == .light ? 0.34 : 0.24))",
-            ".frame(minWidth: 132, minHeight: 44, maxHeight: 44)",
+            ".frame(minWidth: 132,\n               minHeight: AtriaHeaderControlMetrics.height,\n               maxHeight: AtriaHeaderControlMetrics.height)",
+            "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.",
+            "HRV-grade beat-to-beat data is ready as personal-baseline HRV.",
         ]:
             assert_contains(self, home, needle)
 
@@ -202,6 +207,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var liquidWash: LinearGradient",
             "case .connected where !pulse.hasContact:",
             "guard let self, self.prefersPulseSparklineUpdates else { return }\n                self.publishPulseLive()",
+            "clean beat-to-beat",
+            "Clean beat-to-beat",
         ]:
             assert_not_contains(self, home, forbidden)
 
