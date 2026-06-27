@@ -1448,22 +1448,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         Array(snapshot.nights.prefix(7).reversed())
     }
 
-    private var emptyEvidenceValue: String {
-        if snapshot.confirmedCount > 0 { return "\(snapshot.confirmedCount)" }
-        if snapshot.candidateCount > 0 { return "\(snapshot.candidateCount)" }
-        return "Learning"
-    }
-
     private var emptyEvidenceState: AtriaMetricState {
         if snapshot.confirmedCount > 0 { return .validated }
         if snapshot.candidateCount > 0 { return .research }
         return .learning
-    }
-
-    private var emptyEvidenceFootnote: String {
-        if snapshot.confirmedCount > 0 { return "Confirmed sleep saved locally." }
-        if snapshot.candidateCount > 0 { return "Sleep or nap evidence saved; confirm it when ready." }
-        return "Wear the strap overnight or during a nap. Atria shows duration and RHR once saved evidence exists."
     }
 
     private var latestEvidenceFootnote: String {
@@ -1488,11 +1476,11 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             }
 
             if snapshot.nights.isEmpty {
-                AtriaMetricTile(label: "Recent nights",
-                                value: emptyEvidenceValue,
+                AtriaMetricTile(label: snapshot.emptyEvidenceLabel,
+                                value: snapshot.emptyEvidenceValue,
                                 state: emptyEvidenceState,
                                 tint: .cyan,
-                                footnote: emptyEvidenceFootnote)
+                                footnote: snapshot.emptyEvidenceFootnote)
             } else {
                 LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                     AtriaMetricTile(label: snapshot.latest?.evidenceLabel ?? "Latest",
