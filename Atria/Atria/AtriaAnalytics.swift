@@ -1,6 +1,27 @@
 import Foundation
 
 enum AtriaAnalytics {
+    enum ManualSleep {
+        static func inferredIsNap(start: Date,
+                                  end: Date,
+                                  currentSelection: Bool,
+                                  calendar: Calendar = .current) -> Bool {
+            guard end > start else { return currentSelection }
+            let duration = end.timeIntervalSince(start)
+            if duration >= AggregateSleepCandidate.strictMinimumDuration {
+                return false
+            }
+            guard duration >= AggregateSleepCandidate.napMinimumDuration,
+                  duration <= AggregateSleepCandidate.napMaximumSpan else {
+                return currentSelection
+            }
+            let startHour = calendar.component(.hour, from: start)
+            let endHour = calendar.component(.hour, from: end)
+            let daytimeWindow = startHour >= 11 && endHour <= 20
+            return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration
+        }
+    }
+
     enum TargetZones {
         static func recovery(_ pct: Int?,
                              target: AtriaMetricTarget = .recoveryRecommended) -> AtriaMetricZone? {
