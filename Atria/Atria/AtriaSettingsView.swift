@@ -33,6 +33,8 @@ struct AtriaSettingsView: View {
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
@@ -115,6 +117,8 @@ struct AtriaSettingsView: View {
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
         .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: strainGreenBand) { _, _ in normalizeStrainTargets() }
+        .onChange(of: strainYellowBand) { _, _ in normalizeStrainTargets() }
         .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
         .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
         .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
@@ -132,6 +136,11 @@ struct AtriaSettingsView: View {
 
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+    }
+
+    private func normalizeStrainTargets() {
+        strainGreenBand = min(max(strainGreenBand, 0.5), 5.0)
+        strainYellowBand = min(max(strainYellowBand, strainGreenBand + 0.5), 8.0)
     }
 
     private func normalizeSleepGoal() {
@@ -299,6 +308,30 @@ struct AtriaSettingsView: View {
                     Label("Reset to recommended", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+
+                Divider()
+
+                Stepper(value: $strainGreenBand, in: 0.5...5.0, step: 0.5) {
+                    LabeledContent("Strain green band") {
+                        Text(String(format: "+/-%.1f", strainGreenBand))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $strainYellowBand, in: 1.0...8.0, step: 0.5) {
+                    LabeledContent("Strain yellow band") {
+                        Text(String(format: "+/-%.1f", strainYellowBand))
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    strainGreenBand = 1.5
+                    strainYellowBand = 3.0
+                } label: {
+                    Label("Reset strain band", systemImage: "figure.run")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
 
                 Divider()
 
