@@ -159,6 +159,7 @@ provide that users desperately want.** Build these through the cached derived st
 | **SpO₂ (blood oxygen)** | 0x33 sensor probe (research) | Same probe path; candidate frames only. Research-gated, never written to HealthKit, never an absolute %. | research, relative-only |
 | **Resting HR** | overnight/low-activity HR min | ✅ baseline exists. Surface trend. | derived |
 | **Respiratory rate** | RR-derived (during sleep) | Derivable from RR/HR modulation during sleep — research tier. | research, sleep-only |
+| **Biological Age** | VO₂max + RHR + HRV + sleep + activity + BMI | "Body age" + younger/older delta + factor breakdown. See §B-BIOAGE. | estimate, baseline-gated, non-medical |
 
 ### B-RR — the gating dependency (do this first; it unblocks HRV/Recovery/Sleep)
 On-device finding: in low-radio mode the strap sends ~1 Hz HR but **zero RR** at
@@ -186,6 +187,69 @@ the historical RR layout isn't validated (docs/03). TASK: validate the historica
 layout against an external RR/IBI reference; once validated, let backfilled history
 feed Recovery/HRV/Sleep so a gap (phone away, app closed) fills in "with time" as the
 owner wants. Keep the honesty gate until validated.
+
+### B-BIOAGE — Biological Age (physiological age estimate, "younger / older")
+OWNER-REQUESTED. A transparent estimate of how old the user's cardiovascular /
+metabolic system *functions* vs their chronological age, with a **younger / older**
+delta. This is an ESTIMATE built from data the strap + profile already provide — it
+is NOT a medical or longevity assessment, and must be labeled so. Model it on the
+known WHOOP-Age / phenotypic-age approach but compute it 100% locally and honestly.
+
+**Output (3 things):**
+1. `biologicalAge: Int` — estimated physiological age (clamp to chronological ±20 y).
+2. `ageDelta = biologicalAge − chronologicalAge` — negative ⇒ "X years younger"
+   (good, green), positive ⇒ "X years older" (amber→red). This is the headline.
+3. `factors: [BioAgeFactor]` — per-input contribution (which inputs pull you younger
+   vs older), so it's transparent and actionable.
+
+**Inputs (all already available or specced above; sex-specific):**
+- VO₂max estimate (`profileMetricsStore.vo2MaxEstimate`) — strongest signal.
+- Resting HR baseline (`store.baseline.restingInt`).
+- HRV (RMSSD) baseline (morning/sleep window, §B-RR).
+- Sleep: efficiency + average duration + consistency (§B sleep).
+- Activity: daily steps / cardio load / day-strain (§B).
+- Body composition proxy: BMI from profile height/weight (lean-mass proxy).
+- Profile: chronological age, sex.
+
+**Model (transparent, local, documented in code comments with sources):**
+- For each input, map the user's value to an **age-equivalent** using published,
+  sex-specific population reference curves (e.g. ACSM/Cooper VO₂max percentile tables
+  by age+sex; resting-HR norms; the HRV-declines-with-age curve; sleep-need guidance;
+  step/activity norms; BMI bands). Example: a VO₂max that is the median for 30-year-old
+  males ⇒ that factor's age-equivalent = 30. Hard-code the reference tables as small
+  local lookup arrays; cite the source in a comment next to each.
+- Combine the per-factor age-equivalents as a **weighted average** into one
+  physiological age. Suggested weights (document + keep tunable): VO₂max 0.30,
+  RHR 0.20, HRV 0.20, sleep 0.15, activity 0.10, BMI 0.05. Must be MONOTONIC: better
+  fitness / HRV / sleep ⇒ younger.
+- Clamp to chronological ±20 y. `ageDelta` = result − chronological.
+- `factors`: each input's `(label, ageEquivalent, deltaVsChronological, direction)`
+  so the UI can list "VO₂max → 4 yrs younger", "Sleep → 2 yrs older", etc.
+- Optional **pace of aging**: track `biologicalAge` week-over-week and show whether
+  the gap is improving or widening (reuse the trend/derived-store pattern).
+
+**Honest tier + gating (REQUIRED):**
+- Tier = ESTIMATE. Always show the label: *"Estimated from your fitness, heart-rate,
+  HRV and sleep data — an estimate, not a medical assessment."*
+- Gate on enough baseline: require a VO₂max estimate **and** an RHR baseline **and**
+  an HRV baseline **and** ≥ a few sleep nights. Until met, show **"Building your
+  body-age baseline"** (never a fabricated age).
+- Never frame as disease risk, lifespan, or longevity. No medical claims.
+- 100% local; no network; reference literature only in comments.
+
+**Build location:** compute in the derived store (`SessionStore` / a
+`profileMetricsStore`-adjacent cache), recomputed only when its inputs change
+(VO₂max / baselines / sleep / activity), published `@Published`, read O(1) by views —
+**never** computed in a `body` (docs/20 §A0/A0′).
+
+**UI:** a draggable Overview glance card (fits Part A — add `bioAge` to
+`AtriaGlanceCard`/`AtriaTodayMetric`) showing the age number + the younger/older
+delta chip; and a richer Vitals/Data card with the **factor breakdown** (what's
+making you younger vs older — actionable) + the pace-of-aging trend.
+
+**DoD:** shows a physiological age + a "N years younger/older" delta + a factor
+breakdown; gated behind "Building your baseline" until inputs exist; honestly
+labeled as an estimate; computed off the hot path; reorderable on Overview.
 
 DoD for Part B: each metric either shows a real, tier-honest value with a trend, or a
 clear "building baseline"/"research" state — never a fabricated number. All computed
