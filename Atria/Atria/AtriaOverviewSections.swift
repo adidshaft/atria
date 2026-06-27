@@ -519,7 +519,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, respiratoryRate, steps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, hrv, sleep, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -530,6 +530,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
         case .steps: return "Steps"
+        case .strapSteps: return "Strap steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
         case .bloodOxygen: return "Blood oxygen"
@@ -547,6 +548,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .rhr: return "heart.fill"
         case .respiratoryRate: return "lungs"
         case .steps: return "shoeprints.fill"
+        case .strapSteps: return "figure.walk.motion"
         case .calories: return "flame.fill"
         case .vo2max: return "lungs.fill"
         case .bloodOxygen: return "drop.degreesign"
@@ -575,7 +577,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -840,6 +842,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: .green)
                 .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText), \(live.phoneMotionDetailText)")
+        case .strapSteps:
+            AtriaGlanceMetricCard(title: "Strap steps",
+                                  value: sensorSummary.strapStepText,
+                                  detail: sensorSummary.strapStepCount > 0 ? sensorSummary.agreementText : "Research",
+                                  systemImage: metric.systemImage,
+                                  tint: sensorSummary.strapStepCount > 0 ? .green : .orange)
+                .accessibilityLabel(sensorSummary.strapStepCount > 0
+                                    ? "Strap step research \(sensorSummary.strapStepText), agreement \(sensorSummary.agreementText)"
+                                    : "Strap step research is waiting for validated motion evidence")
         case .calories:
             AtriaGlanceMetricCard(title: "Calories",
                                   value: live.liveActiveCaloriesText,
