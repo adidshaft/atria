@@ -7997,7 +7997,8 @@ final class SessionStore: ObservableObject {
     }
 
     func writeSessionBackupFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-backup-sessions") else { return }
+        guard arguments.contains("--atria-backup-sessions")
+            || arguments.contains("--atria-write-session-backup") else { return }
         _ = writeSessionBackup(label: "debug")
     }
 
@@ -9001,7 +9002,8 @@ final class SessionStore: ObservableObject {
     }
 
     func verifyLatestSessionBackupFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-verify-backup") else { return }
+        guard arguments.contains("--atria-verify-backup")
+            || arguments.contains("--atria-verify-session-backup") else { return }
         verifyLatestSessionBackup()
     }
 

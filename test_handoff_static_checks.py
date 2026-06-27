@@ -1436,6 +1436,53 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, workout_body, needle)
 
+    def test_launch_session_backup_flags_are_wired_to_store_guards(self):
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            'store.restoreLatestSessionBackupFromLaunchIfRequested()',
+            'arguments.contains("--atria-write-session-backup")',
+            'arguments.contains("--atria-verify-session-backup")',
+            "store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)",
+            "store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)",
+        ]:
+            assert_contains(self, app, needle)
+
+        write_backup = re.search(
+            r"func writeSessionBackupFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(write_backup)
+        for needle in [
+            'arguments.contains("--atria-backup-sessions")',
+            'arguments.contains("--atria-write-session-backup")',
+            'writeSessionBackup(label: "debug")',
+        ]:
+            assert_contains(self, write_backup.group("body"), needle)
+
+        verify_backup = re.search(
+            r"func verifyLatestSessionBackupFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(verify_backup)
+        for needle in [
+            'arguments.contains("--atria-verify-backup")',
+            'arguments.contains("--atria-verify-session-backup")',
+            "verifyLatestSessionBackup()",
+        ]:
+            assert_contains(self, verify_backup.group("body"), needle)
+
+        restore_backup = re.search(
+            r"func restoreLatestSessionBackupFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(restore_backup)
+        assert_contains(self, restore_backup.group("body"), 'arguments.contains("--atria-restore-backup")')
+
     def test_sleep_validation_reuses_aggregate_candidates(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
