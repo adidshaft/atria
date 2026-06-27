@@ -374,6 +374,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"Building baseline\"",
             "&& lhs.live.status == rhs.live.status",
             "&& lhs.live.sessionSampleCount == rhs.live.sessionSampleCount",
+            "&& lhs.live.liveActiveCalories == rhs.live.liveActiveCalories",
             "AtriaGlanceMetricCard(title: \"VO2max\"",
             "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
             "VO2max building from resting baseline and measured HR max",
