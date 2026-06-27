@@ -330,8 +330,16 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
-                                sleepHistory: store.sleepHistorySnapshot)
+                                sleepHistory: store.sleepHistorySnapshot,
+                                onAddManualSleep: addManualSleep)
             .equatable()
+    }
+
+    private func addManualSleep(start: Date, end: Date, isNap: Bool) {
+        _ = store.addManualSleep(start: start,
+                                 end: end,
+                                 isNap: isNap,
+                                 rest: store.baseline.restingInt ?? 60)
     }
 }
 
@@ -1410,6 +1418,8 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
         .transaction { transaction in
             transaction.animation = nil
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipped()
     }
 }
 
@@ -1473,6 +1483,11 @@ private struct AtriaHRVCard: View, Equatable {
 private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let sleepHistory: SleepHistorySnapshot
+    let onAddManualSleep: (Date, Date, Bool) -> Void
+
+    static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
+        lhs.hero == rhs.hero && lhs.sleepHistory == rhs.sleepHistory
+    }
 
     private var recoveryState: AtriaMetricState {
         switch hero.recoveryEstimate.confidence {
@@ -1492,7 +1507,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             AtriaPanelSectionHeader(title: "Coach", subtitle: "")
 
             metricContent
-            AtriaSleepHistoryCard(snapshot: sleepHistory)
+            AtriaSleepHistoryCard(snapshot: sleepHistory,
+                                  onAddManualSleep: onAddManualSleep)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
@@ -1528,6 +1544,12 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
 private struct AtriaSleepHistoryCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
+    let onAddManualSleep: (Date, Date, Bool) -> Void
+    @State private var showManualSleepSheet = false
+
+    static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
+        lhs.snapshot == rhs.snapshot
+    }
 
     private var chartNights: [SleepHistorySnapshot.Night] {
         Array(snapshot.nights.prefix(7).reversed())
@@ -1557,6 +1579,16 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                Button {
+                    showManualSleepSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("Add sleep manually")
                 AtriaStateBadge(state: snapshot.confirmedCount > 0 ? .validated : (snapshot.candidateCount > 0 ? .research : .learning))
             }
 
@@ -1631,6 +1663,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     .atriaInsetCard(tint: .cyan)
                 }
 
+                if let latest = snapshot.latest, !latest.stageSegments.isEmpty {
+                    AtriaSleepStageSummary(night: latest)
+                }
+
                 ForEach(snapshot.nights.prefix(3)) { night in
                     AtriaSleepNightRow(night: night)
                 }
@@ -1638,9 +1674,147 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         }
         .padding(14)
         .atriaInsetCard(tint: .cyan)
+        .sheet(isPresented: $showManualSleepSheet) {
+            AtriaManualSleepSheet { start, end, isNap in
+                onAddManualSleep(start, end, isNap)
+                showManualSleepSheet = false
+            }
+        }
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
+}
+
+private struct AtriaManualSleepSheet: View {
+    let onSave: (Date, Date, Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var isNap = false
+    @State private var start = Date().addingTimeInterval(-8 * 60 * 60)
+    @State private var end = Date()
+
+    private var durationText: String {
+        SleepHistorySnapshot.formatDuration(max(0, end.timeIntervalSince(start)))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Type", selection: $isNap) {
+                    Text("Sleep").tag(false)
+                    Text("Nap").tag(true)
+                }
+                .pickerStyle(.segmented)
+
+                DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
+
+                Section("Stages") {
+                    ForEach(SleepStageKind.allCases) { stage in
+                        HStack {
+                            Label(stage.label, systemImage: AtriaSleepStageSummary.symbol(for: stage))
+                            Spacer()
+                            Text(stagePreviewText(stage))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into editable research stages: Awake, Light, SWS, and Deep.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Add \(isNap ? "Nap" : "Sleep")")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        onSave(start, end, isNap)
+                    }
+                    .disabled(end <= start)
+                }
+            }
+        }
+    }
+
+    private func stagePreviewText(_ stage: SleepStageKind) -> String {
+        let duration = max(0, end.timeIntervalSince(start))
+        let fraction: Double
+        switch (isNap, stage) {
+        case (_, .awake): fraction = isNap ? 0.06 : 0.08
+        case (true, .light): fraction = 0.72
+        case (false, .light): fraction = 0.52
+        case (true, .sws): fraction = 0.14
+        case (false, .sws): fraction = 0.22
+        case (true, .deep): fraction = 0.08
+        case (false, .deep): fraction = 0.18
+        }
+        return SleepHistorySnapshot.formatDuration(duration * fraction)
+    }
+}
+
+private struct AtriaSleepStageSummary: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Stages")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Text(night.evidenceLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    ForEach(night.stageSegments) { segment in
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(color(for: segment.stage).gradient)
+                            .frame(width: max(4, proxy.size.width * segment.duration / max(night.duration, 1)))
+                    }
+                }
+            }
+            .frame(height: 12)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 8)], spacing: 8) {
+                ForEach(SleepStageKind.allCases) { stage in
+                    Label {
+                        Text("\(stage.label) \(night.stageText(stage))")
+                    } icon: {
+                        Image(systemName: Self.symbol(for: stage))
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(color(for: stage))
+                }
+            }
+        }
+        .padding(10)
+        .atriaInsetCard(tint: .cyan)
+    }
+
+    static func symbol(for stage: SleepStageKind) -> String {
+        switch stage {
+        case .awake: return "sun.max.fill"
+        case .light: return "moon.fill"
+        case .sws: return "waveform.path"
+        case .deep: return "moon.stars.fill"
+        }
+    }
+
+    private func color(for stage: SleepStageKind) -> Color {
+        switch stage {
+        case .awake: return .orange
+        case .light: return .cyan
+        case .sws: return .blue
+        case .deep: return .purple
+        }
+    }
 }
 
 private struct AtriaSleepNightRow: View, Equatable {
@@ -1662,6 +1836,13 @@ private struct AtriaSleepNightRow: View, Equatable {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
+                if !night.stageSegments.isEmpty {
+                    Text("Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.cyan)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
             }
 
             Spacer(minLength: 0)

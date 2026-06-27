@@ -30,6 +30,18 @@ fileprivate struct AtriaGlanceGridSize: Equatable {
     var isValidGlanceShape: Bool {
         rows == 1 && (columns == 1 || columns == 2)
     }
+
+    var storageValue: String {
+        isWide ? "wide" : "compact"
+    }
+
+    static func storageSize(from raw: String) -> AtriaGlanceGridSize? {
+        switch raw {
+        case "compact": return .compact
+        case "wide": return .wide
+        default: return nil
+        }
+    }
 }
 
 struct AtriaOverviewTabContent: View {
@@ -513,6 +525,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
     @AppStorage(AtriaTodayMetric.orderStorageKey) private var orderCSV: String = ""
+    @AppStorage(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = ""
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -530,10 +543,12 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                     hiddenCSV: hiddenCSV),
                                      hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
                                                                                   hiddenCSV: hiddenCSV),
+                                     sizeOverridesCSV: sizeCSV,
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric,
                                      onHideMetric: hideMetric,
                                      onShowMetric: showMetric,
+                                     onToggleMetricSize: toggleMetricSize,
                                      onResetMetrics: resetMetrics,
                                      onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
@@ -541,6 +556,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      onStartWorkout: onStartWorkout)
             .equatable()
             .sensoryFeedback(.selection, trigger: orderCSV)
+            .sensoryFeedback(.selection, trigger: sizeCSV)
     }
 
     private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
@@ -568,6 +584,13 @@ struct AtriaOverviewReadinessSectionHost: View {
     private func resetMetrics() {
         orderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
         hiddenCSV = ""
+        sizeCSV = ""
+    }
+
+    private func toggleMetricSize(_ metric: AtriaTodayMetric) {
+        let current = metric.glanceGridSize(sizeOverridesCSV: sizeCSV)
+        let next: AtriaGlanceGridSize = current.isWide ? .compact : .wide
+        sizeCSV = AtriaTodayMetric.sizeStorageValue(updating: metric, to: next, in: sizeCSV)
     }
 
 }
@@ -621,7 +644,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         }
     }
 
-    fileprivate var glanceGridSize: AtriaGlanceGridSize {
+    fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize {
         switch self {
         case .sleepHistory, .trend, .insights:
             return .wide
@@ -630,15 +653,24 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         }
     }
 
-    var glanceColumnSpan: Int { glanceGridSize.columns }
+    fileprivate func glanceGridSize(sizeOverridesCSV: String) -> AtriaGlanceGridSize {
+        AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)[rawValue] ?? defaultGlanceGridSize
+    }
 
-    fileprivate var isWideGlanceCard: Bool { glanceGridSize.isWide }
+    func glanceColumnSpan(sizeOverridesCSV: String) -> Int {
+        glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).columns
+    }
+
+    fileprivate func isWideGlanceCard(sizeOverridesCSV: String) -> Bool {
+        glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).isWide
+    }
 
     /// Persisted as a comma-separated list of HIDDEN raw values. Empty storage is
     /// the product default, which keeps research-only probes off the main Today
     /// surface until the user explicitly enables them.
     static let storageKey = "atriaTodayHiddenMetrics"
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
+    static let sizeStorageKey = "atria.overview.glanceSizeCSV"
     static let noHiddenMetricsSentinel = "__atria_all_today_cards_visible__"
     private static let dragPayloadPrefix = "atria.today.metric:"
 
@@ -660,6 +692,33 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     static func hiddenStorageValue(for hidden: Set<String>) -> String {
         hidden.isEmpty ? noHiddenMetricsSentinel : hidden.sorted().joined(separator: ",")
+    }
+
+    fileprivate static func sizeOverrides(from csv: String) -> [String: AtriaGlanceGridSize] {
+        var result: [String: AtriaGlanceGridSize] = [:]
+        for token in csv.split(separator: ",").map(String.init) {
+            let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2,
+                  defaultGlanceOrder.contains(where: { $0.rawValue == parts[0] }),
+                  let size = AtriaGlanceGridSize.storageSize(from: parts[1]) else { continue }
+            result[parts[0]] = size
+        }
+        return result
+    }
+
+    fileprivate static func sizeStorageValue(updating metric: AtriaTodayMetric,
+                                             to size: AtriaGlanceGridSize,
+                                             in csv: String) -> String {
+        var overrides = sizeOverrides(from: csv)
+        if size == metric.defaultGlanceGridSize {
+            overrides.removeValue(forKey: metric.rawValue)
+        } else {
+            overrides[metric.rawValue] = size
+        }
+        return defaultGlanceOrder.compactMap { item in
+            overrides[item.rawValue].map { "\(item.rawValue)=\($0.storageValue)" }
+        }
+        .joined(separator: ",")
     }
 
     static func ordered(from csv: String) -> [AtriaTodayMetric] {
@@ -732,15 +791,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let subtitle: String
     let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
+    let sizeOverridesCSV: String
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
     let onHideMetric: (AtriaTodayMetric) -> Void
     let onShowMetric: (AtriaTodayMetric) -> Void
+    let onToggleMetricSize: (AtriaTodayMetric) -> Void
     let onResetMetrics: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onOpenInsights: () -> Void
     let onStartWorkout: () -> Void
+    @State private var isEditingGlance = false
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -773,6 +835,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
+            && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
     }
 
     var body: some View {
@@ -782,14 +845,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                customizeMenu
+                addWidgetMenu
             }
 
             if visibleMetrics.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Choose widgets from the customize menu.")
+                    Text("Add a widget to rebuild this view.")
                         .font(.footnote.weight(.semibold))
-                    Text("Recovery, strain, sleep, HRV, steps and research cards can be restored here anytime.")
+                    Text("Use the plus button to bring back recovery, strain, sleep, HRV, steps, and research cards.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -809,54 +872,55 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                // Cache the metric grid only. The header customize menu remains
-                // interactive native Liquid Glass instead of being flattened.
-                .drawingGroup()
+                .onLongPressGesture(minimumDuration: 0.45) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isEditingGlance = true
+                    }
+                }
             }
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
     }
 
-    private var customizeMenu: some View {
+    private var addWidgetMenu: some View {
         Menu {
             if !hiddenMetrics.isEmpty {
                 Section("Add widget") {
                     ForEach(hiddenMetrics) { metric in
                         Button {
                             onShowMetric(metric)
+                            withAnimation(.snappy(duration: 0.2)) {
+                                isEditingGlance = false
+                            }
                         } label: {
                             Label(metric.label, systemImage: metric.systemImage)
                         }
                     }
                 }
-            }
-
-            if visibleMetrics.count > 1 {
-                Section("Hide widget") {
-                    ForEach(visibleMetrics) { metric in
-                        Button(role: .destructive) {
-                            onHideMetric(metric)
-                        } label: {
-                            Label(metric.label, systemImage: "minus.circle")
-                        }
-                    }
+            } else {
+                Section("Add widget") {
+                    Label("All widgets added", systemImage: "checkmark.circle")
                 }
             }
 
-            Button {
-                onResetMetrics()
-            } label: {
-                Label("Reset widgets", systemImage: "arrow.counterclockwise")
+            if !visibleMetrics.isEmpty {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isEditingGlance.toggle()
+                    }
+                } label: {
+                    Label(isEditingGlance ? "Done editing" : "Edit widgets", systemImage: "square.grid.2x2")
+                }
             }
         } label: {
-            Image(systemName: "slider.horizontal.3")
+            Image(systemName: "plus")
                 .font(.callout.weight(.semibold))
                 .frame(width: 38, height: 38)
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)
-        .accessibilityLabel("Customize Today widgets")
+        .accessibilityLabel("Add Today widget")
     }
 
     private static let glanceGridSpacing: CGFloat = 10
@@ -867,8 +931,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         var rows: [[AtriaTodayMetric]] = []
         var pending: [AtriaTodayMetric] = []
         for metric in visibleMetrics {
-            guard metric.glanceGridSize.isValidGlanceShape else { continue }
-            if metric.isWideGlanceCard {
+            guard metric.glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).isValidGlanceShape else { continue }
+            if metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) {
                 if !pending.isEmpty {
                     rows.append(pending)
                     pending.removeAll(keepingCapacity: true)
@@ -891,7 +955,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric]) -> Bool {
         var span = 0
         for metric in row {
-            span += metric.glanceColumnSpan
+            span += metric.glanceColumnSpan(sizeOverridesCSV: sizeOverridesCSV)
         }
         return span <= Self.glanceGridColumnCount
     }
@@ -905,7 +969,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                    width: glanceCardWidth(for: metric, containerWidth: proxy.size.width))
                 }
 
-                if row.count == 1, row.first?.isWideGlanceCard == false {
+                if row.count == 1, row.first?.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) == false {
                     AtriaGlanceMetricCard.placeholder
                         .frame(width: glanceCardWidth(for: .recovery, containerWidth: proxy.size.width),
                                height: Self.glanceRowHeight)
@@ -923,7 +987,19 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .frame(width: width,
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
-            .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
+            .overlay(alignment: .topTrailing) {
+                if isEditingGlance {
+                    glanceEditControls(for: metric)
+                        .padding(8)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+            .onLongPressGesture(minimumDuration: 0.45) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isEditingGlance = true
+                }
+            }
+            .layoutPriority(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) ? 2 : 1)
             .draggable(metric.dragPayload)
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
@@ -941,10 +1017,45 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
         let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)
-        if metric.isWideGlanceCard {
+        if metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) {
             return (columnWidth * CGFloat(Self.glanceGridColumnCount)) + Self.glanceGridSpacing
         }
         return columnWidth
+    }
+
+    private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                onToggleMetricSize(metric)
+            } label: {
+                Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                      ? "rectangle.compress.vertical"
+                      : "rectangle.expand.vertical")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                                ? "Make \(metric.label) compact"
+                                : "Make \(metric.label) wide")
+
+            Button(role: .destructive) {
+                onHideMetric(metric)
+                if visibleMetrics.count <= 2 {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isEditingGlance = false
+                    }
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Remove \(metric.label)")
+        }
     }
 
     @ViewBuilder
@@ -1187,10 +1298,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 }
 
 private struct AtriaGlanceMetricCard: View, Equatable {
-    static let cardHeight: CGFloat = 166
-    private static let headerHeight: CGFloat = 48
-    private static let valueHeight: CGFloat = 40
-    private static let footerHeight: CGFloat = 34
+    static let cardHeight: CGFloat = 152
+    private static let headerHeight: CGFloat = 42
+    private static let valueHeight: CGFloat = 38
+    private static let footerHeight: CGFloat = 30
 
     let title: String
     let value: String
@@ -1220,7 +1331,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 10) {
                 AtriaGlanceMetricMarker(systemImage: systemImage,
                                         tint: tint,
@@ -1231,16 +1342,17 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.72)
+                        .minimumScaleFactor(0.78)
+                        .allowsTightening(true)
 
                     Text(detail)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(tint.opacity(0.82))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.74)
+                        .allowsTightening(true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 28)
             }
             .frame(height: Self.headerHeight, alignment: .center)
 
@@ -1258,7 +1370,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             footer
         }
         .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)
-        .padding(13)
+        .padding(12)
         .atriaInsetCard(tint: tint)
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .accessibilityElement(children: .combine)
@@ -1300,10 +1412,10 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 }
 
 private struct AtriaGlanceMetricMarker: View, Equatable {
-    private static let size: CGFloat = 44
-    private static let iconCircleSize: CGFloat = 30
-    private static let iconSize: CGFloat = 15
-    private static let ringLineWidth: CGFloat = 3.5
+    private static let size: CGFloat = 38
+    private static let iconCircleSize: CGFloat = 26
+    private static let iconSize: CGFloat = 14
+    private static let ringLineWidth: CGFloat = 3
 
     let systemImage: String
     let tint: Color
