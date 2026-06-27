@@ -1477,6 +1477,8 @@ final class AtriaHomeModel {
         var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
         var batteryRecentlyDropping: Bool
         var rrContinuityState: String
+        var hrvSDNN: Double?
+        var hrvPNN50: Double?
         var sessionSampleCount: Int
         var liveTRIMP: Double
         var liveActiveCalories: Double?
@@ -1508,6 +1510,8 @@ final class AtriaHomeModel {
             return batteryChargeStatus == .levelOnly ? "Battery level is live; waiting for charger-state signal" : batteryChargeText
         }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
+        var hrvSDNNText: String { hrvSDNN.map { "\(Int($0.rounded()))" } ?? "--" }
+        var hrvPNN50Text: String { hrvPNN50.map { "\(Int($0.rounded()))%" } ?? "--" }
         var needsRRQualityCoach: Bool { rrContinuityState == "poor_contact" }
         func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval? {
             pendingKnownReconnectStartedAt.map { now.timeIntervalSince($0) }
@@ -2346,6 +2350,8 @@ final class AtriaHomeModel {
                              batteryChargeStatus: ble.batteryChargeStatus,
                              batteryRecentlyDropping: ble.batteryRecentlyDropping,
                              rrContinuityState: ble.rrContinuityState,
+                             hrvSDNN: ble.hrvSnapshot?.sdnn,
+                             hrvPNN50: ble.hrvSnapshot?.pnn50,
                              sessionSampleCount: liveSessionDerived.sampleCount,
                              liveTRIMP: liveSessionDerived.trimp,
                              liveActiveCalories: liveSessionDerived.activeCalories,

@@ -1839,6 +1839,17 @@ private struct AtriaHRVCard: View, Equatable {
                         value: hero.rrPackageText,
                         state: isConnected && !live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .live : .learning,
                         tint: continuityTint)
+        AtriaMetricTile(label: "SDNN",
+                        value: live.hrvSDNNText,
+                        unit: live.hrvSDNN == nil ? nil : "ms",
+                        state: live.hrvSDNN == nil ? .learning : hrvState,
+                        tint: .indigo,
+                        footnote: "Secondary HRV metric from the same clean RR window.")
+        AtriaMetricTile(label: "pNN50",
+                        value: live.hrvPNN50Text,
+                        state: live.hrvPNN50 == nil ? .learning : hrvState,
+                        tint: .purple,
+                        footnote: "Share of adjacent beat intervals differing by more than 50 ms.")
         AtriaMetricTile(label: "Stress",
                         value: hero.stressValue,
                         state: .local,
