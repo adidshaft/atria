@@ -1217,8 +1217,8 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     .padding(.trailing, 2)
                     .frame(maxWidth: .infinity)
                     .frame(height: 170)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .clipped()
+                    .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 HStack {
                     Label("Time", systemImage: "clock")
@@ -1230,6 +1230,8 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
             }
             .padding(12)
             .atriaInsetCard(tint: .red)
+            .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+            .compositingGroup()
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open heart rate timeline")
@@ -1421,6 +1423,7 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .clipped()
         }
+        .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .chartXSelection(value: $selectedTime)
         .chartOverlay { proxy in
             if points.isEmpty {

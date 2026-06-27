@@ -395,6 +395,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".compositingGroup()",
             ".clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))",
             ".clipped()",
+            ".background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))",
+            ".mask(RoundedRectangle(cornerRadius: 12, style: .continuous))",
+            ".clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))",
             "Slider(value: $zoom, in: 1...6, step: 1)",
             "Label(\"Done\", systemImage: \"xmark\")",
             ".atriaCardAction(prominent: false, tint: .secondary)",
@@ -707,15 +710,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "? \"rectangle.compress.horizontal\"",
             ": \"rectangle.expand.horizontal\"",
             "onToggleMetricSize(metric)",
-            ".atriaCardAction(prominent: false, tint: .secondary)",
-            ".atriaCardAction(prominent: false, tint: .red)",
+            ".atriaGlassIconAction(tint: .secondary, size: 38)",
+            ".atriaGlassIconAction(tint: .secondary, size: 34)",
+            ".atriaGlassIconAction(tint: .red, size: 34)",
             ".accessibilityLabel(\"Add Today widget\")",
             ".accessibilityHint(hiddenMetrics.isEmpty",
             "\"Opens the list of hidden Today widgets.\"",
             "Menu {",
             "Button(role: .destructive)",
             ".clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))",
-            ".background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))",
             "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
             ".sensoryFeedback(.selection, trigger: orderCSV)",
             ".sensoryFeedback(.selection, trigger: sizeCSV)",
@@ -733,6 +736,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "Image(systemName: \"slider.horizontal.3\")")
         assert_not_contains(self, overview, "Label(isEditingGlance ? \"Done editing\" : \"Edit widgets\", systemImage: \"square.grid.2x2\")")
         assert_not_contains(self, overview, "Section(\"Hide widget\")")
+        assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))")
         assert_not_contains(self, overview, "Label(\"Reset widgets\", systemImage: \"arrow.counterclockwise\")")
         assert_not_contains(self, overview, "figure.run.circle.fill")
         assert_not_contains(self, overview, "heart.text.square.fill")
