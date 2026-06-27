@@ -535,6 +535,8 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
     @AppStorage(AtriaTodayMetric.orderStorageKey) private var orderCSV: String = ""
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = ""
+    @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -550,6 +552,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      insights: store.behaviorInsights,
                                      taggedDays: store.behaviorJournalEntries.count,
                                      subtitle: subtitle,
+                                     recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
+                                                                                yellowLower: recoveryYellowLower),
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
                                      hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
@@ -815,6 +819,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let insights: [AtriaInsight]
     let taggedDays: Int
     let subtitle: String
+    let recoveryTarget: AtriaMetricTarget
     let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
     let sizeOverridesCSV: String
@@ -863,6 +868,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.historicalArchiveStatus == rhs.historicalArchiveStatus
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
+            && lhs.recoveryTarget == rhs.recoveryTarget
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
             && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
@@ -1134,8 +1140,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
                                   detail: recoveryDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: recoveryColor(hero.recoveryEstimate.percent),
-                                  ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 })
+                                  tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
+                                  ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
+                                  zone: recoveryZone)
         case .strain:
             AtriaGlanceMetricCard(title: "Strain",
                                   value: metricDisplayValue(hero.strainValue),
@@ -1383,6 +1390,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return .red
     }
 
+    private var recoveryZone: AtriaMetricZone? {
+        Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
+    }
+
 }
 
 private struct AtriaGlanceMetricCard: View, Equatable {
@@ -1398,6 +1409,19 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     let tint: Color
     var ringFraction: Double? = nil
     var sparklineValues: [Int]? = nil
+    var zone: AtriaMetricZone? = nil
+    @State private var showingZoneInfo = false
+
+    static func == (lhs: AtriaGlanceMetricCard, rhs: AtriaGlanceMetricCard) -> Bool {
+        lhs.title == rhs.title
+            && lhs.value == rhs.value
+            && lhs.detail == rhs.detail
+            && lhs.systemImage == rhs.systemImage
+            && lhs.tint == rhs.tint
+            && lhs.ringFraction == rhs.ringFraction
+            && lhs.sparklineValues == rhs.sparklineValues
+            && lhs.zone == rhs.zone
+    }
 
     static var placeholder: some View {
         Color.clear
@@ -1441,6 +1465,13 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                         .allowsTightening(true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let zone, zone.showsWarning {
+                    AtriaMetricZoneInfoButton(zone: zone) {
+                        showingZoneInfo = true
+                    }
+                    .frame(width: 38, height: 32)
+                }
             }
             .frame(height: Self.headerHeight, alignment: .center)
 
@@ -1463,6 +1494,13 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title) \(value), \(detail)")
+        .sheet(isPresented: $showingZoneInfo) {
+            if let zone {
+                AtriaMetricZoneInfoSheet(zone: zone)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
     }
 
     @ViewBuilder
