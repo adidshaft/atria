@@ -2180,6 +2180,28 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, widget, "readings ·")
         assert_not_contains(self, widget, "samples ·")
 
+    def test_widget_snapshot_refreshes_from_live_bpm_on_safe_cadence(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
+
+        for needle in [
+            "private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 60",
+            "@State private var lastLiveWidgetSnapshotAt: Date?",
+            "publishLiveWidgetSnapshotIfNeeded()",
+            "private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date())",
+            "guard scenePhase == .active else { return }",
+            "guard model.pulseLiveStore.state.heartRate > 0 else { return }",
+            "now.timeIntervalSince(lastLiveWidgetSnapshotAt) < Self.liveWidgetSnapshotMinimumInterval",
+            "WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: \"live_throttled\")",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "heartRate: ble.heartRate > 0 ? ble.heartRate : nil",
+            "WidgetCenter.shared.reloadAllTimelines()",
+        ]:
+            assert_contains(self, widget_snapshot, needle)
+
     def test_widgets_deep_link_to_matching_tabs(self):
         plist = source(ROOT / "Atria" / "Info.plist")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
