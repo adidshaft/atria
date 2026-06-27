@@ -10516,6 +10516,12 @@ struct SleepHistorySnapshot: Equatable {
     let candidateCount: Int
     let respiratoryBaselineMean: Double?
     let respiratoryBaselineCount: Int
+    let averageDurationText: String
+    let evidenceCountText: String
+    let averageFootnoteText: String
+    let sleepConsistencyText: String
+    let sleepConsistencyFootnote: String
+    let sleepConsistencyPercent: Int?
 
     static let empty = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
 
@@ -10531,6 +10537,13 @@ struct SleepHistorySnapshot: Equatable {
         self.respiratoryBaselineMean = baselineValues.isEmpty
             ? nil
             : baselineValues.reduce(0, +) / Double(baselineValues.count)
+        self.averageDurationText = Self.makeAverageDurationText(nights)
+        self.evidenceCountText = Self.makeEvidenceCountText(nights)
+        self.averageFootnoteText = "Average across \(self.evidenceCountText)"
+        let consistency = Self.makeSleepConsistency(nights)
+        self.sleepConsistencyPercent = consistency.percent
+        self.sleepConsistencyText = consistency.text
+        self.sleepConsistencyFootnote = consistency.footnote
     }
 
     init(rollups: [DailyRollup], confirmedSleeps: [UserConfirmedSleep], calendar: Calendar = .current) {
@@ -10587,6 +10600,13 @@ struct SleepHistorySnapshot: Equatable {
         self.respiratoryBaselineMean = baselineValues.isEmpty
             ? nil
             : baselineValues.reduce(0, +) / Double(baselineValues.count)
+        self.averageDurationText = Self.makeAverageDurationText(clippedNights)
+        self.evidenceCountText = Self.makeEvidenceCountText(clippedNights)
+        self.averageFootnoteText = "Average across \(self.evidenceCountText)"
+        let consistency = Self.makeSleepConsistency(clippedNights)
+        self.sleepConsistencyPercent = consistency.percent
+        self.sleepConsistencyText = consistency.text
+        self.sleepConsistencyFootnote = consistency.footnote
     }
 
     private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
@@ -10621,13 +10641,13 @@ struct SleepHistorySnapshot: Equatable {
         return (mean, sqrt(variance), values.count)
     }
 
-    var averageDurationText: String {
+    private static func makeAverageDurationText(_ nights: [Night]) -> String {
         guard !nights.isEmpty else { return "--" }
         let average = nights.reduce(0) { $0 + $1.duration } / Double(nights.count)
         return Self.formatDuration(average)
     }
 
-    var evidenceCountText: String {
+    private static func makeEvidenceCountText(_ nights: [Night]) -> String {
         guard !nights.isEmpty else { return "No sleep records" }
         let napCount = nights.filter(\.isNapEvidence).count
         if napCount == nights.count {
@@ -10639,37 +10659,28 @@ struct SleepHistorySnapshot: Equatable {
         return nights.count == 1 ? "1 night" : "\(nights.count) nights"
     }
 
-    var averageFootnoteText: String {
-        "Average across \(evidenceCountText)"
-    }
-
-    private var recentSleepNights: [Night] {
+    private static func recentSleepNights(_ nights: [Night]) -> [Night] {
         nights.filter { !$0.isNapEvidence }
     }
 
-    var sleepConsistencyText: String {
-        guard let score = sleepConsistencyPercent else { return "--" }
-        return "\(score)%"
-    }
-
-    var sleepConsistencyFootnote: String {
-        guard let score = sleepConsistencyPercent else {
-            return "Needs 2 sleep nights."
+    private static func makeSleepConsistency(_ nights: [Night]) -> (percent: Int?, text: String, footnote: String) {
+        let durationScore = sleepDurationConsistencyPercent(nights)
+        let scheduleScore = sleepScheduleConsistencyPercent(nights)
+        guard let durationScore else {
+            return (nil, "--", "Needs 2 sleep nights.")
         }
-        let basis = sleepScheduleConsistencyPercent == nil ? "recent sleep duration" : "sleep timing and duration"
-        if score >= 85 { return "Very steady \(basis)." }
-        if score >= 70 { return "Mostly steady \(basis)." }
-        return "Variable \(basis); keep bed and wake times consistent."
+        let score = scheduleScore.map {
+            min(max(Int((Double(durationScore) * 0.55 + Double($0) * 0.45).rounded()), 0), 100)
+        } ?? durationScore
+        let basis = scheduleScore == nil ? "recent sleep duration" : "sleep timing and duration"
+        let footnote = score >= 70
+            ? (score >= 85 ? "Very steady \(basis)." : "Mostly steady \(basis).")
+            : "Variable \(basis); keep bed and wake times consistent."
+        return (score, "\(score)%", footnote)
     }
 
-    var sleepConsistencyPercent: Int? {
-        guard let durationScore = sleepDurationConsistencyPercent else { return nil }
-        guard let scheduleScore = sleepScheduleConsistencyPercent else { return durationScore }
-        return min(max(Int((Double(durationScore) * 0.55 + Double(scheduleScore) * 0.45).rounded()), 0), 100)
-    }
-
-    private var sleepDurationConsistencyPercent: Int? {
-        let records = recentSleepNights.prefix(7)
+    private static func sleepDurationConsistencyPercent(_ nights: [Night]) -> Int? {
+        let records = recentSleepNights(nights).prefix(7)
         guard records.count >= 2 else { return nil }
         let durations = records.map(\.durationHours)
         let average = durations.reduce(0, +) / Double(durations.count)
@@ -10678,8 +10689,8 @@ struct SleepHistorySnapshot: Equatable {
         return min(max(score, 0), 100)
     }
 
-    private var sleepScheduleConsistencyPercent: Int? {
-        let midpointSeconds = recentSleepNights
+    private static func sleepScheduleConsistencyPercent(_ nights: [Night]) -> Int? {
+        let midpointSeconds = recentSleepNights(nights)
             .prefix(7)
             .compactMap(Self.sleepMidpointTimeOfDaySeconds)
         guard midpointSeconds.count >= 2 else { return nil }
@@ -10728,7 +10739,7 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     private func sleepDebtHours(goalHours: Double) -> Double? {
-        let records = recentSleepNights.prefix(7)
+        let records = Self.recentSleepNights(nights).prefix(7)
         guard !records.isEmpty else { return nil }
         let safeGoal = min(max(goalHours, 4), 12)
         let totalDebt = records.reduce(0) { total, night in
