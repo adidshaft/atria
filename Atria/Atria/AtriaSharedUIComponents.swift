@@ -389,6 +389,19 @@ struct AtriaMetricTile: View, Equatable {
     var tint: Color = .blue
     var footnote: String? = nil
     var sparklineValues: [Int]? = nil
+    var zone: AtriaMetricZone? = nil
+    @State private var showingZoneInfo = false
+
+    static func == (lhs: AtriaMetricTile, rhs: AtriaMetricTile) -> Bool {
+        lhs.label == rhs.label
+            && lhs.value == rhs.value
+            && lhs.unit == rhs.unit
+            && lhs.state == rhs.state
+            && lhs.tint == rhs.tint
+            && lhs.footnote == rhs.footnote
+            && lhs.sparklineValues == rhs.sparklineValues
+            && lhs.zone == rhs.zone
+    }
 
     private var displayValue: String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -423,6 +436,11 @@ struct AtriaMetricTile: View, Equatable {
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
                 Spacer(minLength: 0)
+                if let zone, zone.showsWarning {
+                    AtriaMetricZoneInfoButton(zone: zone) {
+                        showingZoneInfo = true
+                    }
+                }
                 if let state {
                     AtriaStateBadge(state: state)
                 }
@@ -451,6 +469,13 @@ struct AtriaMetricTile: View, Equatable {
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+        .sheet(isPresented: $showingZoneInfo) {
+            if let zone {
+                AtriaMetricZoneInfoSheet(zone: zone)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
     }
 
     private var tileHeight: CGFloat {
@@ -476,6 +501,33 @@ struct AtriaMetricTile: View, Equatable {
                 .frame(height: Self.footerHeight)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+struct AtriaMetricZoneInfoButton: View, Equatable {
+    let zone: AtriaMetricZone
+    let action: () -> Void
+
+    static func == (lhs: AtriaMetricZoneInfoButton, rhs: AtriaMetricZoneInfoButton) -> Bool {
+        lhs.zone == rhs.zone
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if let warningSystemImage = zone.warningSystemImage {
+                    Image(systemName: warningSystemImage)
+                        .font(.caption2.weight(.bold))
+                }
+                Text("(i)")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(zone.tint)
+            .frame(minWidth: 36, minHeight: 28)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(zone.title). \(zone.current)")
     }
 }
 

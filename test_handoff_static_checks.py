@@ -4009,6 +4009,58 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, sessions, "phoneMotionValidated: true")
         assert_not_contains(self, sessions, "phoneStepValidated: true")
 
+    def test_recovery_target_zone_first_slice_is_user_visible(self):
+        targets = source(ROOT / "Atria" / "Atria" / "AtriaMetricTargets.swift")
+        shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
+
+        for needle in [
+            "struct AtriaMetricTarget: Equatable, Codable",
+            "case higherIsBetter",
+            "case researchDefault",
+            "static let recoveryRecommended",
+            "greenLower: 67",
+            "yellowLower: 34",
+            "static func recoveryZone(_ pct: Int?, target: AtriaMetricTarget = .recoveryRecommended) -> AtriaMetricZone?",
+            "exclamationmark.circle",
+            "exclamationmark.triangle.fill",
+            "Low recovery -- keep today light, hydrate, and get to bed earlier.",
+            "General wellness guidance only, not medical advice.",
+            "struct AtriaMetricZoneInfoSheet: View",
+        ]:
+            assert_contains(self, targets, needle)
+
+        for needle in [
+            "var zone: AtriaMetricZone? = nil",
+            "AtriaMetricZoneInfoButton(zone: zone)",
+            "AtriaMetricZoneInfoSheet(zone: zone)",
+            "Text(\"(i)\")",
+        ]:
+            assert_contains(self, shared + overview, needle)
+
+        for needle in [
+            "@AppStorage(\"atria.target.recovery.greenLower\")",
+            "@AppStorage(\"atria.target.recovery.yellowLower\")",
+            "recoveryTarget: AtriaMetricTarget.recovery",
+            "zone: recoveryZone",
+            "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
+        ]:
+            assert_contains(self, overview, needle)
+
+        for needle in [
+            "targetsSection",
+            "Text(\"Targets & zones\")",
+            "Stepper(value: $recoveryGreenLower",
+            "Stepper(value: $recoveryYellowLower",
+            "Reset to recommended",
+            "recoveryGreenLower = 67",
+            "recoveryYellowLower = 34",
+            "normalizeRecoveryTargets()",
+            "Guidance is general wellness information, not medical advice.",
+        ]:
+            assert_contains(self, settings, needle)
+
 
 if __name__ == "__main__":
     unittest.main()

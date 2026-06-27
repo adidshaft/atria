@@ -31,6 +31,8 @@ struct AtriaSettingsView: View {
     @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
     @AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
+    @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -80,6 +82,7 @@ struct AtriaSettingsView: View {
                     profileSection
                     appearanceSection
                     todayLayoutSection
+                    targetsSection
                     deviceSection
                     radioModeSection
                     sensorAvailabilitySection
@@ -102,6 +105,13 @@ struct AtriaSettingsView: View {
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
+        .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
+    }
+
+    private func normalizeRecoveryTargets() {
+        recoveryYellowLower = min(max(recoveryYellowLower, 5), 66)
+        recoveryGreenLower = min(max(recoveryGreenLower, recoveryYellowLower + 1), 95)
     }
 
     // MARK: Appearance
@@ -203,6 +213,62 @@ struct AtriaSettingsView: View {
     }
 
     // MARK: Alerts
+
+    private var targetsSection: some View {
+        let target = AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
+                                                yellowLower: recoveryYellowLower)
+        return Section {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(systemName: "gauge.with.dots.needle.67percent")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .frame(width: 38, height: 38)
+                        .background(AtriaIconTileBackground(cornerRadius: 12, tint: .green))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Recovery")
+                            .font(.headline.weight(.semibold))
+                        Text(target.summaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.78)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                Stepper(value: $recoveryGreenLower, in: 40...95, step: 1) {
+                    LabeledContent("Green starts") {
+                        Text("\(Int(recoveryGreenLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $recoveryYellowLower, in: 5...66, step: 1) {
+                    LabeledContent("Yellow starts") {
+                        Text("\(Int(recoveryYellowLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    recoveryGreenLower = 67
+                    recoveryYellowLower = 34
+                } label: {
+                    Label("Reset to recommended", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+            }
+            .padding(14)
+            .atriaInsetCard(tint: .green)
+        } header: {
+            Text("Targets & zones")
+        } footer: {
+            Text("Recovery uses recommended 67/34 zones by default. Guidance is general wellness information, not medical advice.")
+        }
+    }
 
     private var alertsSection: some View {
         Section {
