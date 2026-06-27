@@ -3,7 +3,8 @@ import SwiftUI
 /// Industry-style headline metrics computed locally from strap data.
 ///
 /// These are honest approximations of the proprietary scores:
-/// - **Strain** uses Banister's TRIMP (training impulse) mapped to the 0–21 scale.
+/// - **Strain** supports Banister TRIMP and Edwards zone-weighted load,
+///   each mapped to the 0–21 scale.
 /// - **Recovery** uses the user's own ready RR/HRV data once enough personal
 ///   baseline exists, and labels the result honestly until reference validated.
 enum Metrics {
@@ -14,6 +15,17 @@ enum Metrics {
     /// Each sample contributes dt · HRr · 0.64 · e^(1.92·HRr).
     static func trimp(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
         AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)
+    }
+
+    static func trimp(_ series: [(t: Double, bpm: Int)],
+                      rest: Int,
+                      max: Int,
+                      sex: AthleteProfile.BiologicalSex) -> Double {
+        AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)
+    }
+
+    static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
+        AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)
     }
 
     static func activeCalories(_ samples: [HRSample], rest: Int, profile: AthleteProfile) -> Double? {
@@ -31,6 +43,10 @@ enum Metrics {
     /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
     static func strain(fromTRIMP trimp: Double) -> Double {
         AtriaAnalytics.Strain.score(fromTRIMP: trimp)
+    }
+
+    static func strain(fromEdwardsLoad load: Double) -> Double {
+        AtriaAnalytics.Strain.score(fromEdwardsLoad: load)
     }
 
     // MARK: Recovery (0–100 %)

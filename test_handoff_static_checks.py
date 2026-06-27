@@ -2295,6 +2295,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaAnalytics",
             "enum Strain",
             "enum TrainingLoad",
+            "static func trimp(_ series: [(t: Double, bpm: Int)],",
+            "sex: AthleteProfile.BiologicalSex",
+            "static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double",
+            "case .female: return 1.67",
+            "case .male, .unspecified: return 1.92",
+            "static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double",
+            "static func edwardsWeight(forHRReserve reserve: Double) -> Int",
+            "case 0.90...: return 5",
+            "case 0.80..<0.90: return 4",
+            "case 0.70..<0.80: return 3",
+            "case 0.60..<0.70: return 2",
+            "case 0.50..<0.60: return 1",
+            "static func score(fromEdwardsLoad load: Double) -> Double",
             "static func summary(sessions: [SavedSession],",
             "static func summary(dailyStrains: [Double]) -> TrainingLoadSummary",
             ".map { Strain.score(fromTRIMP: $0.value) }",
@@ -2313,9 +2326,12 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary",
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)",
+            "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)",
+            "AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.activeCalories(samples, rest: rest, profile: profile)",
             "AtriaAnalytics.Strain.zoneSummary(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.score(fromTRIMP: trimp)",
+            "AtriaAnalytics.Strain.score(fromEdwardsLoad: load)",
         ]:
             assert_contains(self, metrics, needle)
 
@@ -5115,6 +5131,28 @@ class HandoffStaticChecks(unittest.TestCase):
             daytime_window = start_hour >= 11 and end_hour <= 20
             return daytime_window or duration_seconds < 3 * 60 * 60
 
+        def edwards_weight(reserve):
+            if reserve >= 0.90:
+                return 5
+            if reserve >= 0.80:
+                return 4
+            if reserve >= 0.70:
+                return 3
+            if reserve >= 0.60:
+                return 2
+            if reserve >= 0.50:
+                return 1
+            return 0
+
+        def edwards_load(series, rest, max_hr):
+            total = 0
+            span = max_hr - rest
+            for previous, current in zip(series, series[1:]):
+                dt_min = (current[0] - previous[0]) / 60
+                reserve = min(max((current[1] - rest) / span, 0), 1)
+                total += dt_min * edwards_weight(reserve)
+            return total
+
         self.assertEqual(acwr_signal(None, False), "learning")
         self.assertEqual(acwr_signal(1.55, True), "bad")
         self.assertEqual(acwr_signal(1.31, True), "watch")
@@ -5129,6 +5167,8 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertTrue(inferred_manual_sleep_is_nap(45 * 60, 14, 15))
         self.assertFalse(inferred_manual_sleep_is_nap(8 * 60 * 60, 23, 7))
         self.assertTrue(inferred_manual_sleep_is_nap(-60, 14, 15, current_selection=True))
+        self.assertEqual([edwards_weight(x) for x in [0.49, 0.50, 0.61, 0.72, 0.83, 0.94]], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(edwards_load([(0, 100), (60, 130), (120, 150), (180, 170)], 60, 180), 9)
 
 
 if __name__ == "__main__":
