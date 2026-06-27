@@ -138,46 +138,11 @@ extension Metrics {
     }
 
     static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
-        guard let steps, steps > 0 else { return nil }
-        let safeGoal = max(goal, 1_000)
-        let level: AtriaMetricZoneLevel = steps >= safeGoal ? .green : (steps >= safeGoal / 2 ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Steps are at or above your daily goal."
-        case .yellow:
-            recommendation = "Below your step goal -- a short walk closes the gap."
-        case .red:
-            recommendation = "Well below your step goal. Add easy movement when it fits your day."
-        }
-        return AtriaMetricZone(level: level,
-                               title: "Steps target",
-                               current: "\(steps) steps vs \(safeGoal) goal.",
-                               targetSummary: "Green >= \(safeGoal), yellow \(safeGoal / 2)-\(safeGoal - 1), red below \(safeGoal / 2).",
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        AtriaAnalytics.TargetZones.steps(steps, goal: goal)
     }
 
     static func activeCaloriesZone(_ calories: Double?, goal: Int = 500) -> AtriaMetricZone? {
-        guard let calories, calories > 0 else { return nil }
-        let roundedCalories = Int(calories.rounded())
-        let safeGoal = min(max(goal, 100), 3_000)
-        let level: AtriaMetricZoneLevel = roundedCalories >= safeGoal ? .green : (roundedCalories >= safeGoal / 2 ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Estimated active calories are at or above your daily goal."
-        case .yellow:
-            recommendation = "Below your active-calorie goal -- a short walk or easy session can close the gap."
-        case .red:
-            recommendation = "Well below your active-calorie goal. Add easy movement only if it fits your recovery."
-        }
-        return AtriaMetricZone(level: level,
-                               title: "Calories target",
-                               current: "\(roundedCalories) kcal vs \(safeGoal) kcal goal.",
-                               targetSummary: "Green >= \(safeGoal) kcal, yellow \(safeGoal / 2)-\(safeGoal - 1) kcal, red below \(safeGoal / 2) kcal.",
-                               recommendation: recommendation,
-                               disclaimer: "Estimated from heart rate/profile. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        AtriaAnalytics.TargetZones.activeCalories(calories, goal: goal)
     }
 
     static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,
