@@ -9,6 +9,15 @@ import SwiftUI
 ///   baseline exists, and labels the result honestly until reference validated.
 enum Metrics {
 
+    // MARK: Daily aggregation
+
+    typealias PhoneMotionSample = AtriaAnalytics.Daily.PhoneMotionSample
+    typealias PhoneMotionSummary = AtriaAnalytics.Daily.PhoneMotionSummary
+
+    static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
+        AtriaAnalytics.Daily.stepsDaily(samples)
+    }
+
     // MARK: Strain (0–21)
 
     /// Banister TRIMP over a series of (secondsFromStart, bpm) samples.

@@ -4766,6 +4766,12 @@ final class SessionStore: ObservableObject {
             if lhs.t != rhs.t { return lhs.t < rhs.t }
             return lhs.bpm < rhs.bpm
         }
+        let phoneMotion = Metrics.stepsDaily(overlapping.map { session in
+            Metrics.PhoneMotionSample(steps: session.phoneStepCountValue,
+                                      distanceMeters: session.phoneStepDistanceMeters,
+                                      floorsAscended: session.phoneStepFloorsAscended,
+                                      floorsDescended: session.phoneStepFloorsDescended)
+        })
         let session = SavedSession(id: UUID(),
                                    start: workout.start,
                                    end: workout.end,
@@ -4783,18 +4789,12 @@ final class SessionStore: ObservableObject {
                                    motionShortMin: nil,
                                    motionShortMax: nil,
                                    motionShortOverOneCount: nil,
-                                   phoneStepSource: overlapping.contains { $0.phoneStepCountValue > 0 } ? "phone_coremotion_pedometer" : "unavailable",
+                                   phoneStepSource: phoneMotion.hasStepEvidence ? "phone_coremotion_pedometer" : "unavailable",
                                    phoneStepValidated: false,
-                                   phoneStepCount: overlapping.reduce(0) { $0 + $1.phoneStepCountValue },
-                                   phoneStepDistanceMeters: overlapping
-                                       .compactMap(\.phoneStepDistanceMeters)
-                                       .reduce(0, +),
-                                   phoneStepFloorsAscended: overlapping
-                                       .compactMap(\.phoneStepFloorsAscended)
-                                       .reduce(0, +),
-                                   phoneStepFloorsDescended: overlapping
-                                       .compactMap(\.phoneStepFloorsDescended)
-                                       .reduce(0, +),
+                                   phoneStepCount: phoneMotion.steps,
+                                   phoneStepDistanceMeters: phoneMotion.distanceMeters,
+                                   phoneStepFloorsAscended: phoneMotion.floorsAscended,
+                                   phoneStepFloorsDescended: phoneMotion.floorsDescended,
                                    hrRaw2A37: overlapping.reduce(0) { $0 + $1.hrRaw2A37Value },
                                    hrAccepted: overlapping.reduce(0) { $0 + $1.hrAcceptedValue },
                                    hrZero: overlapping.reduce(0) { $0 + $1.hrZeroValue },
@@ -6993,6 +6993,12 @@ final class SessionStore: ObservableObject {
                                                maxHR: Int,
                                                thresholdFraction: Double) -> AggregateWorkoutCandidate? {
         guard points.count >= 2, end > start else { return nil }
+        let phoneMotion = Metrics.stepsDaily(ordered.map { session in
+            Metrics.PhoneMotionSample(steps: session.phoneStepCountValue,
+                                      distanceMeters: session.phoneStepDistanceMeters,
+                                      floorsAscended: session.phoneStepFloorsAscended,
+                                      floorsDescended: session.phoneStepFloorsDescended)
+        })
         let aggregate = SavedSession(id: ordered.first?.id ?? UUID(),
                                      start: start,
                                      end: end,
@@ -7010,18 +7016,12 @@ final class SessionStore: ObservableObject {
                                      motionShortMin: nil,
                                      motionShortMax: nil,
                                      motionShortOverOneCount: nil,
-                                     phoneStepSource: ordered.contains { $0.phoneStepCountValue > 0 } ? "phone_coremotion_pedometer" : "unavailable",
+                                     phoneStepSource: phoneMotion.hasStepEvidence ? "phone_coremotion_pedometer" : "unavailable",
                                      phoneStepValidated: false,
-                                     phoneStepCount: ordered.reduce(0) { $0 + $1.phoneStepCountValue },
-                                     phoneStepDistanceMeters: ordered
-                                         .compactMap(\.phoneStepDistanceMeters)
-                                         .reduce(0, +),
-                                     phoneStepFloorsAscended: ordered
-                                         .compactMap(\.phoneStepFloorsAscended)
-                                         .reduce(0, +),
-                                     phoneStepFloorsDescended: ordered
-                                         .compactMap(\.phoneStepFloorsDescended)
-                                         .reduce(0, +),
+                                     phoneStepCount: phoneMotion.steps,
+                                     phoneStepDistanceMeters: phoneMotion.distanceMeters,
+                                     phoneStepFloorsAscended: phoneMotion.floorsAscended,
+                                     phoneStepFloorsDescended: phoneMotion.floorsDescended,
                                      hrRaw2A37: ordered.reduce(0) { $0 + $1.hrRaw2A37Value },
                                      hrAccepted: ordered.reduce(0) { $0 + $1.hrAcceptedValue },
                                      hrZero: ordered.reduce(0) { $0 + $1.hrZeroValue },
