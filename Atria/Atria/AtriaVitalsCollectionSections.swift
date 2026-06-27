@@ -2421,13 +2421,14 @@ private struct AtriaSleepStageSummary: View, Equatable {
         .padding(10)
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(night.evidenceLabel) \(night.stageEvidence.label). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
+        .accessibilityLabel("\(night.evidenceLabel) \(night.stageEvidence.label). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
 
     static func symbol(for stage: SleepStageKind) -> String {
         switch stage {
         case .awake: return "sun.max.fill"
         case .light: return "moon.fill"
+        case .rem: return "sparkles"
         case .sws: return "waveform.path"
         case .deep: return "moon.stars.fill"
         }
@@ -2437,6 +2438,7 @@ private struct AtriaSleepStageSummary: View, Equatable {
         switch stage {
         case .awake: return .orange
         case .light: return .cyan
+        case .rem: return .indigo
         case .sws: return .blue
         case .deep: return .purple
         }
@@ -2491,10 +2493,11 @@ private struct AtriaSleepStageHypnogram: View, Equatable {
 
     private func stageY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
         switch stage {
-        case .awake: return height * 0.18
-        case .light: return height * 0.40
-        case .sws: return height * 0.62
-        case .deep: return height * 0.84
+        case .awake: return height * 0.14
+        case .light: return height * 0.34
+        case .rem: return height * 0.52
+        case .sws: return height * 0.70
+        case .deep: return height * 0.88
         }
     }
 
@@ -2502,6 +2505,7 @@ private struct AtriaSleepStageHypnogram: View, Equatable {
         switch stage {
         case .awake: return .orange
         case .light: return .cyan
+        case .rem: return .indigo
         case .sws: return .blue
         case .deep: return .purple
         }
@@ -2528,7 +2532,7 @@ private struct AtriaSleepNightRow: View, Equatable {
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
                 if !night.displayStageSegments.isEmpty {
-                    Text("\(night.stageEvidence.label) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
+                    Text("\(night.stageEvidence.label) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · REM \(night.stageText(.rem)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.cyan)
                         .lineLimit(1)

@@ -126,11 +126,15 @@ enum AtriaSleepWakeResearch {
         if !motionValidated && (delta >= 13 || trendUp >= 5) { return .awake }
         if stillness < 0.7 && variability >= 6 { return .awake }
         if isNap {
+            if feature.progress > 0.20 && delta <= 10 && variability >= 3.5 && trendUp > -1 { return .rem }
             if delta <= 3 && variability <= 3 { return .deep }
             if delta <= 7 && trendUp <= 3 { return .sws }
             return .light
         }
         if feature.progress < 0.06 || feature.progress > 0.94, delta >= 10 { return .awake }
+        if feature.progress >= 0.18 && feature.progress <= 0.88 && delta >= 2 && delta <= 12 && variability >= 3.2 && trendUp > -1 {
+            return .rem
+        }
         if delta <= 2 && trendUp <= 1.5 && variability <= 3.5 { return .deep }
         if delta <= 7 && trendUp <= 3.5 { return .sws }
         return .light

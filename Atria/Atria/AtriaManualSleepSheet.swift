@@ -104,7 +104,7 @@ struct AtriaManualSleepSheet: View {
                 }
 
                 Section {
-                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, SWS, and Deep.")
+                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, REM, SWS, and Deep.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -136,12 +136,14 @@ struct AtriaManualSleepSheet: View {
         let fraction: Double
         switch (isNap, stage) {
         case (_, .awake): fraction = isNap ? 0.06 : 0.08
-        case (true, .light): fraction = 0.72
-        case (false, .light): fraction = 0.52
-        case (true, .sws): fraction = 0.14
-        case (false, .sws): fraction = 0.22
-        case (true, .deep): fraction = 0.08
-        case (false, .deep): fraction = 0.18
+        case (true, .light): fraction = 0.68
+        case (false, .light): fraction = 0.47
+        case (true, .rem): fraction = 0.08
+        case (false, .rem): fraction = 0.17
+        case (true, .sws): fraction = 0.12
+        case (false, .sws): fraction = 0.16
+        case (true, .deep): fraction = 0.06
+        case (false, .deep): fraction = 0.12
         }
         return SleepHistorySnapshot.formatDuration(duration * fraction)
     }

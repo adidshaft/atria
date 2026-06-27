@@ -444,6 +444,7 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
 enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
     case awake
     case light
+    case rem
     case sws
     case deep
 
@@ -453,6 +454,7 @@ enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .awake: return "Awake"
         case .light: return "Light"
+        case .rem: return "REM"
         case .sws: return "SWS"
         case .deep: return "Deep"
         }
@@ -5856,8 +5858,8 @@ final class SessionStore: ObservableObject {
         let duration = max(0, end.timeIntervalSince(start))
         guard duration > 0 else { return [] }
         let pattern: [(SleepStageKind, Double)] = isNap
-            ? [(.awake, 0.06), (.light, 0.72), (.sws, 0.14), (.deep, 0.08)]
-            : [(.awake, 0.08), (.light, 0.52), (.sws, 0.22), (.deep, 0.18)]
+            ? [(.awake, 0.06), (.light, 0.68), (.rem, 0.08), (.sws, 0.12), (.deep, 0.06)]
+            : [(.awake, 0.08), (.light, 0.47), (.rem, 0.17), (.sws, 0.16), (.deep, 0.12)]
         var cursor = start
         return pattern.enumerated().compactMap { index, item in
             let next = index == pattern.count - 1
