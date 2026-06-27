@@ -17,6 +17,7 @@ def args(**overrides):
         "min_span": 8 * 60 * 60,
         "min_coverage": 85.0,
         "max_gap": 30.0,
+        "app_commit": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -154,9 +155,33 @@ class MonitorLongWearTests(unittest.TestCase):
 
             self.assertEqual(final["monitor_started_at"], "2026-06-22T00:00:00Z")
             self.assertEqual(final["app_commit"], expected_commit)
+            self.assertEqual(final["monitor_commit"], expected_commit)
             self.assertIsInstance(final["monitor_finished_at"], str)
             self.assertIn("T", final["monitor_finished_at"])
             self.assertTrue(final["monitor_finished_at"].endswith("Z"))
+
+    def test_stamp_run_provenance_can_pin_installed_app_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Initial"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            monitor_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+            final = {}
+
+            monitor_long_wear.stamp_run_provenance(final, repo, "2026-06-22T00:00:00Z", "installed-app")
+
+        self.assertEqual(final["app_commit"], "installed-app")
+        self.assertEqual(final["monitor_commit"], monitor_commit)
 
     def test_detached_launchctl_command_preserves_monitor_arguments(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,6 +193,7 @@ class MonitorLongWearTests(unittest.TestCase):
                 label="overnight handoff/21",
                 samples=11,
                 interval=3600,
+                app_commit="abc123",
                 allowed_thermal=["nominal", "fair"],
             )
             log_path = repo / "logs/live-device/long-wear-monitor/overnight handoff-21.out"
@@ -179,6 +205,7 @@ class MonitorLongWearTests(unittest.TestCase):
         self.assertIn("--preset overnight", shell)
         self.assertIn("--label 'overnight handoff/21'", shell)
         self.assertIn("--device DEVICE-1", shell)
+        self.assertIn("--app-commit abc123", shell)
         self.assertIn("--allowed-thermal nominal fair", shell)
         self.assertIn(">>", shell)
         self.assertNotIn("--launchctl-detach", shell)

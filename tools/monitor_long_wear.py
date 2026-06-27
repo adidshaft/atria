@@ -136,6 +136,7 @@ def detached_command(repo: Path, args: argparse.Namespace, log_path: Path) -> li
         ("min_coverage", "--min-coverage"),
         ("max_gap", "--max-gap"),
         ("max_battery_drop", "--max-battery-drop"),
+        ("app_commit", "--app-commit"),
     )
     for attribute, flag in optional_args:
         value = getattr(args, attribute)
@@ -158,10 +159,14 @@ def submit_detached(repo: Path, args: argparse.Namespace) -> tuple[str, Path]:
     return launchctl_label(args.label), log_path
 
 
-def stamp_run_provenance(final: dict[str, object], repo: Path, monitor_started_at: str) -> None:
+def stamp_run_provenance(final: dict[str, object],
+                         repo: Path,
+                         monitor_started_at: str,
+                         app_commit: str | None = None) -> None:
     final["monitor_started_at"] = monitor_started_at
     final["monitor_finished_at"] = utc_now()
-    final["app_commit"] = current_git_commit(repo)
+    final["app_commit"] = (app_commit or current_git_commit(repo)).strip() or "missing"
+    final["monitor_commit"] = current_git_commit(repo)
 
 
 def value_from(args: argparse.Namespace, name: str) -> object:
@@ -312,6 +317,7 @@ def main() -> int:
     parser.add_argument("--max-gap", type=float, default=None, help="Maximum accepted-HR gap in seconds.")
     parser.add_argument("--allowed-thermal", nargs="+", default=None, help="Thermal states allowed for acceptance.")
     parser.add_argument("--max-battery-drop", type=float, default=None, help="Maximum allowed battery percentage drop.")
+    parser.add_argument("--app-commit", help="Installed app source commit to stamp in the evidence summary.")
     parser.add_argument(
         "--launchctl-detach",
         action="store_true",
@@ -376,7 +382,7 @@ def main() -> int:
     final["planned_samples"] = samples_count
     final["planned_interval_s"] = interval_seconds
     final["planned_duration_s"] = max(0, samples_count - 1) * interval_seconds
-    stamp_run_provenance(final, repo, monitor_started_at)
+    stamp_run_provenance(final, repo, monitor_started_at, args.app_commit)
     final["out_dir"] = str(out_root)
     final["jsonl"] = str(jsonl_path)
     summary_path.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
