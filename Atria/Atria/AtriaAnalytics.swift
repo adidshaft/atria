@@ -107,7 +107,7 @@ enum AtriaAnalytics {
             let current = "\(rmssd) ms vs \(baseline) ms baseline."
             let greenValue = Int((Double(baseline) * safeGreen).rounded())
             let yellowValue = Int((Double(baseline) * safeYellow).rounded())
-            let target = "Green >= \(greenValue) ms, yellow \(yellowValue)-\(greenValue - 1) ms, red below."
+            let target = "Personal baseline · Green >= \(greenValue) ms, yellow \(yellowValue)-\(greenValue - 1) ms, red below."
             return AtriaMetricZone(level: level,
                                    title: "HRV target",
                                    current: current,
@@ -136,7 +136,7 @@ enum AtriaAnalytics {
             case .red:
                 recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
             }
-            let target = "Green <= \(baseline + safeGreenDelta) bpm, yellow \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
+            let target = "Personal baseline · Green <= \(baseline + safeGreenDelta) bpm, yellow \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
             return AtriaMetricZone(level: level,
                                    title: "Resting HR target",
                                    current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",
