@@ -26,14 +26,7 @@ enum AtriaAnalytics {
         static func recovery(_ pct: Int?,
                              target: AtriaMetricTarget = .recoveryRecommended) -> AtriaMetricZone? {
             guard let pct else { return nil }
-            let level: AtriaMetricZoneLevel
-            if Double(pct) >= target.greenLower {
-                level = .green
-            } else if Double(pct) >= target.yellowLower {
-                level = .yellow
-            } else {
-                level = .red
-            }
+            let level = AtriaMetricZone.zone(for: Double(pct), target: target)
 
             let recommendation: String
             switch level {
