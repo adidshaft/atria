@@ -510,6 +510,24 @@ enum AtriaAnalytics {
             let detail: String
         }
 
+        /// HR-only recovery: at/below baseline reads high; elevated resting reads low.
+        static func restingOnly(restingNow: Int, baseline: Int) -> Int {
+            guard restingNow > 0, baseline > 0 else { return 0 }
+            let delta = Double(restingNow - baseline)
+            return Int(min(max(75 - delta * 5, 1), 99).rounded())
+        }
+
+        /// HRV-driven recovery (the primary signal), blended with resting HR.
+        static func estimate(hrvNow: Int, hrvBaseline: Int, restingNow: Int, restingBaseline: Int) -> Int {
+            guard hrvNow > 0, hrvBaseline > 0 else {
+                return restingOnly(restingNow: restingNow, baseline: restingBaseline)
+            }
+            let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)
+            let restingPenalty = restingNow > 0 && restingBaseline > 0
+                ? 3.0 * Double(restingNow - restingBaseline) : 0
+            return Int(min(max(hrvScore - restingPenalty, 1), 99).rounded())
+        }
+
         /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
         /// with resting-HR z-score and saved sleep evidence. Recovery displays after
         /// local data sufficiency; external reference validation upgrades the
