@@ -1700,7 +1700,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         AtriaMetricTile(label: "Strain",
                         value: String(format: "%.1f", hero.strain),
                         state: .local,
-                        tint: Metrics.strainColor(hero.strain))
+                        tint: strainZone?.tint ?? Metrics.strainColor(hero.strain),
+                        zone: strainZone)
         AtriaTrainingLoadTile(ratio: hero.loadRatioText,
                               target: hero.loadTargetText,
                               confidence: hero.loadConfidence,
@@ -1711,6 +1712,10 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     private var recoveryZone: AtriaMetricZone? {
         Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
+    }
+
+    private var strainZone: AtriaMetricZone? {
+        Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)
     }
 }
 
