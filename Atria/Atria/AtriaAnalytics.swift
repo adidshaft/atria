@@ -412,18 +412,72 @@ enum AtriaAnalytics {
         }
 
         /// Banister TRIMP over a series of (secondsFromStart, bpm) samples.
-        /// Each sample contributes dt · HRr · 0.64 · e^(1.92·HRr).
+        /// Each sample contributes dt · HRr · 0.64 · e^(b·HRr).
         static func trimp(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
+            trimp(series, rest: rest, max: max, coefficient: 1.92)
+        }
+
+        static func trimp(_ series: [(t: Double, bpm: Int)],
+                          rest: Int,
+                          max: Int,
+                          sex: AthleteProfile.BiologicalSex) -> Double {
+            trimp(series, rest: rest, max: max, coefficient: banisterCoefficient(for: sex))
+        }
+
+        static func trimp(_ series: [(t: Double, bpm: Int)],
+                          rest: Int,
+                          max: Int,
+                          coefficient: Double) -> Double {
+            guard series.count > 1, max > rest else { return 0 }
+            let span = Double(max - rest)
+            let safeCoefficient = Swift.min(Swift.max(coefficient, 1.0), 2.5)
+            var total = 0.0
+            for index in 1..<series.count {
+                let dtMin = (series[index].t - series[index - 1].t) / 60.0
+                guard dtMin > 0, dtMin < 5 else { continue }
+                let hrr = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
+                total += dtMin * hrr * 0.64 * exp(safeCoefficient * hrr)
+            }
+            return total
+        }
+
+        static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double {
+            switch sex {
+            case .female: return 1.67
+            case .male, .unspecified: return 1.92
+            }
+        }
+
+        /// Edwards load over HR-reserve zones: 50/60/70/80/90% HRR, weights 1...5.
+        /// This is a second supported strain scorer for calibration and audits.
+        static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
             guard series.count > 1, max > rest else { return 0 }
             let span = Double(max - rest)
             var total = 0.0
             for index in 1..<series.count {
                 let dtMin = (series[index].t - series[index - 1].t) / 60.0
                 guard dtMin > 0, dtMin < 5 else { continue }
-                let hrr = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
-                total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
+                let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
+                total += dtMin * Double(edwardsWeight(forHRReserve: reserve))
             }
             return total
+        }
+
+        static func edwardsWeight(forHRReserve reserve: Double) -> Int {
+            switch reserve {
+            case 0.90...: return 5
+            case 0.80..<0.90: return 4
+            case 0.70..<0.80: return 3
+            case 0.60..<0.70: return 2
+            case 0.50..<0.60: return 1
+            default: return 0
+            }
+        }
+
+        /// Map Edwards' weighted zone-minutes onto the same 0...21 strain surface.
+        static func score(fromEdwardsLoad load: Double) -> Double {
+            guard load > 0 else { return 0 }
+            return min(21.0 * (1 - exp(-load / 65.0)), 21.0)
         }
 
         static func activeCalories(_ samples: [HRSample], rest: Int, profile: AthleteProfile) -> Double? {
