@@ -365,6 +365,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let vo2MaxEstimate: VO2MaxEstimateSummary",
             "&& lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence",
             "&& lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail",
+            "&& lhs.hero.strain == rhs.hero.strain",
             "&& lhs.vo2MaxEstimate == rhs.vo2MaxEstimate",
             "detail: recoveryDetailText",
             "private var recoveryDetailText: String",
