@@ -780,6 +780,11 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
                                 tint: biologicalAgeZone?.tint ?? deltaTint,
                                 footnote: summary.isReady ? summary.detailText : "Needs baseline",
                                 zone: biologicalAgeZone)
+                AtriaMetricTile(label: "Pace",
+                                value: summary.agingPaceText,
+                                state: summary.isReady ? .estimate : .learning,
+                                tint: biologicalAgeZone?.tint ?? deltaTint,
+                                footnote: summary.agingPaceDetail)
             }
 
             if summary.factors.isEmpty {
@@ -2481,6 +2486,11 @@ private struct AtriaProfileCard: View, Equatable {
                                 tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? .purple : .orange),
                                 footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building your body-age baseline",
                                 zone: biologicalAgeZone)
+                AtriaMetricTile(label: "Aging pace",
+                                value: biologicalAgeSummary.agingPaceText,
+                                state: biologicalAgeSummary.isReady ? .estimate : .learning,
+                                tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? .purple : .orange),
+                                footnote: biologicalAgeSummary.agingPaceDetail)
             }
 
             Text(vo2MaxEstimate.narrative)
