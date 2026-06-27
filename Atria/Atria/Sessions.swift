@@ -403,6 +403,8 @@ struct DailyRollup {
     let duration: TimeInterval
     let sleepDuration: TimeInterval?
     let sleepSpan: TimeInterval?
+    let sleepStart: Date?
+    let sleepEnd: Date?
     let sleepSource: String?
     let strain: Double
     let avgHRV: Int?
@@ -2802,6 +2804,8 @@ final class SessionStore: ObservableObject {
             let dayDetections = detectionsByDay[day] ?? []
             let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
             let sleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
+            let sleepStart = sleepDetections.map(\.start).min()
+            let sleepEnd = sleepDetections.map(\.end).max()
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -2826,6 +2830,8 @@ final class SessionStore: ObservableObject {
                                duration: duration,
                                sleepDuration: sleepDuration > 0 ? sleepDuration : nil,
                                sleepSpan: sleepDuration > 0 ? sleepDuration : nil,
+                               sleepStart: sleepStart,
+                               sleepEnd: sleepEnd,
                                sleepSource: sleepDuration > 0 ? "single_session_sleep_candidate" : nil,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageIntSnapshot(hrvs),
@@ -6806,6 +6812,9 @@ final class SessionStore: ObservableObject {
             let singleSessionSleepDuration = detections
                 .filter { $0.kind == .sleepCandidate }
                 .reduce(0) { $0 + $1.duration }
+            let sleepDetections = detections.filter { $0.kind == .sleepCandidate }
+            let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\.start).min()
+            let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\.end).max()
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -6830,6 +6839,8 @@ final class SessionStore: ObservableObject {
                                duration: duration,
                                sleepDuration: aggregateSleep?.duration ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
                                sleepSpan: aggregateSleep?.span ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
+                               sleepStart: sleepStart,
+                               sleepEnd: sleepEnd,
                                sleepSource: aggregateSleep?.kind,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
@@ -10540,6 +10551,8 @@ struct SleepHistorySnapshot: Equatable {
             let sleepDuration = rollup.sleepDuration ?? (rollup.sleepReady > 0 ? rollup.duration : min(rollup.duration, 10 * 60 * 60))
             nightsByDay[day] = Night(id: "sleep-history-\(Int(day.timeIntervalSince1970))",
                                      day: day,
+                                     start: rollup.sleepStart,
+                                     end: rollup.sleepEnd,
                                      duration: sleepDuration,
                                      restingHR: rollup.restingHR,
                                      hrv: rollup.avgHRV,
