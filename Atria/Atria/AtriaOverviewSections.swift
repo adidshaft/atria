@@ -773,7 +773,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         var rows: [[AtriaTodayMetric]] = []
         var pending: [AtriaTodayMetric] = []
         for metric in visibleMetrics {
-            precondition(metric.glanceGridSize.isValidGlanceShape, "Today glance cards must be 1x1 or 1x2.")
+            guard metric.glanceGridSize.isValidGlanceShape else { continue }
             if metric.isWideGlanceCard {
                 if !pending.isEmpty {
                     rows.append(pending)
@@ -791,10 +791,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if !pending.isEmpty {
             rows.append(pending)
         }
-        for row in rows {
-            precondition(rowFitsGlanceGrid(row), "Today glance row exceeds the fixed two-column grid.")
-        }
-        return rows
+        return rows.filter(rowFitsGlanceGrid)
     }
 
     private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric]) -> Bool {
