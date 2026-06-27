@@ -788,6 +788,7 @@ struct AtriaHomeView: View {
                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                     aiCoachSettings: aiCoachSettings,
                                     aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                    hapticSettings: hapticSettings,
                                     horizontalSizeClass: horizontalSizeClass,
                                     connectionContext: connectionGuideContext,
                                     onAICoachSettingsChange: { settings in

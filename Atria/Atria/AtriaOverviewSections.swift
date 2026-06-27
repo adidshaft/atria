@@ -55,6 +55,7 @@ struct AtriaOverviewTabContent: View {
     let hasUnlockedSecondarySections: Bool
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
+    let hapticSettings: AtriaHapticAlertSettings
     let horizontalSizeClass: UserInterfaceSizeClass?
     let connectionContext: AtriaConnectionGuideContext
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
@@ -116,6 +117,7 @@ struct AtriaOverviewTabContent: View {
                                              hasUnlockedSecondarySections: false,
                                              aiCoachSettings: aiCoachSettings,
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                             hapticSettings: hapticSettings,
                                              onAICoachSettingsChange: onAICoachSettingsChange,
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
@@ -141,6 +143,7 @@ struct AtriaOverviewTabContent: View {
                                                      hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                                      aiCoachSettings: aiCoachSettings,
                                                      aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                                     hapticSettings: hapticSettings,
                                                      onAICoachSettingsChange: onAICoachSettingsChange,
                                                      onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                                      onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
@@ -175,6 +178,7 @@ struct AtriaOverviewTabContent: View {
                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                              aiCoachSettings: aiCoachSettings,
                                              aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                             hapticSettings: hapticSettings,
                                              onAICoachSettingsChange: onAICoachSettingsChange,
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
@@ -408,6 +412,7 @@ private struct AtriaOverviewLeadingHost: View {
     let hasUnlockedSecondarySections: Bool
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
+    let hapticSettings: AtriaHapticAlertSettings
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
     let onSaveAICoachAPIKey: (String) -> Void
     let onDeleteAICoachAPIKey: () -> Void
@@ -427,6 +432,7 @@ private struct AtriaOverviewLeadingHost: View {
                                    hasUnlockedSecondarySections: hasUnlockedSecondarySections,
                                    aiCoachSettings: aiCoachSettings,
                                    aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                   hapticSettings: hapticSettings,
                                    onAICoachSettingsChange: onAICoachSettingsChange,
                                    onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                    onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
@@ -466,6 +472,7 @@ struct AtriaOverviewLeadingSection: View {
     let hasUnlockedSecondarySections: Bool
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
+    let hapticSettings: AtriaHapticAlertSettings
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
     let onSaveAICoachAPIKey: (String) -> Void
     let onDeleteAICoachAPIKey: () -> Void
@@ -482,6 +489,7 @@ struct AtriaOverviewLeadingSection: View {
                                                  profileMetricsStore: profileMetricsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
+                                                 hapticSettings: hapticSettings,
                                                  subtitle: "",
                                                  onOpenVitals: onOpenVitals,
                                                  onOpenCollection: onOpenCollection,
@@ -517,6 +525,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
+    var hapticSettings: AtriaHapticAlertSettings = AtriaHapticAlertSettings()
     let subtitle: String
     var onOpenVitals: () -> Void = {}
     var onOpenCollection: () -> Void = {}
@@ -534,6 +543,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      sensorSummary: store.imuAuditSummary,
+                                     hapticSettings: hapticSettings,
                                      sleepHistory: store.sleepHistorySnapshot,
                                      historicalArchiveStatus: store.historicalArchiveStatus,
                                      insights: store.behaviorInsights,
@@ -606,7 +616,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, workout, backfill, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -614,6 +624,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "Strain"
         case .workout: return "Workout"
         case .backfill: return "Backfill"
+        case .hapticAlerts: return "Alerts"
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
         case .sleepHistory: return "Sleep history"
@@ -636,6 +647,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "figure.run"
         case .workout: return "stopwatch.fill"
         case .backfill: return "arrow.triangle.2.circlepath"
+        case .hapticAlerts: return "iphone.radiowaves.left.and.right"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
         case .sleepHistory: return "moon.zzz.fill"
@@ -689,7 +701,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .backfill, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -793,6 +805,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let sensorSummary: IMUAuditSummary
+    let hapticSettings: AtriaHapticAlertSettings
     let sleepHistory: SleepHistorySnapshot
     let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus
     let insights: [AtriaInsight]
@@ -840,6 +853,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.live.liveActiveCalories == rhs.live.liveActiveCalories
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.sensorSummary == rhs.sensorSummary
+            && lhs.hapticSettings == rhs.hapticSettings
             && lhs.sleepHistory == rhs.sleepHistory
             && lhs.historicalArchiveStatus == rhs.historicalArchiveStatus
             && lhs.insights == rhs.insights
@@ -1126,6 +1140,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             workoutCard(metric)
         case .backfill:
             backfillCard(metric)
+        case .hapticAlerts:
+            AtriaGlanceMetricCard(title: "Alerts",
+                                  value: hapticSettings.glanceValueText,
+                                  detail: hapticSettings.glanceDetailText,
+                                  systemImage: metric.systemImage,
+                                  tint: hapticSettings.enabledCount == 0 ? .secondary : .purple)
+                .accessibilityLabel("Phone haptic alerts \(hapticSettings.glanceValueText), \(hapticSettings.glanceDetailText). Configure alerts in Data or Settings.")
         case .hrv:
             AtriaGlanceMetricCard(title: "HRV",
                                   value: metricDisplayValue(hero.hrvValue),
