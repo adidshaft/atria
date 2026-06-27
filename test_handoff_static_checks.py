@@ -436,6 +436,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .personalBaseline:\n            return \"Personal baseline\"",
             "if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains(\"HRV baseline\")",
             "return \"Building baseline\"",
+            "detail: hrvDetailText",
+            "private var hrvDetailText: String",
+            "if detail.contains(\"validated\") { return \"Validated\" }",
+            "if detail.contains(\"personal baseline\") || detail.contains(\"% kept\") { return \"Personal baseline\" }",
             "&& lhs.live.status == rhs.live.status",
             "&& lhs.live.sessionSampleCount == rhs.live.sessionSampleCount",
             "&& lhs.live.liveActiveCalories == rhs.live.liveActiveCalories",
@@ -544,6 +548,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "figure.run.circle.fill")
         assert_not_contains(self, overview, "heart.text.square.fill")
         assert_not_contains(self, overview, "flame.circle.fill")
+        assert_not_contains(self, overview, "detail: hrvLearningState == .learning ? \"Building\" : \"Baseline\"")
+        assert_not_contains(self, overview, "private var hrvLearningState: AtriaMetricState")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",

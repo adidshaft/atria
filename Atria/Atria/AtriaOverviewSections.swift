@@ -888,7 +888,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .hrv:
             AtriaGlanceMetricCard(title: "HRV",
                                   value: metricDisplayValue(hero.hrvValue),
-                                  detail: hrvLearningState == .learning ? "Building" : "Baseline",
+                                  detail: hrvDetailText,
                                   systemImage: metric.systemImage,
                                   tint: .pink)
         case .sleep:
@@ -1061,8 +1061,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                             : "Open Trends. \(insights.count) local insights ready")
     }
 
-    private var hrvLearningState: AtriaMetricState {
-        hero.hrvDetail.localizedCaseInsensitiveContains("personal") ? .personalBaseline : .learning
+    private var hrvDetailText: String {
+        let detail = hero.hrvDetail.lowercased()
+        if detail.contains("validated") { return "Validated" }
+        if detail.contains("personal baseline") || detail.contains("% kept") { return "Personal baseline" }
+        return "Building"
     }
 
     private var recoveryDetailText: String {
