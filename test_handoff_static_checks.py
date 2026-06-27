@@ -4246,6 +4246,27 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, targets, needle)
 
+        wrapper_match = re.search(r"extension Metrics \{(?P<body>.*?)\n\}\n\nstruct AtriaMetricZoneInfoSheet", targets, re.S)
+        self.assertIsNotNone(wrapper_match)
+        wrapper_body = wrapper_match.group("body")
+        for forbidden in [
+            "let level: AtriaMetricZoneLevel",
+            "let recommendation: String",
+            "safeGreen",
+            "safeYellow",
+            "absDelta",
+            "trendDelta",
+            "guard summary.isReady",
+            "Research sleep-only estimate.",
+            "General wellness guidance only, not medical advice.",
+            "Below your step goal",
+            "Restless night",
+            "Trending the wrong way",
+            "Green within +/-",
+        ]:
+            assert_not_contains(self, wrapper_body, forbidden)
+        self.assertEqual(wrapper_body.count("AtriaAnalytics.TargetZones."), 12)
+
         for needle in [
             "enum TargetZones",
             "static func recovery(_ pct: Int?,",
