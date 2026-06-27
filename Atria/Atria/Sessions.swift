@@ -422,6 +422,35 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     var duration: TimeInterval { end.timeIntervalSince(start) }
 }
 
+enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
+    case awake
+    case light
+    case sws
+    case deep
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .awake: return "Awake"
+        case .light: return "Light"
+        case .sws: return "SWS"
+        case .deep: return "Deep"
+        }
+    }
+}
+
+struct SleepStageSegment: Codable, Identifiable, Equatable {
+    let id: String
+    let start: Date
+    let end: Date
+    let stage: SleepStageKind
+
+    var duration: TimeInterval {
+        max(0, end.timeIntervalSince(start))
+    }
+}
+
 struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let id: String
     let createdAt: Date
@@ -439,6 +468,7 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let reason: String
     let motionSource: String
     let motionValidated: Bool
+    let stageSegments: [SleepStageSegment]?
 }
 
 struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
@@ -5384,6 +5414,68 @@ final class SessionStore: ObservableObject {
         confirmBestSleepCandidate(rest: rest, source: source)
     }
 
+    func addManualSleep(start: Date,
+                        end: Date,
+                        isNap: Bool,
+                        rest: Int,
+                        source: String = "manual_ui") -> UserConfirmedSleep? {
+        guard end > start else { return nil }
+        let sleepSource = isNap ? "manual_nap" : "manual_sleep"
+        let id = confirmedSleepID(start: start, end: end, source: sleepSource)
+        var existing = cachedConfirmedSleeps.filter { $0.id != id }
+        let duration = end.timeIntervalSince(start)
+        let confirmed = UserConfirmedSleep(id: id,
+                                           createdAt: Date(),
+                                           start: start,
+                                           end: end,
+                                           source: sleepSource,
+                                           confidence: "manual_user_entered",
+                                           sessions: 0,
+                                           samples: 0,
+                                           avgHR: 0,
+                                           peakHR: 0,
+                                           restingHR: rest,
+                                           duration: duration,
+                                           span: duration,
+                                           reason: source,
+                                           motionSource: "manual",
+                                           motionValidated: false,
+                                           stageSegments: Self.defaultManualSleepStages(start: start,
+                                                                                       end: end,
+                                                                                       isNap: isNap))
+        existing.append(confirmed)
+        saveConfirmedSleeps(existing)
+        AtriaDebugLog("ATRIADBG sleep_manual status=saved id=%@ source=%@ start=%@ end=%@ duration_s=%.0f kind=%@ stages=%d",
+                      confirmed.id,
+                      source,
+                      isoString(confirmed.start),
+                      isoString(confirmed.end),
+                      confirmed.duration,
+                      confirmed.source,
+                      confirmed.stageSegments?.count ?? 0)
+        return confirmed
+    }
+
+    private static func defaultManualSleepStages(start: Date, end: Date, isNap: Bool) -> [SleepStageSegment] {
+        let duration = max(0, end.timeIntervalSince(start))
+        guard duration > 0 else { return [] }
+        let pattern: [(SleepStageKind, Double)] = isNap
+            ? [(.awake, 0.06), (.light, 0.72), (.sws, 0.14), (.deep, 0.08)]
+            : [(.awake, 0.08), (.light, 0.52), (.sws, 0.22), (.deep, 0.18)]
+        var cursor = start
+        return pattern.enumerated().compactMap { index, item in
+            let next = index == pattern.count - 1
+                ? end
+                : min(end, cursor.addingTimeInterval(duration * item.1))
+            defer { cursor = next }
+            guard next > cursor else { return nil }
+            return SleepStageSegment(id: "\(Int(cursor.timeIntervalSince1970))-\(item.0.rawValue)",
+                                     start: cursor,
+                                     end: next,
+                                     stage: item.0)
+        }
+    }
+
     func confirmBestSleepCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-confirm-best-sleep-candidate") else { return }
         let rest = baseline.restingInt ?? 60
@@ -5442,7 +5534,8 @@ final class SessionStore: ObservableObject {
                                            span: best.span,
                                            reason: best.reason,
                                            motionSource: best.motionEvidenceSource,
-                                           motionValidated: best.motionEvidenceValidated)
+                                           motionValidated: best.motionEvidenceValidated,
+                                           stageSegments: nil)
         existing.append(confirmed)
         saveConfirmedSleeps(existing)
         AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
@@ -9873,6 +9966,7 @@ struct SleepHistorySnapshot: Equatable {
         let confidence: String
         let source: String
         let confirmed: Bool
+        let stageSegments: [SleepStageSegment]
 
         var durationHours: Double {
             max(0, duration / 3_600)
@@ -9920,6 +10014,14 @@ struct SleepHistorySnapshot: Equatable {
             }
             return isNapEvidence ? "Nap candidate" : "Sleep candidate"
         }
+
+        func stageDuration(_ stage: SleepStageKind) -> TimeInterval {
+            stageSegments.filter { $0.stage == stage }.reduce(0) { $0 + $1.duration }
+        }
+
+        func stageText(_ stage: SleepStageKind) -> String {
+            SleepHistorySnapshot.formatDuration(stageDuration(stage))
+        }
     }
 
     let nights: [Night]
@@ -9947,7 +10049,8 @@ struct SleepHistorySnapshot: Equatable {
                                      sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span),
                                      confidence: sleep.confidence,
                                      source: sleep.source,
-                                     confirmed: true)
+                                     confirmed: true,
+                                     stageSegments: sleep.stageSegments ?? [])
         }
 
         for rollup in rollups where rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
@@ -9966,7 +10069,8 @@ struct SleepHistorySnapshot: Equatable {
                                      sleepEfficiency: Self.efficiency(duration: sleepDuration, span: rollup.sleepSpan),
                                      confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
                                      source: rollup.sleepReady > 0 ? "validated_sleep_window" : (rollup.sleepSource ?? "sleep_candidate"),
-                                     confirmed: false)
+                                     confirmed: false,
+                                     stageSegments: [])
         }
 
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
@@ -9985,7 +10089,8 @@ struct SleepHistorySnapshot: Equatable {
               sleepEfficiency: night.sleepEfficiency,
               confidence: night.confidence,
               source: night.source,
-              confirmed: night.confirmed)
+              confirmed: night.confirmed,
+              stageSegments: night.stageSegments)
     }
 
     var latest: Night? {
@@ -10041,7 +10146,7 @@ struct SleepHistorySnapshot: Equatable {
         return "Learning"
     }
 
-    private static func formatDuration(_ seconds: TimeInterval) -> String {
+    static func formatDuration(_ seconds: TimeInterval) -> String {
         guard seconds > 0 else { return "--" }
         let minutes = Int((seconds / 60).rounded())
         let hours = minutes / 60

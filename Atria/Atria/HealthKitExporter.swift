@@ -982,10 +982,10 @@ final class HealthKitExporter {
                 guard ledger[key]?.workoutExported != true else { return nil }
                 return confirmedWorkoutExportPlan(for: workout)
             })
-            samples.append(contentsOf: confirmedSleeps.compactMap { sleep in
+            samples.append(contentsOf: confirmedSleeps.flatMap { sleep in
                 let key = Self.confirmedSleepLedgerKey(sleep.id)
-                guard ledger[key]?.workoutExported != true else { return nil }
-                return confirmedSleepSample(for: sleep)
+                guard ledger[key]?.workoutExported != true else { return [HKSample]() }
+                return confirmedSleepSamples(for: sleep).map { $0 as HKSample }
             })
         }
         guard !samples.isEmpty || !workoutPlans.isEmpty else {
@@ -2007,10 +2007,10 @@ final class HealthKitExporter {
                                  metadata: metadata)
     }
 
-    private func confirmedSleepSample(for sleep: UserConfirmedSleep) -> HKCategorySample? {
-        guard sleep.end > sleep.start else { return nil }
+    private func confirmedSleepSamples(for sleep: UserConfirmedSleep) -> [HKCategorySample] {
+        guard sleep.end > sleep.start else { return [] }
         let metadata: [String: Any] = [
-            HKMetadataKeyWasUserEntered: false,
+            HKMetadataKeyWasUserEntered: sleep.source.hasPrefix("manual_"),
             "atria_sleep_id": sleep.id,
             "atria_sleep_source": "user_confirmed",
             "atria_sleep_candidate_source": sleep.source,
@@ -2025,11 +2025,34 @@ final class HealthKitExporter {
             "atria_auto_gate_e_unchanged": true,
             "atria_metric_promotions": 0
         ]
-        return HKCategorySample(type: sleepType,
-                                value: HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
-                                start: sleep.start,
-                                end: sleep.end,
-                                metadata: metadata)
+        guard let segments = sleep.stageSegments, !segments.isEmpty else {
+            return [HKCategorySample(type: sleepType,
+                                     value: HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+                                     start: sleep.start,
+                                     end: sleep.end,
+                                     metadata: metadata)]
+        }
+        return segments.compactMap { segment in
+            guard segment.end > segment.start else { return nil }
+            var stageMetadata = metadata
+            stageMetadata["atria_sleep_stage"] = segment.stage.rawValue
+            return HKCategorySample(type: sleepType,
+                                    value: healthKitSleepValue(for: segment.stage),
+                                    start: segment.start,
+                                    end: segment.end,
+                                    metadata: stageMetadata)
+        }
+    }
+
+    private func healthKitSleepValue(for stage: SleepStageKind) -> Int {
+        switch stage {
+        case .awake:
+            return HKCategoryValueSleepAnalysis.awake.rawValue
+        case .light:
+            return HKCategoryValueSleepAnalysis.asleepCore.rawValue
+        case .sws, .deep:
+            return HKCategoryValueSleepAnalysis.asleepDeep.rawValue
+        }
     }
 
     private func heartRateSamples(for session: SavedSession, snapshot: ExportSnapshot?) -> [HKSample] {

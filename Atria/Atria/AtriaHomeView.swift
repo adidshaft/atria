@@ -180,7 +180,7 @@ struct AtriaHomeView: View {
                 .tag(HomeTab.collection)
             }
             .tabBarMinimizeBehavior(.onScrollDown)
-            .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
+            .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory && selectedTab != .overview) {
                 AtriaLiveTabAccessory(liveStore: model.coreLiveStore)
             }
 
@@ -705,36 +705,40 @@ struct AtriaHomeView: View {
                 }
                 .frame(maxWidth: contentWidth)
                 .padding(.horizontal, 16)
-                .padding(.top, 84)
-                .padding(.bottom, 40)
+                .padding(.top, 12)
+                .padding(.bottom, shouldShowLiveAccessory ? 168 : 40)
                 .frame(maxWidth: .infinity)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .navigationTitle(title)
             .toolbar(.hidden, for: .navigationBar)
-            .overlay(alignment: .top) {
-                AtriaHomeTopChrome(statusStore: model.statusStore,
-                                   pulseLiveStore: model.pulseLiveStore,
-                                   store: store,
-                                   showWorkout: model.statusStore.state.status == .connected,
-                                   showHelp: model.statusStore.state.status != .connected,
-                                   onStartWorkout: {
-                                       workoutSession = AtriaWorkoutSession(start: Date())
-                                   },
-                                   onShowHelp: {
-                                       connectionGuideSnoozedUntil = nil
-                                       showConnectionGuide = true
-                                   },
-                                   onShowSettings: {
-                                       showSettings = true
-                                   },
-                                   onTapStatusWhenNotConnected: {
-                                       ble.startScan(reason: "home_status_chip")
-                                   })
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                topChrome
             }
         }
+    }
+
+    private var topChrome: some View {
+        AtriaHomeTopChrome(statusStore: model.statusStore,
+                           pulseLiveStore: model.pulseLiveStore,
+                           store: store,
+                           showWorkout: model.statusStore.state.status == .connected,
+                           showHelp: model.statusStore.state.status != .connected,
+                           onStartWorkout: {
+                               workoutSession = AtriaWorkoutSession(start: Date())
+                           },
+                           onShowHelp: {
+                               connectionGuideSnoozedUntil = nil
+                               showConnectionGuide = true
+                           },
+                           onShowSettings: {
+                               showSettings = true
+                           },
+                           onTapStatusWhenNotConnected: {
+                               ble.startScan(reason: "home_status_chip")
+                           })
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     private var hero: some View {
@@ -1177,7 +1181,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(.cyan)
-                .frame(width: 28, height: 28)
+                .frame(width: 34, height: 34)
                 .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1188,23 +1192,32 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .layoutPriority(2)
 
             Spacer(minLength: 0)
 
-            Button(protectsLiveStream ? "Sync now" : "Sync", action: onSync)
-                .font(.caption.weight(.bold))
-                .atriaCardAction(tint: .blue)
+            Button(action: onSync) {
+                Text(protectsLiveStream ? "Sync now" : "Sync")
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .frame(minWidth: protectsLiveStream ? 76 : 48)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 34, height: 34)
             }
-            .atriaCardAction(prominent: false, tint: .secondary)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .accessibilityLabel("Dismiss missed data banner")
         }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
+        .padding(12)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
         .accessibilityElement(children: .contain)
     }
 }
@@ -2862,7 +2875,7 @@ private struct AtriaToolbarIcon: View, Equatable {
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.callout.weight(.semibold))
+            .font(.footnote.weight(.semibold))
             .imageScale(.small)
             .foregroundStyle(.primary)
             .frame(width: Self.size, height: Self.size)
@@ -2932,7 +2945,7 @@ private struct AtriaHomeTopChrome: View {
 }
 
 private enum AtriaHeaderControlMetrics {
-    static let height: CGFloat = 44
+    static let height: CGFloat = 42
 }
 
 /// The top-left connection chip. A dedicated subview so it OBSERVES both stores —
@@ -2958,10 +2971,9 @@ private struct AtriaTopStatusChip: View {
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
         .padding(.horizontal, 22)
-        .frame(minWidth: 132,
+        .frame(minWidth: 148,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
-        .background(tint.opacity(colorScheme == .light ? 0.18 : 0.24), in: Capsule())
         .glassEffect(.regular.tint(tint.opacity(colorScheme == .light ? 0.24 : 0.32)).interactive(), in: .capsule)
         .contentShape(.capsule)
         .onTapGesture {
@@ -3164,18 +3176,20 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .layoutPriority(2)
 
             Spacer(minLength: 0)
 
             Button(action: onHelp) {
                 Image(systemName: "questionmark.circle")
-                    .frame(width: 30, height: 30)
+                    .frame(width: 34, height: 34)
             }
-            .atriaCardAction(prominent: false, tint: diagnosis.tint)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .accessibilityLabel("Connection help")
         }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
+        .padding(12)
+        .glassEffect(.regular.tint(diagnosis.tint.opacity(0.10)).interactive(), in: .rect(cornerRadius: 18))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(diagnosis.title). \(diagnosis.action)")
     }
