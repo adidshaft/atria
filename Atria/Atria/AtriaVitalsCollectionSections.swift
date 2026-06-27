@@ -439,7 +439,7 @@ private struct AtriaCollectionRRReferenceCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "RR reference", subtitle: "")
+                AtriaPanelSectionHeader(title: "Beat-to-beat reference", subtitle: "")
 
                 Spacer(minLength: 0)
 
@@ -451,7 +451,7 @@ private struct AtriaCollectionRRReferenceCardHost: View {
             }
 
             AtriaCollectionReferenceSummaryCard(
-                leadingTitle: "RR window",
+                leadingTitle: "Beat-to-beat window",
                 leadingValue: homeStatsStore.state.rrPackageText,
                 leadingDetail: homeStatsStore.state.hrvDetail,
                 trailingTitle: "Flow",
@@ -487,14 +487,14 @@ private struct AtriaCollectionRRReferenceCardHost: View {
         Button {
             rrShareURL = store.exportRRReferencePackageForUI()
         } label: {
-            Text("Export RR").frame(maxWidth: .infinity)
+            Text("Export beats").frame(maxWidth: .infinity)
         }
         .atriaCardAction(prominent: false, tint: .gray)
 
         Button {
             showRRImporter = true
         } label: {
-            Text("Import RR").frame(maxWidth: .infinity)
+            Text("Import beats").frame(maxWidth: .infinity)
         }
         .atriaCardAction(tint: .blue)
 

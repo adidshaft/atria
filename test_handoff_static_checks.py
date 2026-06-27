@@ -521,7 +521,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "HistoricalArchive.diagnostics()",
             "return \"\\(rows) saved · reference gated\"",
             "var userFootnoteText: String",
-            "return \"\\(rows) saved locally; external RR reference gates HRV, Recovery and Sleep metrics.\"",
+            "return \"\\(rows) saved locally; external beat-to-beat reference gates HRV, Recovery and Sleep metrics.\"",
             "return \"\\(metricUsableRows)/\\(rows) rows metric-ready.\"",
             "var metricReady: Bool",
             "metricUsableRows > 0 && currentSessionUsableRows > 0",
@@ -580,6 +580,10 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "private struct AtriaCollectionCoexistenceWarning: View, Equatable",
             ".atriaInsetCard(tint: tint)",
+            "AtriaPanelSectionHeader(title: \"Beat-to-beat reference\", subtitle: \"\")",
+            "leadingTitle: \"Beat-to-beat window\"",
+            "Text(\"Export beats\").frame(maxWidth: .infinity)",
+            "Text(\"Import beats\").frame(maxWidth: .infinity)",
             "private struct AtriaCollectionProfilePicker: View, Equatable",
             ".atriaInsetCard(tint: .purple)",
             "private struct AtriaRecoveryStrainCard: View, Equatable",
@@ -591,6 +595,10 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, vitals, needle)
         assert_not_contains(self, vitals, ".atriaRaisedCard(")
+        assert_not_contains(self, vitals, "AtriaPanelSectionHeader(title: \"RR reference\"")
+        assert_not_contains(self, vitals, "leadingTitle: \"RR window\"")
+        assert_not_contains(self, vitals, "Text(\"Export RR\")")
+        assert_not_contains(self, vitals, "Text(\"Import RR\")")
 
         for needle in [
             "struct AtriaHapticAlertSettingsCard: View, Equatable",
@@ -2215,6 +2223,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"Baseline\"")
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Validation\"")
         assert_contains(self, overview, "AtriaInlineQuickStat(label: \"HRV window\"")
+        assert_contains(self, hero, "return \"Beat-to-beat window\"")
+        assert_contains(self, home, "Checked HRV is ready.")
+        assert_contains(self, home, "Beat-to-beat data is ready as personal-baseline HRV.")
+        assert_contains(self, home, "Saved beat-to-beat data is ready while the strap reconnects.")
+        assert_contains(self, home, "Beat-to-beat reference validated")
+        assert_contains(self, overview + hero + home, "Beat-to-beat")
         assert_contains(self, home, "baselineMaturityText(sampleCount:")
         assert_contains(self, home, "sleepValue: \"Preparing\"")
         assert_contains(self, home, "loggingText: \"settling\"")
@@ -2228,6 +2242,13 @@ class HandoffStaticChecks(unittest.TestCase):
             for forbidden in [
                 "Not counted as workout until HR/reference evidence is stronger.",
                 "saved RR package stays ready.",
+                "external RR reference gates HRV, Recovery and Sleep metrics.",
+                "\"RR window\"",
+                "Reference-checked HRV is ready.",
+                "The live RR window is ready as personal-baseline HRV.",
+                "A clean RR window is ready as personal-baseline HRV.",
+                "Atria keeps the live RR window light while the connection settles.",
+                "Saved RR is ready while the strap reconnects.",
                 "Saved references and backup remain available while the strap reconnects.",
                 "Saved references and backup remain on device while Atria waits for the strap again.",
                 "Rest candidates are diagnostic only; they do not count as sleep.",

@@ -371,7 +371,7 @@ private struct AtriaHeroMetricRow: View, Equatable {
                 return "stable contact"
             }
             if normalized.contains("rr window") {
-                return "RR window"
+                return "Beat-to-beat window"
             }
             if normalized.contains("learning") {
                 return "learning"
