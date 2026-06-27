@@ -748,7 +748,7 @@ struct AtriaHomeView: View {
     private var overviewContent: some View {
         VStack(spacing: 18) {
             if shouldShowMissedDataBanner {
-                AtriaMissedDataBanner {
+                AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream) {
                     missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)
                 } onSync: {
                     missedDataBannerDismissedUntil = nil
@@ -885,11 +885,18 @@ struct AtriaHomeView: View {
 
     private var showsMissedDataBannerForCurrentStatus: Bool {
         switch model.statusStore.state.status {
+        case .connected:
+            return model.coreLiveStore.state.sessionSampleCount > 0
         case .disconnected, .poweredOff:
             return model.coreLiveStore.state.sessionSampleCount == 0
-        case .connected, .connecting, .scanning:
+        case .connecting, .scanning:
             return false
         }
+    }
+
+    private var missedDataBackfillIsDeferredForLiveStream: Bool {
+        model.statusStore.state.status == .connected
+            && model.coreLiveStore.state.sessionSampleCount > 0
     }
 
     private func presentCoexistenceModalIfNeeded(for risk: AtriaBLEManager.OfficialAppCoexistenceRisk) {
@@ -1157,11 +1164,12 @@ struct AtriaHomeView: View {
 }
 
 private struct AtriaMissedDataBanner: View, Equatable {
+    let protectsLiveStream: Bool
     let onDismiss: () -> Void
     let onSync: () -> Void
 
     static func == (lhs: AtriaMissedDataBanner, rhs: AtriaMissedDataBanner) -> Bool {
-        true
+        lhs.protectsLiveStream == rhs.protectsLiveStream
     }
 
     var body: some View {
@@ -1173,9 +1181,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
                 .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("New data on your strap")
+                Text(protectsLiveStream ? "Missed data queued" : "New data on your strap")
                     .font(.subheadline.weight(.semibold))
-                Text("Sync missed data when you are ready.")
+                Text(protectsLiveStream ? "Live HR stays protected. Sync when you can pause the stream." : "Sync missed data when you are ready.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1183,7 +1191,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
 
             Spacer(minLength: 0)
 
-            Button("Sync", action: onSync)
+            Button(protectsLiveStream ? "Sync now" : "Sync", action: onSync)
                 .font(.caption.weight(.bold))
                 .atriaCardAction(tint: .blue)
 
