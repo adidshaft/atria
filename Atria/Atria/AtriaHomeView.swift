@@ -836,7 +836,7 @@ struct AtriaHomeView: View {
         }
 
         if next.showsImmediately {
-            if visibleConnectionDiagnosis != next {
+            if next.sendsLocalNotification && visibleConnectionDiagnosis != next {
                 LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,
                                                                                  body: next.action,
                                                                                  reason: reason,
@@ -3055,6 +3055,11 @@ private struct AtriaConnectionDiagnosis: Equatable {
     var showsImmediately: Bool {
         title == "Bluetooth is off"
             || title == "Bluetooth permission needed"
+            || title == "Strap battery low"
+    }
+
+    var sendsLocalNotification: Bool {
+        title == "Bluetooth is off"
             || title == "Strap battery low"
     }
 
