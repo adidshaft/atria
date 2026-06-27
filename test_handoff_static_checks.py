@@ -3657,7 +3657,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "static let diagnosticOnly = [diagnostic]")
         assert_contains(self, notifications, "static let removable = active + diagnosticOnly + legacy")
         assert_contains(self, notifications, "static func scheduleActionableConnectionDiagnosis(title: String,")
+        assert_contains(self, notifications, "static func cancelActionableConnectionDiagnosis(title: String? = nil, reason: String)")
         assert_contains(self, notifications, "private static func actionableConnectionDiagnosisDecision(title: String,")
+        assert_contains(self, notifications, "center.removePendingNotificationRequests(withIdentifiers: identifiers)")
+        assert_contains(self, notifications, "ATRIADBG notification_cancel kind=actionable_connection")
         assert_contains(self, notifications, "if pending.contains(where: { $0.identifier == decision.identifier })")
         assert_contains(self, notifications, "reason=pending_request")
         assert_contains(self, notifications, "reason=cooldown")
@@ -3686,6 +3689,9 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         assert_contains(self, home, "LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,")
         assert_contains(self, home, "if next.sendsLocalNotification && visibleConnectionDiagnosis != next")
+        assert_contains(self, home, "LocalNotificationScheduler.cancelActionableConnectionDiagnosis(reason: \"diagnosis_cleared_\\(reason)\")")
+        assert_contains(self, home, "LocalNotificationScheduler.cancelActionableConnectionDiagnosis(title: visibleConnectionDiagnosis?.title,")
+        assert_contains(self, home, "LocalNotificationScheduler.cancelActionableConnectionDiagnosis(reason: \"diagnosis_non_actionable_\\(reason)\")")
 
         actionable = re.search(
             r"private static func makeActionableConnectionDecisions\(ble: AtriaBLEManager\) -> \[NotificationDecision\] \{(?P<body>.*?)\n    \}",
