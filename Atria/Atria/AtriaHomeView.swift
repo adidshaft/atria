@@ -1001,6 +1001,7 @@ struct AtriaHomeView: View {
                                   homeStatsStore: model.homeStatsStore,
                                   snapshotStore: model.snapshotStore,
                                   profileStore: model.profileStore,
+                                  profileMetricsStore: model.profileMetricsStore,
                                   store: store,
                                   ble: ble,
                                   horizontalSizeClass: horizontalSizeClass,
@@ -2075,6 +2076,16 @@ final class AtriaHomeModel {
                 self?.storeRefreshSubject.send(())
             }
             .store(in: &cancellables)
+
+        Publishers.Merge(
+            store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher(),
+            store.$trainingLoadSummarySnapshot.map { _ in () }.eraseToAnyPublisher()
+        )
+        .throttle(for: .milliseconds(900), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in
+            self?.publishProfileMetrics()
+        }
+        .store(in: &cancellables)
 
         storeRefreshSubject
             .debounce(for: .milliseconds(900), scheduler: RunLoop.main)

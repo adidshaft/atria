@@ -3018,6 +3018,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let biologicalAge: Int?",
             "let ageDelta: Int?",
             "let factors: [BioAgeFactor]",
+            "enum Direction: String, Equatable",
+            "let direction: Direction",
+            "direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older)",
             "static let footnoteText = \"Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment.\"",
             "Building your body-age baseline",
             "func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary",
@@ -3042,6 +3045,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let biologicalAgeSummary: BiologicalAgeSummary",
             "biologicalAgeSummary: store.biologicalAgeSummary(vo2MaxEstimate: vo2)",
             "biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary",
+            "store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher()",
+            "store.$trainingLoadSummarySnapshot.map { _ in () }.eraseToAnyPublisher()",
+            "profileMetricsStore: model.profileMetricsStore",
         ]:
             assert_contains(self, home + overview, needle)
 
@@ -3062,6 +3068,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaPanelSectionHeader(title: \"Biological Age\", subtitle: biologicalAgeSummary.narrative)",
             "ForEach(biologicalAgeSummary.factors)",
             "Text(biologicalAgeSummary.footnote)",
+            "let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
+            "struct AtriaCollectionBiologicalAgeCard: View, Equatable",
+            "AtriaCollectionBiologicalAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)",
+            "AtriaPanelSectionHeader(title: \"Biological Age\", subtitle: summary.narrative)",
+            "ForEach(summary.factors)",
+            "Text(summary.footnote)",
         ]:
             assert_contains(self, vitals, needle)
 
@@ -3316,8 +3328,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "let developerModeEnabled: Bool",
-            "captureCard\n                        researchSignalsCard\n                        if developerModeEnabled",
-            "captureCard\n                    researchSignalsCard\n                    if developerModeEnabled",
+            "captureCard\n                        researchSignalsCard\n                        biologicalAgeCard\n                        if developerModeEnabled",
+            "captureCard\n                    researchSignalsCard\n                    biologicalAgeCard\n                    if developerModeEnabled",
             "if developerModeEnabled {\n                            rrReferenceCard",
             "if developerModeEnabled {\n                            rrReferenceCard\n                            hrReferenceCard\n                            imuAuditCard",
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
