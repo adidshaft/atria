@@ -194,7 +194,9 @@ copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/pref
 python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
 import datetime as dt
 import json
+import math
 import plistlib
+import struct
 import sys
 import time
 from pathlib import Path
@@ -258,6 +260,146 @@ def emit_offline_sync_preferences():
     print(f"link_last_auto_save_duration_s={int(pref(prefs, 'link.lastAutoSaveDuration', 0) or 0)}")
 
 emit_offline_sync_preferences()
+
+def decode_historical_gravity(payload_hex):
+    try:
+        payload = bytes.fromhex(payload_hex)
+    except Exception:
+        return None
+    if len(payload) < 2:
+        return None
+    version = payload[1]
+    try:
+        if version == 25:
+            if len(payload) < 75:
+                return None
+            x_raw, y_raw, z_raw = struct.unpack_from("<hhh", payload, 69)
+            x, y, z = x_raw / 16384.0, y_raw / 16384.0, z_raw / 16384.0
+        else:
+            if len(payload) < 48:
+                return None
+            x, y, z = struct.unpack_from("<fff", payload, 36)
+    except Exception:
+        return None
+    magnitude = math.sqrt(x * x + y * y + z * z)
+    return magnitude, 0.8 <= magnitude <= 1.2, version
+
+def emit_historical_archive_summary():
+    archive_path = evidence / "historical-archive.jsonl"
+    if not archive_path.exists():
+        print("historical_archive_summary_status=missing")
+        print("historical_archive_metric_ready=0")
+        print("historical_archive_interpretation=missing_archive")
+        return
+    rows = 0
+    parse_errors = 0
+    schemas = set()
+    layouts = set()
+    payload_lengths = set()
+    raw_payload_rows = 0
+    undecodable_rows = 0
+    metric_usable_rows = 0
+    current_usable_rows = 0
+    whoof_rr_values = 0
+    k_rr_values = 0
+    candidate_rr_values = 0
+    unix_values = []
+    corrected_values = []
+    clock_rows = 0
+    clock_statuses = set()
+    clock_offsets = []
+    gravity_rows = 0
+    gravity_validated_rows = 0
+    gravity_min = None
+    gravity_max = None
+    hist_versions = set()
+    with archive_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                parse_errors += 1
+                continue
+            rows += 1
+            schemas.add(str(row.get("schema", "missing")))
+            layouts.add(str(row.get("layoutVersion", "undecodable")))
+            if isinstance(row.get("payloadLength"), int):
+                payload_lengths.add(int(row["payloadLength"]))
+            if row.get("metricUsable") is True:
+                metric_usable_rows += 1
+            if row.get("currentSessionUsable") is True:
+                current_usable_rows += 1
+            if row.get("source") == "0x2f" and "layoutVersion" not in row:
+                undecodable_rows += 1
+            if isinstance(row.get("unix7"), int) and int(row["unix7"]) > 0:
+                unix_values.append(int(row["unix7"]))
+            if isinstance(row.get("clockCorrectedUnix7"), int) and int(row["clockCorrectedUnix7"]) > 0:
+                corrected_values.append(int(row["clockCorrectedUnix7"]))
+            if row.get("clockCorrectionStatus"):
+                clock_rows += 1
+                clock_statuses.add(str(row.get("clockCorrectionStatus")))
+            if isinstance(row.get("clockDriftSeconds"), int):
+                clock_offsets.append(int(row["clockDriftSeconds"]))
+            whoof_rr_values += len(row.get("whoofRR19") or [])
+            k_rr_values += len(row.get("kRR64") or [])
+            candidate_rr_values += len(row.get("candidateRR") or [])
+            payload_hex = row.get("rawPayloadHex")
+            if isinstance(payload_hex, str) and payload_hex:
+                raw_payload_rows += 1
+                gravity = decode_historical_gravity(payload_hex)
+                if gravity is not None:
+                    magnitude, valid, version = gravity
+                    gravity_rows += 1
+                    hist_versions.add(version)
+                    gravity_min = magnitude if gravity_min is None else min(gravity_min, magnitude)
+                    gravity_max = magnitude if gravity_max is None else max(gravity_max, magnitude)
+                    if valid:
+                        gravity_validated_rows += 1
+    metric_ready = parse_errors == 0 and rows > 0 and metric_usable_rows > 0 and current_usable_rows > 0
+    if parse_errors:
+        interpretation = "parse_errors"
+    elif metric_ready:
+        interpretation = "metric_ready"
+    elif rows > 0:
+        interpretation = "archive_persisted_fail_closed_rows"
+    else:
+        interpretation = "empty_archive"
+    print("historical_archive_summary_status=ok")
+    print(f"historical_archive_rows={rows}")
+    print(f"historical_archive_parse_errors={parse_errors}")
+    print(f"historical_archive_schemas={','.join(sorted(schemas)) if schemas else 'none'}")
+    print(f"historical_archive_layouts={','.join(sorted(layouts)) if layouts else 'none'}")
+    print(f"historical_archive_payload_lengths={','.join(map(str, sorted(payload_lengths))) if payload_lengths else 'none'}")
+    print(f"historical_archive_raw_payload_rows={raw_payload_rows}")
+    print(f"historical_archive_undecodable_rows={undecodable_rows}")
+    print(f"historical_archive_metric_usable_rows={metric_usable_rows}")
+    print(f"historical_archive_current_session_usable_rows={current_usable_rows}")
+    print(f"historical_archive_whoof_rr_values={whoof_rr_values}")
+    print(f"historical_archive_k_rr_values={k_rr_values}")
+    print(f"historical_archive_candidate_rr_values={candidate_rr_values}")
+    print(f"historical_archive_hist_versions={','.join(map(str, sorted(hist_versions))) if hist_versions else 'none'}")
+    print(f"historical_archive_gravity_rows={gravity_rows}")
+    print(f"historical_archive_gravity_validated_rows={gravity_validated_rows}")
+    if gravity_rows:
+        print(f"historical_archive_gravity_validated_percent={round((gravity_validated_rows / gravity_rows) * 100)}")
+        print(f"historical_archive_gravity_mag_min={gravity_min:.3f}")
+        print(f"historical_archive_gravity_mag_max={gravity_max:.3f}")
+    if unix_values:
+        print(f"historical_archive_unix_first={min(unix_values)}")
+        print(f"historical_archive_unix_last={max(unix_values)}")
+    print(f"historical_archive_clock_correlation_rows={clock_rows}")
+    print(f"historical_archive_clock_correlation_statuses={','.join(sorted(clock_statuses)) if clock_statuses else 'none'}")
+    if clock_offsets:
+        print(f"historical_archive_clock_offset_s={clock_offsets[-1]}")
+    if corrected_values:
+        print(f"historical_archive_clock_corrected_unix_first={min(corrected_values)}")
+        print(f"historical_archive_clock_corrected_unix_last={max(corrected_values)}")
+    print(f"historical_archive_metric_ready={1 if metric_ready else 0}")
+    print(f"historical_archive_interpretation={interpretation}")
+
+emit_historical_archive_summary()
 
 def rr_window_audit(prefix, rr, relative_times=False, emit=True):
     rr_values = []
