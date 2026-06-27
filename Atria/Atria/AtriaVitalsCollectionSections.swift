@@ -659,6 +659,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @State private var showResearchInfo = false
 
     static func == (lhs: AtriaCollectionResearchSignalsCard, rhs: AtriaCollectionResearchSignalsCard) -> Bool {
         lhs.summary == rhs.summary && lhs.sleepHistory == rhs.sleepHistory
@@ -695,6 +696,15 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Sensor signals", subtitle: "")
                 Spacer(minLength: 0)
+                Button {
+                    showResearchInfo = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 18, height: 18)
+                }
+                .atriaCardAction(prominent: false, tint: .blue)
+                .accessibilityLabel("Sensor research info")
                 AtriaStateBadge(state: hasEvidence ? .research : .learning)
             }
 
@@ -735,9 +745,74 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
+        .sheet(isPresented: $showResearchInfo) {
+            AtriaResearchSignalInfoSheet(spo2CandidateFrames: summary.spo2CandidateFrames,
+                                         skinTemperatureSummary: summary.skinTemperatureDeviation)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
+}
+
+private struct AtriaResearchSignalInfoSheet: View {
+    let spo2CandidateFrames: Int
+    let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                researchInfoRow(systemImage: "drop.degreesign",
+                                tint: .blue,
+                                title: "Blood oxygen research",
+                                detail: spo2CandidateFrames > 0
+                                    ? "\(spo2CandidateFrames) candidate frames found. Atria does not show an SpO2 percentage until this protocol is validated."
+                                    : "No candidate frames yet. Atria does not estimate or display an SpO2 percentage from unvalidated bytes.")
+
+                researchInfoRow(systemImage: "thermometer.variable",
+                                tint: .teal,
+                                title: "Body temperature research",
+                                detail: skinTemperatureSummary.isReady
+                                    ? "\(skinTemperatureSummary.valueText) delta C versus your local sleep baseline. This is not an absolute body-temperature reading."
+                                    : "Atria is building a sleep baseline. It will only show relative deviation, never absolute body temperature.")
+
+                Text("Research signals are local, sleep-gated, and not medical advice. Atria does not write SpO2 or body-temperature values to HealthKit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .navigationTitle("Sensor research")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func researchInfoRow(systemImage: String,
+                                 tint: Color,
+                                 title: String,
+                                 detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 36, height: 36)
+                .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: tint)
+    }
 }
 
 private struct AtriaCollectionBiologicalAgeCardHost: View {
