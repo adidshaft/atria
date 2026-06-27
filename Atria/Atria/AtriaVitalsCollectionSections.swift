@@ -327,6 +327,7 @@ private struct AtriaVitalsPulseCardHost: View {
                        restingBaseline: store.baseline.restingInt,
                        restingBaselineSamples: store.baseline.restingSampleCount,
                        restingBaselineTrusted: store.baseline.hasTrustedRestingBaseline(),
+                       baselineTarget: AtriaBaselineTargetSnapshot(store.baseline),
                        restingGreenDelta: restingGreenDelta,
                        restingYellowDelta: restingYellowDelta)
             .equatable()
@@ -346,6 +347,7 @@ private struct AtriaVitalsHRVCardHost: View {
                      hrvBaseline: store.baseline.hrvInt,
                      hrvBaselineSamples: store.baseline.hrvSampleCount,
                      hrvBaselineTrusted: store.baseline.hasTrustedHRVBaseline(),
+                     baselineTarget: AtriaBaselineTargetSnapshot(store.baseline),
                      hrvGreenRatio: hrvGreenRatio,
                      hrvYellowRatio: hrvYellowRatio)
             .equatable()
@@ -379,6 +381,7 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 hrvBaseline: store.baseline.hrvInt,
                                 hrvBaselineSamples: store.baseline.hrvSampleCount,
                                 hrvBaselineTrusted: store.baseline.hasTrustedHRVBaseline(),
+                                baselineTarget: AtriaBaselineTargetSnapshot(store.baseline),
                                 hrvGreenRatio: hrvGreenRatio,
                                 hrvYellowRatio: hrvYellowRatio,
                                 restingBaseline: store.baseline.restingInt,
@@ -1434,6 +1437,7 @@ private struct AtriaPulseCard: View, Equatable {
     let restingBaseline: Int?
     let restingBaselineSamples: Int
     let restingBaselineTrusted: Bool
+    let baselineTarget: AtriaBaselineTargetSnapshot
     let restingGreenDelta: Int
     let restingYellowDelta: Int
     @State private var showHeartRateExplorer = false
@@ -1446,6 +1450,7 @@ private struct AtriaPulseCard: View, Equatable {
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.restingBaselineTrusted == rhs.restingBaselineTrusted
+            && lhs.baselineTarget == rhs.baselineTarget
             && lhs.restingGreenDelta == rhs.restingGreenDelta
             && lhs.restingYellowDelta == rhs.restingYellowDelta
     }
@@ -1463,6 +1468,7 @@ private struct AtriaPulseCard: View, Equatable {
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples,
                                      baselineTrusted: restingBaselineTrusted,
+                                     baselineTarget: baselineTarget,
                                      greenDelta: restingGreenDelta,
                                      yellowDelta: restingYellowDelta)
     }
@@ -1782,6 +1788,7 @@ private struct AtriaHRVCard: View, Equatable {
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
+    let baselineTarget: AtriaBaselineTargetSnapshot
     let hrvGreenRatio: Double
     let hrvYellowRatio: Double
 
@@ -1791,6 +1798,7 @@ private struct AtriaHRVCard: View, Equatable {
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
+            && lhs.baselineTarget == rhs.baselineTarget
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
             && lhs.hrvYellowRatio == rhs.hrvYellowRatio
     }
@@ -1804,6 +1812,7 @@ private struct AtriaHRVCard: View, Equatable {
                         baseline: hrvBaseline,
                         baselineSamples: hrvBaselineSamples,
                         baselineTrusted: hrvBaselineTrusted,
+                        baselineTarget: baselineTarget,
                         greenRatio: hrvGreenRatio,
                         yellowRatio: hrvYellowRatio)
     }
@@ -1884,6 +1893,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
+    let baselineTarget: AtriaBaselineTargetSnapshot
     let hrvGreenRatio: Double
     let hrvYellowRatio: Double
     let restingBaseline: Int?
@@ -1907,6 +1917,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
+            && lhs.baselineTarget == rhs.baselineTarget
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
             && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
@@ -1944,6 +1955,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                                   hrvBaseline: hrvBaseline,
                                   hrvBaselineSamples: hrvBaselineSamples,
                                   hrvBaselineTrusted: hrvBaselineTrusted,
+                                  baselineTarget: baselineTarget,
                                   hrvGreenRatio: hrvGreenRatio,
                                   hrvYellowRatio: hrvYellowRatio,
                                   restingBaseline: restingBaseline,
@@ -2052,6 +2064,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
+    let baselineTarget: AtriaBaselineTargetSnapshot
     let hrvGreenRatio: Double
     let hrvYellowRatio: Double
     let restingBaseline: Int?
@@ -2072,6 +2085,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
+            && lhs.baselineTarget == rhs.baselineTarget
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
             && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
@@ -2112,6 +2126,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples,
                                      baselineTrusted: restingBaselineTrusted,
+                                     baselineTarget: baselineTarget,
                                      greenDelta: restingGreenDelta,
                                      yellowDelta: restingYellowDelta)
     }
@@ -2131,6 +2146,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                         baseline: hrvBaseline,
                         baselineSamples: hrvBaselineSamples,
                         baselineTrusted: hrvBaselineTrusted,
+                        baselineTarget: baselineTarget,
                         greenRatio: hrvGreenRatio,
                         yellowRatio: hrvYellowRatio)
     }

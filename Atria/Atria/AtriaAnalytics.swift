@@ -152,6 +152,7 @@ enum AtriaAnalytics {
                         baseline: Int?,
                         baselineSamples: Int,
                         baselineTrusted: Bool,
+                        baselineTarget: AtriaBaselineTargetSnapshot? = nil,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
             guard baselineTrusted,
@@ -160,7 +161,22 @@ enum AtriaAnalytics {
             let ratio = Double(rmssd) / Double(baseline)
             let safeYellow = min(max(yellowRatio, 0.50), 0.98)
             let safeGreen = min(max(greenRatio, safeYellow + 0.01), 1.20)
-            let level: AtriaMetricZoneLevel = ratio >= safeGreen ? .green : (ratio >= safeYellow ? .yellow : .red)
+            let ratioLevel: AtriaMetricZoneLevel = ratio >= safeGreen ? .green : (ratio >= safeYellow ? .yellow : .red)
+            let zScoreText: String
+            let level: AtriaMetricZoneLevel
+            if let baselineTarget,
+               baselineTarget.hrvTrusted,
+               let mean = baselineTarget.hrvLnMean,
+               let sd = baselineTarget.hrvLnSD,
+               sd > 0.1 {
+                let z = zScore(log(Double(rmssd)), mean: mean, sd: sd)
+                let zLevel: AtriaMetricZoneLevel = z >= -1.0 ? .green : (z >= -2.0 ? .yellow : .red)
+                level = worst(ratioLevel, zLevel)
+                zScoreText = String(format: " · z %.1f", z)
+            } else {
+                level = ratioLevel
+                zScoreText = ""
+            }
             let recommendation: String
             switch level {
             case .green:
@@ -173,7 +189,7 @@ enum AtriaAnalytics {
             let current = "\(rmssd) ms vs \(baseline) ms baseline."
             let greenValue = Int((Double(baseline) * safeGreen).rounded())
             let yellowValue = Int((Double(baseline) * safeYellow).rounded())
-            let target = "Personal baseline · Green >= \(greenValue) ms, yellow \(yellowValue)-\(greenValue - 1) ms, red below."
+            let target = "Personal baseline · Green >= \(greenValue) ms and within 1 SD\(zScoreText), yellow to 2 SD or \(yellowValue)-\(greenValue - 1) ms, red below."
             return AtriaMetricZone(level: level,
                                    title: "HRV target",
                                    current: current,
@@ -186,6 +202,7 @@ enum AtriaAnalytics {
                                      baseline: Int?,
                                      baselineSamples: Int,
                                      baselineTrusted: Bool,
+                                     baselineTarget: AtriaBaselineTargetSnapshot? = nil,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
             guard baselineTrusted,
@@ -194,7 +211,22 @@ enum AtriaAnalytics {
             let delta = bpm - baseline
             let safeGreenDelta = min(max(greenDelta, 0), 12)
             let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 1), 20)
-            let level: AtriaMetricZoneLevel = delta <= safeGreenDelta ? .green : (delta <= safeYellowDelta ? .yellow : .red)
+            let deltaLevel: AtriaMetricZoneLevel = delta <= safeGreenDelta ? .green : (delta <= safeYellowDelta ? .yellow : .red)
+            let zScoreText: String
+            let level: AtriaMetricZoneLevel
+            if let baselineTarget,
+               baselineTarget.restingTrusted,
+               let mean = baselineTarget.restingMean,
+               let sd = baselineTarget.restingSD,
+               sd > 0.1 {
+                let z = zScore(Double(bpm), mean: mean, sd: sd)
+                let zLevel: AtriaMetricZoneLevel = z <= 1.0 ? .green : (z <= 2.0 ? .yellow : .red)
+                level = worst(deltaLevel, zLevel)
+                zScoreText = String(format: " · z %.1f", z)
+            } else {
+                level = deltaLevel
+                zScoreText = ""
+            }
             let recommendation: String
             switch level {
             case .green:
@@ -204,13 +236,29 @@ enum AtriaAnalytics {
             case .red:
                 recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
             }
-            let target = "Personal baseline · Green <= \(baseline + safeGreenDelta) bpm, yellow \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
+            let target = "Personal baseline · Green <= \(baseline + safeGreenDelta) bpm and within 1 SD\(zScoreText), yellow to 2 SD or \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
             return AtriaMetricZone(level: level,
                                    title: "Resting HR target",
                                    current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",
                                    targetSummary: target,
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        }
+
+        private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
+            guard sd > 0.1 else { return 0 }
+            return (value - mean) / sd
+        }
+
+        private static func worst(_ lhs: AtriaMetricZoneLevel, _ rhs: AtriaMetricZoneLevel) -> AtriaMetricZoneLevel {
+            let rank: (AtriaMetricZoneLevel) -> Int = { level in
+                switch level {
+                case .green: return 0
+                case .yellow: return 1
+                case .red: return 2
+                }
+            }
+            return rank(lhs) >= rank(rhs) ? lhs : rhs
         }
 
         static func sleepEfficiency(_ efficiency: Double?,
