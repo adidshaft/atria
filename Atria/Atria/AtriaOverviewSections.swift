@@ -1146,6 +1146,19 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+            .overlay {
+                if isEditingGlance && metric.supportsGlanceTargetEditing {
+                    Button {
+                        targetEditorMetric = metric
+                    } label: {
+                        Color.clear
+                            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,
+                                                           style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHidden(true)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceEditControls(for: metric)
@@ -1175,6 +1188,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .accessibilityAction(named: Text("Edit \(metric.label) widget")) {
                 isEditingGlance = true
             }
+            .accessibilityAction(named: Text("Edit \(metric.label) target")) {
+                if metric.supportsGlanceTargetEditing {
+                    targetEditorMetric = metric
+                }
+            }
             .accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
                                             ? "Make \(metric.label) compact"
                                             : "Make \(metric.label) wide")) {
@@ -1186,7 +1204,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     isEditingGlance = false
                 }
             }
-            .accessibilityHint("Long press to edit, drag to reorder, or use actions to resize and remove.")
+            .accessibilityHint("Long press to edit, then tap to edit targets, drag to reorder, or use actions to resize and remove.")
     }
 
     private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
