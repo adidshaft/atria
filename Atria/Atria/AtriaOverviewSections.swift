@@ -2362,7 +2362,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             }
             .frame(height: 30, alignment: .center)
         } else {
-            Text("Awake · Light · SWS · Deep")
+            Text(latest?.stageEvidence.label ?? "Stages not ready")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
                 .frame(height: 30, alignment: .center)
@@ -2372,6 +2372,9 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     private var accessibilityText: String {
         guard let latest else {
             return "Sleep history building. Wear the strap overnight or during a nap."
+        }
+        guard !latest.displayStageSegments.isEmpty else {
+            return "Sleep history \(valueText). \(latest.evidenceLabel). \(latest.stageEvidence.label)."
         }
         return "Sleep history \(valueText). \(latest.evidenceLabel). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
     }

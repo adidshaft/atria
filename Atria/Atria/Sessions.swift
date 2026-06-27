@@ -446,6 +446,22 @@ enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum SleepStageEvidence: String, Codable, Equatable {
+    case none
+    case manualEstimate
+    case sensorResearch
+    case validated
+
+    var label: String {
+        switch self {
+        case .none: return "Stages not ready"
+        case .manualEstimate: return "Manual estimate"
+        case .sensorResearch: return "Research stages"
+        case .validated: return "Validated stages"
+        }
+    }
+}
+
 struct SleepStageSegment: Codable, Identifiable, Equatable {
     let id: String
     let start: Date
@@ -10280,6 +10296,7 @@ struct SleepHistorySnapshot: Equatable {
         let confirmed: Bool
         let stageSegments: [SleepStageSegment]
         let displayStageSegments: [SleepStageSegment]
+        let stageEvidence: SleepStageEvidence
         private let stageDurationsByStage: [SleepStageKind: TimeInterval]
 
         init(id: String,
@@ -10305,19 +10322,12 @@ struct SleepHistorySnapshot: Equatable {
             self.confirmed = confirmed
             self.stageSegments = stageSegments
 
-            let napEvidence: Bool
-            if Self.explicitNapSources.contains(source) {
-                napEvidence = true
-            } else if Self.explicitSleepSources.contains(source) {
-                napEvidence = false
-            } else {
-                napEvidence = !confirmed && duration <= AggregateSleepCandidate.napMaximumSpan
-            }
-            let resolvedSegments = stageSegments.isEmpty
-                ? Self.estimatedStageSegments(day: day, duration: duration, isNap: napEvidence)
-                : stageSegments
-            self.displayStageSegments = resolvedSegments
-            self.stageDurationsByStage = Self.stageDurations(from: resolvedSegments)
+            let evidence = Self.stageEvidence(source: source,
+                                              confirmed: confirmed,
+                                              hasSegments: !stageSegments.isEmpty)
+            self.stageEvidence = evidence
+            self.displayStageSegments = evidence == .none ? [] : stageSegments
+            self.stageDurationsByStage = Self.stageDurations(from: displayStageSegments)
         }
 
         var durationHours: Double {
@@ -10377,28 +10387,14 @@ struct SleepHistorySnapshot: Equatable {
             SleepHistorySnapshot.formatDuration(stageDuration(stage))
         }
 
-        private static func estimatedStageSegments(day: Date,
-                                                   duration: TimeInterval,
-                                                   isNap: Bool) -> [SleepStageSegment] {
-            let safeDuration = max(0, duration)
-            guard safeDuration > 0 else { return [] }
-            let pattern: [(SleepStageKind, Double)] = isNap
-                ? [(.awake, 0.06), (.light, 0.72), (.sws, 0.14), (.deep, 0.08)]
-                : [(.awake, 0.08), (.light, 0.52), (.sws, 0.22), (.deep, 0.18)]
-            let start = day.addingTimeInterval(isNap ? 13 * 60 * 60 : 22 * 60 * 60)
-            var cursor = start
-            let end = start.addingTimeInterval(safeDuration)
-            return pattern.enumerated().compactMap { index, item in
-                let next = index == pattern.count - 1
-                    ? end
-                    : min(end, cursor.addingTimeInterval(safeDuration * item.1))
-                defer { cursor = next }
-                guard next > cursor else { return nil }
-                return SleepStageSegment(id: "estimated-\(Int(day.timeIntervalSince1970))-\(index)-\(item.0.rawValue)",
-                                         start: cursor,
-                                         end: next,
-                                         stage: item.0)
+        private static func stageEvidence(source: String,
+                                          confirmed: Bool,
+                                          hasSegments: Bool) -> SleepStageEvidence {
+            guard hasSegments else { return .none }
+            if source == "manual_sleep" || source == "manual_nap" {
+                return .manualEstimate
             }
+            return confirmed ? .validated : .sensorResearch
         }
 
         private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval] {
