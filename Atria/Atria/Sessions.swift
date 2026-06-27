@@ -6034,15 +6034,38 @@ final class SessionStore: ObservableObject {
 
     func logActivityDetectionsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-log-activity-detections") else { return }
-        let detections = detectedActivities(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
+        let sourceSessions = sessions
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let confirmedSleeps = cachedConfirmedSleeps
+        let baselineSnapshot = baseline
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        DispatchQueue.global(qos: .utility).async {
+            let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                      confirmedWorkouts: confirmedWorkouts,
+                                                      confirmedSleeps: confirmedSleeps,
+                                                      baseline: baselineSnapshot,
+                                                      rest: rest,
+                                                      maxHR: maxHR)
+            Self.logActivityDetections(detections: snapshots.history.detections,
+                                       sessionsCount: sourceSessions.count,
+                                       rest: rest,
+                                       maxHR: maxHR)
+        }
+    }
+
+    private nonisolated static func logActivityDetections(detections: [ActivityDetection],
+                                                          sessionsCount: Int,
+                                                          rest: Int,
+                                                          maxHR: Int) {
         let maxRows = 12
         let kindCounts = Dictionary(grouping: detections, by: \.kind).mapValues(\.count)
         let rankedDetections = detections.sorted { lhs, rhs in
-            if confidenceRank(lhs.confidence) != confidenceRank(rhs.confidence) {
-                return confidenceRank(lhs.confidence) > confidenceRank(rhs.confidence)
+            if confidenceRankSnapshot(lhs.confidence) != confidenceRankSnapshot(rhs.confidence) {
+                return confidenceRankSnapshot(lhs.confidence) > confidenceRankSnapshot(rhs.confidence)
             }
-            if kindRank(lhs.kind) != kindRank(rhs.kind) {
-                return kindRank(lhs.kind) > kindRank(rhs.kind)
+            if kindRankSnapshot(lhs.kind) != kindRankSnapshot(rhs.kind) {
+                return kindRankSnapshot(lhs.kind) > kindRankSnapshot(rhs.kind)
             }
             if lhs.duration != rhs.duration {
                 return lhs.duration > rhs.duration
@@ -6050,7 +6073,7 @@ final class SessionStore: ObservableObject {
             return lhs.peakHR > rhs.peakHR
         }
         AtriaDebugLog("ATRIADBG activity_detect_summary sessions=%d detections=%d emitted=%d suppressed=%d workouts=%d activity_candidates=%d sleep_candidates=%d rest_candidates=%d rest_hr=%d max_hr=%d",
-              sessions.count,
+              sessionsCount,
               detections.count,
               min(maxRows, detections.count),
               max(0, detections.count - maxRows),
@@ -6058,8 +6081,8 @@ final class SessionStore: ObservableObject {
               kindCounts[.activityCandidate, default: 0],
               kindCounts[.sleepCandidate, default: 0],
               kindCounts[.restCandidate, default: 0],
-              baseline.restingInt ?? 60,
-              profile.maxHR)
+              rest,
+              maxHR)
         for detection in rankedDetections.prefix(maxRows) {
             AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@",
                   detection.kind.rawValue,
@@ -6071,7 +6094,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func kindRank(_ kind: ActivityDetection.Kind) -> Int {
+    private nonisolated static func kindRankSnapshot(_ kind: ActivityDetection.Kind) -> Int {
         switch kind {
         case .workout: return 4
         case .sleepCandidate: return 3
@@ -6080,7 +6103,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func confidenceRank(_ confidence: ActivityDetection.Confidence) -> Int {
+    private nonisolated static func confidenceRankSnapshot(_ confidence: ActivityDetection.Confidence) -> Int {
         switch confidence {
         case .high: return 3
         case .medium: return 2
