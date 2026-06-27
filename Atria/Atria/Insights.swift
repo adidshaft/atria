@@ -297,28 +297,31 @@ struct BaselineCard: View {
 
 import Charts
 
-struct RestingTrendChart: View {
-    let sessions: [SavedSession]   // newest first (as stored)
-    let baseline: Int?
+struct RestingTrendPoint: Identifiable {
+    let id: UUID
+    let start: Date
+    let resting: Int
+}
 
-    /// Oldest → newest for left-to-right time flow.
-    private var ordered: [SavedSession] { sessions.sorted { $0.start < $1.start } }
+struct RestingTrendChart: View {
+    let points: [RestingTrendPoint]
+    let baseline: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Resting HR trend").font(.headline)
-            if ordered.count < 2 {
+            if points.count < 2 {
                 Text("Save at least two sessions to see your trend.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Chart {
-                    ForEach(ordered) { s in
-                        LineMark(x: .value("Date", s.start),
-                                 y: .value("Resting", s.restingStable))
+                    ForEach(points) { point in
+                        LineMark(x: .value("Date", point.start),
+                                 y: .value("Resting", point.resting))
                             .interpolationMethod(.monotone)
                             .foregroundStyle(.teal)
-                        PointMark(x: .value("Date", s.start),
-                                  y: .value("Resting", s.restingStable))
+                        PointMark(x: .value("Date", point.start),
+                                  y: .value("Resting", point.resting))
                             .foregroundStyle(.teal)
                     }
                     if let b = baseline {
