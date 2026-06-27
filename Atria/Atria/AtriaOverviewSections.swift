@@ -1158,19 +1158,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .overlay {
-                if isEditingGlance && metric.supportsGlanceTargetEditing {
-                    Button {
-                        targetEditorMetric = metric
-                    } label: {
-                        Color.clear
-                            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,
-                                                           style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHidden(true)
-                }
-            }
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceEditControls(for: metric)
@@ -1229,17 +1216,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
         HStack(spacing: 4) {
-            if metric.supportsGlanceTargetEditing {
-                Button {
-                    targetEditorMetric = metric
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.caption.weight(.bold))
-                }
-                .atriaGlassIconAction(tint: .blue, size: 30)
-                .accessibilityLabel("Edit \(metric.label) target")
-            }
-
             Button {
                 onToggleMetricSize(metric)
             } label: {
@@ -1268,12 +1244,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .accessibilityLabel("Remove \(metric.label)")
         }
         .fixedSize()
-        .padding(3)
-        .background(Color(.systemBackground).opacity(0.74), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        }
         .accessibilityElement(children: .contain)
     }
 
@@ -1457,26 +1427,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepHistoryCard: some View {
-        ZStack(alignment: .topTrailing) {
-            Button(action: onOpenVitals) {
-                AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,
-                                            sleepGoalHours: sleepGoalHours)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(sleepHistory.nights.isEmpty
-                                ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
-                                : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
-
-            Button {
-                showManualSleepSheet = true
-            } label: {
-                Image(systemName: "moon.zzz.badge.plus")
-                    .font(.caption.weight(.bold))
-            }
-            .atriaGlassIconAction(tint: .cyan, size: 34)
-            .padding(7)
-            .accessibilityLabel("Add sleep manually")
-        }
+        AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,
+                                    sleepGoalHours: sleepGoalHours,
+                                    onOpenVitals: onOpenVitals,
+                                    onAddManualSleep: {
+                                        showManualSleepSheet = true
+                                    })
+        .accessibilityLabel(sleepHistory.nights.isEmpty
+                            ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
+                            : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
     }
 
     private var trendCard: some View {
@@ -2373,6 +2332,13 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
 private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
     let sleepGoalHours: Double
+    let onOpenVitals: () -> Void
+    let onAddManualSleep: () -> Void
+
+    static func == (lhs: AtriaSleepHistoryGlanceCard, rhs: AtriaSleepHistoryGlanceCard) -> Bool {
+        lhs.snapshot == rhs.snapshot
+            && lhs.sleepGoalHours == rhs.sleepGoalHours
+    }
 
     private var latest: SleepHistorySnapshot.Night? {
         snapshot.latest
@@ -2411,6 +2377,15 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                         .minimumScaleFactor(0.72)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    onAddManualSleep()
+                } label: {
+                    Image(systemName: "moon.zzz.badge.plus")
+                        .font(.caption.weight(.bold))
+                }
+                .atriaGlassIconAction(tint: .cyan, size: 32)
+                .accessibilityLabel("Add sleep manually")
             }
             .frame(height: 42, alignment: .center)
 
@@ -2424,6 +2399,43 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             }
             .frame(height: 32, alignment: .bottom)
 
+            stageLegend
+
+            stageStrip
+        }
+        .frame(maxWidth: .infinity,
+               minHeight: AtriaGlanceMetricCard.cardHeight,
+               maxHeight: AtriaGlanceMetricCard.cardHeight,
+               alignment: .leading)
+        .padding(12)
+        .atriaInsetCard(tint: tint)
+        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+        .onTapGesture(perform: onOpenVitals)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    @ViewBuilder
+    private var stageLegend: some View {
+        if let latest, !latest.displayStageSegments.isEmpty {
+            HStack(spacing: 5) {
+                ForEach(SleepStageKind.allCases) { stage in
+                    HStack(spacing: 3) {
+                        Image(systemName: AtriaSleepStageGlyph.symbol(for: stage))
+                            .font(.system(size: 8, weight: .bold))
+                        Text(stage.shortLabel)
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("\(stage.label) \(latest.stageText(stage))")
+                }
+            }
+            .frame(height: 14, alignment: .center)
+            .accessibilityElement(children: .combine)
+        } else {
             HStack(spacing: 8) {
                 Text("Consistency \(snapshot.sleepConsistencyText)")
                     .font(.caption2.weight(.bold))
@@ -2438,18 +2450,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                     .minimumScaleFactor(0.72)
             }
             .frame(height: 14, alignment: .center)
-
-            stageStrip
         }
-        .frame(maxWidth: .infinity,
-               minHeight: AtriaGlanceMetricCard.cardHeight,
-               maxHeight: AtriaGlanceMetricCard.cardHeight,
-               alignment: .leading)
-        .padding(12)
-        .atriaInsetCard(tint: tint)
-        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
     }
 
     @ViewBuilder
@@ -2537,6 +2538,18 @@ enum AtriaSleepStageGlyph {
         case .rem: return .indigo
         case .sws: return .blue
         case .deep: return .purple
+        }
+    }
+}
+
+private extension SleepStageKind {
+    var shortLabel: String {
+        switch self {
+        case .awake: return "AWAKE"
+        case .light: return "LIGHT"
+        case .rem: return "REM"
+        case .sws: return "SWS"
+        case .deep: return "DEEP"
         }
     }
 }
