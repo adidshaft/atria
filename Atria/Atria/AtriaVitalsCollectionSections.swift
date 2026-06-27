@@ -1862,6 +1862,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         Array(snapshot.nights.prefix(7).reversed())
     }
 
+    private var heatStripNights: [SleepHistorySnapshot.Night] {
+        Array(snapshot.nights.prefix(84).reversed())
+    }
+
     private var emptyEvidenceState: AtriaMetricState {
         if snapshot.confirmedCount > 0 { return .validated }
         if snapshot.candidateCount > 0 { return .research }
@@ -2010,6 +2014,11 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     .atriaInsetCard(tint: .cyan)
                 }
 
+                if heatStripNights.count > 7 {
+                    AtriaSleepYearHeatStrip(nights: heatStripNights,
+                                            goalHours: sleepGoalHours)
+                }
+
                 if let latest = snapshot.latest, !latest.displayStageSegments.isEmpty {
                     AtriaSleepStageSummary(night: latest)
                 }
@@ -2030,6 +2039,74 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
+}
+
+private struct AtriaSleepYearHeatStrip: View, Equatable {
+    let nights: [SleepHistorySnapshot.Night]
+    let goalHours: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sleep heat strip")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Text("\(nights.count) nights")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Canvas { context, size in
+                drawCells(in: &context, size: size)
+            }
+            .frame(height: 76)
+            .background(Color.primary.opacity(0.035),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            }
+            .accessibilityHidden(true)
+        }
+        .padding(10)
+        .atriaInsetCard(tint: .cyan)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private func drawCells(in context: inout GraphicsContext, size: CGSize) {
+        guard !nights.isEmpty else { return }
+        let rows = 7
+        let gap: CGFloat = 3
+        let columns = max(1, Int(ceil(Double(nights.count) / Double(rows))))
+        let cell = max(3, min((size.width - gap * CGFloat(columns - 1)) / CGFloat(columns),
+                              (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
+        let totalWidth = CGFloat(columns) * cell + CGFloat(columns - 1) * gap
+        let xOffset = max(0, size.width - totalWidth)
+
+        for (index, night) in nights.enumerated() {
+            let column = index / rows
+            let row = index % rows
+            let rect = CGRect(x: xOffset + CGFloat(column) * (cell + gap),
+                              y: CGFloat(row) * (cell + gap),
+                              width: cell,
+                              height: cell)
+            context.fill(Path(roundedRect: rect, cornerRadius: min(3, cell / 3)),
+                         with: .color(color(for: night)))
+        }
+    }
+
+    private func color(for night: SleepHistorySnapshot.Night) -> Color {
+        let ratio = min(max(night.durationHours / max(goalHours, 0.1), 0), 1)
+        let opacity = 0.18 + 0.72 * ratio
+        let base: Color = night.confirmed ? .cyan : .teal
+        return base.opacity(opacity)
+    }
+
+    private var accessibilityText: String {
+        guard let latest = nights.last else { return "Sleep heat strip empty." }
+        return "Sleep heat strip, \(nights.count) nights, latest \(latest.durationText), \(latest.confirmationText)."
+    }
 }
 
 private struct AtriaSleepStageSummary: View, Equatable {
