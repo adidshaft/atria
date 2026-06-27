@@ -50,6 +50,7 @@ struct AtriaVitalsTabContent: View {
                 }
                 .atriaCardAction(prominent: false, tint: .secondary)
                 .accessibilityLabel("Reset Vitals layout")
+                .accessibilityHint("Restores Pulse, HRV, Recovery and strain, and Profile to the default order.")
             }
         }
         .sensoryFeedback(.selection, trigger: sectionOrderCSV)
@@ -78,6 +79,7 @@ struct AtriaVitalsTabContent: View {
         .accessibilityAction(named: Text("Move \(section.label) down")) {
             moveSection(section, direction: 1)
         }
+        .accessibilityHint("Drag to reorder this Vitals section, or use actions to move it.")
     }
 
     private func moveSection(_ section: AtriaVitalsSection, direction: Int) {
