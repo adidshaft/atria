@@ -530,10 +530,9 @@ enum AtriaAnalytics {
             return Int(min(max(hrvScore - restingPenalty, 1), 99).rounded())
         }
 
-        /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
-        /// with resting-HR z-score and saved sleep evidence. Recovery displays after
-        /// local data sufficiency; external reference validation upgrades the
-        /// confidence tier and HealthKit writes, but does not block in-app display.
+        /// Recovery v2: logistic personal z-score model. HRV is the primary signal,
+        /// resting HR is inverted, sleep contributes once saved, and respiration is
+        /// neutral until a trusted respiratory baseline exists.
         static func estimate(hrvSnapshot: HRVSnapshot?,
                              fallbackRMSSD: Int?,
                              restingNow: Int?,
@@ -546,9 +545,11 @@ enum AtriaAnalytics {
                                 usesHRV: false, detail: "learning: need resting HR")
             }
 
-            guard let restingStats = baseline.restingStats else {
+            guard baseline.hasTrustedRestingBaseline(),
+                  let restingStats = baseline.restingStats else {
                 return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false, detail: "learning: need baseline")
+                                usesHRV: false,
+                                detail: "learning RHR baseline \(baseline.restingSampleCount)/\(PersonalBaseline.trustedMinimumSamples)")
             }
 
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
@@ -561,10 +562,12 @@ enum AtriaAnalytics {
                                 detail: "learning: need a clean HRV window")
             }
 
-            guard let hrvStats = baseline.lnRMSSDStats, hrvStats.count >= 7 else {
+            guard baseline.hasTrustedHRVBaseline(),
+                  let hrvStats = baseline.lnRMSSDStats,
+                  hrvStats.count >= PersonalBaseline.trustedMinimumSamples else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning HRV baseline \(baseline.hrvSampleCount)/7")
+                                detail: "learning HRV baseline \(baseline.hrvSampleCount)/\(PersonalBaseline.trustedMinimumSamples)")
             }
 
             let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
@@ -575,17 +578,25 @@ enum AtriaAnalytics {
                                 detail: "learning: need saved sleep")
             }
 
-            let blendedZ = 0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ
-            let percent = Int(min(max(50 + blendedZ * 16, 1), 99).rounded())
+            let respirationZ = 0.0
+            let blendedZ = 0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ
+            let percent = logisticRecoveryPercent(z: blendedZ)
             let confidence: Estimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
             return Estimate(percent: percent, confidence: confidence,
                             usesHRV: true,
-                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f", hrvZ, restingZ, sleepZ))
+                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · Resp neutral", hrvZ, restingZ, sleepZ))
         }
 
         private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
             guard sd > 0.1 else { return 0 }
             return (value - mean) / sd
+        }
+
+        private static func logisticRecoveryPercent(z: Double) -> Int {
+            let k = 1.6
+            let z0 = -0.20
+            let raw = 100.0 / (1.0 + exp(-k * (z - z0)))
+            return Int(min(max(raw, 1), 99).rounded())
         }
 
         private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {

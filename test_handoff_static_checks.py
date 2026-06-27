@@ -3325,15 +3325,20 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "case personalBaseline = \"personal baseline\"",
-            "with resting-HR z-score and saved sleep evidence",
-            "external reference validation upgrades the",
-            "but does not block in-app display",
+            "Recovery v2: logistic personal z-score model.",
+            "baseline.hasTrustedRestingBaseline()",
+            "baseline.hasTrustedHRVBaseline()",
+            "PersonalBaseline.trustedMinimumSamples",
             "sleepEfficiency: Double? = nil",
             "sleepDurationHours: Double? = nil",
             "guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,",
             "detail: \"learning: need saved sleep\"",
-            "0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ",
-            "Sleep z %.1f",
+            "let respirationZ = 0.0",
+            "0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ",
+            "let percent = logisticRecoveryPercent(z: blendedZ)",
+            "private static func logisticRecoveryPercent(z: Double) -> Int",
+            "100.0 / (1.0 + exp(-k * (z - z0)))",
+            "Sleep z %.1f · Resp neutral",
             "private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double?",
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
@@ -3348,6 +3353,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,")
         assert_not_contains(self, metrics, "let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)")
         assert_not_contains(self, metrics, "let restingPenalty = restingNow > 0 && restingBaseline > 0")
+        assert_not_contains(self, analytics, "hrvStats.count >= 7")
+        assert_not_contains(self, analytics, "learning HRV baseline \\(baseline.hrvSampleCount)/7")
+        assert_not_contains(self, analytics, "50 + blendedZ * 16")
+        assert_not_contains(self, analytics, "0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ")
 
         for needle in [
             "let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD",
