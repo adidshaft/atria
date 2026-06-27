@@ -105,11 +105,13 @@ struct AtriaWidgetEntryView: View {
                     compactMetric("Strain",
                                   value: entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
                                   icon: "bolt.fill",
-                                  tint: .orange)
+                                  tint: .orange,
+                                  deepLinkURL: AtriaWidgetMetric.strain.deepLinkURL)
                     compactMetric("BPM",
                                   value: entry.snapshot?.heartRate.map(String.init) ?? "--",
                                   icon: "heart.fill",
-                                  tint: .red)
+                                  tint: .red,
+                                  deepLinkURL: AtriaWidgetMetric.bpm.deepLinkURL)
                 }
             }
 
@@ -145,24 +147,12 @@ struct AtriaWidgetEntryView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    widgetMetricTile("Strain",
-                                     value: entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
-                                     icon: "bolt.fill",
-                                     tint: .orange)
-                    widgetMetricTile("BPM",
-                                     value: entry.snapshot?.heartRate.map(String.init) ?? "--",
-                                     icon: "heart.fill",
-                                     tint: .red)
+                    widgetMetricLink(.strain, tint: .orange)
+                    widgetMetricLink(.bpm, tint: .red)
                 }
                 HStack(spacing: 8) {
-                    widgetMetricTile("HRV",
-                                     value: entry.snapshot?.hrvRMSSD.map { "\($0)" } ?? "--",
-                                     icon: "waveform.path.ecg",
-                                     tint: .pink)
-                    widgetMetricTile("Steps",
-                                     value: stepsText,
-                                     icon: "figure.walk",
-                                     tint: .blue)
+                    widgetMetricLink(.hrv, tint: .pink)
+                    widgetMetricLink(.steps, tint: .blue)
                 }
             }
         }
@@ -183,22 +173,38 @@ struct AtriaWidgetEntryView: View {
         }
     }
 
-    private func compactMetric(_ title: String, value: String, icon: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Image(systemName: icon)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-            Text(value)
-                .font(.headline.weight(.bold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    private func compactMetric(_ title: String,
+                               value: String,
+                               icon: String,
+                               tint: Color,
+                               deepLinkURL: URL) -> some View {
+        Link(destination: deepLinkURL) {
+            VStack(alignment: .leading, spacing: 1) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                Text(value)
+                    .font(.headline.weight(.bold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func widgetMetricLink(_ metric: AtriaWidgetMetric, tint: Color) -> some View {
+        Link(destination: metric.deepLinkURL) {
+            widgetMetricTile(metric.title,
+                             value: metric.value(entry.snapshot),
+                             icon: metric.icon,
+                             tint: tint)
+        }
+        .accessibilityLabel("\(metric.title) \(metric.value(entry.snapshot))")
     }
 
     private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View {
