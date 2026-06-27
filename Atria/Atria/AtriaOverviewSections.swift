@@ -1207,10 +1207,6 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
         progressFraction == nil ? 1 : clampedProgress
     }
 
-    private var ringOpacity: Double {
-        progressFraction == nil ? 0.38 : 1
-    }
-
     var body: some View {
         ZStack {
             Circle()
@@ -1241,11 +1237,19 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
 
     @ViewBuilder
     private var markerRing: some View {
-        Circle()
-            .trim(from: 0, to: ringEnd)
-            .stroke(tint.opacity(ringOpacity),
-                    style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
-            .rotationEffect(.degrees(-90))
+        if progressFraction == nil {
+            Circle()
+                .stroke(Color.secondary.opacity(0.34),
+                        style: StrokeStyle(lineWidth: Self.ringLineWidth,
+                                           lineCap: .round,
+                                           dash: [2.4, 6.2]))
+        } else {
+            Circle()
+                .trim(from: 0, to: ringEnd)
+                .stroke(tint,
+                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
     }
 }
 
