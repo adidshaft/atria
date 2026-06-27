@@ -4590,7 +4590,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "var zone: AtriaMetricZone? = nil",
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
-            "Text(\"(i)\")",
+            "Image(systemName: \"info.circle\")",
             "if let zone, zone.showsWarning",
             "parts.append(zone.level.label)",
             "parts.append(zone.targetSummary)",
