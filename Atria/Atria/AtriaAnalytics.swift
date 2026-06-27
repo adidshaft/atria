@@ -927,7 +927,7 @@ enum AtriaAnalytics {
                   let restingStats = baseline.restingStats else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning RHR baseline \(baseline.restingSampleCount)/\(PersonalBaseline.trustedMinimumSamples)")
+                                detail: "learning RHR baseline \(baseline.freshRestingSampleCount())/\(PersonalBaseline.trustedMinimumSamples)")
             }
 
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
@@ -945,7 +945,7 @@ enum AtriaAnalytics {
                   hrvStats.count >= PersonalBaseline.trustedMinimumSamples else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning HRV baseline \(baseline.hrvSampleCount)/\(PersonalBaseline.trustedMinimumSamples)")
+                                detail: "learning HRV baseline \(baseline.freshHRVSampleCount())/\(PersonalBaseline.trustedMinimumSamples)")
             }
 
             let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
@@ -1448,6 +1448,10 @@ enum AtriaAnalytics {
                                                                        baselineTrusted: false)?.level.rawValue ?? "gated",
                                                expected: "gated")
 
+        static let staleBaselineGated = LabelCheck(name: "fresh_baseline_old_samples_gated",
+                                                   actual: staleHeavyBaseline.hasTrustedHRVBaseline(now: calibrationNow) ? "trusted" : "gated",
+                                                   expected: "gated")
+
         static let manualDayNap = LabelCheck(name: "manual_sleep_day_nap",
                                              actual: ManualSleep.inferredIsNap(start: calibrationDate(hour: 13),
                                                                                end: calibrationDate(hour: 13).addingTimeInterval(40 * 60),
@@ -1493,6 +1497,7 @@ enum AtriaAnalytics {
             [
                 recoveryTargetYellow,
                 hrvTargetGated,
+                staleBaselineGated,
                 manualDayNap,
                 manualNightSleep,
                 acwrWatch,
@@ -1521,6 +1526,27 @@ enum AtriaAnalytics {
                                                           day: 27,
                                                           hour: hour)) ?? Date(timeIntervalSinceReferenceDate: 0)
         }
+
+        private static let calibrationNow = calibrationDate(hour: 12)
+
+        private static let staleHeavyBaseline = PersonalBaseline(restingHR: 60,
+                                                                 hrvEMA: 55,
+                                                                 sessions: 14,
+                                                                 updated: calibrationNow,
+                                                                 samples: staleBaselineSamples)
+
+        private static let staleBaselineSamples: [PersonalBaseline.BaselineSample] = {
+            let oldDate = calibrationNow.addingTimeInterval(-(PersonalBaseline.staleAfter + 24 * 60 * 60))
+            var samples = (0..<13).map { index in
+                PersonalBaseline.BaselineSample(date: oldDate.addingTimeInterval(Double(index)),
+                                                restingHR: 60,
+                                                rmssd: 55)
+            }
+            samples.append(PersonalBaseline.BaselineSample(date: calibrationNow,
+                                                           restingHR: 59,
+                                                           rmssd: 56))
+            return samples
+        }()
 
         private static let strongBodyAgeFactors: [BioAgeFactor] = [
             BiologicalAge.factor(id: "vo2",

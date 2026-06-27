@@ -73,25 +73,41 @@ struct PersonalBaseline: Codable {
     var hrvInt: Int? { hrvEMA.map { Int($0.rounded()) } }
     var hrvSampleCount: Int { samples.compactMap(\.lnRMSSD).count }
     var restingSampleCount: Int { samples.count }
+
+    func freshSamples(now: Date = Date()) -> [BaselineSample] {
+        samples.filter { sample in
+            let age = now.timeIntervalSince(sample.date)
+            return age >= 0 && age <= Self.staleAfter
+        }
+    }
+
+    func freshRestingSampleCount(now: Date = Date()) -> Int {
+        freshSamples(now: now).count
+    }
+
+    func freshHRVSampleCount(now: Date = Date()) -> Int {
+        freshSamples(now: now).compactMap(\.lnRMSSD).count
+    }
+
     func isStale(now: Date = Date()) -> Bool {
         guard let updated else { return true }
         return now.timeIntervalSince(updated) > Self.staleAfter
     }
 
     func hasTrustedRestingBaseline(now: Date = Date()) -> Bool {
-        restingSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)
+        freshRestingSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)
     }
 
     func hasTrustedHRVBaseline(now: Date = Date()) -> Bool {
-        hrvSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)
+        freshHRVSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)
     }
 
     var restingStats: (mean: Double, sd: Double, count: Int)? {
-        stats(samples.map(\.restingHR)) ?? restingHR.map { ($0, 0, max(sessions, 1)) }
+        stats(freshSamples().map(\.restingHR))
     }
 
     var lnRMSSDStats: (mean: Double, sd: Double, count: Int)? {
-        stats(samples.compactMap(\.lnRMSSD))
+        stats(freshSamples().compactMap(\.lnRMSSD))
     }
 
     /// Feedback vs the learned norm: negative = below baseline (more recovered).

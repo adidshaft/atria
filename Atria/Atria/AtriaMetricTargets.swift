@@ -150,12 +150,12 @@ struct AtriaBaselineTargetSnapshot: Equatable {
         let hrvStats = baseline.lnRMSSDStats
         let restingStats = baseline.restingStats
         hrvBaseline = baseline.hrvInt
-        hrvSampleCount = baseline.hrvSampleCount
+        hrvSampleCount = baseline.freshHRVSampleCount()
         hrvLnMean = hrvStats?.mean
         hrvLnSD = hrvStats?.sd
         hrvTrusted = baseline.hasTrustedHRVBaseline() && (hrvStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
         restingBaseline = baseline.restingInt
-        restingSampleCount = baseline.restingSampleCount
+        restingSampleCount = baseline.freshRestingSampleCount()
         restingMean = restingStats?.mean
         restingSD = restingStats?.sd
         restingTrusted = baseline.hasTrustedRestingBaseline() && (restingStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
