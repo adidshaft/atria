@@ -808,20 +808,20 @@ struct AtriaSettingsView: View {
         Section {
             settingsInfoRow(icon: "waveform.path.ecg",
                             tint: .secondary,
-                            title: "ECG unavailable",
-                            detail: "WHOOP 4.0 has no electrodes.")
+                            title: "ECG not supported",
+                            detail: "WHOOP 4.0 has no electrodes, so Atria does not fake an ECG.")
             settingsInfoRow(icon: "gauge.with.dots.needle.50percent",
                             tint: .secondary,
-                            title: "Blood pressure unavailable",
-                            detail: "Requires a cuff-calibrated device.")
+                            title: "Blood pressure not supported",
+                            detail: "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.")
             settingsInfoRow(icon: "drop.degreesign",
                             tint: .cyan,
                             title: "Blood oxygen research",
-                            detail: "Sleep-only probe; no Health export.")
+                            detail: "Sleep-only evidence; no SpO2 percentage or Health export yet.")
             settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
                             title: "Body temperature research",
-                            detail: "Skin-temp deviation only; no absolute degrees C or Health export.")
+                            detail: "Skin-temp deviation only; no absolute body temperature or Health export.")
         } header: {
             Text("Sensors")
         } footer: {

@@ -2896,14 +2896,14 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "private var sensorAvailabilitySection: some View",
-            "ECG unavailable",
-            "WHOOP 4.0 has no electrodes.",
-            "Blood pressure unavailable",
-            "Requires a cuff-calibrated device.",
+            "ECG not supported",
+            "WHOOP 4.0 has no electrodes, so Atria does not fake an ECG.",
+            "Blood pressure not supported",
+            "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.",
             "Blood oxygen research",
-            "Sleep-only probe; no Health export.",
+            "Sleep-only evidence; no SpO2 percentage or Health export yet.",
             "Body temperature research",
-            "Skin-temp deviation only; no absolute degrees C or Health export.",
+            "Skin-temp deviation only; no absolute body temperature or Health export.",
             "Atria shows only hardware-backed readings.",
         ]:
             assert_contains(self, settings, needle)
