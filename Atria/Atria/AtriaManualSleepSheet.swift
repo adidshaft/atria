@@ -11,6 +11,36 @@ struct AtriaManualSleepSheet: View {
         SleepHistorySnapshot.formatDuration(max(0, end.timeIntervalSince(start)))
     }
 
+    private var duration: TimeInterval {
+        max(0, end.timeIntervalSince(start))
+    }
+
+    private var canSave: Bool {
+        guard end > start else { return false }
+        if isNap {
+            return duration >= AggregateSleepCandidate.napMinimumDuration
+                && duration <= AggregateSleepCandidate.napMaximumSpan
+        }
+        return duration >= AggregateSleepCandidate.strictMinimumDuration
+    }
+
+    private var validationText: String {
+        guard end > start else { return "Choose an end time after the start." }
+        if isNap {
+            if duration < AggregateSleepCandidate.napMinimumDuration {
+                return "Naps need at least 20 minutes."
+            }
+            if duration > AggregateSleepCandidate.napMaximumSpan {
+                return "Longer than 3 hours should be saved as sleep."
+            }
+            return "Ready to save as a nap."
+        }
+        if duration < AggregateSleepCandidate.strictMinimumDuration {
+            return "Sleep needs at least 3 hours."
+        }
+        return "Ready to save as sleep."
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -22,6 +52,16 @@ struct AtriaManualSleepSheet: View {
 
                 DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
                 DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
+
+                Section("Duration") {
+                    LabeledContent("Window") {
+                        Text(durationText)
+                            .monospacedDigit()
+                    }
+                    Text(validationText)
+                        .font(.caption)
+                        .foregroundStyle(canSave ? Color.secondary : Color.orange)
+                }
 
                 Section("Stages") {
                     ForEach(SleepStageKind.allCases) { stage in
@@ -49,14 +89,13 @@ struct AtriaManualSleepSheet: View {
                     Button("Save") {
                         onSave(start, end, isNap)
                     }
-                    .disabled(end <= start)
+                    .disabled(!canSave)
                 }
             }
         }
     }
 
     private func stagePreviewText(_ stage: SleepStageKind) -> String {
-        let duration = max(0, end.timeIntervalSince(start))
         let fraction: Double
         switch (isNap, stage) {
         case (_, .awake): fraction = isNap ? 0.06 : 0.08
