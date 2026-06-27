@@ -971,9 +971,9 @@ private struct AtriaCollectionStatusCardHost: View {
         case .cleared:
             return "Atria has the strap."
         case .advisory:
-            return "If drops return, close the official app."
+            return "Close the official app if drops return."
         case .suspected:
-            return "Official app may interfere."
+            return "Uninstall or disable the official app before relying on Atria."
         }
     }
 
