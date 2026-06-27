@@ -2361,29 +2361,46 @@ final class SessionStore: ObservableObject {
     private func refreshHistorySnapshotCache(deferred: Bool = true) {
         historySnapshotRevision &+= 1
         let revision = historySnapshotRevision
-        historySnapshot = HistorySnapshot.sessionsOnly(sessions)
+        let sourceSessions = sessions
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let confirmedSleeps = cachedConfirmedSleeps
+        let baselineSnapshot = baseline
+        let rest = baselineSnapshot.restingInt ?? 60
+        let maxHR = profile.maxHR
+        historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions)
         if deferred {
-            Task { @MainActor [weak self] in
-                await Task.yield()
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                self?.publishFullHistorySnapshotIfCurrent(revision: revision)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12) {
+                let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                          confirmedWorkouts: confirmedWorkouts,
+                                                          confirmedSleeps: confirmedSleeps,
+                                                          baseline: baselineSnapshot,
+                                                          rest: rest,
+                                                          maxHR: maxHR)
+                DispatchQueue.main.async { [weak self] in
+                    self?.publishFullHistorySnapshotIfCurrent(revision: revision,
+                                                              history: snapshots.history,
+                                                              sleep: snapshots.sleep)
+                }
             }
         } else {
-            publishFullHistorySnapshotIfCurrent(revision: revision)
+            let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                      confirmedWorkouts: confirmedWorkouts,
+                                                      confirmedSleeps: confirmedSleeps,
+                                                      baseline: baselineSnapshot,
+                                                      rest: rest,
+                                                      maxHR: maxHR)
+            publishFullHistorySnapshotIfCurrent(revision: revision,
+                                                history: snapshots.history,
+                                                sleep: snapshots.sleep)
         }
     }
 
-    private func publishFullHistorySnapshotIfCurrent(revision: Int) {
+    private func publishFullHistorySnapshotIfCurrent(revision: Int,
+                                                     history: HistorySnapshot,
+                                                     sleep: SleepHistorySnapshot) {
         guard revision == historySnapshotRevision else { return }
-        let rest = baseline.restingInt ?? 60
-        let maxHR = profile.maxHR
-        let rollups = dailyRollups(rest: rest, maxHR: maxHR)
-        historySnapshot = HistorySnapshot(sessions: sessions,
-                                          detections: detectedActivities(rest: rest, maxHR: maxHR),
-                                          trends: trendSummaries(rest: rest, maxHR: maxHR),
-                                          rollups: rollups)
-        sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,
-                                                    confirmedSleeps: cachedConfirmedSleeps)
+        historySnapshot = history
+        sleepHistorySnapshot = sleep
     }
 
     private func refreshOverviewTrendPointsCache(deferred: Bool = true) {
@@ -2443,6 +2460,257 @@ final class SessionStore: ObservableObject {
                             strain: Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)),
                             hrv: session.hrv)
         }
+    }
+
+    private nonisolated static func makeHistorySnapshots(sessions: [SavedSession],
+                                                         confirmedWorkouts: [UserConfirmedWorkout],
+                                                         confirmedSleeps: [UserConfirmedSleep],
+                                                         baseline: PersonalBaseline,
+                                                         rest: Int,
+                                                         maxHR: Int,
+                                                         calendar: Calendar = .current) -> (history: HistorySnapshot, sleep: SleepHistorySnapshot) {
+        let canonical = makeCanonicalSessions(from: sessions)
+        let detections = makeHistoryDetections(sessions: canonical,
+                                               rest: rest,
+                                               maxHR: maxHR,
+                                               calendar: calendar)
+        let rollups = makeHistoryDailyRollups(sessions: canonical,
+                                              detections: detections,
+                                              confirmedWorkouts: confirmedWorkouts,
+                                              rest: rest,
+                                              maxHR: maxHR,
+                                              calendar: calendar)
+        let trends = makeHistoryTrendSummaries(sessions: canonical,
+                                               rollups: rollups,
+                                               baseline: baseline,
+                                               rest: rest,
+                                               maxHR: maxHR,
+                                               calendar: calendar)
+        let history = HistorySnapshot(sessions: canonical,
+                                      detections: detections,
+                                      trends: trends,
+                                      rollups: rollups)
+        let sleep = SleepHistorySnapshot(rollups: rollups,
+                                         confirmedSleeps: confirmedSleeps,
+                                         calendar: calendar)
+        return (history, sleep)
+    }
+
+    private nonisolated static func makeHistoryDetections(sessions: [SavedSession],
+                                                          rest: Int,
+                                                          maxHR: Int,
+                                                          calendar: Calendar) -> [ActivityDetection] {
+        sessions
+            .compactMap { $0.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar) }
+            .sorted { $0.start > $1.start }
+    }
+
+    private nonisolated static func makeHistoryDailyRollups(sessions: [SavedSession],
+                                                            detections: [ActivityDetection],
+                                                            confirmedWorkouts: [UserConfirmedWorkout],
+                                                            rest: Int,
+                                                            maxHR: Int,
+                                                            calendar: Calendar) -> [DailyRollup] {
+        let grouped = Dictionary(grouping: sessions) { session in
+            calendar.startOfDay(for: session.start)
+        }
+        let detectionsByDay = Dictionary(grouping: detections) { detection in
+            calendar.startOfDay(for: detection.start)
+        }
+        let confirmedWorkoutsByDay = Dictionary(grouping: confirmedWorkouts) { workout in
+            calendar.startOfDay(for: workout.start)
+        }
+        return grouped.map { day, daySessions in
+            let dayDetections = detectionsByDay[day] ?? []
+            let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
+            let sleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
+            let duration = daySessions.reduce(0) { $0 + $1.duration }
+            let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
+            let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
+            let respiratoryRates = daySessions.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let sleepRHRs = daySessions.compactMap { session -> Int? in
+                guard session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate else {
+                    return nil
+                }
+                return session.sleepCandidateRestingHR
+            }.filter { $0 > 0 }
+            let fallbackRHRs = daySessions.map(\.restingStable).filter { $0 > 0 }
+            return DailyRollup(day: day,
+                               sessions: daySessions.count,
+                               activityCandidates: dayDetections.filter { $0.kind == .activityCandidate }.count,
+                               workouts: dayDetections.filter { $0.kind == .workout }.count,
+                               confirmedWorkouts: confirmedWorkoutsByDay[day]?.count ?? 0,
+                               restCandidates: dayDetections.filter { $0.kind == .restCandidate }.count,
+                               sleepReady: 0,
+                               sleepCandidates: sleepDetections.count,
+                               duration: duration,
+                               sleepDuration: sleepDuration > 0 ? sleepDuration : nil,
+                               sleepSpan: sleepDuration > 0 ? sleepDuration : nil,
+                               sleepSource: sleepDuration > 0 ? "single_session_sleep_candidate" : nil,
+                               strain: Metrics.strain(fromTRIMP: strainTRIMP),
+                               avgHRV: averageIntSnapshot(hrvs),
+                               restingHR: sleepRHRs.min() ?? fallbackRHRs.min(),
+                               avgRespiratoryRate: averageDoubleSnapshot(respiratoryRates))
+        }
+        .sorted { $0.day > $1.day }
+    }
+
+    private nonisolated static func makeHistoryTrendSummaries(sessions: [SavedSession],
+                                                              rollups: [DailyRollup],
+                                                              baseline: PersonalBaseline,
+                                                              rest: Int,
+                                                              maxHR: Int,
+                                                              calendar: Calendar) -> [TrendSummary] {
+        let now = Date()
+        return TrendSummary.Window.allCases.map { window in
+            let cutoff = now.addingTimeInterval(-Double(window.rawValue) * 24 * 60 * 60)
+            let recent = sessions.filter { $0.start >= cutoff }
+            let recentRollups = rollups.filter { $0.day >= calendar.startOfDay(for: cutoff) }
+            let coverageDays = Set(recent.map { calendar.startOfDay(for: $0.start) }).count
+            let requiredCoverageDays = trendRequiredCoverageDaysSnapshot(windowDays: window.rawValue)
+            let coveragePercent = Int((Double(coverageDays) / Double(window.rawValue) * 100).rounded())
+            let rhrs = recent.compactMap { session -> Int? in
+                let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
+                return evidence.accepted ? evidence.value : nil
+            }
+            let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+            let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
+            let respiratoryRates = recent.compactMap(\.respiratoryRate).filter { $0 > 0 }
+            let recoveries = recent.compactMap {
+                Metrics.recoveryV2(hrvSnapshot: nil,
+                                   fallbackRMSSD: $0.localRMSSD,
+                                   restingNow: $0.restingStable,
+                                   baseline: baseline,
+                                   hrvReferenceValidated: $0.hrvReferenceValidated == true).percent
+            }
+            let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
+            let hrvState = hrvs.isEmpty
+                ? "learning"
+                : (validatedHRVs.count == hrvs.count
+                   ? "validated_samples_\(hrvs.count)"
+                   : "personal_baseline_samples_\(hrvs.count)")
+            let avgRecovery = averageIntSnapshot(recoveries)
+            let avgHRV = averageIntSnapshot(hrvs)
+            let anomalies = trendAnomaliesSnapshot(rollups: recentRollups)
+            return TrendSummary(id: window.rawValue,
+                                days: window.rawValue,
+                                sessions: recent.count,
+                                coverageDays: coverageDays,
+                                requiredCoverageDays: requiredCoverageDays,
+                                coveragePercent: coveragePercent,
+                                confidence: trendConfidenceSnapshot(coverageDays: coverageDays, windowDays: window.rawValue),
+                                avgRecovery: avgRecovery,
+                                avgHRV: avgHRV,
+                                avgRHR: averageIntSnapshot(rhrs),
+                                avgStrain: averageDoubleSnapshot(strains),
+                                avgRespiratoryRate: averageDoubleSnapshot(respiratoryRates),
+                                anomalies: anomalies,
+                                anomalySource: "bounded_history_rollups",
+                                anomalySampleDays: recentRollups.count,
+                                hrvState: hrvState,
+                                detail: trendDetailSnapshot(coverageDays: coverageDays,
+                                                            windowDays: window.rawValue,
+                                                            hrvState: hrvState,
+                                                            rhrSamples: rhrs.count,
+                                                            strainSamples: strains.count,
+                                                            anomalySampleDays: recentRollups.count,
+                                                            anomalies: anomalies),
+                                blockers: trendSummaryBlockersSnapshot(coverageDays: coverageDays,
+                                                                       requiredCoverageDays: requiredCoverageDays,
+                                                                       avgRecovery: avgRecovery,
+                                                                       avgHRV: avgHRV,
+                                                                       hrvState: hrvState))
+        }
+    }
+
+    private nonisolated static func averageIntSnapshot(_ values: [Int]) -> Int? {
+        guard !values.isEmpty else { return nil }
+        return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
+    }
+
+    private nonisolated static func trendRequiredCoverageDaysSnapshot(windowDays: Int) -> Int {
+        max(1, Int((Double(windowDays) * 0.70).rounded(.up)))
+    }
+
+    private nonisolated static func trendConfidenceSnapshot(coverageDays: Int, windowDays: Int) -> String {
+        guard coverageDays > 0 else { return "learning" }
+        if coverageDays >= trendRequiredCoverageDaysSnapshot(windowDays: windowDays) { return "high" }
+        let coverage = Double(coverageDays) / Double(windowDays)
+        if coverage >= 0.25 || coverageDays >= 7 { return "partial" }
+        return "learning"
+    }
+
+    private nonisolated static func trendAnomaliesSnapshot(rollups recent: [DailyRollup]) -> [String] {
+        let ordered = recent.sorted { $0.day < $1.day }
+        guard let latest = ordered.last else { return [] }
+        let rhrs = ordered.compactMap(\.restingHR).filter { $0 > 0 }
+        let strains = ordered.map(\.strain).filter { $0 > 0 }
+        var out: [String] = []
+        if let latestRHR = latest.restingHR,
+           isHighOutlierSnapshot(Double(latestRHR), in: rhrs.map(Double.init)) {
+            out.append("RHR elevated")
+        }
+        if latest.strain > 0,
+           isHighOutlierSnapshot(latest.strain, in: strains) {
+            out.append("Strain spike")
+        }
+        return out
+    }
+
+    private nonisolated static func isHighOutlierSnapshot(_ value: Double, in values: [Double]) -> Bool {
+        guard values.count >= 5 else { return false }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
+        let sd = sqrt(variance)
+        return sd > 0.1 && value > mean + 2 * sd
+    }
+
+    private nonisolated static func trendDetailSnapshot(coverageDays: Int,
+                                                        windowDays: Int,
+                                                        hrvState: String,
+                                                        rhrSamples: Int,
+                                                        strainSamples: Int,
+                                                        anomalySampleDays: Int,
+                                                        anomalies: [String]) -> String {
+        var parts: [String] = []
+        if coverageDays == 0 {
+            parts.append("no saved history")
+        } else if Double(coverageDays) / Double(windowDays) >= 0.70 {
+            parts.append("coverage high")
+        } else {
+            parts.append("coverage sparse")
+        }
+        parts.append(hrvState == "learning" ? "HRV learning" : "HRV \(hrvState)")
+        parts.append(rhrSamples > 0 ? "RHR accepted evidence \(rhrSamples)" : "RHR learning")
+        parts.append(strainSamples > 0 ? "strain saved TRIMP \(strainSamples)" : "strain learning")
+        parts.append("anomaly source bounded_history_rollups days \(anomalySampleDays)")
+        if !anomalies.isEmpty {
+            parts.append("flags \(anomalies.joined(separator: ","))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private nonisolated static func trendSummaryBlockersSnapshot(coverageDays: Int,
+                                                                 requiredCoverageDays: Int,
+                                                                 avgRecovery: Int?,
+                                                                 avgHRV: Int?,
+                                                                 hrvState: String) -> String {
+        var blockers: [String] = []
+        if coverageDays <= 0 {
+            blockers.append("no_saved_history")
+        } else if coverageDays < requiredCoverageDays {
+            blockers.append("coverage_below_70pct")
+        }
+        if hrvState == "learning" {
+            blockers.append("hrv_learning")
+        }
+        if avgRecovery == nil {
+            blockers.append("recovery_points_missing")
+        }
+        if avgHRV == nil {
+            blockers.append("hrv_points_missing")
+        }
+        return blockers.isEmpty ? "none" : blockers.joined(separator: "+")
     }
 
     /// EXPENSIVE: behavior insights via dailyRollups → the canonical-session cache.
