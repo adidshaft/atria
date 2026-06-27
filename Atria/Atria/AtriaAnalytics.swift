@@ -914,7 +914,7 @@ enum AtriaAnalytics {
             guard let rmssdNow, rmssdNow > 0 else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning: need a clean HRV window")
+                                detail: "learning: need a steady HRV window")
             }
 
             guard baseline.hasTrustedHRVBaseline(),

@@ -1863,7 +1863,7 @@ private struct AtriaHRVCard: View, Equatable {
                         unit: live.hrvSDNN == nil ? nil : "ms",
                         state: live.hrvSDNN == nil ? .learning : hrvState,
                         tint: .indigo,
-                        footnote: "Secondary HRV metric from the same clean RR window.")
+                        footnote: "Secondary HRV metric from the same steady beat-to-beat window.")
         AtriaMetricTile(label: "pNN50",
                         value: live.hrvPNN50Text,
                         state: live.hrvPNN50 == nil ? .learning : hrvState,
