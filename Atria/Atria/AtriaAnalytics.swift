@@ -1,6 +1,81 @@
 import Foundation
 
 enum AtriaAnalytics {
+    enum VO2Max {
+        static func summary(rest: Int,
+                            maxHR: Int,
+                            restingSamples: Int,
+                            maxHRMeasured: Bool,
+                            restingTrend: [Int]) -> VO2MaxEstimateSummary {
+            guard rest > 0, maxHR > rest else {
+                return learning(detail: "Need RHR",
+                                narrative: "Atria needs resting HR and HRmax before estimating VO2max.",
+                                trendDetail: "Needs resting baseline.")
+            }
+            guard restingSamples >= 7 else {
+                return learning(detail: "\(restingSamples)/7 RHR",
+                                narrative: "Atria needs 7 resting nights before estimating VO2max.",
+                                trendDetail: "\(restingSamples)/7 RHR nights.")
+            }
+            guard maxHRMeasured else {
+                return learning(detail: "Need HRmax",
+                                narrative: "Atria needs a measured HRmax before estimating VO2max.",
+                                trendDetail: "Needs measured HRmax.")
+            }
+
+            let boundedEstimate = boundedEstimate(rest: rest, maxHR: maxHR)
+            let confidence = "rough estimate"
+            let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
+            let trend = trendText(currentEstimate: boundedEstimate,
+                                  maxHR: maxHR,
+                                  restingTrend: restingTrend)
+            return VO2MaxEstimateSummary(value: boundedEstimate,
+                                         confidence: confidence,
+                                         detail: detail,
+                                         narrative: "Rough estimate from measured max HR and resting baseline.",
+                                         trendText: trend.text,
+                                         trendDetail: trend.detail,
+                                         trendDelta: trend.delta)
+        }
+
+        static func estimate(rest: Int, maxHR: Int) -> Double? {
+            guard rest > 0, maxHR > rest else { return nil }
+            return boundedEstimate(rest: rest, maxHR: maxHR)
+        }
+
+        static func trendText(currentEstimate: Double,
+                              maxHR: Int,
+                              restingTrend: [Int]) -> (text: String, detail: String, delta: Double?) {
+            let rests = restingTrend.filter { $0 > 0 }
+            guard rests.count >= 2, let oldestRest = rests.first else {
+                return ("Learning", "Needs 2 cached RHR points.", nil)
+            }
+            let previousEstimate = boundedEstimate(rest: oldestRest, maxHR: maxHR)
+            let delta = currentEstimate - previousEstimate
+            if abs(delta) < 0.2 {
+                return ("Stable", "vs \(rests.count)-point RHR trend.", delta)
+            }
+            return (String(format: "%+.1f", delta), "vs \(rests.count)-point RHR trend.", delta)
+        }
+
+        private static func boundedEstimate(rest: Int, maxHR: Int) -> Double {
+            let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
+            return min(max(rawEstimate, 20), 80)
+        }
+
+        private static func learning(detail: String,
+                                     narrative: String,
+                                     trendDetail: String) -> VO2MaxEstimateSummary {
+            VO2MaxEstimateSummary(value: nil,
+                                  confidence: "learning",
+                                  detail: detail,
+                                  narrative: narrative,
+                                  trendText: "Learning",
+                                  trendDetail: trendDetail,
+                                  trendDelta: nil)
+        }
+    }
+
     enum BiologicalAge {
         // Reference curves are compact local approximations of commonly published
         // ACSM/Cooper VO2max percentile tables, resting-HR norms, age-related RMSSD
