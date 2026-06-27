@@ -476,7 +476,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private(set) var rrContinuityMaxGapSeconds = 0.0
     private(set) var rrContinuityFrames = 0
     private(set) var rrContinuityRRFrames = 0
-    private var lastScanRequestedAt: Date?
+    @Published private(set) var lastScanRequestedAt: Date?
+    @Published private(set) var lastScanMatchAt: Date?
+    @Published private(set) var pendingKnownReconnectStartedAt: Date?
+    @Published private(set) var pendingKnownReconnectReason = ""
     private var lastScanRequestMode = "filtered"
     private static let scanRequestDedupWindow: TimeInterval = 1.5
     private(set) var sleepMotionHintCount = 0
@@ -2065,8 +2068,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               peripheral?.name ?? deviceName)
     }
 
+    private func markPendingKnownReconnect(reason: String) {
+        pendingKnownReconnectStartedAt = Date()
+        pendingKnownReconnectReason = reason
+    }
+
+    private func clearPendingKnownReconnect(reason: String) {
+        guard pendingKnownReconnectStartedAt != nil || !pendingKnownReconnectReason.isEmpty else { return }
+        pendingKnownReconnectStartedAt = nil
+        pendingKnownReconnectReason = ""
+        AtriaDebugLog("ATRIADBG ble_link pending_known_reconnect status=cleared reason=%@", reason)
+    }
+
     private func recordLinkConnected(peripheral: CBPeripheral) {
         resetRecoveryReconnectBackoff(reason: "did_connect")
+        clearPendingKnownReconnect(reason: "did_connect")
         let defaults = UserDefaults.standard
         // Remember this strap so we can re-arm a standing pending connection to it
         // on every launch / drop without scanning. "Connect once, stay connected."
@@ -5025,6 +5041,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastScanRequestMode = requestedMode
         reconnectWatchdogTask?.cancel()
         scanWideningTask?.cancel()
+        if !hasSavedStrap {
+            clearPendingKnownReconnect(reason: "start_scan")
+        }
         isActivelyScanning = true
         recomputeConnectionStatus(reason: "start_scan")
         // Prefer a staged fresh scan: start with the expected strap/heart-rate
@@ -5212,12 +5231,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         self.peripheral = saved
         assignIfChanged(\.deviceName, saved.name ?? deviceName)
         if saved.state == .connected {
+            clearPendingKnownReconnect(reason: "\(reason)_already_connected")
             recomputeConnectionStatus(reason: "event")
             saved.discoverServices(Self.UUIDs.discoveryServices)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=already_connected", reason)
         } else {
             recomputeConnectionStatus(reason: "event")
             recordLinkAttempt(reason: reason, peripheral: saved)
+            markPendingKnownReconnect(reason: reason)
             // Standing pending connect — never times out; iOS fulfils it whenever
             // the strap becomes reachable. No scanning, no give-up.
             central.connect(saved, options: nil)
@@ -5235,6 +5256,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reconnectWatchdogTask = nil
         freshScanFallbackTask?.cancel()
         freshScanFallbackTask = nil
+        clearPendingKnownReconnect(reason: "forget")
         if let peripheral {
             central.cancelPeripheralConnection(peripheral)
         }
@@ -8970,6 +8992,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.assignIfChanged(\.deviceName, restoredPeripheral.name ?? self.deviceName)
             switch restoredPeripheral.state {
             case .connected:
+                self.clearPendingKnownReconnect(reason: "state_restore_connected")
                 self.recomputeConnectionStatus(reason: "event")
                 self.reconnectWatchdogTask?.cancel()
                 self.connectedAt = Date()
@@ -8979,11 +9002,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 AtriaDebugLog("ATRIADBG ble_restore status=connected name=%@", self.deviceName)
             case .connecting:
                 self.recomputeConnectionStatus(reason: "event")
+                self.markPendingKnownReconnect(reason: "state_restore_connecting")
                 self.startReconnectWatchdog(reason: "state_restore_connecting", peripheral: restoredPeripheral)
                 AtriaDebugLog("ATRIADBG ble_restore status=connecting name=%@", self.deviceName)
             default:
                 self.recomputeConnectionStatus(reason: "event")
                 self.recordLinkAttempt(reason: "state_restore", peripheral: restoredPeripheral)
+                self.markPendingKnownReconnect(reason: "state_restore")
                 central.connect(restoredPeripheral, options: nil)
                 self.startReconnectWatchdog(reason: "state_restore", peripheral: restoredPeripheral)
                 AtriaDebugLog("ATRIADBG ble_restore status=reconnect name=%@", self.deviceName)
@@ -9004,6 +9029,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         let name = advName ?? "Strap"
         Task { @MainActor in
             guard self.peripheral == nil else { return }   // first match wins
+            self.lastScanMatchAt = Date()
             AtriaDebugLog("ATRIADBG ble_scan status=matched name=%@ rssi=%@ services=%d",
                   name,
                   RSSI,
@@ -9119,6 +9145,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             }
             // Auto-reconnect: keep the strap connected as it moves in/out of range.
             recordLinkAttempt(reason: "did_disconnect_reconnect", peripheral: peripheral)
+            markPendingKnownReconnect(reason: "did_disconnect_reconnect")
             central.connect(peripheral, options: nil)
             startReconnectWatchdog(reason: "did_disconnect_reconnect", peripheral: peripheral)
             recomputeConnectionStatus(reason: "event")
