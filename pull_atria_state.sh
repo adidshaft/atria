@@ -259,7 +259,44 @@ def emit_offline_sync_preferences():
     print(f"link_last_auto_save_samples={int(pref(prefs, 'link.lastAutoSaveSamples', 0) or 0)}")
     print(f"link_last_auto_save_duration_s={int(pref(prefs, 'link.lastAutoSaveDuration', 0) or 0)}")
 
+def emit_battery_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"battery_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    level = pref(prefs, "battery.level", -1)
+    source = pref(prefs, "battery.source", "none") or "none"
+    at = pref(prefs, "battery.at")
+    age = max(0.0, now - float(at)) if isinstance(at, (int, float)) and at > 0 else -1.0
+    charge_status = pref(prefs, "battery.chargeStatus", "levelOnly") or "levelOnly"
+    charge_at = pref(prefs, "battery.chargeAt")
+    charge_age = max(0.0, now - float(charge_at)) if isinstance(charge_at, (int, float)) and charge_at > 0 else -1.0
+    drop_delta = int(pref(prefs, "battery.dropDelta", 0) or 0)
+    drop_at = pref(prefs, "battery.dropAt")
+    drop_age = max(0.0, now - float(drop_at)) if isinstance(drop_at, (int, float)) and drop_at > 0 else -1.0
+    usable = isinstance(level, int) and level >= 0 and 0 <= age <= 86_400 and (charge_status == "levelOnly" or 0 <= charge_age <= 86_400)
+    recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
+    charging = charge_status in ("charging", "full")
+    print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
+    print(f"battery_level={int(level) if isinstance(level, int) else -1}")
+    print(f"battery_source={source}")
+    print(f"battery_age_s={age:.1f}")
+    print(f"battery_charge_status={charge_status}")
+    print(f"battery_charge_age_s={charge_age:.1f}")
+    print(f"battery_is_charging={bool_int(charging)}")
+    print(f"battery_usable={bool_int(usable)}")
+    print(f"battery_drop_recent={bool_int(recent_drop)}")
+    print(f"battery_drop_delta={drop_delta}")
+    print(f"battery_drop_age_s={drop_age:.1f}")
+
 emit_offline_sync_preferences()
+emit_battery_preferences()
 
 def decode_historical_gravity(payload_hex):
     try:
