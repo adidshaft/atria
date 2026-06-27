@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -105,6 +106,56 @@ def current_git_commit(repo: Path) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def launchctl_label(label: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
+    return f"com.adidshaft.atria.longwear.{safe or 'run'}"
+
+
+def detached_command(repo: Path, args: argparse.Namespace, log_path: Path) -> list[str]:
+    command = [
+        sys.executable,
+        str((repo / "tools" / "monitor_long_wear.py").resolve()),
+        "--repo",
+        str(repo),
+        "--device",
+        args.device,
+        "--out-dir",
+        str(args.out_dir),
+        "--preset",
+        args.preset,
+        "--label",
+        args.label,
+    ]
+    optional_args: tuple[tuple[str, str], ...] = (
+        ("samples", "--samples"),
+        ("interval", "--interval"),
+        ("min_samples", "--min-samples"),
+        ("min_span", "--min-span"),
+        ("min_coverage", "--min-coverage"),
+        ("max_gap", "--max-gap"),
+        ("max_battery_drop", "--max-battery-drop"),
+    )
+    for attribute, flag in optional_args:
+        value = getattr(args, attribute)
+        if value is not None:
+            command.extend([flag, str(value)])
+    if args.allowed_thermal is not None:
+        command.append("--allowed-thermal")
+        command.extend(str(value) for value in args.allowed_thermal)
+
+    quoted = " ".join(shlex.quote(part) for part in command)
+    shell = f"cd {shlex.quote(str(repo))} && exec {quoted} >> {shlex.quote(str(log_path))} 2>&1"
+    return ["launchctl", "submit", "-l", launchctl_label(args.label), "--", "/bin/zsh", "-lc", shell]
+
+
+def submit_detached(repo: Path, args: argparse.Namespace) -> tuple[str, Path]:
+    out_root = (repo / args.out_dir).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    log_path = out_root / f"{args.label}.out"
+    subprocess.run(detached_command(repo, args, log_path), cwd=repo, check=True)
+    return launchctl_label(args.label), log_path
 
 
 def stamp_run_provenance(final: dict[str, object], repo: Path, monitor_started_at: str) -> None:
@@ -261,6 +312,11 @@ def main() -> int:
     parser.add_argument("--max-gap", type=float, default=None, help="Maximum accepted-HR gap in seconds.")
     parser.add_argument("--allowed-thermal", nargs="+", default=None, help="Thermal states allowed for acceptance.")
     parser.add_argument("--max-battery-drop", type=float, default=None, help="Maximum allowed battery percentage drop.")
+    parser.add_argument(
+        "--launchctl-detach",
+        action="store_true",
+        help="Submit this monitor run to launchctl and exit after printing the job label.",
+    )
     args = parser.parse_args()
     samples_count = int(value_from(args, "samples") or 2)
     interval_seconds = float(value_from(args, "interval") or 300)
@@ -272,6 +328,10 @@ def main() -> int:
         print("--samples must be >= 1", file=sys.stderr)
         return 64
     repo = args.repo.resolve()
+    if args.launchctl_detach:
+        label, log_path = submit_detached(repo, args)
+        print(f"ATRIA_LONG_WEAR_MONITOR_DETACHED label={label} log={log_path}")
+        return 0
     out_root = (repo / args.out_dir / args.label).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_root / "samples.jsonl"

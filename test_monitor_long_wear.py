@@ -158,6 +158,31 @@ class MonitorLongWearTests(unittest.TestCase):
             self.assertIn("T", final["monitor_finished_at"])
             self.assertTrue(final["monitor_finished_at"].endswith("Z"))
 
+    def test_detached_launchctl_command_preserves_monitor_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            namespace = args(
+                device="DEVICE-1",
+                out_dir=Path("logs/live-device/long-wear-monitor"),
+                preset="overnight",
+                label="overnight handoff/21",
+                samples=11,
+                interval=3600,
+                allowed_thermal=["nominal", "fair"],
+            )
+            log_path = repo / "logs/live-device/long-wear-monitor/overnight handoff-21.out"
+
+            command = monitor_long_wear.detached_command(repo, namespace, log_path)
+
+        self.assertEqual(command[:4], ["launchctl", "submit", "-l", "com.adidshaft.atria.longwear.overnight-handoff-21"])
+        shell = command[-1]
+        self.assertIn("--preset overnight", shell)
+        self.assertIn("--label 'overnight handoff/21'", shell)
+        self.assertIn("--device DEVICE-1", shell)
+        self.assertIn("--allowed-thermal nominal fair", shell)
+        self.assertIn(">>", shell)
+        self.assertNotIn("--launchctl-detach", shell)
+
 
 if __name__ == "__main__":
     unittest.main()
