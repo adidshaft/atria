@@ -860,15 +860,38 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .padding(12)
                 .atriaInsetCard(tint: .secondary)
             } else {
-                VStack(spacing: Self.glanceGridSpacing) {
-                    ForEach(glanceRows, id: \.glanceRowID) { row in
-                        HStack(spacing: Self.glanceGridSpacing) {
-                            glanceRowContent(row)
+                VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
+                    if isEditingGlance {
+                        HStack(spacing: 8) {
+                            Label("Editing widgets", systemImage: "rectangle.grid.2x2")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button {
+                                withAnimation(.snappy(duration: 0.2)) {
+                                    isEditingGlance = false
+                                }
+                            } label: {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.bold))
+                                    .frame(width: 18, height: 18)
+                            }
+                            .atriaCardAction(prominent: false, tint: .green)
+                            .accessibilityLabel("Finish editing widgets")
                         }
-                        .frame(maxWidth: .infinity,
-                               minHeight: Self.glanceRowHeight,
-                               maxHeight: Self.glanceRowHeight,
-                               alignment: .topLeading)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    VStack(spacing: Self.glanceGridSpacing) {
+                        ForEach(glanceRows, id: \.glanceRowID) { row in
+                            HStack(spacing: Self.glanceGridSpacing) {
+                                glanceRowContent(row)
+                            }
+                            .frame(maxWidth: .infinity,
+                                   minHeight: Self.glanceRowHeight,
+                                   maxHeight: Self.glanceRowHeight,
+                                   alignment: .topLeading)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -980,6 +1003,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .frame(width: width,
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
+            .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceEditControls(for: metric)
@@ -1040,7 +1064,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                       ? "rectangle.compress.horizontal"
                       : "rectangle.expand.horizontal")
                     .font(.caption.weight(.bold))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 17, height: 17)
             }
             .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
@@ -1057,10 +1081,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 17, height: 17)
             }
             .atriaCardAction(prominent: false, tint: .red)
             .accessibilityLabel("Remove \(metric.label)")
+        }
+        .padding(2)
+        .background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
@@ -1550,13 +1580,15 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                         Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
                             .labelStyle(.iconOnly)
                             .font(.caption2.weight(.bold))
+                            .frame(width: 14, height: 14, alignment: .leading)
                         Text(latest.stageText(stage))
                             .font(.caption2.weight(.bold).monospacedDigit())
                             .lineLimit(1)
                             .minimumScaleFactor(0.68)
                     }
                     .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                    .clipped()
                 }
             }
             .frame(height: 30, alignment: .center)
