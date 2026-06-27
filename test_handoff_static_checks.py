@@ -52,7 +52,7 @@ def swift_var_body_blocks(text):
 def swift_some_view_blocks(text):
     return swift_braced_blocks(text, [
         r"\bvar\s+\w+\s*:\s*some\s+View\b",
-        r"\bfunc\s+\w+\s*\([^)]*\)\s*->\s*some\s+View\b",
+        r"\bfunc\s+\w+(?:<[^>{}]+>)?\s*\([^{}]*?\)\s*->\s*some\s+View\b",
     ])
 
 
@@ -1613,6 +1613,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_swiftui_render_blocks_do_not_run_session_derivations(self):
         forbidden = [
             ".sorted(",
+            ".sorted {",
             ".reduce(",
             ".compactMap(",
             "dailyRollups(",
@@ -1632,7 +1633,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AthleteProfile.load()",
         ]
         checked = 0
-        for rel in (ROOT / "Atria" / "Atria").rglob("*.swift"):
+        for rel in swift_files():
             for start, body in swift_some_view_blocks(source(rel)):
                 checked += 1
                 for needle in forbidden:
@@ -1641,6 +1642,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
         checks = source(ROOT / "test_handoff_static_checks.py")
         assert_contains(self, checks, "def swift_some_view_blocks(text):")
+        assert_contains(self, checks, "for rel in swift_files():")
+        assert_contains(self, checks, '".sorted {"')
 
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         for removed_legacy_token in [
@@ -4396,6 +4399,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_section_render_paths_do_not_recompute_session_metrics(self):
         forbidden_calls = [
             ".sorted(",
+            ".sorted {",
             ".reduce(",
             ".compactMap(",
             "detectedActivity(",
