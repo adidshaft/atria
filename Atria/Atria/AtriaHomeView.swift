@@ -20,6 +20,7 @@ struct AtriaHomeContainer: View, Equatable {
 struct AtriaHomeView: View {
     private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
     private static let connectionDiagnosisTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 60
 
     private struct AtriaWorkoutEndNotice: Identifiable, Equatable {
         let id = UUID()
@@ -128,6 +129,7 @@ struct AtriaHomeView: View {
     @State private var standByDismissedUntil: Date?
     @State private var missedDataBannerDismissedUntil: Date?
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
+    @State private var lastLiveWidgetSnapshotAt: Date?
 
     init(ble: AtriaBLEManager, store: SessionStore) {
         self.ble = ble
@@ -360,6 +362,7 @@ struct AtriaHomeView: View {
         .onReceive(liveSideEffectUpdates) { _ in
             updateLiveActivity()
             updateHapticCoordinator()
+            publishLiveWidgetSnapshotIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             batteryState = UIDevice.current.batteryState
@@ -559,6 +562,17 @@ struct AtriaHomeView: View {
             mediaIsPlaying: mediaController.state.isPlaying,
             mediaHasNowPlayingInfo: mediaController.state.hasNowPlayingInfo
         ))
+    }
+
+    private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date()) {
+        guard scenePhase == .active else { return }
+        guard model.pulseLiveStore.state.heartRate > 0 else { return }
+        if let lastLiveWidgetSnapshotAt,
+           now.timeIntervalSince(lastLiveWidgetSnapshotAt) < Self.liveWidgetSnapshotMinimumInterval {
+            return
+        }
+        lastLiveWidgetSnapshotAt = now
+        WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "live_throttled")
     }
 
     private func endWorkoutSession(startedAt: Date) {
