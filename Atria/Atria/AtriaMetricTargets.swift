@@ -41,6 +41,14 @@ struct AtriaMetricTarget: Equatable, Codable {
         case researchDefault
         case personalBaseline
         case userEdited
+
+        var label: String {
+            switch self {
+            case .researchDefault: return "Research default"
+            case .personalBaseline: return "Personal baseline"
+            case .userEdited: return "User edited"
+            }
+        }
     }
 
     let metricID: String
@@ -67,7 +75,7 @@ struct AtriaMetricTarget: Equatable, Codable {
     }
 
     var summaryText: String {
-        "Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
+        "\(source.label) · Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
     }
 }
 
