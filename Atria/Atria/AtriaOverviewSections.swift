@@ -996,15 +996,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return Button(action: onOpenVitals) {
             AtriaGlanceMetricCard(title: "Sleep history",
                                   value: sleepHistory.nights.isEmpty ? "--" : sleepHistory.averageDurationText,
-                                  detail: sleepHistory.nights.isEmpty ? "Wear strap overnight" : "\(sleepHistory.nights.count) nights",
+                                  detail: sleepHistory.nights.isEmpty ? "Wear strap overnight or nap" : sleepHistory.evidenceCountText,
                                   systemImage: AtriaTodayMetric.sleepHistory.systemImage,
                                   tint: sleepHistory.nights.isEmpty ? .orange : .cyan,
                                   sparklineValues: values.isEmpty ? [0, 0] : values)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(sleepHistory.nights.isEmpty
-                            ? "Open Vitals. Sleep history is building. Wear the strap overnight."
-                            : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText) across \(sleepHistory.nights.count) nights")
+                            ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
+                            : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
     }
 
     private var sleepHistorySparklineValues: [Int] {

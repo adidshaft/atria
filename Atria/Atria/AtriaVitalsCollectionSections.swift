@@ -1504,7 +1504,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: snapshot.averageDurationText,
                                     state: .local,
                                     tint: .blue,
-                                    footnote: "\(snapshot.nights.count) nights")
+                                    footnote: snapshot.averageFootnoteText)
                     AtriaMetricTile(label: "Sleep RHR",
                                     value: snapshot.latest?.restingHRText ?? "--",
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",

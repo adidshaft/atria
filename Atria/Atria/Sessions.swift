@@ -9488,6 +9488,22 @@ struct SleepHistorySnapshot: Equatable {
         return Self.formatDuration(average)
     }
 
+    var evidenceCountText: String {
+        guard !nights.isEmpty else { return "No sleep records" }
+        let napCount = nights.filter(\.isNapEvidence).count
+        if napCount == nights.count {
+            return nights.count == 1 ? "1 nap" : "\(nights.count) naps"
+        }
+        if napCount > 0 {
+            return "\(nights.count) records"
+        }
+        return nights.count == 1 ? "1 night" : "\(nights.count) nights"
+    }
+
+    var averageFootnoteText: String {
+        "Average across \(evidenceCountText)"
+    }
+
     private static func efficiency(duration: TimeInterval, span: TimeInterval?) -> Double? {
         guard let span, span > 0, duration > 0 else { return nil }
         return min(max(duration / span, 0), 1)
