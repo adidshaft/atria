@@ -681,7 +681,7 @@ final class HealthKitExporter {
             if let sdnn = session.referenceValidatedSDNN, sdnn > 0 {
                 hrvSamples += 1
             }
-            if let respiratoryRate = session.respiratoryRate, respiratoryRate > 0 {
+            if let respiratoryRate = session.sleepRespiratoryRate(rest: rest, maxHR: maxHR), respiratoryRate > 0 {
                 respiratoryRateSamples += 1
             }
         }
@@ -729,7 +729,7 @@ final class HealthKitExporter {
             if let sdnn = session.referenceValidatedSDNN, sdnn > 0, snapshot?.hrvExported != true {
                 hrvSamples += 1
             }
-            if let respiratoryRate = session.respiratoryRate,
+            if let respiratoryRate = session.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
                respiratoryRate > 0,
                snapshot?.respiratoryRateExported != true {
                 respiratoryRateSamples += 1
@@ -897,7 +897,7 @@ final class HealthKitExporter {
                 hrPointCount: session.points.count,
                 restingHRExported: session.restingStable > 0,
                 hrvExported: (session.referenceValidatedSDNN ?? 0) > 0,
-                respiratoryRateExported: (session.respiratoryRate ?? 0) > 0,
+                respiratoryRateExported: (session.sleepRespiratoryRate(rest: rest, maxHR: maxHR) ?? 0) > 0,
                 activeEnergyExported: profile.map {
                     session.workoutReadiness(rest: rest, maxHR: maxHR).ready
                     && $0.hasEnergyProfile
@@ -1914,7 +1914,7 @@ final class HealthKitExporter {
         }
 
         if snapshot?.respiratoryRateExported != true,
-           let respiratoryRate = session.respiratoryRate,
+           let respiratoryRate = session.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
            respiratoryRate > 0 {
             let quantity = HKQuantity(unit: HKUnit.count().unitDivided(by: .minute()),
                                       doubleValue: respiratoryRate)

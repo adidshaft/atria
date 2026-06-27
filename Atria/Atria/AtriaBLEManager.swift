@@ -8661,7 +8661,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let phoneMotion = phoneMotionAuditSummary()
         let phoneSteps = phoneStepEvidenceSummary()
         let imu = imuFeatureSummary()
-        let respiratoryRate = hrvSnapshot?.isReady == true ? hrvSnapshot?.respiratoryRate : nil
         let averageHR = session.map(\.bpm).reduce(0, +) / max(session.count, 1)
         let sleepWake = AtriaSleepWakeResearch.classify(duration: last.t.timeIntervalSince(start),
                                                         averageHR: averageHR,
@@ -8669,6 +8668,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                         imuStillnessRatio: imu.stillnessRatio,
                                                         imuMovementIntensity: imu.movementIntensity,
                                                         strapSteps: strapStepResearchCount > 0 ? strapStepResearchCount : nil)
+        let respiratoryRate = sleepWake.state == "sleep_research" && hrvSnapshot?.isReady == true
+            ? hrvSnapshot?.respiratoryRate
+            : nil
         let profile = AthleteProfile.load()
         let activeCalories = Metrics.activeCalories(session,
                                                     rest: restingHR ?? min(averageHR, session.map(\.bpm).min() ?? averageHR),
