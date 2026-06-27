@@ -1505,13 +1505,13 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
                                     tint: .purple,
-                                    footnote: "Sleep beat-to-beat research")
+                                    footnote: "Sleep-only estimate")
                     AtriaMetricTile(label: "Sleep resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
                                     tint: .teal,
-                                    footnote: "Sleep beat-to-beat research")
+                                    footnote: "Sleep-only estimate")
                 }
 
                 if chartNights.count > 1 {
