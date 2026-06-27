@@ -43,6 +43,28 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(summary.footnote.lowercased().contains("estimate"))
     }
 
+    func testBiologicalAgePaceUsesTrendDeltaWhenPresent() {
+        let factors = [
+            AtriaAnalytics.BiologicalAge.factor(id: "vo2",
+                                                label: "VO2max",
+                                                ageEquivalent: 40,
+                                                chronologicalAge: 40,
+                                                weight: 1,
+                                                detail: "steady")
+        ]
+
+        let improving = AtriaAnalytics.BiologicalAge.summary(chronologicalAge: 40,
+                                                            factors: factors,
+                                                            trendDeltaYears: -1)
+        let widening = AtriaAnalytics.BiologicalAge.summary(chronologicalAge: 40,
+                                                          factors: factors,
+                                                          trendDeltaYears: 2)
+
+        XCTAssertEqual(improving.agingPaceText, "Improving pace")
+        XCTAssertTrue(improving.agingPaceDetail.contains("cached fitness trend"))
+        XCTAssertEqual(widening.agingPaceText, "Widening pace")
+    }
+
     func testHRVAnalyzerRequiresContinuousCleanRRWindow() {
         let now = Date()
         let cleanRR = (0...300).map { index in

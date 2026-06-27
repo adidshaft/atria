@@ -7809,8 +7809,29 @@ final class SessionStore: ObservableObject {
                                                 weight: 0.05,
                                                 detail: String(format: "BMI %.1f", bmi))
         ]
+        let trendDeltaYears: Int?
+        if let vo2TrendDelta = vo2MaxEstimate.trendDelta {
+            let priorVO2 = max(1, vo2Max - vo2TrendDelta)
+            let priorFactors = factors.map { factor -> BioAgeFactor in
+                guard factor.id == "vo2max" else { return factor }
+                return AtriaAnalytics.BiologicalAge.factor(id: factor.id,
+                                                           label: factor.label,
+                                                           ageEquivalent: AtriaAnalytics.BiologicalAge.vo2AgeEquivalent(priorVO2, sex: profile.biologicalSex),
+                                                           chronologicalAge: chronologicalAge,
+                                                           weight: factor.weight,
+                                                           detail: String(format: "prior VO2max %.1f", priorVO2))
+            }
+            let currentAge = AtriaAnalytics.BiologicalAge.estimatedAge(chronologicalAge: chronologicalAge,
+                                                                       factors: factors)
+            let priorAge = AtriaAnalytics.BiologicalAge.estimatedAge(chronologicalAge: chronologicalAge,
+                                                                     factors: priorFactors)
+            trendDeltaYears = currentAge - priorAge
+        } else {
+            trendDeltaYears = nil
+        }
         return AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,
-                                                    factors: factors)
+                                                    factors: factors,
+                                                    trendDeltaYears: trendDeltaYears)
     }
 
     func trendSummaryFast(rest: Int,

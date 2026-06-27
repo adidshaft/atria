@@ -1086,14 +1086,15 @@ enum AtriaAnalytics {
         // ACSM/Cooper VO2max percentile tables, resting-HR norms, age-related RMSSD
         // decline, adult sleep guidance, activity norms, and BMI bands. They are
         // monotonic and intentionally conservative; no network or medical inference.
-        static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary {
-            let weighted = factors.reduce(0) { $0 + Double($1.ageEquivalent) * $1.weight }
-            let totalWeight = factors.reduce(0) { $0 + $1.weight }
-            let unclamped = Int((weighted / max(totalWeight, 0.01)).rounded())
-            let biologicalAge = min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)
+        static func summary(chronologicalAge: Int,
+                            factors: [BioAgeFactor],
+                            trendDeltaYears: Int? = nil) -> BiologicalAgeSummary {
+            let biologicalAge = estimatedAge(chronologicalAge: chronologicalAge,
+                                             factors: factors)
             let pace = agingPace(biologicalAge: biologicalAge,
                                  chronologicalAge: chronologicalAge,
-                                 factors: factors)
+                                 factors: factors,
+                                 trendDeltaYears: trendDeltaYears)
             return BiologicalAgeSummary(biologicalAge: biologicalAge,
                                         chronologicalAge: chronologicalAge,
                                         ageDelta: biologicalAge - chronologicalAge,
@@ -1104,9 +1105,29 @@ enum AtriaAnalytics {
                                         footnote: BiologicalAgeSummary.footnoteText)
         }
 
+        static func estimatedAge(chronologicalAge: Int, factors: [BioAgeFactor]) -> Int {
+            let weighted = factors.reduce(0) { $0 + Double($1.ageEquivalent) * $1.weight }
+            let totalWeight = factors.reduce(0) { $0 + $1.weight }
+            let unclamped = Int((weighted / max(totalWeight, 0.01)).rounded())
+            return min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)
+        }
+
         static func agingPace(biologicalAge: Int,
                               chronologicalAge: Int,
-                              factors: [BioAgeFactor]) -> (text: String, detail: String) {
+                              factors: [BioAgeFactor],
+                              trendDeltaYears: Int? = nil) -> (text: String, detail: String) {
+            if let trendDeltaYears {
+                if trendDeltaYears <= -1 {
+                    return ("Improving pace",
+                            "Body-age estimate is \(abs(trendDeltaYears))y younger vs the cached fitness trend.")
+                }
+                if trendDeltaYears >= 1 {
+                    return ("Widening pace",
+                            "Body-age estimate is \(trendDeltaYears)y older vs the cached fitness trend.")
+                }
+                return ("Stable pace",
+                        "Body-age estimate is steady vs the cached fitness trend.")
+            }
             let delta = biologicalAge - chronologicalAge
             let youngerWeight = factors
                 .filter { $0.direction == .younger }
