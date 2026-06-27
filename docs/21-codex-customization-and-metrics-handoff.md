@@ -161,6 +161,38 @@ provide that users desperately want.** Build these through the cached derived st
 | **Respiratory rate** | RR-derived (during sleep) | Derivable from RR/HR modulation during sleep — research tier. | research, sleep-only |
 | **Biological Age** | VO₂max + RHR + HRV + sleep + activity + BMI | "Body age" + younger/older delta + factor breakdown. See §B-BIOAGE. | estimate, baseline-gated, non-medical |
 
+### B-BENCHMARK — match/beat NOOP's grounded methods (don't copy code)
+The open-source **NOOP** app (`github.com/noop-app/noop`, Swift) open-sources its
+analytics (`StrandAnalytics`) — but NOT its BLE/protocol (kept private). Its methods
+are well-grounded public sports-science; build Atria's metrics to the SAME standard
+(re-implement from the public research below — do not lift NOOP's source):
+- **Recovery** = logistic of a weighted z-score vs the user's PERSONAL baseline:
+  HRV 0.60, RHR 0.20, Sleep 0.15, Respiration 0.05; logistic k≈1.6, z0≈−0.20; bands
+  **red <34, yellow <67, green ≥67** (WHOOP's own thresholds). RHR = lowest 5-min
+  sleep-window mean. Replace Atria's crude `100−strain*4` proxy with this.
+- **Strain** = TRIMP → 0–21 ln scale. Support **Edwards** (zone-weighted 50/60/70/
+  80/90 %HRR, weights 1–5) and **Banister** (scale 0.64; b=1.92 men / 1.67 women).
+  HRmax = max(observed 99.5th-pct, **Tanaka 208−0.7·age**). %HRR via Karvonen.
+- **HRV** = RMSSD (+ SDNN, pNN50); RR range-filter 300–2000 ms; ectopic rejection
+  (±20% of local median); min ~20 beats.
+- **Sleep stager** = IMU gravity-stillness + HR (difference-of-Gaussians, σ 120/600 s)
+  + HRV/RR variability → wake/light/deep/rem on 30-s epochs; efficiency + per-night
+  RHR/HRV. (Atria has only a research scaffold today — this is the biggest gap.)
+- **Vital bands / target zones (Part D)** — NOOP's `VitalBands` validates the Part-D
+  design: **personal z-score ±2σ once ≥14 valid nights** (trusted, not stale), else a
+  **population range** fallback; `noData` until then. Mirror this exactly.
+- **Readiness/coaching** — NOOP's `ReadinessEngine` adds training-load signals worth
+  having: **ACWR** (acute 7-day : chronic 28-day strain) and **monotony**, surfaced as
+  primed/balanced/strained/rundown with per-signal good/neutral/watch/bad flags +
+  plain-English detail. Fold into Recovery + the Part-D "(i)" coaching.
+
+WHERE ATRIA STANDS vs NOOP (2026-06-27): on par on Strain + HRV math + behavior
+insights + trends; **ahead** on connection robustness (derived status + persistent
+reconnect) and iOS-native UX; **behind** on Recovery (proxy vs real model), Sleep
+staging, Readiness/ACWR, and Target zones — all already specced here, so building
+Parts B/D to the methods above puts Atria at or beyond parity. NOOP's protocol is
+private, so Atria's RR-stream (§B-RR) must be solved with our own reverse-engineering.
+
 ### B-RR — the gating dependency (do this first; it unblocks HRV/Recovery/Sleep)
 On-device finding: in low-radio mode the strap sends ~1 Hz HR but **zero RR** at
 rest; RR flowed at HR ~108 (activity) and shows `rr_quality state=poor_contact` when
