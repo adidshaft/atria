@@ -182,7 +182,9 @@ struct ProfileOnboardingView: View {
                 VStack(spacing: 14) {
                     onboardingProgressDots
                     Button {
-                        if step.isLast {
+                        if step == .coexistence && officialAppMayBeInstalled {
+                            recheckOfficialApp()
+                        } else if step.isLast {
                             onComplete(draft)
                         } else {
                             advance(to: OnboardingStep(rawValue: step.rawValue + 1) ?? .profile)
@@ -203,7 +205,7 @@ struct ProfileOnboardingView: View {
     private var primaryButtonTitle: String {
         switch step {
         case .welcome: return "Get started"
-        case .coexistence: return officialAppMayBeInstalled ? "I’ll do this — continue" : "Continue"
+        case .coexistence: return officialAppMayBeInstalled ? "Recheck official app" : "Continue"
         case .connect: return "Continue"
         case .profile: return "Use this profile"
         }
@@ -296,6 +298,10 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Clear this before relying on Atria for overnight or workout metrics.")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 14) {
@@ -307,7 +313,7 @@ struct ProfileOnboardingView: View {
                                        detail: "Remove App, then Delete App.")
                 onboardingNumberedStep(2,
                                        title: "Or fully disable it",
-                                       detail: "Log out, then disable Bluetooth.")
+                                       detail: "Close it, log out, disable Bluetooth access, and remove widgets.")
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
