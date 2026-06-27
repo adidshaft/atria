@@ -1457,6 +1457,7 @@ private struct AtriaStandByMetric: View {
 final class AtriaHomeModel {
     struct StatusState: Equatable {
         var status: AtriaBLEManager.Status
+        var bluetoothPermissionDenied: Bool
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
     }
 
@@ -1857,6 +1858,7 @@ final class AtriaHomeModel {
                                                                     maxHR: store.profile.maxHR,
                                                                     profile: store.profile)
         let initialStatus = StatusState(status: ble.status,
+                                        bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
                                         officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble, liveSessionDerived: initialLiveSessionDerived)
         let initialHeroPulse = Self.makeHeroPulseState(ble: ble)
@@ -1938,6 +1940,14 @@ final class AtriaHomeModel {
                 guard let self else { return }
                 self.publishStatus()
                 self.publishCollectionLive()
+            }
+            .store(in: &cancellables)
+
+        ble.$bluetoothPermissionDenied
+            .removeDuplicates()
+            .map { _ in () }
+            .sink { [weak self] _ in
+                self?.publishStatus()
             }
             .store(in: &cancellables)
 
@@ -2128,6 +2138,7 @@ final class AtriaHomeModel {
 
     private func publishStatus() {
         let next = StatusState(status: ble.status,
+                               bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
                                officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
         guard next != statusStore.state else { return }
         statusStore.state = next
@@ -3015,6 +3026,7 @@ private struct AtriaTopStatusChip: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var status: AtriaBLEManager.Status { statusStore.state.status }
+    private var bluetoothPermissionDenied: Bool { statusStore.state.bluetoothPermissionDenied }
     private var hasPulseSignal: Bool { pulseLiveStore.state.hasPulseSignal }
 
     var body: some View {
@@ -3046,7 +3058,7 @@ private struct AtriaTopStatusChip: View {
             return hasPulseSignal ? "Live" : "No signal"
         case .connecting: return "Connecting"
         case .scanning: return "Searching"
-        case .poweredOff: return "Bluetooth off"
+        case .poweredOff: return bluetoothPermissionDenied ? "Permission" : "Bluetooth off"
         case .disconnected:
             return UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0
                 ? "Reconnecting…"
@@ -3058,7 +3070,7 @@ private struct AtriaTopStatusChip: View {
         switch status {
         case .connected: return hasPulseSignal ? "bolt.heart.fill" : "heart.slash"
         case .connecting, .scanning: return "dot.radiowaves.left.and.right"
-        case .poweredOff: return "bolt.slash.fill"
+        case .poweredOff: return bluetoothPermissionDenied ? "hand.raised.fill" : "bolt.slash.fill"
         case .disconnected: return "bolt.horizontal.circle"
         }
     }
