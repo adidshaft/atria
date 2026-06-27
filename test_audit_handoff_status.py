@@ -103,6 +103,30 @@ def current_test_commit(path: Path) -> str:
 
 
 class AuditHandoffStatusTests(unittest.TestCase):
+    def test_accessibility_visual_evidence_helper_is_non_invasive(self):
+        script = (Path(__file__).resolve().parent / "tools" / "capture_accessibility_visual_evidence.sh").read_text(encoding="utf-8")
+
+        for required in [
+            "xcrun xctrace record",
+            "--attach \"$pid\"",
+            "devicectl device capture screenshot",
+            "devicectl device settings appearance",
+            "prepare_accessibility_performance_evidence.py",
+            "--all-accessibility-checks-pass",
+            "dashboard_scroll_fps left at 0",
+        ]:
+            self.assertIn(required, script)
+
+        for forbidden in [
+            "device install app",
+            "device process launch",
+            "device process terminate",
+            "live_device_debug.sh",
+            "--dashboard-scroll-fps",
+            "--final",
+        ]:
+            self.assertNotIn(forbidden, script)
+
     def test_running_long_wear_progress_reports_eta_and_remaining_samples(self):
         progress = audit_handoff_status.running_long_wear_progress(
             {
