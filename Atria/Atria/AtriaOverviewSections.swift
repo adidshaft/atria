@@ -916,10 +916,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         } label: {
             Image(systemName: "plus")
                 .font(.callout.weight(.semibold))
-                .frame(width: 38, height: 38)
+                .frame(width: 20, height: 20)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .atriaCardAction(prominent: false, tint: .secondary)
         .accessibilityLabel("Add Today widget")
     }
 
@@ -1032,10 +1031,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                       ? "rectangle.compress.vertical"
                       : "rectangle.expand.vertical")
                     .font(.caption.weight(.bold))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
                                 ? "Make \(metric.label) compact"
                                 : "Make \(metric.label) wide")
@@ -1050,10 +1048,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .atriaCardAction(prominent: false, tint: .red)
             .accessibilityLabel("Remove \(metric.label)")
         }
     }
