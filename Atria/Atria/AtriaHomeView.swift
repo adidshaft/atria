@@ -858,6 +858,7 @@ struct AtriaHomeView: View {
                                   rrImportStatus: $rrImportStatus,
                                   hrImportStatus: $hrImportStatus,
                                   hapticSettings: $hapticSettings,
+                                  officialAppInstalled: officialAppInstalled,
                                   developerModeEnabled: developerModeEnabled)
     }
 
