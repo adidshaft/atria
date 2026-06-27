@@ -159,6 +159,26 @@ def submit_detached(repo: Path, args: argparse.Namespace) -> tuple[str, Path]:
     return launchctl_label(args.label), log_path
 
 
+def write_run_metadata(path: Path,
+                       repo: Path,
+                       args: argparse.Namespace,
+                       *,
+                       samples_count: int,
+                       interval_seconds: float,
+                       monitor_started_at: str) -> None:
+    data = {
+        "label": args.label,
+        "preset": args.preset,
+        "planned_samples": samples_count,
+        "planned_interval_s": interval_seconds,
+        "planned_duration_s": max(0, samples_count - 1) * interval_seconds,
+        "app_commit": (args.app_commit or current_git_commit(repo)).strip() or "missing",
+        "monitor_commit": current_git_commit(repo),
+        "monitor_started_at": monitor_started_at,
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def stamp_run_provenance(final: dict[str, object],
                          repo: Path,
                          monitor_started_at: str,
@@ -341,9 +361,16 @@ def main() -> int:
     out_root = (repo / args.out_dir / args.label).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_root / "samples.jsonl"
+    metadata_path = out_root / "run.json"
     summary_path = out_root / "summary.json"
     samples: list[dict[str, object]] = []
     monitor_started_at = utc_now()
+    write_run_metadata(metadata_path,
+                       repo,
+                       args,
+                       samples_count=samples_count,
+                       interval_seconds=interval_seconds,
+                       monitor_started_at=monitor_started_at)
 
     for index in range(samples_count):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

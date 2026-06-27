@@ -166,8 +166,19 @@ def load_jsonl_last(path: Path) -> dict[str, object]:
     return last
 
 
+def load_running_metadata(samples_path: Path) -> dict[str, object]:
+    metadata = samples_path.parent / "run.json"
+    if not metadata.exists():
+        return {}
+    try:
+        return load_json(metadata)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
     item = load_jsonl_last(samples_path)
+    metadata = load_running_metadata(samples_path)
     samples = 0
     try:
         samples = sum(1 for line in samples_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
@@ -190,17 +201,17 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         "battery_delta": "pending",
         "latest_recent_session_span_s": sessions.get("recent_span_s", 0),
         "latest_recent_session_coverage_percent": sessions.get("recent_coverage_percent", 0),
-        "preset": "overnight",
-        "planned_samples": MIN_OVERNIGHT_PLANNED_SAMPLES,
-        "planned_duration_s": MIN_OVERNIGHT_PLANNED_DURATION_S,
+        "preset": metadata.get("preset", "overnight"),
+        "planned_samples": metadata.get("planned_samples", MIN_OVERNIGHT_PLANNED_SAMPLES),
+        "planned_duration_s": metadata.get("planned_duration_s", MIN_OVERNIGHT_PLANNED_DURATION_S),
         "running_samples": samples,
         "latest_sample": item.get("sample", "missing"),
         "latest_sample_at": item.get("captured_at", "missing"),
         "latest_sample_log": item.get("log", "missing"),
-        "app_commit": "pending",
-        "monitor_commit": "pending",
+        "app_commit": metadata.get("app_commit", "pending"),
+        "monitor_commit": metadata.get("monitor_commit", "pending"),
         "expected_app_commit": "pending",
-        "monitor_started_at": "pending",
+        "monitor_started_at": metadata.get("monitor_started_at", "pending"),
         "monitor_finished_at": "pending",
     }
 
