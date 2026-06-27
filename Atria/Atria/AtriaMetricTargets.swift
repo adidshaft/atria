@@ -116,11 +116,16 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
-    static func strainZone(strain: Double, target: Double?) -> AtriaMetricZone? {
+    static func strainZone(strain: Double,
+                           target: Double?,
+                           greenBand: Double = 1.5,
+                           yellowBand: Double = 3.0) -> AtriaMetricZone? {
         guard let target else { return nil }
         let delta = strain - target
         let absDelta = abs(delta)
-        let level: AtriaMetricZoneLevel = absDelta <= 1.5 ? .green : (absDelta <= 3.0 ? .yellow : .red)
+        let safeGreenBand = min(max(greenBand, 0.5), 5.0)
+        let safeYellowBand = min(max(yellowBand, safeGreenBand + 0.5), 8.0)
+        let level: AtriaMetricZoneLevel = absDelta <= safeGreenBand ? .green : (absDelta <= safeYellowBand ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -137,7 +142,7 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "Strain target",
                                current: String(format: "Strain %.1f vs target %.1f.", strain, target),
-                               targetSummary: String(format: "Green within +/-1.5, yellow within +/-3.0, red farther from %.1f.", target),
+                               targetSummary: String(format: "Green within +/-%.1f, yellow within +/-%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
                                recommendation: recommendation,
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }

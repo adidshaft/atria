@@ -338,6 +338,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     @ObservedObject var store: SessionStore
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
@@ -351,6 +353,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 sleepHistory: store.sleepHistorySnapshot,
                                 recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
                                                                            yellowLower: recoveryYellowLower),
+                                strainGreenBand: strainGreenBand,
+                                strainYellowBand: strainYellowBand,
                                 hrvBaseline: store.baseline.hrvInt,
                                 hrvBaselineSamples: store.baseline.hrvSampleCount,
                                 hrvGreenRatio: hrvGreenRatio,
@@ -1670,6 +1674,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let sleepHistory: SleepHistorySnapshot
     let recoveryTarget: AtriaMetricTarget
+    let strainGreenBand: Double
+    let strainYellowBand: Double
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvGreenRatio: Double
@@ -1687,6 +1693,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         lhs.hero == rhs.hero
             && lhs.sleepHistory == rhs.sleepHistory
             && lhs.recoveryTarget == rhs.recoveryTarget
+            && lhs.strainGreenBand == rhs.strainGreenBand
+            && lhs.strainYellowBand == rhs.strainYellowBand
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
@@ -1772,7 +1780,10 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     }
 
     private var strainZone: AtriaMetricZone? {
-        Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)
+        Metrics.strainZone(strain: hero.strain,
+                           target: hero.guidance.target,
+                           greenBand: strainGreenBand,
+                           yellowBand: strainYellowBand)
     }
 }
 

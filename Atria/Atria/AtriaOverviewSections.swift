@@ -537,6 +537,8 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = ""
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
@@ -562,6 +564,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      subtitle: subtitle,
                                      recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
                                                                                 yellowLower: recoveryYellowLower),
+                                     strainGreenBand: strainGreenBand,
+                                     strainYellowBand: strainYellowBand,
                                      hrvBaseline: store.baseline.hrvInt,
                                      hrvBaselineSamples: store.baseline.hrvSampleCount,
                                      hrvGreenRatio: hrvGreenRatio,
@@ -797,7 +801,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .hrv, .sleep, .sleepEfficiency, .rhr, .steps:
+        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .steps:
             return true
         default:
             return false
@@ -849,6 +853,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let taggedDays: Int
     let subtitle: String
     let recoveryTarget: AtriaMetricTarget
+    let strainGreenBand: Double
+    let strainYellowBand: Double
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvGreenRatio: Double
@@ -912,6 +918,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.recoveryTarget == rhs.recoveryTarget
+            && lhs.strainGreenBand == rhs.strainGreenBand
+            && lhs.strainYellowBand == rhs.strainYellowBand
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
@@ -1476,7 +1484,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var strainZone: AtriaMetricZone? {
-        Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)
+        Metrics.strainZone(strain: hero.strain,
+                           target: hero.guidance.target,
+                           greenBand: strainGreenBand,
+                           yellowBand: strainYellowBand)
     }
 
     private var hrvZone: AtriaMetricZone? {
@@ -1683,6 +1694,8 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
@@ -1736,6 +1749,8 @@ private struct AtriaGlanceTargetEditorSheet: View {
         }
         .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: strainGreenBand) { _, _ in normalizeStrainTargets() }
+        .onChange(of: strainYellowBand) { _, _ in normalizeStrainTargets() }
         .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
         .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
         .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
@@ -1770,6 +1785,28 @@ private struct AtriaGlanceTargetEditorSheet: View {
                     Label("Reset recovery target", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+            }
+        case .strain:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $strainGreenBand, in: 0.5...5.0, step: 0.5) {
+                    LabeledContent("Green band") {
+                        Text(String(format: "+/-%.1f", strainGreenBand))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $strainYellowBand, in: 1.0...8.0, step: 0.5) {
+                    LabeledContent("Yellow band") {
+                        Text(String(format: "+/-%.1f", strainYellowBand))
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    strainGreenBand = 1.5
+                    strainYellowBand = 3.0
+                } label: {
+                    Label("Reset strain band", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
             }
         case .sleep:
             VStack(alignment: .leading, spacing: 12) {
@@ -1879,6 +1916,11 @@ private struct AtriaGlanceTargetEditorSheet: View {
         recoveryGreenLower = min(max(recoveryGreenLower, recoveryYellowLower + 1), 95)
     }
 
+    private func normalizeStrainTargets() {
+        strainGreenBand = min(max(strainGreenBand, 0.5), 5.0)
+        strainYellowBand = min(max(strainYellowBand, strainGreenBand + 0.5), 8.0)
+    }
+
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
     }
@@ -1907,6 +1949,7 @@ private extension AtriaTodayMetric {
     var targetEditorTint: Color {
         switch self {
         case .recovery, .steps: return .green
+        case .strain: return .orange
         case .hrv: return .pink
         case .rhr: return .red
         case .sleep, .sleepEfficiency: return .cyan
@@ -1918,6 +1961,8 @@ private extension AtriaTodayMetric {
         switch self {
         case .recovery:
             return "Adjust the green/yellow recovery thresholds used by target zones."
+        case .strain:
+            return "Adjust how tightly Strain should track today's recovery-scaled target."
         case .sleep:
             return "Adjust the sleep duration goal used by sleep target zones."
         case .hrv:
