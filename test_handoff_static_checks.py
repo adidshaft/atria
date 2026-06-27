@@ -528,10 +528,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "tint: coexistenceTint",
             "footnote: coexistenceFootnote",
             "private var coexistenceValue: String",
+            "case .advisory:\n            return \"Monitor\"",
             "case .suspected:\n            return \"Conflict\"",
             "private var coexistenceState: AtriaMetricState",
+            "case .advisory:\n            return .local",
             "return .conflict",
             "private var coexistenceFootnote: String",
+            "return \"If drops return, close the official app.\"",
             "return \"Official app may interfere.\"",
         ]:
             assert_contains(self, collection, needle)

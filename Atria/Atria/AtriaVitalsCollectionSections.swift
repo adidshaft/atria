@@ -937,7 +937,7 @@ private struct AtriaCollectionStatusCardHost: View {
         case .cleared:
             return "Clear"
         case .advisory:
-            return "Watch"
+            return "Monitor"
         case .suspected:
             return "Conflict"
         }
@@ -948,7 +948,7 @@ private struct AtriaCollectionStatusCardHost: View {
         case .cleared:
             return .local
         case .advisory:
-            return .research
+            return .local
         case .suspected:
             return .conflict
         }
@@ -970,7 +970,7 @@ private struct AtriaCollectionStatusCardHost: View {
         case .cleared:
             return "Atria has the strap."
         case .advisory:
-            return "Remove WHOOP if drops return."
+            return "If drops return, close the official app."
         case .suspected:
             return "Official app may interfere."
         }
