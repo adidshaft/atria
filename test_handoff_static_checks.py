@@ -676,8 +676,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Image(systemName: \"xmark\")",
             "Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)",
             "onToggleMetricSize(metric)",
-            ".buttonStyle(.glass)",
-            ".buttonBorderShape(.circle)",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
+            ".atriaCardAction(prominent: false, tint: .red)",
             ".accessibilityLabel(\"Add Today widget\")",
             "Menu {",
             "Button(role: .destructive)",
@@ -706,6 +706,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "Label(\"Remove \\(metric.label)\", systemImage: \"minus.circle\")")
         assert_not_contains(self, overview, ".accessibilityLabel(\"Widget options for \\(metric.label)\")")
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Circle())")
+        assert_not_contains(self, overview, ".buttonStyle(.glass)")
+        assert_not_contains(self, overview, ".buttonBorderShape(.circle)")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
