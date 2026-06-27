@@ -138,8 +138,81 @@ def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     return summaries[-1] if summaries else None
 
 
+def latest_running_overnight_samples(repo: Path) -> Path | None:
+    root = repo / "logs/live-device/long-wear-monitor"
+    candidates: list[Path] = []
+    for path in root.glob("*/samples.jsonl"):
+        if (path.parent / "summary.json").exists():
+            continue
+        if "overnight" not in path.parent.name:
+            continue
+        if path.stat().st_size <= 0:
+            continue
+        candidates.append(path)
+    return sorted(candidates, key=lambda path: path.stat().st_mtime)[-1] if candidates else None
+
+
+def load_jsonl_last(path: Path) -> dict[str, object]:
+    last: dict[str, object] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            last = item
+    return last
+
+
+def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
+    item = load_jsonl_last(samples_path)
+    samples = 0
+    try:
+        samples = sum(1 for line in samples_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+    except OSError:
+        samples = 0
+    active = item.get("active_journal", {})
+    sessions = item.get("sessions", {})
+    if not isinstance(active, dict):
+        active = {}
+    if not isinstance(sessions, dict):
+        sessions = {}
+    return {
+        "status": "in_progress",
+        "summary": str(samples_path),
+        "acceptance_status": "running",
+        "acceptance_blockers": ["overnight_summary_pending"],
+        "audit_blockers": ["overnight_summary_pending"],
+        "acceptance_diagnostics": {},
+        "thermal_states": [active.get("thermal", "missing")] if active.get("thermal") else [],
+        "battery_delta": "pending",
+        "latest_recent_session_span_s": sessions.get("recent_span_s", 0),
+        "latest_recent_session_coverage_percent": sessions.get("recent_coverage_percent", 0),
+        "preset": "overnight",
+        "planned_samples": MIN_OVERNIGHT_PLANNED_SAMPLES,
+        "planned_duration_s": MIN_OVERNIGHT_PLANNED_DURATION_S,
+        "running_samples": samples,
+        "latest_sample": item.get("sample", "missing"),
+        "latest_sample_at": item.get("captured_at", "missing"),
+        "latest_sample_log": item.get("log", "missing"),
+        "app_commit": "pending",
+        "monitor_commit": "pending",
+        "expected_app_commit": "pending",
+        "monitor_started_at": "pending",
+        "monitor_finished_at": "pending",
+    }
+
+
 def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) -> dict[str, object]:
     selected_summary = latest_summary(repo, summary_path)
+    if summary_path is None:
+        running_samples = latest_running_overnight_samples(repo)
+        if running_samples is not None and (
+            selected_summary is None or running_samples.stat().st_mtime > selected_summary.stat().st_mtime
+        ):
+            return evaluate_running_long_wear(running_samples)
     if selected_summary is None:
         return {
             "status": "missing",
@@ -516,6 +589,12 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Monitor started: `{physical.get('monitor_started_at', 'missing')}`",
         f"- Monitor finished: `{physical.get('monitor_finished_at', 'missing')}`",
     ])
+    if physical.get("status") == "in_progress":
+        lines.extend([
+            f"- Running samples: `{physical.get('running_samples', 'missing')}`",
+            f"- Latest sample: `{physical.get('latest_sample', 'missing')}` at `{physical.get('latest_sample_at', 'missing')}`",
+            f"- Latest sample log: `{physical.get('latest_sample_log', 'missing')}`",
+        ])
 
     diagnostics = physical.get("acceptance_diagnostics", {})
     if isinstance(diagnostics, dict) and diagnostics:
