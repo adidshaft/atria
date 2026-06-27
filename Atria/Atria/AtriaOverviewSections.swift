@@ -1221,7 +1221,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sleepHistory.latest?.respiratoryRateText ?? "--",
                                   detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep research" : "Research",
                                   systemImage: metric.systemImage,
-                                  tint: sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal)
+                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal),
+                                  zone: respiratoryRateZone)
                 .accessibilityLabel(sleepHistory.latest?.respiratoryRate == nil
                                     ? "Respiratory rate is building from sleep-only evidence"
                                     : "Respiratory rate research sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute")
@@ -1283,7 +1284,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : "--",
                                   detail: sensorSummary.skinTemperatureDeviation.detailText,
                                   systemImage: metric.systemImage,
-                                  tint: sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange)
+                                  tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange),
+                                  zone: skinTemperatureDeviationZone)
                 .accessibilityLabel(sensorSummary.skinTemperatureDeviation.isReady
                                     ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)"
                                     : "Body temperature research is building a sleep baseline and does not show an absolute temperature")
@@ -1458,6 +1460,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var biologicalAgeZone: AtriaMetricZone? {
         Metrics.biologicalAgeZone(biologicalAgeSummary)
+    }
+
+    private var respiratoryRateZone: AtriaMetricZone? {
+        let baselineValues = sleepHistory.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
+        return Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,
+                                           baseline: baseline,
+                                           baselineSamples: baselineValues.count)
+    }
+
+    private var skinTemperatureDeviationZone: AtriaMetricZone? {
+        Metrics.skinTemperatureDeviationZone(sensorSummary.skinTemperatureDeviation)
     }
 
     private func parseInt(_ value: String) -> Int? {

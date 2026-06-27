@@ -4136,6 +4136,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func biologicalAgeZone(_ summary: BiologicalAgeSummary) -> AtriaMetricZone?",
             "guard summary.isReady, let delta = summary.ageDelta else { return nil }",
             "Green younger than chronological age, yellow slightly older, red older.",
+            "static func respiratoryRateZone(_ breathsPerMinute: Double?,",
+            "baselineSamples >= 3",
+            "Research sleep-only estimate.",
+            "static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary) -> AtriaMetricZone?",
+            "Green within +/-0.5 delta C, yellow within +/-1.0, red farther from baseline.",
+            "Research relative sleep-only deviation; not an absolute temperature.",
             "exclamationmark.circle",
             "exclamationmark.triangle.fill",
             "Low recovery -- keep today light, hydrate, and get to bed earlier.",
@@ -4177,6 +4183,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "zone: stepsZone",
             "zone: vo2TrendZone",
             "zone: biologicalAgeZone",
+            "zone: respiratoryRateZone",
+            "zone: skinTemperatureDeviationZone",
             "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
             "Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)",
             "Metrics.hrvZone(parseInt(hero.hrvValue),",
@@ -4186,6 +4194,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,",
             "Metrics.vo2TrendZone(vo2MaxEstimate)",
             "Metrics.biologicalAgeZone(biologicalAgeSummary)",
+            "Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,",
+            "Metrics.skinTemperatureDeviationZone(sensorSummary.skinTemperatureDeviation)",
         ]:
             assert_contains(self, overview, needle)
 
@@ -4204,6 +4214,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "zone: hrvZone",
             "zone: vo2TrendZone",
             "zone: biologicalAgeZone",
+            "zone: respiratoryRateZone",
+            "zone: skinTemperatureDeviationZone",
             "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
             "Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)",
             "Metrics.restingHeartRateZone(snapshot.latest?.restingHR,",
@@ -4212,6 +4224,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.hrvZone(snapshot.latest?.hrv,",
             "Metrics.vo2TrendZone(vo2MaxEstimate)",
             "Metrics.biologicalAgeZone(biologicalAgeSummary)",
+            "Metrics.respiratoryRateZone(snapshot.latest?.respiratoryRate,",
+            "Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation)",
         ]:
             assert_contains(self, vitals, needle)
 

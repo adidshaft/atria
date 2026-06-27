@@ -316,6 +316,54 @@ extension Metrics {
                                recommendation: recommendation,
                                disclaimer: summary.footnote)
     }
+
+    static func respiratoryRateZone(_ breathsPerMinute: Double?,
+                                    baseline: Double?,
+                                    baselineSamples: Int) -> AtriaMetricZone? {
+        guard baselineSamples >= 3,
+              let breathsPerMinute,
+              let baseline,
+              baseline > 0 else { return nil }
+        let delta = breathsPerMinute - baseline
+        let absDelta = abs(delta)
+        let level: AtriaMetricZoneLevel = absDelta <= 1.5 ? .green : (absDelta <= 3.0 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Respiratory rate is close to your local sleep baseline."
+        case .yellow:
+            recommendation = "Respiratory rate is slightly off your baseline -- environment, poor sleep, stress, or illness onset can move it. Watch the trend, not one night."
+        case .red:
+            recommendation = "Respiratory rate is well off your baseline. Treat this as a wellness signal only and prioritize rest if you feel off."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Respiratory rate baseline",
+                               current: String(format: "%.1f/min, %+.1f vs %.1f baseline.", breathsPerMinute, delta, baseline),
+                               targetSummary: String(format: "Green within +/-1.5/min, yellow within +/-3.0/min, red farther from %.1f/min.", baseline),
+                               recommendation: recommendation,
+                               disclaimer: "Research sleep-only estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
+    }
+
+    static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary) -> AtriaMetricZone? {
+        guard summary.isReady, let delta = summary.latestDeltaCelsius else { return nil }
+        let absDelta = abs(delta)
+        let level: AtriaMetricZoneLevel = absDelta <= 0.5 ? .green : (absDelta <= 1.0 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Skin temperature deviation is close to your local sleep baseline."
+        case .yellow:
+            recommendation = "Skin temperature is slightly off your baseline -- room temperature, alcohol, cycle, travel, or illness onset can move it."
+        case .red:
+            recommendation = "Skin temperature is well off your baseline. Treat this as informational and compare with how you feel."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Skin temperature baseline",
+                               current: String(format: "%+.1f delta C vs sleep baseline.", delta),
+                               targetSummary: "Green within +/-0.5 delta C, yellow within +/-1.0, red farther from baseline.",
+                               recommendation: recommendation,
+                               disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
+    }
 }
 
 struct AtriaMetricZoneInfoSheet: View {
