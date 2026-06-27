@@ -1437,6 +1437,31 @@ enum AtriaAnalytics {
                                           expected: 23,
                                           tolerance: 1)
 
+        static let recoveryTargetYellow = LabelCheck(name: "target_recovery_yellow",
+                                                     actual: TargetZones.recovery(55)?.level.rawValue ?? "nil",
+                                                     expected: "yellow")
+
+        static let hrvTargetGated = LabelCheck(name: "target_hrv_no_baseline",
+                                               actual: TargetZones.hrv(65,
+                                                                       baseline: 60,
+                                                                       baselineSamples: PersonalBaseline.trustedMinimumSamples - 1,
+                                                                       baselineTrusted: false)?.level.rawValue ?? "gated",
+                                               expected: "gated")
+
+        static let manualDayNap = LabelCheck(name: "manual_sleep_day_nap",
+                                             actual: ManualSleep.inferredIsNap(start: calibrationDate(hour: 13),
+                                                                               end: calibrationDate(hour: 13).addingTimeInterval(40 * 60),
+                                                                               currentSelection: false,
+                                                                               calendar: calibrationCalendar) ? "nap" : "sleep",
+                                             expected: "nap")
+
+        static let manualNightSleep = LabelCheck(name: "manual_sleep_night_sleep",
+                                                 actual: ManualSleep.inferredIsNap(start: calibrationDate(hour: 23),
+                                                                                   end: calibrationDate(hour: 23).addingTimeInterval(7 * 60 * 60),
+                                                                                   currentSelection: true,
+                                                                                   calendar: calibrationCalendar) ? "nap" : "sleep",
+                                                 expected: "sleep")
+
         static let acwrWatch = LabelCheck(name: "acwr_watch",
                                           actual: TrainingLoad.acwrReadinessSignal(ratio: 1.35,
                                                                                    enoughChronic: true),
@@ -1466,6 +1491,10 @@ enum AtriaAnalytics {
 
         static var labelChecks: [LabelCheck] {
             [
+                recoveryTargetYellow,
+                hrvTargetGated,
+                manualDayNap,
+                manualNightSleep,
                 acwrWatch,
                 monotonyBad,
                 readinessRundown
@@ -1478,6 +1507,19 @@ enum AtriaAnalytics {
 
         private static let respiratorySineWave: [Double] = (0..<240).map { index in
             900 + 50 * sin(2 * .pi * (15.0 / 60.0) * Double(index) / 4.0)
+        }
+
+        private static let calibrationCalendar: Calendar = {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+            return calendar
+        }()
+
+        private static func calibrationDate(hour: Int) -> Date {
+            calibrationCalendar.date(from: DateComponents(year: 2026,
+                                                          month: 6,
+                                                          day: 27,
+                                                          hour: hour)) ?? Date(timeIntervalSinceReferenceDate: 0)
         }
 
         private static let strongBodyAgeFactors: [BioAgeFactor] = [
