@@ -1,6 +1,158 @@
 import Foundation
 
 enum AtriaAnalytics {
+    enum Strain {
+        struct ZoneSummary: Equatable {
+            let secondsZ0: TimeInterval
+            let secondsZ1: TimeInterval
+            let secondsZ2: TimeInterval
+            let secondsZ3: TimeInterval
+            let secondsZ4: TimeInterval
+            let droppedGapSeconds: TimeInterval
+            let samples: Int
+            let minHRReserve: Double
+            let maxHRReserve: Double
+
+            static let empty = ZoneSummary(secondsZ0: 0,
+                                           secondsZ1: 0,
+                                           secondsZ2: 0,
+                                           secondsZ3: 0,
+                                           secondsZ4: 0,
+                                           droppedGapSeconds: 0,
+                                           samples: 0,
+                                           minHRReserve: 0,
+                                           maxHRReserve: 0)
+
+            var totalSeconds: TimeInterval {
+                secondsZ0 + secondsZ1 + secondsZ2 + secondsZ3 + secondsZ4
+            }
+
+            static func + (lhs: ZoneSummary, rhs: ZoneSummary) -> ZoneSummary {
+                let samples = lhs.samples + rhs.samples
+                let minReserve: Double
+                let maxReserve: Double
+                if lhs.samples == 0 {
+                    minReserve = rhs.minHRReserve
+                    maxReserve = rhs.maxHRReserve
+                } else if rhs.samples == 0 {
+                    minReserve = lhs.minHRReserve
+                    maxReserve = lhs.maxHRReserve
+                } else {
+                    minReserve = min(lhs.minHRReserve, rhs.minHRReserve)
+                    maxReserve = max(lhs.maxHRReserve, rhs.maxHRReserve)
+                }
+                return ZoneSummary(secondsZ0: lhs.secondsZ0 + rhs.secondsZ0,
+                                   secondsZ1: lhs.secondsZ1 + rhs.secondsZ1,
+                                   secondsZ2: lhs.secondsZ2 + rhs.secondsZ2,
+                                   secondsZ3: lhs.secondsZ3 + rhs.secondsZ3,
+                                   secondsZ4: lhs.secondsZ4 + rhs.secondsZ4,
+                                   droppedGapSeconds: lhs.droppedGapSeconds + rhs.droppedGapSeconds,
+                                   samples: samples,
+                                   minHRReserve: minReserve,
+                                   maxHRReserve: maxReserve)
+            }
+        }
+
+        /// Banister TRIMP over a series of (secondsFromStart, bpm) samples.
+        /// Each sample contributes dt · HRr · 0.64 · e^(1.92·HRr).
+        static func trimp(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
+            guard series.count > 1, max > rest else { return 0 }
+            let span = Double(max - rest)
+            var total = 0.0
+            for index in 1..<series.count {
+                let dtMin = (series[index].t - series[index - 1].t) / 60.0
+                guard dtMin > 0, dtMin < 5 else { continue }
+                let hrr = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
+                total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
+            }
+            return total
+        }
+
+        static func activeCalories(_ samples: [HRSample], rest: Int, profile: AthleteProfile) -> Double? {
+            guard samples.count > 1, rest > 0, profile.hasEnergyProfile else { return nil }
+            let resting = energyKcalPerMinute(heartRate: rest, profile: profile)
+            var total = 0.0
+            for index in 1..<samples.count {
+                let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
+                guard dtMin > 0, dtMin < 5, samples[index].bpm > 0 else { continue }
+                let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
+                total += max(0, gross - resting) * dtMin
+            }
+            return total
+        }
+
+        /// HR-reserve zone seconds for auditing Strain behavior across rest to max.
+        /// Buckets: z0 <30%, z1 30-50%, z2 50-70%, z3 70-85%, z4 >=85% HR reserve.
+        static func zoneSummary(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> ZoneSummary {
+            guard series.count > 1, max > rest else { return .empty }
+            let span = Double(max - rest)
+            var z0 = 0.0, z1 = 0.0, z2 = 0.0, z3 = 0.0, z4 = 0.0
+            var dropped = 0.0
+            var minReserve = 1.0
+            var maxReserve = 0.0
+            var usableSamples = 0
+            for index in 1..<series.count {
+                let dt = series[index].t - series[index - 1].t
+                guard dt > 0 else { continue }
+                if dt >= 5 {
+                    dropped += dt
+                    continue
+                }
+                let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
+                minReserve = Swift.min(minReserve, reserve)
+                maxReserve = Swift.max(maxReserve, reserve)
+                usableSamples += 1
+                switch reserve {
+                case ..<0.30: z0 += dt
+                case ..<0.50: z1 += dt
+                case ..<0.70: z2 += dt
+                case ..<0.85: z3 += dt
+                default: z4 += dt
+                }
+            }
+            guard usableSamples > 0 else {
+                return ZoneSummary(secondsZ0: 0,
+                                   secondsZ1: 0,
+                                   secondsZ2: 0,
+                                   secondsZ3: 0,
+                                   secondsZ4: 0,
+                                   droppedGapSeconds: dropped,
+                                   samples: 0,
+                                   minHRReserve: 0,
+                                   maxHRReserve: 0)
+            }
+            return ZoneSummary(secondsZ0: z0,
+                               secondsZ1: z1,
+                               secondsZ2: z2,
+                               secondsZ3: z3,
+                               secondsZ4: z4,
+                               droppedGapSeconds: dropped,
+                               samples: usableSamples,
+                               minHRReserve: minReserve,
+                               maxHRReserve: maxReserve)
+        }
+
+        /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
+        static func score(fromTRIMP trimp: Double) -> Double {
+            guard trimp > 0 else { return 0 }
+            return min(21.0 * (1 - exp(-trimp / 40.0)), 21.0)
+        }
+
+        private static func energyKcalPerMinute(heartRate: Int, profile: AthleteProfile) -> Double {
+            let hr = Double(heartRate)
+            let weight = profile.weightKg
+            let age = Double(profile.age)
+            switch profile.biologicalSex {
+            case .male:
+                return max(0, (-55.0969 + 0.6309 * hr + 0.1988 * weight + 0.2017 * age) / 4.184)
+            case .female:
+                return max(0, (-20.4022 + 0.4472 * hr - 0.1263 * weight + 0.0740 * age) / 4.184)
+            case .unspecified:
+                return 0
+            }
+        }
+    }
+
     enum Recovery {
         struct Estimate: Equatable {
             enum Confidence: String {
@@ -248,7 +400,7 @@ enum AtriaAnalytics {
             }
             let dailyStrains = trimpByDay
                 .sorted { $0.key > $1.key }
-                .map { Metrics.strain(fromTRIMP: $0.value) }
+                .map { Strain.score(fromTRIMP: $0.value) }
             return summary(dailyStrains: dailyStrains)
         }
 
