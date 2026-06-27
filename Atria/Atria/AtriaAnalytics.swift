@@ -271,7 +271,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "VO2max trend",
                                    current: "Trend \(trimmedTrend), \(summary.trendDetail)",
-                                   targetSummary: String(format: "Green >= +%.1f, yellow %.1f to %.1f, red <= %.1f.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
+                                   targetSummary: String(format: "Estimate trend · Green >= +%.1f, yellow %.1f to %.1f, red <= %.1f.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
                                    recommendation: recommendation,
                                    disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
@@ -304,7 +304,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Body age target",
                                    current: "\(summary.valueText), \(summary.detailText).",
-                                   targetSummary: "Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
+                                   targetSummary: "Estimate · Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
                                    recommendation: recommendation,
                                    disclaimer: summary.footnote)
         }
