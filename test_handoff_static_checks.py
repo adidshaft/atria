@@ -4791,6 +4791,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenDelta: Double = 0.5",
             "yellowDelta: Double = 1.0",
             "AtriaAnalytics.TargetZones.skinTemperatureDeviation(summary,",
+            "static func bloodOxygenResearchZone(candidateFrames: Int,",
+            "goalFrames: Int = 8",
+            "AtriaAnalytics.TargetZones.bloodOxygenResearch(candidateFrames: candidateFrames,",
             "exclamationmark.circle",
             "exclamationmark.triangle.fill",
             "General wellness guidance only, not medical advice.",
@@ -4817,7 +4820,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Green within +/-",
         ]:
             assert_not_contains(self, wrapper_body, forbidden)
-        self.assertEqual(wrapper_body.count("AtriaAnalytics.TargetZones."), 12)
+        self.assertEqual(wrapper_body.count("AtriaAnalytics.TargetZones."), 13)
 
         for needle in [
             "enum TargetZones",
@@ -4896,6 +4899,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func skinTemperatureDeviation(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,",
             "Research baseline · Green within +/-%.1f delta C",
             "Research relative sleep-only deviation; not an absolute temperature.",
+            "static func bloodOxygenResearch(candidateFrames: Int,",
+            "guard candidateFrames > 0 else { return nil }",
+            "Research evidence · Green >= \\(safeGoal) candidate frames",
+            "not an SpO2 reading.",
+            "no SpO2 percentage, diagnosis, alarm, or Health export",
         ]:
             assert_contains(self, analytics, needle)
         assert_not_contains(self, analytics, "guard baselineSamples >= 7, let rmssd")
@@ -4941,6 +4949,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AppStorage(\"atria.target.respiratory.yellowDelta\")",
             "@AppStorage(\"atria.target.skinTemp.greenDelta\")",
             "@AppStorage(\"atria.target.skinTemp.yellowDelta\")",
+            "@AppStorage(\"atria.target.bloodOxygen.candidateFrames\")",
             "@AppStorage(\"atria.target.bioAge.greenOlderDelta\")",
             "@AppStorage(\"atria.target.bioAge.yellowOlderDelta\")",
             "@AppStorage(\"atria.target.vo2.greenDelta\")",
@@ -4963,6 +4972,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "respiratoryYellowDelta: respiratoryYellowDelta",
             "skinTemperatureGreenDelta: skinTemperatureGreenDelta",
             "skinTemperatureYellowDelta: skinTemperatureYellowDelta",
+            "bloodOxygenCandidateGoal: bloodOxygenCandidateGoal",
             "biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta",
             "biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta",
             "vo2GreenDelta: vo2GreenDelta",
@@ -5020,6 +5030,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.skinTemperatureDeviationZone(sensorSummary.skinTemperatureDeviation,",
             "greenDelta: skinTemperatureGreenDelta",
             "yellowDelta: skinTemperatureYellowDelta",
+            "Metrics.bloodOxygenResearchZone(candidateFrames: sensorSummary.spo2CandidateFrames,",
+            "goalFrames: bloodOxygenCandidateGoal",
+            "zone: bloodOxygenResearchZone",
         ]:
             assert_contains(self, overview, needle)
 

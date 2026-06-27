@@ -552,6 +552,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
     @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
@@ -590,6 +591,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      respiratoryYellowDelta: respiratoryYellowDelta,
                                      skinTemperatureGreenDelta: skinTemperatureGreenDelta,
                                      skinTemperatureYellowDelta: skinTemperatureYellowDelta,
+                                     bloodOxygenCandidateGoal: bloodOxygenCandidateGoal,
                                      biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
                                      biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
                                      vo2GreenDelta: vo2GreenDelta,
@@ -822,7 +824,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp:
             return true
         default:
             return false
@@ -891,6 +893,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let respiratoryYellowDelta: Double
     let skinTemperatureGreenDelta: Double
     let skinTemperatureYellowDelta: Double
+    let bloodOxygenCandidateGoal: Int
     let biologicalAgeGreenOlderDelta: Int
     let biologicalAgeYellowOlderDelta: Int
     let vo2GreenDelta: Double
@@ -968,6 +971,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.respiratoryYellowDelta == rhs.respiratoryYellowDelta
             && lhs.skinTemperatureGreenDelta == rhs.skinTemperatureGreenDelta
             && lhs.skinTemperatureYellowDelta == rhs.skinTemperatureYellowDelta
+            && lhs.bloodOxygenCandidateGoal == rhs.bloodOxygenCandidateGoal
             && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
             && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
             && lhs.vo2GreenDelta == rhs.vo2GreenDelta
@@ -1398,7 +1402,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sensorSummary.spo2CandidateFrames > 0 ? "Research" : "--",
                                   detail: sensorSummary.spo2CandidateFrames > 0 ? "\(sensorSummary.spo2CandidateFrames) candidate frames" : "Sleep research",
                                   systemImage: metric.systemImage,
-                                  tint: sensorSummary.spo2CandidateFrames > 0 ? .blue : .orange)
+                                  tint: bloodOxygenResearchZone?.tint ?? (sensorSummary.spo2CandidateFrames > 0 ? .blue : .orange),
+                                  zone: bloodOxygenResearchZone)
                 .accessibilityLabel(sensorSummary.spo2CandidateFrames > 0
                                     ? "Blood oxygen research has \(sensorSummary.spo2CandidateFrames) candidate frames, not an SpO2 reading"
                                     : "Blood oxygen research is building and does not show an SpO2 percentage")
@@ -1635,6 +1640,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                              yellowDelta: skinTemperatureYellowDelta)
     }
 
+    private var bloodOxygenResearchZone: AtriaMetricZone? {
+        Metrics.bloodOxygenResearchZone(candidateFrames: sensorSummary.spo2CandidateFrames,
+                                        goalFrames: bloodOxygenCandidateGoal)
+    }
+
     private func parseInt(_ value: String) -> Int? {
         Int(value.trimmingCharacters(in: .whitespacesAndNewlines)
             .filter { $0.isNumber })
@@ -1813,6 +1823,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
     @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
@@ -1882,6 +1893,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
             respiratoryYellowDelta,
             skinTemperatureGreenDelta,
             skinTemperatureYellowDelta,
+            Double(bloodOxygenCandidateGoal),
             Double(biologicalAgeGreenOlderDelta),
             Double(biologicalAgeYellowOlderDelta),
             vo2GreenDelta,
@@ -1902,6 +1914,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
         normalizeRestingTargets()
         normalizeRespiratoryTargets()
         normalizeSkinTemperatureTargets()
+        normalizeBloodOxygenTargets()
         normalizeBiologicalAgeTargets()
         normalizeVO2Targets()
     }
@@ -2033,6 +2046,25 @@ private struct AtriaGlanceTargetEditorSheet: View {
                     Label("Reset resp-rate target", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
+            }
+        case .bloodOxygen:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $bloodOxygenCandidateGoal, in: 2...120, step: 1) {
+                    LabeledContent("Green evidence") {
+                        Text("\(bloodOxygenCandidateGoal) frames")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    bloodOxygenCandidateGoal = 8
+                } label: {
+                    Label("Reset oxygen research target", systemImage: "drop.degreesign")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
+                Text("This tunes candidate-frame evidence only. Atria still does not show an SpO2 percentage until the protocol is validated.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case .bodyTemp:
             VStack(alignment: .leading, spacing: 12) {
@@ -2206,6 +2238,10 @@ private struct AtriaGlanceTargetEditorSheet: View {
         skinTemperatureYellowDelta = min(max(skinTemperatureYellowDelta, skinTemperatureGreenDelta + 0.1), 4.0)
     }
 
+    private func normalizeBloodOxygenTargets() {
+        bloodOxygenCandidateGoal = min(max(bloodOxygenCandidateGoal, 2), 120)
+    }
+
     private func normalizeBiologicalAgeTargets() {
         biologicalAgeGreenOlderDelta = min(max(biologicalAgeGreenOlderDelta, -10), 10)
         biologicalAgeYellowOlderDelta = min(max(biologicalAgeYellowOlderDelta, biologicalAgeGreenOlderDelta + 1), 20)
@@ -2227,6 +2263,7 @@ private extension AtriaTodayMetric {
         case .bioAge: return .purple
         case .vo2max: return .blue
         case .respiratoryRate, .bodyTemp: return .teal
+        case .bloodOxygen: return .blue
         case .sleep, .sleepHistory, .sleepEfficiency: return .cyan
         default: return .blue
         }
@@ -2250,6 +2287,8 @@ private extension AtriaTodayMetric {
             return "Adjust the sleep respiratory-rate deviation allowed around your baseline."
         case .bodyTemp:
             return "Adjust the relative sleep skin-temperature deviation allowed around baseline."
+        case .bloodOxygen:
+            return "Adjust the research evidence threshold for candidate frames. This is not an SpO2 percentage target."
         case .bioAge:
             return "Adjust the younger/older delta bands for the body-age estimate."
         case .vo2max:

@@ -480,6 +480,29 @@ enum AtriaAnalytics {
                                    recommendation: recommendation,
                                    disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
+
+        static func bloodOxygenResearch(candidateFrames: Int,
+                                        goalFrames: Int = 8) -> AtriaMetricZone? {
+            guard candidateFrames > 0 else { return nil }
+            let safeGoal = min(max(goalFrames, 2), 120)
+            let yellowFloor = max(1, safeGoal / 2)
+            let level: AtriaMetricZoneLevel = candidateFrames >= safeGoal ? .green : (candidateFrames >= yellowFloor ? .yellow : .red)
+            let recommendation: String
+            switch level {
+            case .green:
+                recommendation = "Blood oxygen research has enough candidate frames to inspect. Atria still does not show an SpO2 percentage until the protocol is validated."
+            case .yellow:
+                recommendation = "Blood oxygen research has partial candidate evidence. Keep collecting sleep data before trusting this signal."
+            case .red:
+                recommendation = "Blood oxygen research has too little candidate evidence. Wear the strap overnight and treat this as protocol research only."
+            }
+            return AtriaMetricZone(level: level,
+                                   title: "Blood oxygen research evidence",
+                                   current: "\(candidateFrames) candidate frames; not an SpO2 reading.",
+                                   targetSummary: "Research evidence · Green >= \(safeGoal) candidate frames, yellow \(yellowFloor)-\(safeGoal - 1), red below \(yellowFloor).",
+                                   recommendation: recommendation,
+                                   disclaimer: "Research signal only; no SpO2 percentage, diagnosis, alarm, or Health export. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        }
     }
 
     enum Daily {
