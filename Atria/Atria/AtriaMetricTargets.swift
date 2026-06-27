@@ -166,55 +166,19 @@ extension Metrics {
                                     baselineSamples: Int,
                                     greenDelta: Double = 1.5,
                                     yellowDelta: Double = 3.0) -> AtriaMetricZone? {
-        guard baselineSamples >= 3,
-              let breathsPerMinute,
-              let baseline,
-              baseline > 0 else { return nil }
-        let delta = breathsPerMinute - baseline
-        let absDelta = abs(delta)
-        let safeGreenDelta = min(max(greenDelta, 0.5), 4.0)
-        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 0.5), 8.0)
-        let level: AtriaMetricZoneLevel = absDelta <= safeGreenDelta ? .green : (absDelta <= safeYellowDelta ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Respiratory rate is close to your local sleep baseline."
-        case .yellow:
-            recommendation = "Respiratory rate is slightly off your baseline -- environment, poor sleep, stress, or illness onset can move it. Watch the trend, not one night."
-        case .red:
-            recommendation = "Respiratory rate is well off your baseline. Treat this as a wellness signal only and prioritize rest if you feel off."
-        }
-        return AtriaMetricZone(level: level,
-                               title: "Respiratory rate baseline",
-                               current: String(format: "%.1f/min, %+.1f vs %.1f baseline.", breathsPerMinute, delta, baseline),
-                               targetSummary: String(format: "Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
-                               recommendation: recommendation,
-                               disclaimer: "Research sleep-only estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        AtriaAnalytics.TargetZones.respiratoryRate(breathsPerMinute,
+                                                   baseline: baseline,
+                                                   baselineSamples: baselineSamples,
+                                                   greenDelta: greenDelta,
+                                                   yellowDelta: yellowDelta)
     }
 
     static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                              greenDelta: Double = 0.5,
                                              yellowDelta: Double = 1.0) -> AtriaMetricZone? {
-        guard summary.isReady, let delta = summary.latestDeltaCelsius else { return nil }
-        let absDelta = abs(delta)
-        let safeGreenDelta = min(max(greenDelta, 0.2), 2.0)
-        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 0.1), 4.0)
-        let level: AtriaMetricZoneLevel = absDelta <= safeGreenDelta ? .green : (absDelta <= safeYellowDelta ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Skin temperature deviation is close to your local sleep baseline."
-        case .yellow:
-            recommendation = "Skin temperature is slightly off your baseline -- room temperature, alcohol, cycle, travel, or illness onset can move it."
-        case .red:
-            recommendation = "Skin temperature is well off your baseline. Treat this as informational and compare with how you feel."
-        }
-        return AtriaMetricZone(level: level,
-                               title: "Skin temperature baseline",
-                               current: String(format: "%+.1f delta C vs sleep baseline.", delta),
-                               targetSummary: String(format: "Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
-                               recommendation: recommendation,
-                               disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        AtriaAnalytics.TargetZones.skinTemperatureDeviation(summary,
+                                                            greenDelta: greenDelta,
+                                                            yellowDelta: yellowDelta)
     }
 }
 
