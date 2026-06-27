@@ -1326,7 +1326,7 @@ private struct AtriaLiveTabAccessory: View {
             Image(systemName: liveStore.state.batterySymbol)
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(liveStore.state.batteryChargeStatus == .charging ? Color.green : .secondary)
+                .foregroundStyle(liveStore.state.batteryShowsPowered ? Color.green : .secondary)
 
             Text(liveStore.state.batteryText)
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
@@ -1334,7 +1334,7 @@ private struct AtriaLiveTabAccessory: View {
 
             Text(isInline ? liveStore.state.batteryChargeCompactText : liveStore.state.batteryChargeText)
                 .font((isInline ? Font.caption2 : Font.caption).weight(.semibold))
-                .foregroundStyle(liveStore.state.batteryChargeStatus == .charging ? .green : .secondary)
+                .foregroundStyle(liveStore.state.batteryShowsPowered ? .green : .secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
 
@@ -1493,6 +1493,7 @@ final class AtriaHomeModel {
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var batteryChargeText: String { batteryLevel >= 0 ? batteryChargeStatus.label : "Waiting" }
+        var batteryShowsPowered: Bool { batteryChargeStatus == .charging || batteryChargeStatus == .full }
         var batteryChargeCompactText: String {
             switch batteryChargeStatus {
             case .levelOnly: return "State pending"
@@ -1533,7 +1534,7 @@ final class AtriaHomeModel {
         /// SF Symbol matching the level, with the bolt overlay while charging.
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "battery.0percent" }
-            if batteryChargeStatus == .charging { return "battery.100percent.bolt" }
+            if batteryShowsPowered { return "battery.100percent.bolt" }
             switch batteryLevel {
             case ..<13: return "battery.0percent"
             case ..<38: return "battery.25percent"

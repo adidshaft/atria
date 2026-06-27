@@ -1128,12 +1128,15 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus",
             "var batteryChargeText: String",
+            "var batteryShowsPowered: Bool",
             "var batteryChargeCompactText: String",
             "var batteryStatusSummaryText: String",
             "var batteryDetailText: String",
+            "batteryChargeStatus == .charging || batteryChargeStatus == .full",
             "case .levelOnly: return \"State pending\"",
             "Battery level is live; waiting for charger-state signal",
             "return \"\\(batteryText) · \\(batteryChargeCompactText)\"",
+            "if batteryShowsPowered { return \"battery.100percent.bolt\" }",
             "ble.$batteryChargeStatus.removeDuplicates()",
             "batteryChargeStatus: ble.batteryChargeStatus",
             "Text(isInline ? liveStore.state.batteryChargeCompactText : liveStore.state.batteryChargeText)",
@@ -1167,7 +1170,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "? \"Battery level is live; charger state pending\"",
             ": \"Current strap status\"",
             "footnote: coreLiveStore.state.batteryDetailText",
-            "tint: coreLiveStore.state.batteryChargeStatus == .charging ? .green : .blue",
+            "tint: coreLiveStore.state.batteryShowsPowered ? .green : .blue",
         ]:
             assert_contains(self, overview + data, needle)
 
