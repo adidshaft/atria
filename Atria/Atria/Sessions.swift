@@ -9393,6 +9393,7 @@ struct SleepHistorySnapshot: Equatable {
         for rollup in rollups where rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
             let day = calendar.startOfDay(for: rollup.day)
             if let existing = nightsByDay[day], existing.confirmed {
+                nightsByDay[day] = Self.mergingConfirmedNight(existing, with: rollup)
                 continue
             }
             let sleepDuration = rollup.sleepDuration ?? (rollup.sleepReady > 0 ? rollup.duration : min(rollup.duration, 10 * 60 * 60))
@@ -9412,6 +9413,19 @@ struct SleepHistorySnapshot: Equatable {
         self.nights = Array(sorted.prefix(14))
         self.confirmedCount = confirmedSleeps.count
         self.candidateCount = rollups.reduce(0) { $0 + $1.sleepCandidates }
+    }
+
+    private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
+        Night(id: night.id,
+              day: night.day,
+              duration: night.duration,
+              restingHR: night.restingHR ?? rollup.restingHR,
+              hrv: night.hrv ?? rollup.avgHRV,
+              respiratoryRate: night.respiratoryRate ?? rollup.avgRespiratoryRate,
+              sleepEfficiency: night.sleepEfficiency,
+              confidence: night.confidence,
+              source: night.source,
+              confirmed: night.confirmed)
     }
 
     var latest: Night? {
