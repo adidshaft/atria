@@ -2371,7 +2371,9 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
-                AtriaInlineQuickStat(label: "Battery", value: live.batteryText)
+                AtriaInlineQuickStat(label: "Battery",
+                                     value: live.batteryText,
+                                     detail: live.batteryDetailText)
                 AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
                 AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }

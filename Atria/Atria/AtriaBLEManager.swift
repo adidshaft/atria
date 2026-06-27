@@ -184,6 +184,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    enum BatteryChargeStatus: String, Equatable {
+        case levelOnly
+        case charging
+        case notCharging
+        case full
+
+        var label: String {
+            switch self {
+            case .levelOnly: return "Level only"
+            case .charging: return "Charging"
+            case .notCharging: return "Not charging"
+            case .full: return "Full"
+            }
+        }
+    }
+
     private enum ParsedProprietaryUpdate {
         case realtime(ParsedRealtimePacket)
         case commandResponse(AtriaFrame)
@@ -367,9 +383,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
-    /// Best-effort: The strap exposes only a level (2A19), no charge flag. We infer
-    /// charging when the level rises between readings, and clear it when it falls.
+    /// Best-effort: the strap exposes Battery Level (2A19), not a direct charge
+    /// flag. Keep unknown separate from not-charging so the UI never silently hides
+    /// that limitation.
     @Published var batteryIsCharging: Bool = false
+    @Published var batteryChargeStatus: BatteryChargeStatus = .levelOnly
     @Published private(set) var phoneStepsToday: Int = 0
     @Published private(set) var phoneDistanceTodayMeters: Double?
     @Published private(set) var phoneFloorsToday: Int?
@@ -9054,9 +9072,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask = nil
             isActivelyScanning = false
             recomputeConnectionStatus(reason: "did_connect")
-            // Start each live link assuming not charging; only an in-session rise
-            // re-asserts it (prevents a stale "Charging" sticking across sessions).
+            // Start each live link with level-only evidence. 2A19 does not expose a
+            // direct charge flag, so a fresh link must prove charging by trend.
             assignIfChanged(\.batteryIsCharging, false)
+            assignIfChanged(\.batteryChargeStatus, .levelOnly)
             connectedAt = Date()
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -9321,21 +9340,25 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 if central.state == .poweredOn, peripheral.state == .connected, self.status != .connected {
                     self.recomputeConnectionStatus(reason: "event")
                 }
-                // Infer charging from the in-session battery trend. A gradual RISE
-                // (2–5%) between reads means it's actively on the charger now; a
-                // DROP clears it. A big jump (>5%) is an ambiguous reconnect gap
-                // (charged while away) — left unchanged. `batteryIsCharging` is also
-                // reset to false on each connect (see didConnect), so the flag
-                // reflects active charging within the live link and can't stick on
-                // true forever after a plateau.
+                // Infer charging from the in-session battery trend. WHOOP exposes
+                // 2A19 level only, not a direct charge flag, so the first/flat read
+                // remains "level only". A rise is charging evidence; a drop is
+                // not-charging evidence. 100% is surfaced as full.
                 let previous = batteryLevel
                 if previous >= 0 {
                     let delta = newLevel - previous
-                    if delta >= 2 && delta <= 5 {
+                    if newLevel >= 100 {
+                        assignIfChanged(\.batteryIsCharging, false)
+                        assignIfChanged(\.batteryChargeStatus, .full)
+                    } else if delta > 0 && delta <= 5 {
                         assignIfChanged(\.batteryIsCharging, true)
+                        assignIfChanged(\.batteryChargeStatus, .charging)
                     } else if delta < 0 {
                         assignIfChanged(\.batteryIsCharging, false)
+                        assignIfChanged(\.batteryChargeStatus, .notCharging)
                     }
+                } else if newLevel >= 100 {
+                    assignIfChanged(\.batteryChargeStatus, .full)
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 persistBatteryLevel(batteryLevel, source: "live_2A19")

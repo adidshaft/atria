@@ -1005,6 +1005,49 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, ble, needle)
 
+    def test_strap_battery_charge_status_is_visible_and_honest(self):
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        data = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "enum BatteryChargeStatus: String, Equatable",
+            "case levelOnly",
+            "case charging",
+            "case notCharging",
+            "case full",
+            "@Published var batteryChargeStatus: BatteryChargeStatus = .levelOnly",
+            "2A19 does not expose a",
+            "direct charge flag",
+            "assignIfChanged(\\.batteryChargeStatus, .levelOnly)",
+            "delta > 0 && delta <= 5",
+            "assignIfChanged(\\.batteryChargeStatus, .charging)",
+            "assignIfChanged(\\.batteryChargeStatus, .notCharging)",
+            "assignIfChanged(\\.batteryChargeStatus, .full)",
+        ]:
+            assert_contains(self, ble, needle)
+
+        for needle in [
+            "var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus",
+            "var batteryChargeText: String",
+            "var batteryChargeCompactText: String",
+            "var batteryDetailText: String",
+            "Charge state not reported",
+            "ble.$batteryChargeStatus.removeDuplicates()",
+            "batteryChargeStatus: ble.batteryChargeStatus",
+            "Text(isInline ? liveStore.state.batteryChargeCompactText : liveStore.state.batteryChargeText)",
+            "accessibilityLabel(\"Strap battery \\(liveStore.state.batteryText), \\(liveStore.state.batteryChargeText).\")",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "detail: live.batteryDetailText",
+            "footnote: coreLiveStore.state.batteryDetailText",
+            "tint: coreLiveStore.state.batteryChargeStatus == .charging ? .green : .blue",
+        ]:
+            assert_contains(self, overview + data, needle)
+
     def test_handoff_21_historical_backfill_status_is_visible_and_fail_closed(self):
         archive = source(ROOT / "Atria" / "Atria" / "HistoricalArchive.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")

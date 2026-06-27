@@ -1064,7 +1064,8 @@ private struct AtriaCollectionStatusCardHost: View {
         AtriaMetricTile(label: "Battery",
                         value: coreLiveStore.state.batteryText,
                         state: coreLiveStore.state.batteryLevel >= 0 ? .live : .learning,
-                        tint: .green)
+                        tint: coreLiveStore.state.batteryChargeStatus == .charging ? .green : .blue,
+                        footnote: coreLiveStore.state.batteryDetailText)
         AtriaMetricTile(label: "Mode",
                         value: collectionLiveStore.state.modeLabel,
                         state: collectionLiveStore.state.longWearModeEnabled ? .live : .local,
