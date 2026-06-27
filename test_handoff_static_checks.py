@@ -2315,7 +2315,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaOverviewMorningJournalHost(heroStore: heroStore,",
             "struct AtriaOverviewMorningJournalHost: View",
-            "AtriaOverviewMorningJournalCard(hero: heroStore.state,",
+            "AtriaOverviewMorningJournalCard(snapshot: snapshotStore.state,",
             "sleepHistory: store.sleepHistorySnapshot",
             "todayEntry: store.behaviorJournalEntry()",
             "taggedDays: store.behaviorJournalEntries.count",
@@ -2324,19 +2324,20 @@ class HandoffStaticChecks(unittest.TestCase):
             'source: "morning_journal"',
             "struct AtriaOverviewMorningJournalCard: View, Equatable",
             'AtriaPanelSectionHeader(title: "Morning journal", subtitle: "")',
-            'AtriaMetricTile(label: latestNight?.evidenceLabel ?? "Sleep"',
-            'AtriaMetricTile(label: latestNight.map { "\\($0.evidenceLabel) eff" } ?? "Sleep eff"',
-            "value: latestNight?.sleepEfficiencyText ?? \"--\"",
-            "state: latestNight?.sleepEfficiency == nil ? .learning : .research",
-            "AtriaMetricTile(label: \"HRV\"",
-            "state: hrvState",
-            "footnote: hero.hrvDetail",
+            'private var sleepReviewTitle: String',
+            'private var sleepReviewValue: String',
+            'private var sleepReviewState: AtriaMetricState',
+            'Image(systemName: latestNight?.isNapEvidence == true ? "bed.double.fill" : "moon.zzz.fill")',
+            "Text(sleepReviewTitle)",
+            "Text(sleepStatusText)",
+            "Text(sleepReviewValue)",
+            "AtriaStateBadge(state: sleepReviewState)",
+            ".atriaInsetCard(tint: .cyan)",
             "parts.append(\"Eff \\(latestNight.sleepEfficiencyText)\")",
             "parts.append(\"HRV \\(latestNight.hrvText)\")",
             "parts.append(\"Resp \\(latestNight.respiratoryRateText)\")",
             "parts.append(latestNight.confirmationText)",
             "return parts.joined(separator: \" · \")",
-            "footnote: \"Duration-based estimate\"",
             'Label(latestNight?.isNapEvidence == true ? "Confirm nap" : "Confirm sleep",',
             '"Tags stay on device and power local insights."',
         ]:
@@ -2349,6 +2350,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "dailyRollups(",
             "detectedActivity(",
             "aggregateSleepCandidates(",
+            "AtriaMetricTile(label: \"Recovery\"",
+            "AtriaMetricTile(label: \"HRV\"",
+            "hero.hrvDetail",
         ]:
             assert_not_contains(self, morning_source, forbidden)
 
@@ -2520,13 +2524,14 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let sourceSessions = cachedCanonicalSessions",
             "let journalEntries = cachedBehaviorJournalEntries",
-            "Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,",
+            "Self.sortedBehaviorCorrelationSummaries(\n                Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,",
             "let insights = Self.deriveInsights(from: summaries)",
             "nonisolated static func deriveInsights(from summaries: [BehaviorCorrelationSummary])",
             "private nonisolated static func makeBehaviorCorrelationSummaries(sessions: [SavedSession]",
             "journalEntries: [BehaviorJournalEntry]",
-            "Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),",
+            "Self.sortedBehaviorCorrelationSummaries(\n            Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),",
             "private nonisolated static func averageDoubleSnapshot(_ values: [Double]) -> Double?",
+            "private nonisolated static func sortedBehaviorCorrelationSummaries(_ summaries: [BehaviorCorrelationSummary]) -> [BehaviorCorrelationSummary]",
             "Recovery correlations stay fail-closed until they can use real",
             "strain-derived recovery proxies would",
             "return InsightDayMetrics(recovery: nil, hrv: hrv)",
@@ -2544,6 +2549,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "detectedActivities(rest:",
         ]:
             assert_not_contains(self, recompute_source, forbidden)
+
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        journal_start = overview.index("struct AtriaOverviewBehaviorJournalSection")
+        journal_end = overview.index("struct AtriaOverviewBackupSectionHost")
+        journal_source = overview[journal_start:journal_end]
+        assert_contains(self, journal_source, "store.behaviorCorrelationSummariesCache\n            .filter { $0.days > 0 }")
+        assert_not_contains(self, journal_source, ".sorted { lhs, rhs in")
 
         insight_source_start = sessions.index("private nonisolated static func makeBehaviorCorrelationSummaries")
         insight_source_end = sessions.index("private nonisolated static func averageDoubleSnapshot")

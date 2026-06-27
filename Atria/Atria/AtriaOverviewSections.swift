@@ -2734,8 +2734,7 @@ struct AtriaOverviewMorningJournalHost: View {
     @ObservedObject var store: SessionStore
 
     var body: some View {
-        AtriaOverviewMorningJournalCard(hero: heroStore.state,
-                                        snapshot: snapshotStore.state,
+        AtriaOverviewMorningJournalCard(snapshot: snapshotStore.state,
                                         sleepHistory: store.sleepHistorySnapshot,
                                         todayEntry: store.behaviorJournalEntry(),
                                         taggedDays: store.behaviorJournalEntries.count,
@@ -2751,7 +2750,6 @@ struct AtriaOverviewMorningJournalHost: View {
 }
 
 struct AtriaOverviewMorningJournalCard: View, Equatable {
-    let hero: AtriaHomeModel.HeroSnapshot
     let snapshot: AtriaHomeModel.Snapshot
     let sleepHistory: SleepHistorySnapshot
     let todayEntry: BehaviorJournalEntry
@@ -2761,10 +2759,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaOverviewMorningJournalCard, rhs: AtriaOverviewMorningJournalCard) -> Bool {
-        lhs.hero.recoveryValue == rhs.hero.recoveryValue
-            && lhs.hero.hrvValue == rhs.hero.hrvValue
-            && lhs.hero.hrvDetail == rhs.hero.hrvDetail
-            && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
+        lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.snapshot.sleepDetail == rhs.snapshot.sleepDetail
             && lhs.sleepHistory == rhs.sleepHistory
             && lhs.todayEntry == rhs.todayEntry
@@ -2775,29 +2770,21 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         sleepHistory.latest
     }
 
-    private var recoveryState: AtriaMetricState {
-        switch hero.recoveryEstimate.confidence {
-        case .validated:
-            return .validated
-        case .personalBaseline:
-            return .personalBaseline
-        case .unverified:
-            return .research
-        case .learning:
-            return .learning
-        }
-    }
-
-    private var hrvState: AtriaMetricState {
-        let detail = hero.hrvDetail.lowercased()
-        if detail.contains("validated") { return .validated }
-        if detail.contains("personal baseline") || detail.contains("% kept") { return .personalBaseline }
-        return .learning
-    }
-
     private var shouldShowConfirmSleep: Bool {
         guard let latestNight else { return false }
         return !latestNight.confirmed && sleepHistory.candidateCount > 0
+    }
+
+    private var sleepReviewTitle: String {
+        latestNight?.evidenceLabel ?? "Sleep review"
+    }
+
+    private var sleepReviewValue: String {
+        latestNight?.durationText ?? metricDisplayValue(snapshot.sleepValue)
+    }
+
+    private var sleepReviewState: AtriaMetricState {
+        latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning)
     }
 
     private var sleepStatusText: String {
@@ -2830,29 +2817,39 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                 AtriaStateBadge(state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning))
             }
 
-            LazyVGrid(columns: Self.metricColumns, spacing: 10) {
-                AtriaMetricTile(label: latestNight?.evidenceLabel ?? "Sleep",
-                                value: latestNight?.durationText ?? metricDisplayValue(snapshot.sleepValue),
-                                state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning),
-                                tint: .cyan,
-                                footnote: sleepStatusText)
-                AtriaMetricTile(label: latestNight.map { "\($0.evidenceLabel) eff" } ?? "Sleep eff",
-                                value: latestNight?.sleepEfficiencyText ?? "--",
-                                state: latestNight?.sleepEfficiency == nil ? .learning : .research,
-                                tint: .cyan,
-                                footnote: "Duration-based estimate")
-                AtriaMetricTile(label: "Recovery",
-                                value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
-                                unit: hero.recoveryEstimate.percent == nil ? nil : "%",
-                                state: recoveryState,
-                                tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
-                                footnote: hero.recoveryEstimate.confidence.rawValue)
-                AtriaMetricTile(label: "HRV",
-                                value: metricDisplayValue(hero.hrvValue),
-                                state: hrvState,
-                                tint: .pink,
-                                footnote: hero.hrvDetail)
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: latestNight?.isNapEvidence == true ? "bed.double.fill" : "moon.zzz.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(Color.cyan)
+                    .frame(width: 34, height: 34)
+                    .background(Color.cyan.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(sleepReviewTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(sleepStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(sleepReviewValue)
+                        .font(.title3.weight(.bold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    AtriaStateBadge(state: sleepReviewState)
+                }
             }
+            .padding(12)
+            .atriaInsetCard(tint: .cyan)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(sleepReviewTitle) \(sleepReviewValue). \(sleepStatusText)")
 
             LazyVGrid(columns: Self.tagColumns, spacing: 8) {
                 ForEach(BehaviorJournalEntry.Tag.allCases) { tag in
@@ -2906,7 +2903,6 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         .atriaCard(emphasis: .soft)
     }
 
-    private static let metricColumns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
     private static let tagColumns = [GridItem(.adaptive(minimum: 118), spacing: 8)]
 
     private func metricDisplayValue(_ value: String) -> String {
@@ -3036,10 +3032,6 @@ struct AtriaOverviewBehaviorJournalSection: View {
         // to run the heavy rollup on every render/checkpoint tick).
         store.behaviorCorrelationSummariesCache
             .filter { $0.days > 0 }
-            .sorted { lhs, rhs in
-                if lhs.days != rhs.days { return lhs.days > rhs.days }
-                return lhs.tag.rawValue < rhs.tag.rawValue
-            }
     }
 
     var body: some View {
