@@ -428,6 +428,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "live.bluetoothPermissionDenied",
             "case .connected where pulse.needsContactCoach:",
             "pulse.hasPulseSignal ? \"Fit check needed\" : \"Connected, no pulse\"",
+            "case .scanning, .connecting:\n            if officialAppInstalled",
+            "Keep the strap nearby and close WHOOP if it keeps reclaiming it.",
             "Turn on Bluetooth in Settings.",
             "Allow Bluetooth for Atria in Settings.",
             "Tighten the strap fit or wet the sensor.",

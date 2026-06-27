@@ -2954,6 +2954,12 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "heart.slash",
                                             tint: .orange)
         case .scanning, .connecting:
+            if officialAppInstalled {
+                return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
+                                                action: "Keep the strap nearby and close WHOOP if it keeps reclaiming it.",
+                                                systemImage: "exclamationmark.triangle.fill",
+                                                tint: .orange)
+            }
             return AtriaConnectionDiagnosis(title: "Looking for your strap",
                                             action: "Bring your strap closer and keep it on your wrist.",
                                             systemImage: "dot.radiowaves.left.and.right",
