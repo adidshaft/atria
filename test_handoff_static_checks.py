@@ -3189,11 +3189,23 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, vitals, "AtriaInlineQuickStat(label: \"VO2max\"")
 
     def test_biological_age_is_local_estimate_and_fail_closed(self):
+        insights = source(ROOT / "Atria" / "Atria" / "Insights.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "static let trustedMinimumSamples = 14",
+            "static let staleAfter: TimeInterval = 21 * 24 * 60 * 60",
+            "func isStale(now: Date = Date()) -> Bool",
+            "func hasTrustedRestingBaseline(now: Date = Date()) -> Bool",
+            "restingSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)",
+            "func hasTrustedHRVBaseline(now: Date = Date()) -> Bool",
+            "hrvSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)",
+        ]:
+            assert_contains(self, insights, needle)
 
         for needle in [
             "struct BiologicalAgeSummary: Equatable",
@@ -3206,8 +3218,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "Building your body-age baseline",
             "func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary",
             "guard let vo2Max = vo2MaxEstimate.value else",
-            "baseline.restingSampleCount >= 7",
-            "baseline.hrvSampleCount >= 7",
+            "baseline.hasTrustedRestingBaseline()",
+            "14 fresh RHR baseline nights",
+            "baseline.hasTrustedHRVBaseline()",
+            "14 fresh HRV baseline nights",
             "let sleepNights = sleepHistorySnapshot.nights\n            .filter { !$0.isNapEvidence }\n            .prefix(14)",
             "guard sleepNights.count >= 3 else",
             "3 sleep night records",
@@ -3223,6 +3237,8 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
         assert_not_contains(self, sessions, "3 sleep or nap records")
+        assert_not_contains(self, sessions, "guard let restingHR = baseline.restingInt, baseline.restingSampleCount >= 7 else")
+        assert_not_contains(self, sessions, "guard let hrv = baseline.hrvInt, baseline.hrvSampleCount >= 7 else")
 
         for needle in [
             "enum BiologicalAge",

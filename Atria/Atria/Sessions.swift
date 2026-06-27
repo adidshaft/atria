@@ -7598,12 +7598,12 @@ final class SessionStore: ObservableObject {
             blockers.append("VO2max estimate")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard let restingHR = baseline.restingInt, baseline.restingSampleCount >= 7 else {
-            blockers.append("7 RHR baseline nights")
+        guard let restingHR = baseline.restingInt, baseline.hasTrustedRestingBaseline() else {
+            blockers.append("14 fresh RHR baseline nights")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard let hrv = baseline.hrvInt, baseline.hrvSampleCount >= 7 else {
-            blockers.append("7 HRV baseline nights")
+        guard let hrv = baseline.hrvInt, baseline.hasTrustedHRVBaseline() else {
+            blockers.append("14 fresh HRV baseline nights")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
         let sleepNights = sleepHistorySnapshot.nights
