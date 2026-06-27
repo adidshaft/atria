@@ -190,6 +190,7 @@ struct AtriaCollectionTabContent: View {
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let snapshotStore: AtriaHomeModel.SnapshotStore
     let profileStore: AtriaHomeModel.ProfileStore
+    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let store: SessionStore
     let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
@@ -211,6 +212,7 @@ struct AtriaCollectionTabContent: View {
                     LazyVStack(spacing: 18) {
                         captureCard
                         researchSignalsCard
+                        biologicalAgeCard
                         if developerModeEnabled {
                             rrReferenceCard
                             hrReferenceCard
@@ -230,6 +232,7 @@ struct AtriaCollectionTabContent: View {
                 LazyVStack(spacing: 18) {
                     captureCard
                     researchSignalsCard
+                    biologicalAgeCard
                     if developerModeEnabled {
                         rrReferenceCard
                         hrReferenceCard
@@ -272,6 +275,10 @@ struct AtriaCollectionTabContent: View {
     private var researchSignalsCard: some View {
         AtriaCollectionResearchSignalsCard(summary: store.imuAuditSummary,
                                            sleepHistory: store.sleepHistorySnapshot)
+    }
+
+    private var biologicalAgeCard: some View {
+        AtriaCollectionBiologicalAgeCardHost(profileMetricsStore: profileMetricsStore)
     }
 
     private var researchManeuverCard: some View {
@@ -668,6 +675,118 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
+    }
+
+    private static let statColumns = AtriaMetricTile.gridColumns
+}
+
+private struct AtriaCollectionBiologicalAgeCardHost: View {
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+
+    var body: some View {
+        AtriaCollectionBiologicalAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
+            .equatable()
+    }
+}
+
+private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
+    let summary: BiologicalAgeSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Biological Age", subtitle: summary.narrative)
+                Spacer(minLength: 0)
+                AtriaStateBadge(state: summary.isReady ? .estimate : .learning)
+            }
+
+            LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
+                AtriaMetricTile(label: "Body age",
+                                value: summary.valueText,
+                                state: summary.isReady ? .estimate : .learning,
+                                tint: summary.isReady ? .purple : .orange,
+                                footnote: summary.isReady ? summary.detailText : "Building baseline")
+                AtriaMetricTile(label: "Delta",
+                                value: summary.ageDelta.map { "\($0 > 0 ? "+" : "")\($0)" } ?? "--",
+                                unit: summary.ageDelta == nil ? nil : "yr",
+                                state: summary.isReady ? .estimate : .learning,
+                                tint: deltaTint,
+                                footnote: summary.isReady ? summary.detailText : "Needs baseline")
+            }
+
+            if summary.factors.isEmpty {
+                Text(summary.blockerText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(summary.factors) { factor in
+                        factorRow(factor)
+                    }
+                }
+            }
+
+            Text(summary.footnote)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private func factorRow(_ factor: BioAgeFactor) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon(for: factor.direction))
+                .foregroundStyle(tint(for: factor.direction))
+                .frame(width: 28, height: 28)
+                .background(AtriaIconTileBackground(cornerRadius: 10, tint: tint(for: factor.direction)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(factor.label)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(factor.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(factor.deltaText)
+                .font(.caption.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(tint(for: factor.direction))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .padding(10)
+        .atriaInsetCard(tint: tint(for: factor.direction))
+    }
+
+    private var deltaTint: Color {
+        guard let ageDelta = summary.ageDelta else { return .orange }
+        if ageDelta == 0 { return .blue }
+        return ageDelta < 0 ? .green : .orange
+    }
+
+    private func tint(for direction: BioAgeFactor.Direction) -> Color {
+        switch direction {
+        case .younger: return .green
+        case .older: return .orange
+        case .neutral: return .blue
+        }
+    }
+
+    private func icon(for direction: BioAgeFactor.Direction) -> String {
+        switch direction {
+        case .younger: return "arrow.down.forward.circle.fill"
+        case .older: return "arrow.up.forward.circle.fill"
+        case .neutral: return "equal.circle.fill"
+        }
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
@@ -1919,8 +2038,8 @@ private struct AtriaProfileCard: View, Equatable {
                 } else {
                     ForEach(biologicalAgeSummary.factors) { factor in
                         HStack(spacing: 10) {
-                            Image(systemName: factor.deltaVsChronological <= 0 ? "arrow.down.forward.circle.fill" : "arrow.up.forward.circle.fill")
-                                .foregroundStyle(factor.deltaVsChronological <= 0 ? .green : .orange)
+                            Image(systemName: factor.direction == .older ? "arrow.up.forward.circle.fill" : "arrow.down.forward.circle.fill")
+                                .foregroundStyle(factor.direction == .older ? .orange : .green)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(factor.label)
                                     .font(.caption.weight(.semibold))
@@ -1932,10 +2051,10 @@ private struct AtriaProfileCard: View, Equatable {
                             Text(factor.deltaText)
                                 .font(.caption.weight(.bold))
                                 .monospacedDigit()
-                                .foregroundStyle(factor.deltaVsChronological <= 0 ? .green : .orange)
+                                .foregroundStyle(factor.direction == .older ? .orange : .green)
                         }
                         .padding(10)
-                        .atriaInsetCard(tint: factor.deltaVsChronological <= 0 ? .green : .orange)
+                        .atriaInsetCard(tint: factor.direction == .older ? .orange : .green)
                     }
                 }
                 Text(biologicalAgeSummary.footnote)

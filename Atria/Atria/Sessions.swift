@@ -1535,10 +1535,17 @@ struct VO2MaxEstimateSummary: Equatable {
 }
 
 struct BioAgeFactor: Equatable, Identifiable {
+    enum Direction: String, Equatable {
+        case younger
+        case older
+        case neutral
+    }
+
     let id: String
     let label: String
     let ageEquivalent: Int
     let deltaVsChronological: Int
+    let direction: Direction
     let weight: Double
     let detail: String
 
@@ -7731,12 +7738,14 @@ final class SessionStore: ObservableObject {
                                                      chronologicalAge: Int,
                                                      weight: Double,
                                                      detail: String) -> BioAgeFactor {
-        BioAgeFactor(id: id,
-                     label: label,
-                     ageEquivalent: ageEquivalent,
-                     deltaVsChronological: ageEquivalent - chronologicalAge,
-                     weight: weight,
-                     detail: detail)
+        let delta = ageEquivalent - chronologicalAge
+        return BioAgeFactor(id: id,
+                            label: label,
+                            ageEquivalent: ageEquivalent,
+                            deltaVsChronological: delta,
+                            direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older),
+                            weight: weight,
+                            detail: detail)
     }
 
     // Reference curves are compact local approximations of commonly published
