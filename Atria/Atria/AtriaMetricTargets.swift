@@ -148,70 +148,17 @@ extension Metrics {
     static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,
                              greenDelta: Double = 0.2,
                              redDelta: Double = -0.2) -> AtriaMetricZone? {
-        guard summary.value != nil,
-              summary.trendText != "Learning",
-              let trendDelta = summary.trendDelta else { return nil }
-        let trimmedTrend = summary.trendText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safeGreenDelta = min(max(greenDelta, 0.0), 2.0)
-        let safeRedDelta = max(min(redDelta, -0.05), -2.0)
-        let level: AtriaMetricZoneLevel
-        if trendDelta >= safeGreenDelta {
-            level = .green
-        } else if trendDelta <= safeRedDelta {
-            level = .red
-        } else {
-            level = .yellow
-        }
-
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "VO2max trend is improving. Keep the cardio and recovery habits consistent."
-        case .yellow:
-            recommendation = "VO2max trend is flat -- consistent cardio, Zone 2, intervals, and sleep move this most."
-        case .red:
-            recommendation = "Trending the wrong way -- consistent cardio, Zone 2, intervals, and sleep move this most."
-        }
-
-        return AtriaMetricZone(level: level,
-                               title: "VO2max trend",
-                               current: "Trend \(trimmedTrend), \(summary.trendDetail)",
-                               targetSummary: String(format: "Green >= +%.1f, yellow %.1f to %.1f, red <= %.1f.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
-                               recommendation: recommendation,
-                               disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        AtriaAnalytics.TargetZones.vo2Trend(summary,
+                                            greenDelta: greenDelta,
+                                            redDelta: redDelta)
     }
 
     static func biologicalAgeZone(_ summary: BiologicalAgeSummary,
                                   greenOlderDelta: Int = 0,
                                   yellowOlderDelta: Int = 3) -> AtriaMetricZone? {
-        guard summary.isReady, let delta = summary.ageDelta else { return nil }
-        let safeGreenDelta = min(max(greenOlderDelta, -10), 10)
-        let safeYellowDelta = min(max(yellowOlderDelta, safeGreenDelta + 1), 20)
-        let level: AtriaMetricZoneLevel
-        if delta <= safeGreenDelta {
-            level = .green
-        } else if delta <= safeYellowDelta {
-            level = .yellow
-        } else {
-            level = .red
-        }
-
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Body age is on the younger side for your profile. Keep the fitness, sleep, HRV, and recovery habits consistent."
-        case .yellow:
-            recommendation = "Body age is slightly older than your profile. Consistent cardio, sleep, HRV, and recovery habits move this estimate most."
-        case .red:
-            recommendation = "Body age is older than your profile. Prioritize consistent cardio, sleep regularity, recovery, and easier days when strain is high."
-        }
-
-        return AtriaMetricZone(level: level,
-                               title: "Body age target",
-                               current: "\(summary.valueText), \(summary.detailText).",
-                               targetSummary: "Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
-                               recommendation: recommendation,
-                               disclaimer: summary.footnote)
+        AtriaAnalytics.TargetZones.biologicalAge(summary,
+                                                 greenOlderDelta: greenOlderDelta,
+                                                 yellowOlderDelta: yellowOlderDelta)
     }
 
     static func respiratoryRateZone(_ breathsPerMinute: Double?,
