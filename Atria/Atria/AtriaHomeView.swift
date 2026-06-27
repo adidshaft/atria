@@ -34,6 +34,27 @@ struct AtriaHomeView: View {
 
         var id: String { rawValue }
 
+        var deepLinkPath: String {
+            switch self {
+            case .overview: return "overview"
+            case .vitals: return "vitals"
+            case .collection: return "data"
+            }
+        }
+
+        static func deepLinkDestination(for url: URL) -> HomeTab? {
+            guard url.scheme?.lowercased() == "atria" else { return nil }
+            let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+                .map { $0.lowercased() }
+            guard let token = pieces.first(where: { $0 != "tab" }) else { return nil }
+            switch token {
+            case "overview", "today": return .overview
+            case "vitals": return .vitals
+            case "data", "collection": return .collection
+            default: return nil
+            }
+        }
+
         var title: String {
             switch self {
             case .overview: return "Overview"
@@ -343,6 +364,7 @@ struct AtriaHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             batteryState = UIDevice.current.batteryState
         }
+        .onOpenURL(perform: handleDeepLink)
         .onDisappear {
             connectionGuidePresentationTask?.cancel()
             connectionGuidePresentationTask = nil
@@ -354,6 +376,21 @@ struct AtriaHomeView: View {
             automaticConnectionSetupTask = nil
             mediaController.setRefreshLoopActive(false)
         }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard let tab = HomeTab.deepLinkDestination(for: url) else { return }
+        selectedTab = tab
+        hasUnlockedPrimaryContent = true
+        if tab != .overview {
+            hasUnlockedSecondarySections = true
+        }
+        if tab == .collection {
+            model.loadDeferredDiagnosticsIfNeeded(reason: "deeplink_\(tab.deepLinkPath)")
+        }
+        AtriaDebugLog("ATRIADBG deeplink status=handled target=%@ url=%@",
+                      tab.deepLinkPath,
+                      url.absoluteString)
     }
 
     private var contentWidth: CGFloat {

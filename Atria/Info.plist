@@ -11,6 +11,17 @@
 	<string>Atria</string>
 	<key>CFBundleName</key>
 	<string>Atria</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.adidshaft.atria</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>atria</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>whoop</string>

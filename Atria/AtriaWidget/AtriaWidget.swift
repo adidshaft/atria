@@ -5,6 +5,8 @@ import AppIntents
 
 private let snapshotKey = "atria.widgetSnapshot.v1"
 private let appGroupID = "group.com.adidshaft.atria"
+private let atriaOverviewURL = URL(string: "atria://tab/overview")!
+private let atriaVitalsURL = URL(string: "atria://tab/vitals")!
 
 struct AtriaWidgetSnapshot: Codable {
     let schema: Int
@@ -60,16 +62,19 @@ struct AtriaWidgetEntryView: View {
     let entry: AtriaWidgetEntry
 
     var body: some View {
-        switch family {
-        case .accessoryCircular:
-            accessoryCircular
-        case .accessoryRectangular:
-            accessoryRectangular
-        case .accessoryInline:
-            Text(inlineText)
-        default:
-            systemWidget
+        Group {
+            switch family {
+            case .accessoryCircular:
+                accessoryCircular
+            case .accessoryRectangular:
+                accessoryRectangular
+            case .accessoryInline:
+                Text(inlineText)
+            default:
+                systemWidget
+            }
         }
+        .widgetURL(atriaOverviewURL)
     }
 
     private var systemWidget: some View {
@@ -380,6 +385,15 @@ private func elapsedText(since start: Date) -> String {
 enum AtriaWidgetMetric {
     case steps, strain, hrv, bpm
 
+    var deepLinkURL: URL {
+        switch self {
+        case .steps, .strain:
+            return atriaOverviewURL
+        case .hrv, .bpm:
+            return atriaVitalsURL
+        }
+    }
+
     var title: String {
         switch self {
         case .steps: return "Steps"
@@ -422,39 +436,42 @@ struct AtriaMetricWidgetEntryView: View {
     private var value: String { metric.value(entry.snapshot) }
 
     var body: some View {
-        switch family {
-        case .accessoryInline:
-            Label("\(metric.title) \(value)", systemImage: metric.icon)
-        case .accessoryRectangular:
-            HStack(spacing: 8) {
-                Image(systemName: metric.icon)
-                    .font(.title3)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(metric.title.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+        Group {
+            switch family {
+            case .accessoryInline:
+                Label("\(metric.title) \(value)", systemImage: metric.icon)
+            case .accessoryRectangular:
+                HStack(spacing: 8) {
+                    Image(systemName: metric.icon)
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(metric.title.uppercased())
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(value)
+                            .font(.title2.weight(.bold))
+                            .monospacedDigit()
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .containerBackground(.clear, for: .widget)
+            default:
+                VStack(spacing: 0) {
+                    Image(systemName: metric.icon)
+                        .font(.system(size: 12, weight: .semibold))
                     Text(value)
-                        .font(.title2.weight(.bold))
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .minimumScaleFactor(0.6)
+                        .minimumScaleFactor(0.5)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 0)
+                .containerBackground(for: .widget) { AccessoryWidgetBackground() }
+                .widgetAccentable()
             }
-            .containerBackground(.clear, for: .widget)
-        default: // accessoryCircular
-            VStack(spacing: 0) {
-                Image(systemName: metric.icon)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(value)
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.5)
-                    .lineLimit(1)
-            }
-            .containerBackground(for: .widget) { AccessoryWidgetBackground() }
-            .widgetAccentable()
         }
+        .widgetURL(metric.deepLinkURL)
     }
 }
 
