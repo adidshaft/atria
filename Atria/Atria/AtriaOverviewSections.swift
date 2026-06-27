@@ -518,7 +518,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, bodyTemp, trend, insights
+    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -530,6 +530,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "Steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
+        case .bloodOxygen: return "Blood oxygen"
         case .bodyTemp: return "Body temp"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
@@ -545,6 +546,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
         case .vo2max: return "lungs.fill"
+        case .bloodOxygen: return "drop.degreesign"
         case .bodyTemp: return "thermometer.variable"
         case .trend: return "chart.line.uptrend.xyaxis"
         case .insights: return "sparkles"
@@ -570,7 +572,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -840,6 +842,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .accessibilityLabel(vo2MaxEstimate.value == nil
                                     ? "VO2max building from resting baseline and measured HR max"
                                     : "VO2max estimate \(vo2MaxEstimate.valueText), \(vo2MaxEstimate.confidence)")
+        case .bloodOxygen:
+            AtriaGlanceMetricCard(title: "Blood oxygen",
+                                  value: sensorSummary.spo2CandidateFrames > 0 ? "\(sensorSummary.spo2CandidateFrames)" : "--",
+                                  detail: sensorSummary.spo2CandidateFrames > 0 ? "research frames" : "Sleep research",
+                                  systemImage: metric.systemImage,
+                                  tint: sensorSummary.spo2CandidateFrames > 0 ? .blue : .orange)
+                .accessibilityLabel(sensorSummary.spo2CandidateFrames > 0
+                                    ? "Blood oxygen research has \(sensorSummary.spo2CandidateFrames) candidate frames, not an SpO2 reading"
+                                    : "Blood oxygen research is building and does not show an SpO2 percentage")
         case .bodyTemp:
             AtriaGlanceMetricCard(title: "Body temp",
                                   value: sensorSummary.skinTempCandidateFrames > 0 ? "\(sensorSummary.skinTempCandidateFrames)" : "--",
