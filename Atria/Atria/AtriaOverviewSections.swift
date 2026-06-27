@@ -538,6 +538,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -560,6 +561,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      restingBaseline: store.baseline.restingInt,
                                      restingBaselineSamples: store.baseline.restingSampleCount,
                                      stepsGoal: stepsGoal,
+                                     sleepGoalHours: sleepGoalHours,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
                                      hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
@@ -831,6 +833,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let restingBaseline: Int?
     let restingBaselineSamples: Int
     let stepsGoal: Int
+    let sleepGoalHours: Double
     let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
     let sizeOverridesCSV: String
@@ -886,6 +889,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.stepsGoal == rhs.stepsGoal
+            && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
             && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
@@ -1191,7 +1195,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(snapshot.sleepValue),
                                   detail: metricIsPending(snapshot.sleepValue) ? "Learning" : "Last sleep",
                                   systemImage: metric.systemImage,
-                                  tint: .cyan)
+                                  tint: sleepDurationZone?.tint ?? .cyan,
+                                  zone: sleepDurationZone)
         case .sleepHistory:
             sleepHistoryCard
         case .sleepEfficiency:
@@ -1436,6 +1441,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
         Metrics.sleepEfficiencyZone(sleepHistory.latest?.sleepEfficiency)
+    }
+
+    private var sleepDurationZone: AtriaMetricZone? {
+        Metrics.sleepDurationZone(sleepHistory.latest?.durationHours, goalHours: sleepGoalHours)
     }
 
     private var stepsZone: AtriaMetricZone? {

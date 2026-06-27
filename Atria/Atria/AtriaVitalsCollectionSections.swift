@@ -338,6 +338,7 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     @ObservedObject var store: SessionStore
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
@@ -348,6 +349,7 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 hrvBaselineSamples: store.baseline.hrvSampleCount,
                                 restingBaseline: store.baseline.restingInt,
                                 restingBaselineSamples: store.baseline.restingSampleCount,
+                                sleepGoalHours: sleepGoalHours,
                                 onAddManualSleep: addManualSleep)
             .equatable()
     }
@@ -1646,6 +1648,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let hrvBaselineSamples: Int
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let sleepGoalHours: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
@@ -1656,6 +1659,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.sleepGoalHours == rhs.sleepGoalHours
     }
 
     private var recoveryState: AtriaMetricState {
@@ -1681,6 +1685,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                                   hrvBaselineSamples: hrvBaselineSamples,
                                   restingBaseline: restingBaseline,
                                   restingBaselineSamples: restingBaselineSamples,
+                                  sleepGoalHours: sleepGoalHours,
                                   onAddManualSleep: onAddManualSleep)
         }
         .padding(18)
@@ -1733,6 +1738,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let hrvBaselineSamples: Int
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let sleepGoalHours: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     @State private var showManualSleepSheet = false
 
@@ -1742,6 +1748,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.sleepGoalHours == rhs.sleepGoalHours
     }
 
     private var chartNights: [SleepHistorySnapshot.Night] {
@@ -1765,6 +1772,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         Metrics.restingHeartRateZone(snapshot.latest?.restingHR,
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples)
+    }
+
+    private var sleepDurationZone: AtriaMetricZone? {
+        Metrics.sleepDurationZone(snapshot.latest?.durationHours, goalHours: sleepGoalHours)
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
@@ -1811,8 +1822,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     AtriaMetricTile(label: snapshot.latest?.evidenceLabel ?? "Latest",
                                     value: snapshot.latest?.durationText ?? "--",
                                     state: snapshot.latest?.confirmed == true ? .validated : .research,
-                                    tint: .cyan,
-                                    footnote: latestEvidenceFootnote)
+                                    tint: sleepDurationZone?.tint ?? .cyan,
+                                    footnote: latestEvidenceFootnote,
+                                    zone: sleepDurationZone)
                     AtriaMetricTile(label: "Average",
                                     value: snapshot.averageDurationText,
                                     state: .local,
