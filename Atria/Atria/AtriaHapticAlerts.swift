@@ -10,6 +10,20 @@ struct AtriaHapticAlertSettings: Codable, Equatable {
     var strainTarget = true
     var lowBattery = true
 
+    var enabledCount: Int {
+        [incomingCalls, heartRateZones, recoveryReady, strainTarget, lowBattery].filter { $0 }.count
+    }
+
+    var glanceValueText: String {
+        "\(enabledCount)/5"
+    }
+
+    var glanceDetailText: String {
+        if enabledCount == 0 { return "Off" }
+        if heartRateZones { return "Zones on" }
+        return "Zones off"
+    }
+
     private static let key = "atria.hapticAlertSettings.v1"
 
     static func load() -> AtriaHapticAlertSettings {
