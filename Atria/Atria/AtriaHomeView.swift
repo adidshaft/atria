@@ -1324,25 +1324,24 @@ private struct AtriaLiveTabAccessory: View {
             Image(systemName: liveStore.state.batterySymbol)
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(liveStore.state.batteryIsCharging ? Color.green : .secondary)
+                .foregroundStyle(liveStore.state.batteryChargeStatus == .charging ? Color.green : .secondary)
 
             Text(liveStore.state.batteryText)
                 .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                 .monospacedDigit()
 
-            if !isInline {
-                if liveStore.state.batteryIsCharging {
-                    Text("Charging")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.green)
-                }
-                Spacer(minLength: 0)
-            }
+            Text(isInline ? liveStore.state.batteryChargeCompactText : liveStore.state.batteryChargeText)
+                .font((isInline ? Font.caption2 : Font.caption).weight(.semibold))
+                .foregroundStyle(liveStore.state.batteryChargeStatus == .charging ? .green : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+
+            if !isInline { Spacer(minLength: 0) }
         }
         .padding(.horizontal, isInline ? 8 : 12)
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strap battery \(liveStore.state.batteryText)\(liveStore.state.batteryIsCharging ? ", charging" : "").")
+        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
     }
 }
 
@@ -1473,6 +1472,7 @@ final class AtriaHomeModel {
         var displayDeviceName: String
         var batteryLevel: Int
         var batteryIsCharging: Bool
+        var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
         var rrContinuityState: String
         var sessionSampleCount: Int
         var liveTRIMP: Double
@@ -1487,6 +1487,19 @@ final class AtriaHomeModel {
         var pendingKnownReconnectReason: String
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
+        var batteryChargeText: String { batteryLevel >= 0 ? batteryChargeStatus.label : "Waiting" }
+        var batteryChargeCompactText: String {
+            switch batteryChargeStatus {
+            case .levelOnly: return "Level"
+            case .charging: return "Charging"
+            case .notCharging: return "Not chg"
+            case .full: return "Full"
+            }
+        }
+        var batteryDetailText: String {
+            guard batteryLevel >= 0 else { return "Waiting for strap battery" }
+            return batteryChargeStatus == .levelOnly ? "Charge state not reported" : batteryChargeText
+        }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
         var needsRRQualityCoach: Bool { rrContinuityState == "poor_contact" }
         func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval? {
@@ -1509,7 +1522,7 @@ final class AtriaHomeModel {
         /// SF Symbol matching the level, with the bolt overlay while charging.
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "battery.0percent" }
-            if batteryIsCharging { return "battery.100percent.bolt" }
+            if batteryChargeStatus == .charging { return "battery.100percent.bolt" }
             switch batteryLevel {
             case ..<13: return "battery.0percent"
             case ..<38: return "battery.25percent"
@@ -1968,6 +1981,7 @@ final class AtriaHomeModel {
         let throttledCoreLiveChanges = Publishers.MergeMany([
             ble.$bluetoothPermissionDenied.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryChargeStatus.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -2313,6 +2327,7 @@ final class AtriaHomeModel {
                              displayDeviceName: AtriaDeviceDisplayName.shortName(for: deviceName),
                              batteryLevel: ble.batteryLevel,
                              batteryIsCharging: ble.batteryIsCharging,
+                             batteryChargeStatus: ble.batteryChargeStatus,
                              rrContinuityState: ble.rrContinuityState,
                              sessionSampleCount: liveSessionDerived.sampleCount,
                              liveTRIMP: liveSessionDerived.trimp,
