@@ -335,7 +335,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Respiratory rate baseline",
                                    current: String(format: "%.1f/min, %+.1f vs %.1f baseline.", breathsPerMinute, delta, baseline),
-                                   targetSummary: String(format: "Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
+                                   targetSummary: String(format: "Research baseline · Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
                                    recommendation: recommendation,
                                    disclaimer: "Research sleep-only estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
@@ -360,7 +360,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Skin temperature baseline",
                                    current: String(format: "%+.1f delta C vs sleep baseline.", delta),
-                                   targetSummary: String(format: "Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
+                                   targetSummary: String(format: "Research baseline · Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
                                    recommendation: recommendation,
                                    disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }

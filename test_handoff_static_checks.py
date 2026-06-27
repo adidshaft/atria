@@ -4630,9 +4630,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "baselineSamples >= 3",
             "absDelta <= safeGreenDelta",
             "absDelta <= safeYellowDelta",
+            "Research baseline · Green within +/-%.1f/min",
             "Research sleep-only estimate.",
             "static func skinTemperatureDeviation(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,",
-            "Green within +/-%.1f delta C",
+            "Research baseline · Green within +/-%.1f delta C",
             "Research relative sleep-only deviation; not an absolute temperature.",
         ]:
             assert_contains(self, analytics, needle)
