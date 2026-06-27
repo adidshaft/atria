@@ -2825,6 +2825,16 @@ final class SessionStore: ObservableObject {
             .sorted { $0.start > $1.start }
     }
 
+    private nonisolated static func sleepSpan(duration: TimeInterval,
+                                              start: Date?,
+                                              end: Date?) -> TimeInterval? {
+        guard duration > 0 else { return nil }
+        if let start, let end, end > start {
+            return max(duration, end.timeIntervalSince(start))
+        }
+        return duration
+    }
+
     private nonisolated static func makeHistoryDailyRollups(sessions: [SavedSession],
                                                             detections: [ActivityDetection],
                                                             confirmedWorkouts: [UserConfirmedWorkout],
@@ -2846,6 +2856,9 @@ final class SessionStore: ObservableObject {
             let sleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
             let sleepStart = sleepDetections.map(\.start).min()
             let sleepEnd = sleepDetections.map(\.end).max()
+            let sleepSpan = Self.sleepSpan(duration: sleepDuration,
+                                           start: sleepStart,
+                                           end: sleepEnd)
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -2869,7 +2882,7 @@ final class SessionStore: ObservableObject {
                                sleepCandidates: sleepDetections.count,
                                duration: duration,
                                sleepDuration: sleepDuration > 0 ? sleepDuration : nil,
-                               sleepSpan: sleepDuration > 0 ? sleepDuration : nil,
+                               sleepSpan: sleepSpan,
                                sleepStart: sleepStart,
                                sleepEnd: sleepEnd,
                                sleepSource: sleepDuration > 0 ? "single_session_sleep_candidate" : nil,
@@ -6841,6 +6854,9 @@ final class SessionStore: ObservableObject {
             let sleepDetections = detections.filter { $0.kind == .sleepCandidate }
             let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\.start).min()
             let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\.end).max()
+            let singleSessionSleepSpan = Self.sleepSpan(duration: singleSessionSleepDuration,
+                                                        start: sleepDetections.map(\.start).min(),
+                                                        end: sleepDetections.map(\.end).max())
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -6864,7 +6880,7 @@ final class SessionStore: ObservableObject {
                                sleepCandidates: sleepCandidates,
                                duration: duration,
                                sleepDuration: aggregateSleep?.duration ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
-                               sleepSpan: aggregateSleep?.span ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
+                               sleepSpan: aggregateSleep?.span ?? singleSessionSleepSpan,
                                sleepStart: sleepStart,
                                sleepEnd: sleepEnd,
                                sleepSource: aggregateSleep?.kind,
