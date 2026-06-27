@@ -898,14 +898,14 @@ struct AtriaHomeView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else {
-                hrImportStatus = "No HR file selected"
+                hrImportStatus = "No heart-rate file selected"
                 return
             }
             let passed = store.importHRReferenceCSVForUI(from: url)
-            hrImportStatus = passed ? "HR reference validated" : "HR reference still pending"
+            hrImportStatus = passed ? "Heart-rate check passed" : "Heart-rate check still pending"
             model.forceRefresh()
         case .failure:
-            hrImportStatus = "HR import failed"
+            hrImportStatus = "Heart-rate import failed"
         }
     }
 

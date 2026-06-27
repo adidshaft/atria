@@ -519,7 +519,7 @@ private struct AtriaCollectionHRReferenceCardHost: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "HR reference", subtitle: "")
+                AtriaPanelSectionHeader(title: "Heart-rate check", subtitle: "")
 
                 Spacer(minLength: 0)
 
@@ -531,9 +531,9 @@ private struct AtriaCollectionHRReferenceCardHost: View {
             }
 
             AtriaCollectionReferenceSummaryCard(
-                leadingTitle: "HR status",
+                leadingTitle: "Heart-rate status",
                 leadingValue: snapshotStore.state.referenceText,
-                leadingDetail: "external workout check",
+                leadingDetail: "comparison workout",
                 trailingTitle: "Workout",
                 trailingValue: snapshotStore.state.workoutText,
                 trailingDetail: "current classifier"
@@ -562,14 +562,14 @@ private struct AtriaCollectionHRReferenceCardHost: View {
         Button {
             hrShareURL = store.exportHRReferencePackageForUI()
         } label: {
-            Text("Export HR").frame(maxWidth: .infinity)
+            Text("Export heart rate").frame(maxWidth: .infinity)
         }
         .atriaCardAction(prominent: false, tint: .gray)
 
         Button {
             showHRImporter = true
         } label: {
-            Text("Import HR").frame(maxWidth: .infinity)
+            Text("Import heart rate").frame(maxWidth: .infinity)
         }
         .atriaCardAction(tint: .blue)
 
