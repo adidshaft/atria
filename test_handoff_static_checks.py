@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import re
 import unittest
 from pathlib import Path
@@ -4737,6 +4738,134 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, settings, needle)
         assert_not_contains(self, settings, "7-night baseline")
+
+    def test_pure_analytics_calibration_examples_are_monotonic_and_gated(self):
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            "enum BiologicalAge",
+            "static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary",
+            "static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int",
+            "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
+            "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
+            "static func sleepAgeEquivalent(durationHours: Double,",
+            "static func activityAgeEquivalent(_ chronicLoad: Double,",
+            "static func bmiAgeEquivalent(_ bmi: Double,",
+            "static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
+            "static func monotonyReadinessSignal(monotony: Double?, enoughAcute: Bool) -> String",
+            "static func trainingReadiness(acwrSignal: String,",
+        ]:
+            assert_contains(self, analytics, needle)
+
+        for needle in [
+            "guard let vo2Max = vo2MaxEstimate.value else",
+            "baseline.hasTrustedRestingBaseline()",
+            "baseline.hasTrustedHRVBaseline()",
+            "guard sleepNights.count >= 3 else",
+            "trainingLoadSummarySnapshot.confidence == \"local\"",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        def vo2_age(vo2, sex):
+            base_at_20 = 44.0 if sex == "female" else 52.0
+            yearly_drop = 0.30 if sex == "female" else 0.35
+            return min(max(round(20 + (base_at_20 - vo2) / yearly_drop), 18), 90)
+
+        def rhr_age(resting_hr):
+            return min(max(round(30 + (resting_hr - 60) * 0.8), 18), 90)
+
+        def hrv_age(rmssd):
+            safe = max(8.0, rmssd)
+            return min(max(round(20 - math.log(safe / 70.0) / 0.018), 18), 90)
+
+        def sleep_age(duration_hours, efficiency, chronological_age):
+            duration_penalty = abs(duration_hours - 7.5) * 2.0
+            efficiency_penalty = max(0, 0.85 - efficiency) * 35
+            bonus = -4.0 if duration_penalty < 1.0 and efficiency >= 0.88 else 0
+            return min(max(round(chronological_age + duration_penalty + efficiency_penalty + bonus), 18), 90)
+
+        def activity_age(chronic_load, chronological_age):
+            delta = min(max((chronic_load - 25) / 3.0, -8), 8)
+            return min(max(round(chronological_age - delta), 18), 90)
+
+        def bmi_age(bmi, chronological_age):
+            penalty = (18.5 - bmi) * 1.2 if bmi < 18.5 else max(0, bmi - 24.9) * 0.8
+            return min(max(round(chronological_age + penalty), 18), 90)
+
+        def biological_age(chronological_age, weighted_factors):
+            weighted = sum(age * weight for age, weight in weighted_factors)
+            total_weight = sum(weight for _, weight in weighted_factors)
+            unclamped = round(weighted / max(total_weight, 0.01))
+            return min(max(unclamped, chronological_age - 20), chronological_age + 20)
+
+        self.assertLess(vo2_age(56, "male"), vo2_age(40, "male"))
+        self.assertLess(vo2_age(48, "female"), vo2_age(34, "female"))
+        self.assertLess(hrv_age(80), hrv_age(30))
+        self.assertLess(rhr_age(52), rhr_age(75))
+        self.assertLess(sleep_age(7.6, 0.91, 38), sleep_age(5.5, 0.78, 38))
+        self.assertLess(activity_age(40, 38), activity_age(8, 38))
+        self.assertLess(bmi_age(22.0, 38), bmi_age(32.0, 38))
+
+        strong_factors = [
+            (vo2_age(55, "male"), 0.30),
+            (rhr_age(55), 0.20),
+            (hrv_age(70), 0.20),
+            (sleep_age(7.5, 0.90, 38), 0.15),
+            (activity_age(36, 38), 0.10),
+            (bmi_age(22.0, 38), 0.05),
+        ]
+        weak_factors = [
+            (vo2_age(28, "male"), 0.30),
+            (rhr_age(82), 0.20),
+            (hrv_age(16), 0.20),
+            (sleep_age(5.2, 0.74, 38), 0.15),
+            (activity_age(3, 38), 0.10),
+            (bmi_age(35.0, 38), 0.05),
+        ]
+        self.assertLess(biological_age(38, strong_factors), 38)
+        self.assertEqual(biological_age(38, weak_factors), 58)
+
+        def acwr_signal(ratio, enough_chronic):
+            if not enough_chronic or ratio is None:
+                return "learning"
+            if ratio >= 1.50 or ratio < 0.60:
+                return "bad"
+            if ratio > 1.30 or ratio < 0.80:
+                return "watch"
+            return "good"
+
+        def monotony_signal(monotony, enough_acute):
+            if not enough_acute or monotony is None:
+                return "learning"
+            if monotony >= 2.50:
+                return "bad"
+            if monotony >= 2.00:
+                return "watch"
+            return "good"
+
+        def training_readiness(acwr, monotony, ratio):
+            if acwr == "learning" and monotony == "learning":
+                return "learning"
+            if acwr == "bad" or monotony == "bad":
+                return "rundown"
+            if acwr == "watch" or monotony == "watch":
+                return "strained"
+            if ratio is not None and ratio < 0.80:
+                return "primed"
+            return "balanced"
+
+        self.assertEqual(acwr_signal(None, False), "learning")
+        self.assertEqual(acwr_signal(1.55, True), "bad")
+        self.assertEqual(acwr_signal(1.31, True), "watch")
+        self.assertEqual(acwr_signal(1.00, True), "good")
+        self.assertEqual(monotony_signal(2.6, True), "bad")
+        self.assertEqual(monotony_signal(2.1, True), "watch")
+        self.assertEqual(monotony_signal(1.4, True), "good")
+        self.assertEqual(training_readiness("bad", "good", 1.6), "rundown")
+        self.assertEqual(training_readiness("watch", "good", 1.35), "strained")
+        self.assertEqual(training_readiness("good", "good", 0.75), "primed")
+        self.assertEqual(training_readiness("good", "good", 1.0), "balanced")
 
 
 if __name__ == "__main__":
