@@ -550,8 +550,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .advisory:\n            return .local",
             "return .conflict",
             "private var coexistenceFootnote: String",
-            "return \"If drops return, close the official app.\"",
-            "return \"Official app may interfere.\"",
+            "return \"Close the official app if drops return.\"",
+            "return \"Uninstall or disable the official app before relying on Atria.\"",
         ]:
             assert_contains(self, collection, needle)
 
