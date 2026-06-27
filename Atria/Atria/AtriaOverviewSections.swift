@@ -3045,8 +3045,13 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
                 AtriaInlineQuickStat(label: "Battery",
-                                     value: live.batteryText,
+                                     value: live.batteryStatusSummaryText,
                                      detail: live.batteryDetailText)
+                AtriaInlineQuickStat(label: "Charge",
+                                     value: live.batteryChargeText,
+                                     detail: live.batteryChargeStatus == .levelOnly
+                                        ? "Waiting for charger signal"
+                                        : "Current strap status")
                 AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
                 AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }
