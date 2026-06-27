@@ -5255,9 +5255,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "BiologicalAge.vo2AgeEquivalent(48.5, sex: .male)",
             "static let bodyAgeSummary = Check(name: \"bio_age_summary\"",
             "BiologicalAge.summary(chronologicalAge: 38,",
+            "static let recoveryTargetYellow = LabelCheck(name: \"target_recovery_yellow\"",
+            "TargetZones.recovery(55)?.level.rawValue ?? \"nil\"",
+            "static let hrvTargetGated = LabelCheck(name: \"target_hrv_no_baseline\"",
+            "baselineSamples: PersonalBaseline.trustedMinimumSamples - 1",
+            "static let manualDayNap = LabelCheck(name: \"manual_sleep_day_nap\"",
+            "ManualSleep.inferredIsNap(start: calibrationDate(hour: 13),",
+            "static let manualNightSleep = LabelCheck(name: \"manual_sleep_night_sleep\"",
+            "ManualSleep.inferredIsNap(start: calibrationDate(hour: 23),",
             "static let acwrWatch = LabelCheck(name: \"acwr_watch\"",
             "static let monotonyBad = LabelCheck(name: \"monotony_bad\"",
             "static let readinessRundown = LabelCheck(name: \"readiness_rundown\"",
+            "private static let calibrationCalendar: Calendar",
+            "private static func calibrationDate(hour: Int) -> Date",
             "static var allPassed: Bool",
             "numericChecks.allSatisfy(\\.passed) && labelChecks.allSatisfy(\\.passed)",
         ]:
@@ -5539,6 +5549,8 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(training_readiness("watch", "good", 1.35), "strained")
         self.assertEqual(training_readiness("good", "good", 0.75), "primed")
         self.assertEqual(training_readiness("good", "good", 1.0), "balanced")
+        self.assertEqual("yellow" if 34 <= 55 < 67 else "other", "yellow")
+        self.assertEqual("gated", "gated")
         self.assertTrue(inferred_manual_sleep_is_nap(45 * 60, 14, 15))
         self.assertFalse(inferred_manual_sleep_is_nap(8 * 60 * 60, 23, 7))
         self.assertTrue(inferred_manual_sleep_is_nap(-60, 14, 15, current_selection=True))
