@@ -26,7 +26,9 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
 struct AtriaHomeView: View {
     private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
     private static let connectionDiagnosisTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-    private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 60
+    private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 45
+    private static let liveWidgetSnapshotMeaningfulChangeInterval: TimeInterval = 15
+    private static let liveWidgetSnapshotMeaningfulBPMDelta = 4
     private static let workoutPromptCooldown: TimeInterval = 45 * 60
     private static let workoutPromptMinimumSamples = 180
     private static let workoutPromptMinimumTRIMP = 1.2
@@ -140,6 +142,7 @@ struct AtriaHomeView: View {
     @State private var missedDataBannerDismissedUntil: Date?
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
     @State private var lastLiveWidgetSnapshotAt: Date?
+    @State private var lastLiveWidgetSnapshotHeartRate: Int?
     @State private var workoutDetectionPrompt: AtriaWorkoutDetectionPrompt?
     @State private var workoutPromptDismissedUntil: Date?
 
@@ -579,13 +582,23 @@ struct AtriaHomeView: View {
 
     private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date()) {
         guard scenePhase == .active else { return }
-        guard model.pulseLiveStore.state.heartRate > 0 else { return }
-        if let lastLiveWidgetSnapshotAt,
-           now.timeIntervalSince(lastLiveWidgetSnapshotAt) < Self.liveWidgetSnapshotMinimumInterval {
+        let heartRate = model.pulseLiveStore.state.heartRate
+        guard heartRate > 0 else { return }
+        let elapsed = lastLiveWidgetSnapshotAt.map { now.timeIntervalSince($0) }
+        let meaningfulDelta = lastLiveWidgetSnapshotHeartRate.map {
+            abs(heartRate - $0) >= Self.liveWidgetSnapshotMeaningfulBPMDelta
+        } ?? true
+        let cadenceReady = elapsed.map { $0 >= Self.liveWidgetSnapshotMinimumInterval } ?? true
+        let changeReady = meaningfulDelta
+            && (elapsed.map { $0 >= Self.liveWidgetSnapshotMeaningfulChangeInterval } ?? true)
+        guard cadenceReady || changeReady else {
             return
         }
         lastLiveWidgetSnapshotAt = now
-        WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "live_throttled")
+        lastLiveWidgetSnapshotHeartRate = heartRate
+        WidgetSnapshotPublisher.publish(store: store,
+                                        ble: ble,
+                                        reason: cadenceReady ? "live_throttled" : "live_bpm_delta")
     }
 
     private func updateWorkoutDetectionPrompt(now: Date = Date()) {

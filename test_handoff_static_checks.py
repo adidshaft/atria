@@ -3319,14 +3319,24 @@ class HandoffStaticChecks(unittest.TestCase):
         widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
 
         for needle in [
-            "private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 60",
+            "private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 45",
+            "private static let liveWidgetSnapshotMeaningfulChangeInterval: TimeInterval = 15",
+            "private static let liveWidgetSnapshotMeaningfulBPMDelta = 4",
             "@State private var lastLiveWidgetSnapshotAt: Date?",
+            "@State private var lastLiveWidgetSnapshotHeartRate: Int?",
             "publishLiveWidgetSnapshotIfNeeded()",
             "private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date())",
             "guard scenePhase == .active else { return }",
-            "guard model.pulseLiveStore.state.heartRate > 0 else { return }",
-            "now.timeIntervalSince(lastLiveWidgetSnapshotAt) < Self.liveWidgetSnapshotMinimumInterval",
-            "WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: \"live_throttled\")",
+            "let heartRate = model.pulseLiveStore.state.heartRate",
+            "guard heartRate > 0 else { return }",
+            "let meaningfulDelta = lastLiveWidgetSnapshotHeartRate.map {",
+            "abs(heartRate - $0) >= Self.liveWidgetSnapshotMeaningfulBPMDelta",
+            "let cadenceReady = elapsed.map { $0 >= Self.liveWidgetSnapshotMinimumInterval } ?? true",
+            "let changeReady = meaningfulDelta",
+            "elapsed.map { $0 >= Self.liveWidgetSnapshotMeaningfulChangeInterval } ?? true",
+            "guard cadenceReady || changeReady else",
+            "lastLiveWidgetSnapshotHeartRate = heartRate",
+            "reason: cadenceReady ? \"live_throttled\" : \"live_bpm_delta\"",
         ]:
             assert_contains(self, home, needle)
 
