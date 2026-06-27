@@ -3148,6 +3148,15 @@ private struct AtriaTopStatusChip: View {
     private var status: AtriaBLEManager.Status { statusStore.state.status }
     private var bluetoothPermissionDenied: Bool { statusStore.state.bluetoothPermissionDenied }
     private var hasPulseSignal: Bool { pulseLiveStore.state.hasPulseSignal }
+    private var displayStatus: AtriaBLEManager.Status {
+        guard hasPulseSignal else { return status }
+        switch status {
+        case .poweredOff:
+            return status
+        case .connected, .connecting, .scanning, .disconnected:
+            return .connected
+        }
+    }
 
     var body: some View {
         HStack(spacing: 5) {
@@ -3166,13 +3175,13 @@ private struct AtriaTopStatusChip: View {
         .atriaChromeCapsule(tint: tint)
         .contentShape(Capsule())
         .onTapGesture {
-            if status != .connected { onTapWhenNotConnected() }
+            if displayStatus != .connected { onTapWhenNotConnected() }
         }
         .accessibilityLabel("Connection \(label)")
     }
 
     private var label: String {
-        switch status {
+        switch displayStatus {
         case .connected:
             // "Live" must mean actually reading your pulse, not just a BLE link.
             return hasPulseSignal ? "Live" : "No signal"
@@ -3187,7 +3196,7 @@ private struct AtriaTopStatusChip: View {
     }
 
     private var symbol: String {
-        switch status {
+        switch displayStatus {
         case .connected: return hasPulseSignal ? "bolt.heart.fill" : "heart.slash"
         case .connecting, .scanning: return "dot.radiowaves.left.and.right"
         case .poweredOff: return bluetoothPermissionDenied ? "hand.raised.fill" : "bolt.slash.fill"
@@ -3196,7 +3205,7 @@ private struct AtriaTopStatusChip: View {
     }
 
     private var tint: Color {
-        switch status {
+        switch displayStatus {
         case .connected: return hasPulseSignal ? .green : .orange
         case .connecting: return .yellow
         case .scanning: return .cyan
@@ -3207,7 +3216,7 @@ private struct AtriaTopStatusChip: View {
 
     private var foreground: Color {
         if colorScheme == .light {
-            switch status {
+            switch displayStatus {
             case .connected: return hasPulseSignal ? Color(red: 0.04, green: 0.42, blue: 0.20) : Color(red: 0.60, green: 0.34, blue: 0.00)
             case .connecting: return Color(red: 0.52, green: 0.36, blue: 0.00)
             case .scanning: return Color(red: 0.00, green: 0.36, blue: 0.46)
@@ -3215,7 +3224,7 @@ private struct AtriaTopStatusChip: View {
             case .disconnected: return Color(red: 0.10, green: 0.28, blue: 0.66)
             }
         }
-        switch status {
+        switch displayStatus {
         case .connected: return hasPulseSignal ? Color(red: 0.77, green: 1.00, blue: 0.86) : Color(red: 1.00, green: 0.86, blue: 0.62)
         case .connecting: return Color(red: 1.00, green: 0.91, blue: 0.54)
         case .scanning: return Color(red: 0.64, green: 0.95, blue: 1.00)
