@@ -1440,7 +1440,10 @@ private struct AtriaHRVCard: View, Equatable {
     }
 
     private var hrvState: AtriaMetricState {
-        hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning
+        let detail = hero.hrvDetail.lowercased()
+        if detail.contains("validated") { return .validated }
+        if detail.contains("personal baseline") || detail.contains("% kept") { return .personalBaseline }
+        return .learning
     }
 
     private var isConnected: Bool {

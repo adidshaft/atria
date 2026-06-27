@@ -2518,11 +2518,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .unverified:\n            return .research",
             "state: recoveryState",
             "footnote: hero.recoveryEstimate.confidence.rawValue",
+            "private var hrvState: AtriaMetricState",
+            "if detail.contains(\"validated\") { return .validated }",
+            "if detail.contains(\"personal baseline\") || detail.contains(\"% kept\") { return .personalBaseline }",
             "footnote: hero.hrvDetail",
         ]:
             assert_contains(self, overview + vitals, needle)
 
         assert_not_contains(self, overview + vitals, "state: hero.recoveryEstimate.percent == nil ? .learning : .validated")
+        assert_not_contains(self, vitals, "hero.hrvDetail.localizedCaseInsensitiveContains(\"validated\") ? .validated : .learning")
 
         assert_contains(self, intents, "Read the latest local recovery, strain, and HRV snapshot.")
         assert_contains(self, intents, "snapshot.hrvRMSSD.map")
