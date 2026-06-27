@@ -61,6 +61,8 @@ struct SavedSession: Codable, Identifiable {
     var sensorResearchProbeFrames: Int? = nil
     var spo2ResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateFrames: Int? = nil
+    var skinTempResearchCandidateValueSum: Int? = nil
+    var skinTempResearchCandidateValueCount: Int? = nil
     /// Keytel HR->energy estimate persisted with the session when sex and weight
     /// are present. It is an estimate only, never a measured calorie value.
     var activeCalories: Double? = nil
@@ -593,6 +595,42 @@ struct ResearchManeuverMarker: Codable, Identifiable, Equatable {
 }
 
 struct IMUAuditSummary: Equatable {
+    struct SkinTemperatureDeviationSummary: Equatable {
+        let latestDeltaCelsius: Double?
+        let baselineSessions: Int
+        let candidateFrames: Int
+        let candidateValues: Int
+
+        var valueText: String {
+            guard let latestDeltaCelsius else { return "--" }
+            return String(format: "%+.1f", latestDeltaCelsius)
+        }
+
+        var detailText: String {
+            guard latestDeltaCelsius != nil else {
+                if candidateFrames > 0 {
+                    return "\(candidateFrames) candidates · baseline needed"
+                }
+                return "Sleep research"
+            }
+            return "vs sleep baseline"
+        }
+
+        var footnoteText: String {
+            guard latestDeltaCelsius != nil else {
+                if candidateFrames > 0 {
+                    return "\(candidateFrames) candidate frames; relative baseline building, no absolute temperature."
+                }
+                return "Sleep-only research; no absolute temperature."
+            }
+            return "Relative sleep-only deviation from \(baselineSessions) prior local sessions; no absolute temperature."
+        }
+
+        var isReady: Bool {
+            latestDeltaCelsius != nil
+        }
+    }
+
     let frameCount: Int
     let sampleCount: Int
     let validatedFrames: Int
@@ -606,6 +644,7 @@ struct IMUAuditSummary: Equatable {
     let probeFrameCount: Int
     let spo2CandidateFrames: Int
     let skinTempCandidateFrames: Int
+    let skinTemperatureDeviation: SkinTemperatureDeviationSummary
 
     init(sessions: [SavedSession]) {
         let imuSessions = sessions.filter { ($0.imuFrameCount ?? 0) > 0 || ($0.imuSampleCount ?? 0) > 0 }
@@ -625,6 +664,8 @@ struct IMUAuditSummary: Equatable {
         probeFrameCount = probeSessions.reduce(0) { $0 + ($1.sensorResearchProbeFrames ?? 0) }
         spo2CandidateFrames = probeSessions.reduce(0) { $0 + ($1.spo2ResearchCandidateFrames ?? 0) }
         skinTempCandidateFrames = probeSessions.reduce(0) { $0 + ($1.skinTempResearchCandidateFrames ?? 0) }
+        skinTemperatureDeviation = Self.makeSkinTemperatureDeviationSummary(sessions: sessions,
+                                                                            candidateFrames: skinTempCandidateFrames)
     }
 
     var frameText: String {
@@ -664,6 +705,39 @@ struct IMUAuditSummary: Equatable {
 
     var probeDetail: String {
         probeFrameCount > 0 ? "O2 \(spo2CandidateFrames) · temp \(skinTempCandidateFrames)" : "none yet"
+    }
+
+    private static func makeSkinTemperatureDeviationSummary(sessions: [SavedSession],
+                                                            candidateFrames: Int) -> SkinTemperatureDeviationSummary {
+        let sleepTemperatureSessions = sessions
+            .filter { $0.sleepWakeResearchState == "sleep_research" }
+            .compactMap { session -> (start: Date, meanCelsius: Double, values: Int)? in
+                guard let sum = session.skinTempResearchCandidateValueSum,
+                      let count = session.skinTempResearchCandidateValueCount,
+                      count > 0 else { return nil }
+                return (session.start, Double(sum) / Double(count) / 100.0, count)
+            }
+            .sorted { $0.start < $1.start }
+
+        let candidateValues = sleepTemperatureSessions.reduce(0) { $0 + $1.values }
+        guard let latest = sleepTemperatureSessions.last else {
+            return SkinTemperatureDeviationSummary(latestDeltaCelsius: nil,
+                                                   baselineSessions: 0,
+                                                   candidateFrames: candidateFrames,
+                                                   candidateValues: candidateValues)
+        }
+        let baseline = sleepTemperatureSessions.dropLast()
+        guard baseline.count >= 3 else {
+            return SkinTemperatureDeviationSummary(latestDeltaCelsius: nil,
+                                                   baselineSessions: baseline.count,
+                                                   candidateFrames: candidateFrames,
+                                                   candidateValues: candidateValues)
+        }
+        let baselineMean = baseline.reduce(0) { $0 + $1.meanCelsius } / Double(baseline.count)
+        return SkinTemperatureDeviationSummary(latestDeltaCelsius: latest.meanCelsius - baselineMean,
+                                               baselineSessions: baseline.count,
+                                               candidateFrames: candidateFrames,
+                                               candidateValues: candidateValues)
     }
 }
 

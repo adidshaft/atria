@@ -849,6 +849,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
+    private var researchProbeTemperatureCandidateValueSum = 0
+    private var researchProbeTemperatureCandidateValueCount = 0
     private var protocolDiagnosticFrameCount = 0
     private var protocolEventFrameCount = 0
     private var protocolUnknownFrameCount = 0
@@ -7532,6 +7534,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if supportsSkinTempProbe, !summary.temperatureWordCandidates.isEmpty {
             researchProbeTemperatureCandidateFrames += 1
+            researchProbeTemperatureCandidateValueSum += summary.temperatureWordCandidates.reduce(0) { $0 + $1.value }
+            researchProbeTemperatureCandidateValueCount += summary.temperatureWordCandidates.count
         }
         guard summary.hasAnyCandidate || researchProbeFrameCount == 1 || researchProbeFrameCount.isMultiple(of: 50) else { return }
         AtriaDebugLog("ATRIADBG sensor_research_probe source=%@ status=research_unvalidated len=%d frames=%d model_generation=%@ model_evidence=%@ spo2_enabled=%d spo2_candidate_frames=%d spo2_offsets=%@ skin_temp_enabled=%d skin_temp_candidate_frames=%d skin_temp_offsets=%@ metric_promotions=0 healthkit_write=0 raw_storage=0",
@@ -8648,6 +8652,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             sensorResearchProbeFrames: researchProbeFrameCount > 0 ? researchProbeFrameCount : nil,
                             spo2ResearchCandidateFrames: researchProbeOxygenCandidateFrames > 0 ? researchProbeOxygenCandidateFrames : nil,
                             skinTempResearchCandidateFrames: researchProbeTemperatureCandidateFrames > 0 ? researchProbeTemperatureCandidateFrames : nil,
+                            skinTempResearchCandidateValueSum: researchProbeTemperatureCandidateValueCount > 0 ? researchProbeTemperatureCandidateValueSum : nil,
+                            skinTempResearchCandidateValueCount: researchProbeTemperatureCandidateValueCount > 0 ? researchProbeTemperatureCandidateValueCount : nil,
                             activeCalories: activeCalories,
                             caloriesConfidence: caloriesConfidence,
                             phoneMotionSource: phoneMotion.source,
@@ -8736,6 +8742,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         researchProbeFrameCount = 0
         researchProbeOxygenCandidateFrames = 0
         researchProbeTemperatureCandidateFrames = 0
+        researchProbeTemperatureCandidateValueSum = 0
+        researchProbeTemperatureCandidateValueCount = 0
     }
 
     private func startPhoneMotionAudit() {

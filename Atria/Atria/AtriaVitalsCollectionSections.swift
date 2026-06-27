@@ -640,11 +640,11 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 tint: .blue,
                                 footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.")
                 AtriaMetricTile(label: "Body temp",
-                                value: summary.skinTempCandidateFrames > 0 ? "Research" : "--",
-                                unit: nil,
-                                state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
-                                tint: .orange,
-                                footnote: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames) candidate frames; not body temperature." : "Early signal; not body temperature.")
+                                value: summary.skinTemperatureDeviation.valueText,
+                                unit: summary.skinTemperatureDeviation.isReady ? "deg C" : nil,
+                                state: summary.skinTemperatureDeviation.isReady ? .research : .learning,
+                                tint: summary.skinTemperatureDeviation.isReady ? .teal : .orange,
+                                footnote: summary.skinTemperatureDeviation.footnoteText)
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
@@ -658,7 +658,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.agreementText)
             }
 
-            Text("Early sensor rows show evidence counts, not measurements. Atria will not show SpO2 or body-temperature values until the sensor layout is proven against comparison data.")
+            Text("Early sensor rows show evidence counts, not measurements. Atria shows skin temperature only as a sleep-baseline deviation, never as an absolute body-temperature value.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)

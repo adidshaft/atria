@@ -1168,13 +1168,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     : "Blood oxygen research is building and does not show an SpO2 percentage")
         case .bodyTemp:
             AtriaGlanceMetricCard(title: "Body temp",
-                                  value: sensorSummary.skinTempCandidateFrames > 0 ? "Research" : "--",
-                                  detail: sensorSummary.skinTempCandidateFrames > 0 ? "\(sensorSummary.skinTempCandidateFrames) candidate frames" : "Sleep research",
+                                  value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : "--",
+                                  detail: sensorSummary.skinTemperatureDeviation.detailText,
                                   systemImage: metric.systemImage,
-                                  tint: sensorSummary.skinTempCandidateFrames > 0 ? .teal : .orange)
-                .accessibilityLabel(sensorSummary.skinTempCandidateFrames > 0
-                                    ? "Body temperature research has \(sensorSummary.skinTempCandidateFrames) candidate frames, not a temperature reading"
-                                    : "Body temperature research is building and does not show an absolute temperature")
+                                  tint: sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange)
+                .accessibilityLabel(sensorSummary.skinTemperatureDeviation.isReady
+                                    ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) degrees Celsius from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)"
+                                    : "Body temperature research is building a sleep baseline and does not show an absolute temperature")
         case .trend:
             trendCard
         case .insights:
