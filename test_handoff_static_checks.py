@@ -459,7 +459,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "radioModeSection",
             "Toggle(isOn: $batterySaver)",
             "Label(\"Battery saver\", systemImage: \"battery.75percent\")",
-            "title: batterySaver ? \"Standard HR radio\" : \"Full protocol radio\"",
+            "title: batterySaver ? \"Heart-rate only\" : \"Full sensor mode\"",
             "HRV, Recovery and sleep detail wait for validated RR windows.",
             "Atria reconnects the strap when the radio mode changes.",
             ".onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }",
