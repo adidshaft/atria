@@ -2096,6 +2096,8 @@ final class HealthKitExporter {
             return HKCategoryValueSleepAnalysis.awake.rawValue
         case .light:
             return HKCategoryValueSleepAnalysis.asleepCore.rawValue
+        case .rem:
+            return HKCategoryValueSleepAnalysis.asleepREM.rawValue
         case .sws, .deep:
             return HKCategoryValueSleepAnalysis.asleepDeep.rawValue
         }

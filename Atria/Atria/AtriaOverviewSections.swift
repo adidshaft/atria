@@ -2474,7 +2474,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
         guard !latest.displayStageSegments.isEmpty else {
             return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(latest.stageEvidence.label)."
         }
-        return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
+        return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
     }
 }
 
@@ -2511,10 +2511,11 @@ private struct AtriaSleepMiniHypnogram: View, Equatable {
 
     private func stageY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
         switch stage {
-        case .awake: return height * 0.18
-        case .light: return height * 0.40
-        case .sws: return height * 0.62
-        case .deep: return height * 0.84
+        case .awake: return height * 0.14
+        case .light: return height * 0.34
+        case .rem: return height * 0.52
+        case .sws: return height * 0.70
+        case .deep: return height * 0.88
         }
     }
 }
@@ -2524,6 +2525,7 @@ enum AtriaSleepStageGlyph {
         switch stage {
         case .awake: return "sun.max.fill"
         case .light: return "moon.fill"
+        case .rem: return "sparkles"
         case .sws: return "waveform.path"
         case .deep: return "moon.stars.fill"
         }
@@ -2533,6 +2535,7 @@ enum AtriaSleepStageGlyph {
         switch stage {
         case .awake: return .orange
         case .light: return .cyan
+        case .rem: return .indigo
         case .sws: return .blue
         case .deep: return .purple
         }

@@ -1771,6 +1771,7 @@ class HandoffStaticChecks(unittest.TestCase):
         manual_sheet = source(ROOT / "Atria" / "Atria" / "AtriaManualSleepSheet.swift")
         sleep_research = source(ROOT / "Atria" / "Atria" / "AtriaSleepWakeResearch.swift")
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
 
         for needle in [
             "struct SleepHistorySnapshot: Equatable",
@@ -1888,6 +1889,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum SleepStageKind: String, Codable, CaseIterable, Identifiable",
             "case awake",
             "case light",
+            "case rem",
             "case sws",
             "case deep",
             "enum SleepStageEvidence: String, Codable, Equatable",
@@ -1911,6 +1913,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "feature.differenceOfGaussians",
             "feature.localVariability",
             "feature.motionStillnessPrior",
+            "return .rem",
             "private static func gaussianSmoothedHR(samples: [HeartSample],",
             "private static func standardDeviation(_ values: [Double]) -> Double",
             "private static func merge(_ staged:",
@@ -1974,6 +1977,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"Sleep needs at least 3 hours.\"",
             ".disabled(!canSave)",
             "ForEach(SleepStageKind.allCases)",
+            "research stages: Awake, Light, REM, SWS, and Deep.",
             "AtriaSleepStageSummary(night: latest)",
             "AtriaMetricTile(label: \"Consistency\"",
             "value: snapshot.sleepConsistencyText",
@@ -2008,9 +2012,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "width: min(width, max(0, size.width - x))",
             "Awake \\(night.stageText(.awake))",
             "Light \\(night.stageText(.light))",
+            "REM \\(night.stageText(.rem))",
             "SWS \\(night.stageText(.sws))",
             "Deep \\(night.stageText(.deep))",
-            ".accessibilityLabel(\"\\(night.evidenceLabel) \\(night.stageEvidence.label). Awake \\(night.stageText(.awake)), Light \\(night.stageText(.light)), SWS \\(night.stageText(.sws)), Deep \\(night.stageText(.deep)).\")",
+            ".accessibilityLabel(\"\\(night.evidenceLabel) \\(night.stageEvidence.label). Awake \\(night.stageText(.awake)), Light \\(night.stageText(.light)), REM \\(night.stageText(.rem)), SWS \\(night.stageText(.sws)), Deep \\(night.stageText(.deep)).\")",
+            "HKCategoryValueSleepAnalysis.asleepREM.rawValue",
             "Chart(chartNights)",
             "Wear the strap overnight or during a nap.",
             "Sleep or nap evidence saved; confirm it when ready.",
@@ -2051,7 +2057,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let daytimeWindow = startHour >= 11 && endHour <= 20",
             "return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration",
         ]:
-            assert_contains(self, sessions + vitals + manual_sheet + sleep_research + analytics, needle)
+            assert_contains(self, sessions + vitals + manual_sheet + sleep_research + analytics + healthkit, needle)
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
