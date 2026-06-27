@@ -2046,17 +2046,9 @@ private struct AtriaSleepStageSummary: View, Equatable {
                     .foregroundStyle(.secondary)
             }
 
-            GeometryReader { proxy in
-                HStack(spacing: 2) {
-                    ForEach(night.displayStageSegments) { segment in
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(color(for: segment.stage).gradient)
-                            .frame(width: max(4, proxy.size.width * segment.duration / max(night.duration, 1)))
-                    }
-                }
-            }
-            .frame(height: 12)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            AtriaSleepStageHypnogram(segments: night.displayStageSegments,
+                                     duration: night.duration)
+                .frame(height: 36)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
@@ -2095,6 +2087,71 @@ private struct AtriaSleepStageSummary: View, Equatable {
         case .light: return "moon.fill"
         case .sws: return "waveform.path"
         case .deep: return "moon.stars.fill"
+        }
+    }
+
+    private func color(for stage: SleepStageKind) -> Color {
+        switch stage {
+        case .awake: return .orange
+        case .light: return .cyan
+        case .sws: return .blue
+        case .deep: return .purple
+        }
+    }
+}
+
+private struct AtriaSleepStageHypnogram: View, Equatable {
+    let segments: [SleepStageSegment]
+    let duration: TimeInterval
+
+    var body: some View {
+        Canvas { context, size in
+            drawGuides(in: &context, size: size)
+            drawSegments(in: &context, size: size)
+        }
+        .background(Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func drawGuides(in context: inout GraphicsContext, size: CGSize) {
+        for stage in SleepStageKind.allCases {
+            let y = stageY(stage, height: size.height)
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
+            context.stroke(path, with: .color(Color.primary.opacity(0.08)), lineWidth: 1)
+        }
+    }
+
+    private func drawSegments(in context: inout GraphicsContext, size: CGSize) {
+        guard duration > 0, !segments.isEmpty else { return }
+        let laneHeight = max(5, min(8, size.height / 5))
+        var elapsed: TimeInterval = 0
+        for segment in segments {
+            let width = max(1, size.width * segment.duration / duration)
+            let x = size.width * elapsed / duration
+            let y = stageY(segment.stage, height: size.height) - laneHeight / 2
+            let rect = CGRect(x: x,
+                              y: y,
+                              width: min(width, max(0, size.width - x)),
+                              height: laneHeight)
+            context.fill(Path(roundedRect: rect, cornerRadius: laneHeight / 2),
+                         with: .color(color(for: segment.stage)))
+            elapsed += segment.duration
+        }
+    }
+
+    private func stageY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
+        switch stage {
+        case .awake: return height * 0.18
+        case .light: return height * 0.40
+        case .sws: return height * 0.62
+        case .deep: return height * 0.84
         }
     }
 
