@@ -886,6 +886,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "var sleepEfficiencyText: String",
             "sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span)",
             "private static func efficiency(duration: TimeInterval, span: TimeInterval?) -> Double?",
+            "static let minimumFragmentDuration: TimeInterval = 5 * 60",
+            "session.duration >= AggregateSleepCandidate.minimumFragmentDuration",
+            "let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration",
+            "let fragmentedFallbackReady = cluster.count > 1",
             "AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore,\n                                          store: store)",
             "AtriaRecoveryStrainCard(hero: heroStore.state,\n                                sleepHistory: store.sleepHistorySnapshot)",
             "private struct AtriaSleepHistoryCard: View, Equatable",
@@ -925,6 +929,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_contains(self, vitals, "case pulse, hrv, recoveryStrain, profile")
         assert_not_contains(self, vitals, "case pulse, hrv, recoveryStrain, sleep")
+        assert_not_contains(self, sessions, "guard session.duration >= 20 * 60, !session.points.isEmpty else { return false }")
 
         sleep_card_start = vitals.index("private struct AtriaSleepHistoryCard")
         sleep_card_end = vitals.index("private struct AtriaSleepNightRow")

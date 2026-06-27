@@ -1251,6 +1251,7 @@ struct BaselineLearningEvidence {
 }
 
 struct AggregateSleepCandidate {
+    static let minimumFragmentDuration: TimeInterval = 5 * 60
     static let strictMinimumDuration: TimeInterval = 3 * 60 * 60
     static let fragmentedMinimumDuration: TimeInterval = 2.5 * 60 * 60
     static let fragmentedMinimumSpan: TimeInterval = 3 * 60 * 60
@@ -6379,7 +6380,8 @@ final class SessionStore: ObservableObject {
                                           maxHR: Int,
                                           calendar: Calendar = .current) -> [AggregateSleepCandidate] {
         let eligible = sourceSessions.filter { session in
-            guard session.duration >= 20 * 60, !session.points.isEmpty else { return false }
+            guard session.duration >= AggregateSleepCandidate.minimumFragmentDuration,
+                  !session.points.isEmpty else { return false }
             let startHour = calendar.component(.hour, from: session.start)
             let endHour = calendar.component(.hour, from: session.end)
             let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
