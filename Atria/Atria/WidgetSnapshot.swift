@@ -66,11 +66,14 @@ enum WidgetSnapshotPublisher {
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable
         let validatedHRV = store.latestReferenceValidatedHRV
         let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
+        let latestSleep = store.sleepHistorySnapshot.latest
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
                                           fallbackRMSSD: fallbackHRV,
                                           restingNow: rest,
                                           baseline: store.baseline,
-                                          hrvReferenceValidated: validatedHRV != nil)
+                                          hrvReferenceValidated: validatedHRV != nil,
+                                          sleepEfficiency: latestSleep?.sleepEfficiency,
+                                          sleepDurationHours: latestSleep?.durationHours)
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let hrvRMSSD: Int?
         if recovery.usesHRV {

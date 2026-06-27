@@ -196,12 +196,14 @@ enum Metrics {
     }
 
     /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
-    /// with resting-HR z-score. Recovery displays after local data sufficiency;
-    /// external reference validation upgrades the confidence tier and HealthKit
-    /// writes, but does not block in-app display.
+    /// with resting-HR z-score and saved sleep evidence. Recovery displays after
+    /// local data sufficiency; external reference validation upgrades the
+    /// confidence tier and HealthKit writes, but does not block in-app display.
     static func recoveryV2(hrvSnapshot: HRVSnapshot?, fallbackRMSSD: Int?,
                            restingNow: Int?, baseline: PersonalBaseline,
-                           hrvReferenceValidated: Bool = false) -> RecoveryEstimate {
+                           hrvReferenceValidated: Bool = false,
+                           sleepEfficiency: Double? = nil,
+                           sleepDurationHours: Double? = nil) -> RecoveryEstimate {
         guard let restingNow else {
             return RecoveryEstimate(percent: nil, confidence: .learning,
                                     usesHRV: false, detail: "learning: need resting HR")
@@ -229,17 +231,38 @@ enum Metrics {
         }
 
         let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
-        let blendedZ = 0.75 * hrvZ - 0.25 * restingZ
+        guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
+                                          durationHours: sleepDurationHours) else {
+            return RecoveryEstimate(percent: nil, confidence: .learning,
+                                    usesHRV: true,
+                                    detail: "learning: need saved sleep")
+        }
+
+        let blendedZ = 0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ
         let percent = Int(Swift.min(Swift.max(50 + blendedZ * 16, 1), 99).rounded())
         let confidence: RecoveryEstimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
         return RecoveryEstimate(percent: percent, confidence: confidence,
                                 usesHRV: true,
-                                detail: String(format: "lnRMSSD z %.1f · RHR z %.1f", hrvZ, restingZ))
+                                detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f", hrvZ, restingZ, sleepZ))
     }
 
     private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
         guard sd > 0.1 else { return 0 }
         return (value - mean) / sd
+    }
+
+    private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {
+        var components: [Double] = []
+        if let efficiency {
+            components.append((min(max(efficiency, 0), 1) - 0.85) / 0.10)
+        }
+        if let durationHours, durationHours > 0 {
+            let capped = min(max(durationHours, 0), 9)
+            components.append((capped - 7.0) / 1.5)
+        }
+        guard !components.isEmpty else { return nil }
+        let average = components.reduce(0, +) / Double(components.count)
+        return min(max(average, -2), 2)
     }
 
     static func recoveryColor(_ pct: Int) -> Color {
