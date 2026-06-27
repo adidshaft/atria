@@ -336,10 +336,18 @@ private struct AtriaVitalsHRVCardHost: View {
 private struct AtriaVitalsRecoveryStrainCardHost: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var store: SessionStore
+    @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
                                 sleepHistory: store.sleepHistorySnapshot,
+                                recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
+                                                                           yellowLower: recoveryYellowLower),
+                                hrvBaseline: store.baseline.hrvInt,
+                                hrvBaselineSamples: store.baseline.hrvSampleCount,
+                                restingBaseline: store.baseline.restingInt,
+                                restingBaselineSamples: store.baseline.restingSampleCount,
                                 onAddManualSleep: addManualSleep)
             .equatable()
     }
@@ -1627,10 +1635,21 @@ private struct AtriaHRVCard: View, Equatable {
 private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let sleepHistory: SleepHistorySnapshot
+    let recoveryTarget: AtriaMetricTarget
+    let hrvBaseline: Int?
+    let hrvBaselineSamples: Int
+    let restingBaseline: Int?
+    let restingBaselineSamples: Int
     let onAddManualSleep: (Date, Date, Bool) -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
-        lhs.hero == rhs.hero && lhs.sleepHistory == rhs.sleepHistory
+        lhs.hero == rhs.hero
+            && lhs.sleepHistory == rhs.sleepHistory
+            && lhs.recoveryTarget == rhs.recoveryTarget
+            && lhs.hrvBaseline == rhs.hrvBaseline
+            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.restingBaseline == rhs.restingBaseline
+            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
     }
 
     private var recoveryState: AtriaMetricState {
@@ -1652,6 +1671,10 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
             metricContent
             AtriaSleepHistoryCard(snapshot: sleepHistory,
+                                  hrvBaseline: hrvBaseline,
+                                  hrvBaselineSamples: hrvBaselineSamples,
+                                  restingBaseline: restingBaseline,
+                                  restingBaselineSamples: restingBaselineSamples,
                                   onAddManualSleep: onAddManualSleep)
         }
         .padding(18)
@@ -1671,8 +1694,9 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                         value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
                         unit: hero.recoveryEstimate.percent == nil ? nil : "%",
                         state: recoveryState,
-                        tint: hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
-                        footnote: hero.recoveryEstimate.confidence.rawValue)
+                        tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
+                        footnote: hero.recoveryEstimate.confidence.rawValue,
+                        zone: recoveryZone)
         AtriaMetricTile(label: "Strain",
                         value: String(format: "%.1f", hero.strain),
                         state: .local,
@@ -1684,15 +1708,27 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
+
+    private var recoveryZone: AtriaMetricZone? {
+        Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
+    }
 }
 
 private struct AtriaSleepHistoryCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
+    let hrvBaseline: Int?
+    let hrvBaselineSamples: Int
+    let restingBaseline: Int?
+    let restingBaselineSamples: Int
     let onAddManualSleep: (Date, Date, Bool) -> Void
     @State private var showManualSleepSheet = false
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
         lhs.snapshot == rhs.snapshot
+            && lhs.hrvBaseline == rhs.hrvBaseline
+            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.restingBaseline == rhs.restingBaseline
+            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
     }
 
     private var chartNights: [SleepHistorySnapshot.Night] {
@@ -1710,6 +1746,22 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         return latest.confirmed
             ? "\(latest.confidenceText) · \(latest.confirmationText)"
             : "\(latest.confidenceText) · \(latest.confirmationText.lowercased())"
+    }
+
+    private var restingHeartRateZone: AtriaMetricZone? {
+        Metrics.restingHeartRateZone(snapshot.latest?.restingHR,
+                                     baseline: restingBaseline,
+                                     baselineSamples: restingBaselineSamples)
+    }
+
+    private var sleepEfficiencyZone: AtriaMetricZone? {
+        Metrics.sleepEfficiencyZone(snapshot.latest?.sleepEfficiency)
+    }
+
+    private var hrvZone: AtriaMetricZone? {
+        Metrics.hrvZone(snapshot.latest?.hrv,
+                        baseline: hrvBaseline,
+                        baselineSamples: hrvBaselineSamples)
     }
 
     var body: some View {
@@ -1757,18 +1809,21 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: snapshot.latest?.restingHRText ?? "--",
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
                                     state: snapshot.latest?.restingHR == nil ? .learning : .personalBaseline,
-                                    tint: .red)
+                                    tint: restingHeartRateZone?.tint ?? .red,
+                                    zone: restingHeartRateZone)
                     AtriaMetricTile(label: "Efficiency",
                                     value: snapshot.latest?.sleepEfficiencyText ?? "--",
                                     state: snapshot.latest?.sleepEfficiency == nil ? .learning : .research,
-                                    tint: .cyan,
-                                    footnote: "Duration-based estimate")
+                                    tint: sleepEfficiencyZone?.tint ?? .cyan,
+                                    footnote: "Duration-based estimate",
+                                    zone: sleepEfficiencyZone)
                     AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") HRV",
                                     value: snapshot.latest?.hrvText ?? "--",
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
-                                    tint: .purple,
-                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate")
+                                    tint: hrvZone?.tint ?? .purple,
+                                    footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate",
+                                    zone: hrvZone)
                     AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
