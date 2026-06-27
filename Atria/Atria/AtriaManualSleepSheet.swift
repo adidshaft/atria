@@ -26,19 +26,9 @@ struct AtriaManualSleepSheet: View {
     }
 
     private var inferredIsNap: Bool {
-        guard end > start else { return isNap }
-        if duration >= AggregateSleepCandidate.strictMinimumDuration {
-            return false
-        }
-        guard duration >= AggregateSleepCandidate.napMinimumDuration,
-              duration <= AggregateSleepCandidate.napMaximumSpan else {
-            return isNap
-        }
-        let calendar = Calendar.current
-        let startHour = calendar.component(.hour, from: start)
-        let endHour = calendar.component(.hour, from: end)
-        let daytimeWindow = startHour >= 11 && endHour <= 20
-        return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration
+        AtriaAnalytics.ManualSleep.inferredIsNap(start: start,
+                                                 end: end,
+                                                 currentSelection: isNap)
     }
 
     private var typeBinding: Binding<Bool> {

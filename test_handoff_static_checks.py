@@ -1710,6 +1710,7 @@ class HandoffStaticChecks(unittest.TestCase):
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         manual_sheet = source(ROOT / "Atria" / "Atria" / "AtriaManualSleepSheet.swift")
         sleep_research = source(ROOT / "Atria" / "Atria" / "AtriaSleepWakeResearch.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
 
         for needle in [
             "struct SleepHistorySnapshot: Equatable",
@@ -1856,9 +1857,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaManualSleepSheet { start, end, isNap in",
             "@State private var typeWasManuallyEdited = false",
             "private var inferredIsNap: Bool",
-            "duration >= AggregateSleepCandidate.strictMinimumDuration",
-            "let daytimeWindow = startHour >= 11 && endHour <= 20",
-            "return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration",
+            "AtriaAnalytics.ManualSleep.inferredIsNap(start: start,",
             "private var typeBinding: Binding<Bool>",
             "typeWasManuallyEdited = true",
             "private var typeSuggestionText: String",
@@ -1954,8 +1953,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "Eff \\(night.sleepEfficiencyText)",
             "HRV \\(night.hrvText)",
             "Resp \\(night.respiratoryRateText)",
+            "enum ManualSleep",
+            "static func inferredIsNap(start: Date,",
+            "currentSelection: Bool,",
+            "calendar: Calendar = .current",
+            "duration >= AggregateSleepCandidate.strictMinimumDuration",
+            "let daytimeWindow = startHour >= 11 && endHour <= 20",
+            "return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration",
         ]:
-            assert_contains(self, sessions + vitals + manual_sheet + sleep_research, needle)
+            assert_contains(self, sessions + vitals + manual_sheet + sleep_research + analytics, needle)
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
@@ -4995,6 +5001,16 @@ class HandoffStaticChecks(unittest.TestCase):
                 return "primed"
             return "balanced"
 
+        def inferred_manual_sleep_is_nap(duration_seconds, start_hour, end_hour, current_selection=False):
+            if duration_seconds <= 0:
+                return current_selection
+            if duration_seconds >= 3 * 60 * 60:
+                return False
+            if duration_seconds < 20 * 60:
+                return current_selection
+            daytime_window = start_hour >= 11 and end_hour <= 20
+            return daytime_window or duration_seconds < 3 * 60 * 60
+
         self.assertEqual(acwr_signal(None, False), "learning")
         self.assertEqual(acwr_signal(1.55, True), "bad")
         self.assertEqual(acwr_signal(1.31, True), "watch")
@@ -5006,6 +5022,9 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(training_readiness("watch", "good", 1.35), "strained")
         self.assertEqual(training_readiness("good", "good", 0.75), "primed")
         self.assertEqual(training_readiness("good", "good", 1.0), "balanced")
+        self.assertTrue(inferred_manual_sleep_is_nap(45 * 60, 14, 15))
+        self.assertFalse(inferred_manual_sleep_is_nap(8 * 60 * 60, 23, 7))
+        self.assertTrue(inferred_manual_sleep_is_nap(-60, 14, 15, current_selection=True))
 
 
 if __name__ == "__main__":
