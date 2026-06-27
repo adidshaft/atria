@@ -747,6 +747,9 @@ struct Sparkline: View, Equatable {
                     .stroke(.red.gradient, style: .init(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
         }
+        .padding(.vertical, 2)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipped()
         .transaction { transaction in
             transaction.animation = nil
         }

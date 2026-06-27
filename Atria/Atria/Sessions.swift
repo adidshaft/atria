@@ -10027,12 +10027,41 @@ struct SleepHistorySnapshot: Equatable {
             return isNapEvidence ? "Nap candidate" : "Sleep candidate"
         }
 
+        var displayStageSegments: [SleepStageSegment] {
+            if !stageSegments.isEmpty { return stageSegments }
+            return Self.estimatedStageSegments(day: day, duration: duration, isNap: isNapEvidence)
+        }
+
         func stageDuration(_ stage: SleepStageKind) -> TimeInterval {
-            stageSegments.filter { $0.stage == stage }.reduce(0) { $0 + $1.duration }
+            displayStageSegments.filter { $0.stage == stage }.reduce(0) { $0 + $1.duration }
         }
 
         func stageText(_ stage: SleepStageKind) -> String {
             SleepHistorySnapshot.formatDuration(stageDuration(stage))
+        }
+
+        private static func estimatedStageSegments(day: Date,
+                                                   duration: TimeInterval,
+                                                   isNap: Bool) -> [SleepStageSegment] {
+            let safeDuration = max(0, duration)
+            guard safeDuration > 0 else { return [] }
+            let pattern: [(SleepStageKind, Double)] = isNap
+                ? [(.awake, 0.06), (.light, 0.72), (.sws, 0.14), (.deep, 0.08)]
+                : [(.awake, 0.08), (.light, 0.52), (.sws, 0.22), (.deep, 0.18)]
+            let start = day.addingTimeInterval(isNap ? 13 * 60 * 60 : 22 * 60 * 60)
+            var cursor = start
+            let end = start.addingTimeInterval(safeDuration)
+            return pattern.enumerated().compactMap { index, item in
+                let next = index == pattern.count - 1
+                    ? end
+                    : min(end, cursor.addingTimeInterval(safeDuration * item.1))
+                defer { cursor = next }
+                guard next > cursor else { return nil }
+                return SleepStageSegment(id: "estimated-\(Int(day.timeIntervalSince1970))-\(index)-\(item.0.rawValue)",
+                                         start: cursor,
+                                         end: next,
+                                         stage: item.0)
+            }
         }
     }
 

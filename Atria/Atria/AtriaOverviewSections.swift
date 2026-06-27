@@ -904,15 +904,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
 
-            if !visibleMetrics.isEmpty {
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        isEditingGlance.toggle()
-                    }
-                } label: {
-                    Label(isEditingGlance ? "Done editing" : "Edit widgets", systemImage: "square.grid.2x2")
-                }
-            }
         } label: {
             Image(systemName: "plus")
                 .font(.callout.weight(.semibold))
@@ -992,7 +983,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceEditControls(for: metric)
-                        .padding(8)
+                        .padding(7)
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
@@ -1046,8 +1037,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 onToggleMetricSize(metric)
             } label: {
                 Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
-                      ? "rectangle.compress.vertical"
-                      : "rectangle.expand.vertical")
+                      ? "rectangle.compress.horizontal"
+                      : "rectangle.expand.horizontal")
                     .font(.caption.weight(.bold))
                     .frame(width: 18, height: 18)
             }
@@ -1071,6 +1062,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .atriaCardAction(prominent: false, tint: .red)
             .accessibilityLabel("Remove \(metric.label)")
         }
+        .fixedSize()
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -1223,27 +1216,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepHistoryCard: some View {
-        let values = sleepHistorySparklineValues
         return Button(action: onOpenVitals) {
-            AtriaGlanceMetricCard(title: "Sleep history",
-                                  value: sleepHistory.nights.isEmpty ? "--" : sleepHistory.averageDurationText,
-                                  detail: sleepHistory.nights.isEmpty ? "Wear strap overnight or nap" : sleepHistory.evidenceCountText,
-                                  systemImage: AtriaTodayMetric.sleepHistory.systemImage,
-                                  tint: sleepHistory.nights.isEmpty ? .orange : .cyan,
-                                  sparklineValues: values.isEmpty ? [0, 0] : values)
+            AtriaSleepHistoryGlanceCard(snapshot: sleepHistory)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(sleepHistory.nights.isEmpty
                             ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
                             : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
-    }
-
-    private var sleepHistorySparklineValues: [Int] {
-        var values: [Int] = []
-        for night in sleepHistory.nights.reversed() {
-            values.append(Int((night.durationHours * 10).rounded()))
-        }
-        return values
     }
 
     private var trendCard: some View {
@@ -1492,6 +1471,127 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
                 .stroke(tint,
                         style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+        }
+    }
+}
+
+private struct AtriaSleepHistoryGlanceCard: View, Equatable {
+    let snapshot: SleepHistorySnapshot
+
+    private var latest: SleepHistorySnapshot.Night? {
+        snapshot.latest
+    }
+
+    private var tint: Color {
+        latest == nil ? .orange : .cyan
+    }
+
+    private var valueText: String {
+        guard !snapshot.nights.isEmpty else { return "--" }
+        return snapshot.averageDurationText
+    }
+
+    private var detailText: String {
+        guard let latest else { return "Wear strap overnight or nap" }
+        return "\(latest.evidenceLabel) · \(snapshot.evidenceCountText)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                AtriaGlanceMetricMarker(systemImage: AtriaTodayMetric.sleepHistory.systemImage,
+                                        tint: tint,
+                                        progressFraction: nil)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sleep history")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(detailText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint.opacity(0.82))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 42, alignment: .center)
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(valueText)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 38, alignment: .bottom)
+
+            stageStrip
+        }
+        .frame(maxWidth: .infinity,
+               minHeight: AtriaGlanceMetricCard.cardHeight,
+               maxHeight: AtriaGlanceMetricCard.cardHeight,
+               alignment: .leading)
+        .padding(12)
+        .atriaInsetCard(tint: tint)
+        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    @ViewBuilder
+    private var stageStrip: some View {
+        if let latest, !latest.displayStageSegments.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(SleepStageKind.allCases) { stage in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
+                            .labelStyle(.iconOnly)
+                            .font(.caption2.weight(.bold))
+                        Text(latest.stageText(stage))
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+                    }
+                    .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(height: 30, alignment: .center)
+        } else {
+            Text("Awake · Light · SWS · Deep")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .frame(height: 30, alignment: .center)
+        }
+    }
+
+    private var accessibilityText: String {
+        guard let latest else {
+            return "Sleep history building. Wear the strap overnight or during a nap."
+        }
+        return "Sleep history \(valueText). \(latest.evidenceLabel). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
+    }
+}
+
+enum AtriaSleepStageGlyph {
+    static func symbol(for stage: SleepStageKind) -> String {
+        switch stage {
+        case .awake: return "sun.max.fill"
+        case .light: return "moon.fill"
+        case .sws: return "waveform.path"
+        case .deep: return "moon.stars.fill"
+        }
+    }
+
+    static func color(for stage: SleepStageKind) -> Color {
+        switch stage {
+        case .awake: return .orange
+        case .light: return .cyan
+        case .sws: return .blue
+        case .deep: return .purple
         }
     }
 }
