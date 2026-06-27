@@ -65,10 +65,10 @@ struct AtriaVitalsTabContent: View {
             case .profile: profileCard
             }
         }
-        .draggable(section.rawValue)
+        .draggable(section.dragPayload)
         .dropDestination(for: String.self) { items, _ in
             guard let raw = items.first,
-                  let dragged = AtriaVitalsSection(rawValue: raw) else { return false }
+                  let dragged = AtriaVitalsSection.draggedSection(from: raw) else { return false }
             sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
             return true
         }
@@ -132,6 +132,7 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
     }
 
     static let orderStorageKey = "atria.vitals.sectionOrderCSV"
+    private static let dragPayloadPrefix = "atria.vitals.section:"
 
     static func ordered(from csv: String) -> [AtriaVitalsSection] {
         let decoded = csv.split(separator: ",").compactMap { AtriaVitalsSection(rawValue: String($0)) }
@@ -143,6 +144,16 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
             seen.insert(section)
         }
         return result
+    }
+
+    fileprivate var dragPayload: String {
+        Self.dragPayloadPrefix + rawValue
+    }
+
+    static func draggedSection(from payload: String) -> AtriaVitalsSection? {
+        guard payload.hasPrefix(dragPayloadPrefix) else { return nil }
+        let raw = String(payload.dropFirst(dragPayloadPrefix.count))
+        return AtriaVitalsSection(rawValue: raw)
     }
 
     static func moving(_ dragged: AtriaVitalsSection, before target: AtriaVitalsSection, in csv: String) -> String {

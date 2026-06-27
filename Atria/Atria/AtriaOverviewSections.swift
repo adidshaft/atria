@@ -616,6 +616,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let storageKey = "atriaTodayHiddenMetrics"
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
     static let noHiddenMetricsSentinel = "__atria_all_today_cards_visible__"
+    private static let dragPayloadPrefix = "atria.today.metric:"
 
     static var defaultHiddenMetrics: Set<String> {
         let metrics: [AtriaTodayMetric] = [.respiratoryRate, .strapSteps, .bloodOxygen, .bodyTemp]
@@ -652,6 +653,16 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric] {
         let hidden = hidden(from: hiddenCSV)
         return ordered(from: orderCSV).filter { !hidden.contains($0.rawValue) }
+    }
+
+    fileprivate var dragPayload: String {
+        Self.dragPayloadPrefix + rawValue
+    }
+
+    static func draggedMetric(from payload: String) -> AtriaTodayMetric? {
+        guard payload.hasPrefix(dragPayloadPrefix) else { return nil }
+        let raw = String(payload.dropFirst(dragPayloadPrefix.count))
+        return AtriaTodayMetric(rawValue: raw)
     }
 
     static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String {
@@ -830,10 +841,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
-            .draggable(metric.rawValue)
+            .draggable(metric.dragPayload)
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
-                      let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
+                      let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
                 onMoveMetric(dragged, metric)
                 return true
             }
