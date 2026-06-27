@@ -861,6 +861,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.recoveryValue == rhs.hero.recoveryValue
             && lhs.hero.strain == rhs.hero.strain
             && lhs.hero.strainValue == rhs.hero.strainValue
+            && lhs.hero.guidance.target == rhs.hero.guidance.target
             && lhs.hero.hrvValue == rhs.hero.hrvValue
             && lhs.hero.hrvDetail == rhs.hero.hrvDetail
             && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
@@ -1164,8 +1165,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(hero.strainValue),
                                   detail: "Day load",
                                   systemImage: metric.systemImage,
-                                  tint: .orange,
-                                  ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1))
+                                  tint: strainZone?.tint ?? .orange,
+                                  ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
+                                  zone: strainZone)
         case .workout:
             workoutCard(metric)
         case .backfill:
@@ -1412,6 +1414,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var recoveryZone: AtriaMetricZone? {
         Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
+    }
+
+    private var strainZone: AtriaMetricZone? {
+        Metrics.strainZone(strain: hero.strain, target: hero.guidance.target)
     }
 
     private var hrvZone: AtriaMetricZone? {

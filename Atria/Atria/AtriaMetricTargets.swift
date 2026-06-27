@@ -116,6 +116,32 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
+    static func strainZone(strain: Double, target: Double?) -> AtriaMetricZone? {
+        guard let target else { return nil }
+        let delta = strain - target
+        let absDelta = abs(delta)
+        let level: AtriaMetricZoneLevel = absDelta <= 1.5 ? .green : (absDelta <= 3.0 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Strain is inside today's recovery-scaled target band."
+        case .yellow where delta > 0:
+            recommendation = "You're past today's suggested strain for your recovery -- ease off to protect tomorrow."
+        case .red where delta > 0:
+            recommendation = "You're far past today's suggested strain. Keep the rest of the day light."
+        case .yellow:
+            recommendation = "Room to add load if you feel good."
+        case .red:
+            recommendation = "Well under today's target. Add easy movement or training only if it fits how you feel."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Strain target",
+                               current: String(format: "Strain %.1f vs target %.1f.", strain, target),
+                               targetSummary: String(format: "Green within +/-1.5, yellow within +/-3.0, red farther from %.1f.", target),
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
     static func hrvZone(_ rmssd: Int?, baseline: Int?, baselineSamples: Int) -> AtriaMetricZone? {
         guard baselineSamples >= 7, let rmssd, let baseline, baseline > 0 else { return nil }
         let ratio = Double(rmssd) / Double(baseline)
