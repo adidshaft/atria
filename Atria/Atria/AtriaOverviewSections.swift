@@ -819,7 +819,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bioAge, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bodyTemp:
             return true
         default:
             return false
@@ -1333,9 +1333,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sensorSummary.strapStepText,
                                   detail: sensorSummary.strapStepCount > 0 ? sensorSummary.agreementText : "Research",
                                   systemImage: metric.systemImage,
-                                  tint: sensorSummary.strapStepCount > 0 ? .green : .orange)
+                                  tint: strapStepsZone?.tint ?? (sensorSummary.strapStepCount > 0 ? .green : .orange),
+                                  zone: strapStepsZone)
                 .accessibilityLabel(sensorSummary.strapStepCount > 0
-                                    ? "Strap step research \(sensorSummary.strapStepText), agreement \(sensorSummary.agreementText)"
+                                    ? "Strap step research \(sensorSummary.strapStepText), agreement \(sensorSummary.agreementText), goal \(stepsGoal) steps"
                                     : "Strap step research is waiting for validated motion evidence")
         case .calories:
             AtriaGlanceMetricCard(title: "Calories",
@@ -1557,6 +1558,19 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var stepsZone: AtriaMetricZone? {
         Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,
                           goal: stepsGoal)
+    }
+
+    private var strapStepsZone: AtriaMetricZone? {
+        guard sensorSummary.strapStepCount > 0 else { return nil }
+        let zone = Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)
+        return zone.map {
+            AtriaMetricZone(level: $0.level,
+                            title: "Strap step research goal",
+                            current: "\($0.current) Strap-step agreement: \(sensorSummary.agreementText).",
+                            targetSummary: $0.targetSummary,
+                            recommendation: "\($0.recommendation) Strap steps remain research-tier until motion agreement is validated.",
+                            disclaimer: "Research strap-step estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
+        }
     }
 
     private var activeCaloriesZone: AtriaMetricZone? {
@@ -2047,7 +2061,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
             }
-        case .steps:
+        case .steps, .strapSteps:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
                     LabeledContent("Steps goal") {
@@ -2167,7 +2181,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
 private extension AtriaTodayMetric {
     var targetEditorTint: Color {
         switch self {
-        case .recovery, .steps: return .green
+        case .recovery, .steps, .strapSteps: return .green
         case .strain, .calories: return .orange
         case .hrv: return .pink
         case .rhr: return .red
@@ -2203,6 +2217,8 @@ private extension AtriaTodayMetric {
             return "Adjust the VO2max trend gain or decline needed for target colors."
         case .steps:
             return "Adjust the daily step goal used by the steps card."
+        case .strapSteps:
+            return "Adjust the daily step goal used by strap-step research while validation remains separate."
         case .calories:
             return "Adjust the estimated active-calorie goal used by the calories card."
         case .sleepEfficiency:
