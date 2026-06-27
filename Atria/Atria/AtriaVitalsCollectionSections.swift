@@ -676,11 +676,9 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
-        let baselineValues = sleepHistory.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
-        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         return Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,
-                                           baseline: baseline,
-                                           baselineSamples: baselineValues.count,
+                                           baseline: sleepHistory.respiratoryBaselineMean,
+                                           baselineSamples: sleepHistory.respiratoryBaselineCount,
                                            greenDelta: respiratoryGreenDelta,
                                            yellowDelta: respiratoryYellowDelta)
     }
@@ -2027,11 +2025,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
-        let baselineValues = snapshot.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
-        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         return Metrics.respiratoryRateZone(snapshot.latest?.respiratoryRate,
-                                           baseline: baseline,
-                                           baselineSamples: baselineValues.count,
+                                           baseline: snapshot.respiratoryBaselineMean,
+                                           baselineSamples: snapshot.respiratoryBaselineCount,
                                            greenDelta: respiratoryGreenDelta,
                                            yellowDelta: respiratoryYellowDelta)
     }

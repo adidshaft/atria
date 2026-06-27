@@ -10514,13 +10514,23 @@ struct SleepHistorySnapshot: Equatable {
     let nights: [Night]
     let confirmedCount: Int
     let candidateCount: Int
+    let respiratoryBaselineMean: Double?
+    let respiratoryBaselineCount: Int
 
     static let empty = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
 
     init(nights: [Night], confirmedCount: Int, candidateCount: Int) {
+        let baselineValues = nights
+            .dropFirst()
+            .compactMap(\.respiratoryRate)
+            .filter { $0 > 0 }
         self.nights = nights
         self.confirmedCount = confirmedCount
         self.candidateCount = candidateCount
+        self.respiratoryBaselineCount = baselineValues.count
+        self.respiratoryBaselineMean = baselineValues.isEmpty
+            ? nil
+            : baselineValues.reduce(0, +) / Double(baselineValues.count)
     }
 
     init(rollups: [DailyRollup], confirmedSleeps: [UserConfirmedSleep], calendar: Calendar = .current) {
@@ -10565,9 +10575,18 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
-        self.nights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))
+        let clippedNights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))
+        let baselineValues = clippedNights
+            .dropFirst()
+            .compactMap(\.respiratoryRate)
+            .filter { $0 > 0 }
+        self.nights = clippedNights
         self.confirmedCount = confirmedSleeps.count
         self.candidateCount = rollups.reduce(0) { $0 + $1.sleepCandidates }
+        self.respiratoryBaselineCount = baselineValues.count
+        self.respiratoryBaselineMean = baselineValues.isEmpty
+            ? nil
+            : baselineValues.reduce(0, +) / Double(baselineValues.count)
     }
 
     private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
