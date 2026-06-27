@@ -1480,6 +1480,7 @@ final class AtriaHomeModel {
         var hrvSDNN: Double?
         var hrvPNN50: Double?
         var sessionSampleCount: Int
+        var hasRecentHeartRateSample: Bool
         var liveTRIMP: Double
         var liveActiveCalories: Double?
         var phoneStepsToday: Int
@@ -2360,6 +2361,7 @@ final class AtriaHomeModel {
                              hrvSDNN: ble.hrvSnapshot?.sdnn,
                              hrvPNN50: ble.hrvSnapshot?.pnn50,
                              sessionSampleCount: liveSessionDerived.sampleCount,
+                             hasRecentHeartRateSample: hasRecentHeartRateSample(ble: ble),
                              liveTRIMP: liveSessionDerived.trimp,
                              liveActiveCalories: liveSessionDerived.activeCalories,
                              phoneStepsToday: ble.phoneStepsToday,
@@ -2409,6 +2411,16 @@ final class AtriaHomeModel {
             return average
         }
         return 0
+    }
+
+    private static func hasRecentHeartRateSample(ble: AtriaBLEManager, now: Date = Date()) -> Bool {
+        if ble.heartRate > 0 { return true }
+        if let latest = ble.session.last, latest.bpm > 0,
+           now.timeIntervalSince(latest.t) <= 180 {
+            return true
+        }
+        return ble.status == .connected
+            && (ble.liveHeartWindow.sparkline.contains { $0 > 0 } || (ble.liveHeartWindow.average ?? 0) > 0)
     }
 
     private static func compactHeartChartPoints(_ samples: [HRSample], targetCount: Int = 120) -> [HeartRateChartPoint] {
@@ -3072,6 +3084,7 @@ private struct AtriaHomeTopChrome: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             AtriaTopStatusChip(statusStore: statusStore,
+                               coreLiveStore: coreLiveStore,
                                pulseLiveStore: pulseLiveStore,
                                onTapWhenNotConnected: onTapStatusWhenNotConnected)
 
@@ -3154,13 +3167,16 @@ private struct AtriaHeaderBatteryIndicator: View {
 /// strap loses contact, even while the BLE link stays up).
 private struct AtriaTopStatusChip: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let onTapWhenNotConnected: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     private var status: AtriaBLEManager.Status { statusStore.state.status }
     private var bluetoothPermissionDenied: Bool { statusStore.state.bluetoothPermissionDenied }
-    private var hasPulseSignal: Bool { pulseLiveStore.state.hasPulseSignal }
+    private var hasPulseSignal: Bool {
+        pulseLiveStore.state.hasPulseSignal || coreLiveStore.state.hasRecentHeartRateSample
+    }
     private var displayStatus: AtriaBLEManager.Status {
         guard hasPulseSignal else { return status }
         switch status {
