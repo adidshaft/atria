@@ -453,6 +453,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func openTrendsSegment()",
             "onOpenInsights: openTrendsSegment",
             "let onOpenInsights: () -> Void",
+            "private static let dragPayloadPrefix = \"atria.today.metric:\"",
+            "fileprivate var dragPayload: String",
+            "Self.dragPayloadPrefix + rawValue",
+            "static func draggedMetric(from payload: String) -> AtriaTodayMetric?",
+            "guard payload.hasPrefix(dragPayloadPrefix) else { return nil }",
             "historicalArchiveStatus: store.historicalArchiveStatus",
             "let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus",
             "&& lhs.historicalArchiveStatus == rhs.historicalArchiveStatus",
@@ -514,8 +519,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaGlanceMetricCard(title: \"Insights\"",
             "detail: topInsight?.tagLabel ?? (taggedDays > 0 ? \"Learning patterns\" : \"Tag today\")",
             "Open Trends. Insights building from \\(taggedDays) tagged days",
-            ".draggable(metric.rawValue)",
+            ".draggable(metric.dragPayload)",
             ".dropDestination(for: String.self)",
+            "AtriaTodayMetric.draggedMetric(from: raw)",
             "onMoveMetric(dragged, metric)",
             "let upLabel = Text(\"Move \\(metric.label) up\")",
             "let downLabel = Text(\"Move \\(metric.label) down\")",
@@ -561,9 +567,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
             "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
             "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
+            "private static let dragPayloadPrefix = \"atria.vitals.section:\"",
+            "fileprivate var dragPayload: String",
+            "static func draggedSection(from payload: String) -> AtriaVitalsSection?",
             "var label: String",
             "case .recoveryStrain: return \"Recovery and strain\"",
-            ".draggable(section.rawValue)",
+            ".draggable(section.dragPayload)",
+            "AtriaVitalsSection.draggedSection(from: raw)",
             "AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)",
             ".accessibilityAction(named: Text(\"Move \\(section.label) up\"))",
             ".accessibilityAction(named: Text(\"Move \\(section.label) down\"))",
@@ -578,6 +588,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
         ]:
             assert_contains(self, vitals, needle)
+
+        assert_not_contains(self, overview, ".draggable(metric.rawValue)")
+        assert_not_contains(self, overview, "let dragged = AtriaTodayMetric(rawValue: raw)")
+        assert_not_contains(self, vitals, ".draggable(section.rawValue)")
+        assert_not_contains(self, vitals, "let dragged = AtriaVitalsSection(rawValue: raw)")
 
     def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
