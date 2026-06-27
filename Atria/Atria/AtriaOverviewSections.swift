@@ -460,6 +460,7 @@ struct AtriaOverviewLeadingSection: View {
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "",
+                                                 onOpenVitals: onOpenVitals,
                                                  onOpenCollection: onOpenCollection,
                                                  onStartWorkout: onStartWorkout)
 
@@ -493,6 +494,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
     let subtitle: String
+    var onOpenVitals: () -> Void = {}
     var onOpenCollection: () -> Void = {}
     var onStartWorkout: () -> Void = {}
 
@@ -515,6 +517,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                     hiddenCSV: hiddenCSV),
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric,
+                                     onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
                                      onStartWorkout: onStartWorkout)
             .equatable()
@@ -662,6 +665,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
+    let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onStartWorkout: () -> Void
 
@@ -974,15 +978,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var sleepHistoryCard: some View {
         let values = sleepHistorySparklineValues
-        return AtriaGlanceMetricCard(title: "Sleep history",
-                                     value: sleepHistory.nights.isEmpty ? "--" : sleepHistory.averageDurationText,
-                                     detail: sleepHistory.nights.isEmpty ? "Wear strap overnight" : "\(sleepHistory.nights.count) nights",
-                                     systemImage: AtriaTodayMetric.sleepHistory.systemImage,
-                                     tint: sleepHistory.nights.isEmpty ? .orange : .cyan,
-                                     sparklineValues: values.isEmpty ? [0, 0] : values)
-            .accessibilityLabel(sleepHistory.nights.isEmpty
-                                ? "Sleep history is building. Wear the strap overnight."
-                                : "Sleep history average \(sleepHistory.averageDurationText) across \(sleepHistory.nights.count) nights")
+        return Button(action: onOpenVitals) {
+            AtriaGlanceMetricCard(title: "Sleep history",
+                                  value: sleepHistory.nights.isEmpty ? "--" : sleepHistory.averageDurationText,
+                                  detail: sleepHistory.nights.isEmpty ? "Wear strap overnight" : "\(sleepHistory.nights.count) nights",
+                                  systemImage: AtriaTodayMetric.sleepHistory.systemImage,
+                                  tint: sleepHistory.nights.isEmpty ? .orange : .cyan,
+                                  sparklineValues: values.isEmpty ? [0, 0] : values)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(sleepHistory.nights.isEmpty
+                            ? "Open Vitals. Sleep history is building. Wear the strap overnight."
+                            : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText) across \(sleepHistory.nights.count) nights")
     }
 
     private var sleepHistorySparklineValues: [Int] {
