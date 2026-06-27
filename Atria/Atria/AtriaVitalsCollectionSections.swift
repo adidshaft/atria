@@ -613,17 +613,17 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
 
             LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Blood oxygen",
-                                value: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames)" : "--",
-                                unit: summary.spo2CandidateFrames > 0 ? "frames" : nil,
+                                value: summary.spo2CandidateFrames > 0 ? "Research" : "--",
+                                unit: nil,
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: .blue,
-                                footnote: "Early signal; not a SpO2 value.")
+                                footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.")
                 AtriaMetricTile(label: "Body temp",
-                                value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
-                                unit: summary.skinTempCandidateFrames > 0 ? "frames" : nil,
+                                value: summary.skinTempCandidateFrames > 0 ? "Research" : "--",
+                                unit: nil,
                                 state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
                                 tint: .orange,
-                                footnote: "Early signal; not body temperature.")
+                                footnote: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames) candidate frames; not body temperature." : "Early signal; not body temperature.")
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",

@@ -935,8 +935,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     : "VO2max estimate \(vo2MaxEstimate.valueText), \(vo2MaxEstimate.confidence)")
         case .bloodOxygen:
             AtriaGlanceMetricCard(title: "Blood oxygen",
-                                  value: sensorSummary.spo2CandidateFrames > 0 ? "\(sensorSummary.spo2CandidateFrames)" : "--",
-                                  detail: sensorSummary.spo2CandidateFrames > 0 ? "research frames" : "Sleep research",
+                                  value: sensorSummary.spo2CandidateFrames > 0 ? "Research" : "--",
+                                  detail: sensorSummary.spo2CandidateFrames > 0 ? "\(sensorSummary.spo2CandidateFrames) candidate frames" : "Sleep research",
                                   systemImage: metric.systemImage,
                                   tint: sensorSummary.spo2CandidateFrames > 0 ? .blue : .orange)
                 .accessibilityLabel(sensorSummary.spo2CandidateFrames > 0
@@ -944,8 +944,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     : "Blood oxygen research is building and does not show an SpO2 percentage")
         case .bodyTemp:
             AtriaGlanceMetricCard(title: "Body temp",
-                                  value: sensorSummary.skinTempCandidateFrames > 0 ? "\(sensorSummary.skinTempCandidateFrames)" : "--",
-                                  detail: sensorSummary.skinTempCandidateFrames > 0 ? "research frames" : "Sleep research",
+                                  value: sensorSummary.skinTempCandidateFrames > 0 ? "Research" : "--",
+                                  detail: sensorSummary.skinTempCandidateFrames > 0 ? "\(sensorSummary.skinTempCandidateFrames) candidate frames" : "Sleep research",
                                   systemImage: metric.systemImage,
                                   tint: sensorSummary.skinTempCandidateFrames > 0 ? .teal : .orange)
                 .accessibilityLabel(sensorSummary.skinTempCandidateFrames > 0
