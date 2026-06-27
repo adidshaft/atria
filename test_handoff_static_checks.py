@@ -2180,6 +2180,44 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, widget, "readings ·")
         assert_not_contains(self, widget, "samples ·")
 
+    def test_widgets_deep_link_to_matching_tabs(self):
+        plist = source(ROOT / "Atria" / "Info.plist")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+
+        for needle in [
+            "<key>CFBundleURLTypes</key>",
+            "<string>com.adidshaft.atria</string>",
+            "<string>atria</string>",
+        ]:
+            assert_contains(self, plist, needle)
+
+        for needle in [
+            "var deepLinkPath: String",
+            "static func deepLinkDestination(for url: URL) -> HomeTab?",
+            "guard url.scheme?.lowercased() == \"atria\" else { return nil }",
+            "case \"data\", \"collection\": return .collection",
+            ".onOpenURL(perform: handleDeepLink)",
+            "private func handleDeepLink(_ url: URL)",
+            "selectedTab = tab",
+            "model.loadDeferredDiagnosticsIfNeeded(reason: \"deeplink_\\(tab.deepLinkPath)\")",
+            "ATRIADBG deeplink status=handled",
+        ]:
+            assert_contains(self, home, needle)
+
+        for needle in [
+            "private let atriaOverviewURL = URL(string: \"atria://tab/overview\")!",
+            "private let atriaVitalsURL = URL(string: \"atria://tab/vitals\")!",
+            ".widgetURL(atriaOverviewURL)",
+            "var deepLinkURL: URL",
+            "case .steps, .strain:",
+            "return atriaOverviewURL",
+            "case .hrv, .bpm:",
+            "return atriaVitalsURL",
+            ".widgetURL(metric.deepLinkURL)",
+        ]:
+            assert_contains(self, widget, needle)
+
     def test_live_activity_updates_are_throttled_off_the_sample_hot_path(self):
         coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
 
