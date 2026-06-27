@@ -255,14 +255,23 @@ enum LocalNotificationScheduler {
     private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision] {
         let bluetoothDecision: NotificationDecision
         if ble.status == .poweredOff {
+            if ble.bluetoothPermissionDenied {
+                return [NotificationDecision(
+                    kind: "bluetooth_off",
+                    identifier: Identifier.bluetoothOff,
+                    title: "",
+                    body: "",
+                    reason: "bluetooth_permission_inline_only",
+                    shouldSchedule: false,
+                    delay: 0
+                )]
+            }
             bluetoothDecision = NotificationDecision(
                 kind: "bluetooth_off",
                 identifier: Identifier.bluetoothOff,
-                title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off",
-                body: ble.bluetoothPermissionDenied
-                    ? "Allow Bluetooth for Atria in Settings."
-                    : "Turn on Bluetooth in Settings so Atria can read your strap.",
-                reason: ble.bluetoothPermissionDenied ? "bluetooth_permission_denied" : "bluetooth_powered_off",
+                title: "Bluetooth is off",
+                body: "Turn on Bluetooth in Settings so Atria can read your strap.",
+                reason: "bluetooth_powered_off",
                 shouldSchedule: true,
                 delay: 9
             )
@@ -327,7 +336,7 @@ enum LocalNotificationScheduler {
                                         reason: "visible_diagnosis_\(reason)",
                                         shouldSchedule: true,
                                         delay: 9)
-        case "Bluetooth is off", "Bluetooth permission needed":
+        case "Bluetooth is off":
             return NotificationDecision(kind: "bluetooth_off",
                                         identifier: Identifier.bluetoothOff,
                                         title: title,

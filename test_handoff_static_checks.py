@@ -617,6 +617,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "title == \"Bluetooth is off\"",
             "title == \"Bluetooth permission needed\"",
             "title == \"Strap battery low\"",
+            "var sendsLocalNotification: Bool",
+            "next.sendsLocalNotification && visibleConnectionDiagnosis != next",
             "live.batteryLevel <= Self.lowBatteryThreshold",
             "var bluetoothPermissionDenied: Bool",
             "var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk",
@@ -3118,7 +3120,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "reason=pending_request")
         assert_contains(self, notifications, "reason=cooldown")
         assert_contains(self, notifications, "case \"Strap battery low\":")
-        assert_contains(self, notifications, "case \"Bluetooth is off\", \"Bluetooth permission needed\":")
+        assert_contains(self, notifications, "case \"Bluetooth is off\":")
+        assert_contains(self, notifications, "bluetooth_permission_inline_only")
         assert_contains(self, notifications, "includeMetricDecisions: debugMetricRequest")
         assert_contains(self, notifications, "includeActionableConnectionDecisions: productionCadence || debugMetricRequest")
         assert_contains(self, notifications, "actionable_connection_decisions=%d")
@@ -3127,9 +3130,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision]")
         assert_contains(self, notifications, 'static let bluetoothOff = "atria.bluetooth.off"')
         assert_contains(self, notifications, 'kind: "bluetooth_off"')
-        assert_contains(self, notifications, 'title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off"')
-        assert_contains(self, notifications, 'body: ble.bluetoothPermissionDenied')
-        assert_contains(self, notifications, 'Allow Bluetooth for Atria in Settings.')
+        assert_contains(self, notifications, "if ble.bluetoothPermissionDenied")
+        assert_contains(self, notifications, 'title: "Bluetooth is off"')
         assert_contains(self, notifications, 'Turn on Bluetooth in Settings so Atria can read your strap.')
         assert_contains(self, notifications, "if ble.status == .poweredOff")
         assert_contains(self, notifications, "return [bluetoothDecision]")
@@ -3141,7 +3143,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "body: \"Local notification delivery is working.\"")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         assert_contains(self, home, "LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,")
-        assert_contains(self, home, "if visibleConnectionDiagnosis != next")
+        assert_contains(self, home, "if next.sendsLocalNotification && visibleConnectionDiagnosis != next")
 
         actionable = re.search(
             r"private static func makeActionableConnectionDecisions\(ble: AtriaBLEManager\) -> \[NotificationDecision\] \{(?P<body>.*?)\n    \}",
@@ -3159,6 +3161,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, notifications, "includeMetricDecisions: productionCadence || debugMetricRequest")
         assert_not_contains(self, notifications, "monitor_confidence_gated_metric_triggers")
         assert_not_contains(self, notifications, "title: \"Atria diagnostic\"")
+        assert_not_contains(self, notifications, "case \"Bluetooth is off\", \"Bluetooth permission needed\":")
+        assert_not_contains(self, notifications, 'title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off"')
 
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
