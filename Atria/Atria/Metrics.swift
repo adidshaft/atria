@@ -162,19 +162,7 @@ enum Metrics {
 
     // MARK: Recovery (0–100 %)
 
-    struct RecoveryEstimate: Equatable {
-        enum Confidence: String {
-            case learning
-            case unverified
-            case personalBaseline = "personal baseline"
-            case validated
-        }
-
-        let percent: Int?
-        let confidence: Confidence
-        let usesHRV: Bool
-        let detail: String
-    }
+    typealias RecoveryEstimate = AtriaAnalytics.Recovery.Estimate
 
     /// HR-only recovery: at/below baseline reads high; elevated resting reads low.
     static func recovery(restingNow: Int, baseline: Int) -> Int {
@@ -204,65 +192,13 @@ enum Metrics {
                            hrvReferenceValidated: Bool = false,
                            sleepEfficiency: Double? = nil,
                            sleepDurationHours: Double? = nil) -> RecoveryEstimate {
-        guard let restingNow else {
-            return RecoveryEstimate(percent: nil, confidence: .learning,
-                                    usesHRV: false, detail: "learning: need resting HR")
-        }
-
-        guard let restingStats = baseline.restingStats else {
-            return RecoveryEstimate(percent: nil, confidence: .learning,
-                                    usesHRV: false, detail: "learning: need baseline")
-        }
-
-        let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
-        let rmssdNow = hrvSnapshot?.isReady == true
-            ? hrvSnapshot?.rmssd
-            : fallbackRMSSD.map(Double.init)
-        guard let rmssdNow, rmssdNow > 0 else {
-            return RecoveryEstimate(percent: nil, confidence: .learning,
-                                    usesHRV: false,
-                                    detail: "learning: need a clean HRV window")
-        }
-
-        guard let hrvStats = baseline.lnRMSSDStats, hrvStats.count >= 7 else {
-            return RecoveryEstimate(percent: nil, confidence: .learning,
-                                    usesHRV: false,
-                                    detail: "learning HRV baseline \(baseline.hrvSampleCount)/7")
-        }
-
-        let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
-        guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
-                                          durationHours: sleepDurationHours) else {
-            return RecoveryEstimate(percent: nil, confidence: .learning,
-                                    usesHRV: true,
-                                    detail: "learning: need saved sleep")
-        }
-
-        let blendedZ = 0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ
-        let percent = Int(Swift.min(Swift.max(50 + blendedZ * 16, 1), 99).rounded())
-        let confidence: RecoveryEstimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
-        return RecoveryEstimate(percent: percent, confidence: confidence,
-                                usesHRV: true,
-                                detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f", hrvZ, restingZ, sleepZ))
-    }
-
-    private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
-        guard sd > 0.1 else { return 0 }
-        return (value - mean) / sd
-    }
-
-    private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {
-        var components: [Double] = []
-        if let efficiency {
-            components.append((min(max(efficiency, 0), 1) - 0.85) / 0.10)
-        }
-        if let durationHours, durationHours > 0 {
-            let capped = min(max(durationHours, 0), 9)
-            components.append((capped - 7.0) / 1.5)
-        }
-        guard !components.isEmpty else { return nil }
-        let average = components.reduce(0, +) / Double(components.count)
-        return min(max(average, -2), 2)
+        AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,
+                                         fallbackRMSSD: fallbackRMSSD,
+                                         restingNow: restingNow,
+                                         baseline: baseline,
+                                         hrvReferenceValidated: hrvReferenceValidated,
+                                         sleepEfficiency: sleepEfficiency,
+                                         sleepDurationHours: sleepDurationHours)
     }
 
     static func recoveryColor(_ pct: Int) -> Color {
