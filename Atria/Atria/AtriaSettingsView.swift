@@ -35,6 +35,8 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
+    @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -111,6 +113,8 @@ struct AtriaSettingsView: View {
         .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
         .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
+        .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
+        .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
     }
 
     private func normalizeRecoveryTargets() {
@@ -124,6 +128,11 @@ struct AtriaSettingsView: View {
 
     private func normalizeSleepGoal() {
         sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
+    }
+
+    private func normalizeSleepEfficiencyTargets() {
+        sleepEfficiencyYellowLower = min(max(sleepEfficiencyYellowLower, 50), 95)
+        sleepEfficiencyGreenLower = min(max(sleepEfficiencyGreenLower, sleepEfficiencyYellowLower + 1), 99)
     }
 
     // MARK: Appearance
@@ -289,10 +298,26 @@ struct AtriaSettingsView: View {
                     }
                 }
 
+                Stepper(value: $sleepEfficiencyGreenLower, in: 60...99, step: 1) {
+                    LabeledContent("Sleep eff green") {
+                        Text("\(Int(sleepEfficiencyGreenLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $sleepEfficiencyYellowLower, in: 50...95, step: 1) {
+                    LabeledContent("Sleep eff yellow") {
+                        Text("\(Int(sleepEfficiencyYellowLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
                 Button {
                     sleepGoalHours = 8.0
+                    sleepEfficiencyGreenLower = 90
+                    sleepEfficiencyYellowLower = 80
                 } label: {
-                    Label("Reset sleep goal", systemImage: "bed.double.fill")
+                    Label("Reset sleep targets", systemImage: "bed.double.fill")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
 

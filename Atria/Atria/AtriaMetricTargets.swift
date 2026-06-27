@@ -187,10 +187,14 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
-    static func sleepEfficiencyZone(_ efficiency: Double?) -> AtriaMetricZone? {
+    static func sleepEfficiencyZone(_ efficiency: Double?,
+                                    greenLower: Double = 90,
+                                    yellowLower: Double = 80) -> AtriaMetricZone? {
         guard let efficiency else { return nil }
         let pct = Int((efficiency * 100).rounded())
-        let level: AtriaMetricZoneLevel = pct >= 90 ? .green : (pct >= 80 ? .yellow : .red)
+        let safeYellow = min(max(yellowLower, 50), 95)
+        let safeGreen = min(max(greenLower, safeYellow + 1), 99)
+        let level: AtriaMetricZoneLevel = Double(pct) >= safeGreen ? .green : (Double(pct) >= safeYellow ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -203,7 +207,7 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "Sleep efficiency target",
                                current: "\(pct)% sleep efficiency.",
-                               targetSummary: "Green >= 90%, yellow 80-89%, red below 80%.",
+                               targetSummary: "Green >= \(Int(safeGreen.rounded()))%, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
                                recommendation: recommendation,
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
