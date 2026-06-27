@@ -2053,6 +2053,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_overview_trend_chart_points_are_cached_off_render_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         trend_chart = source(ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
@@ -2075,20 +2076,29 @@ class HandoffStaticChecks(unittest.TestCase):
             "Self.makeTrainingLoadSummary(sessions: source,",
             "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
             "private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession]",
+            "AtriaAnalytics.TrainingLoad.summary(sessions: sessions,",
             "Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))",
-            "let monotony = trainingMonotony(acuteRollups)",
-            "private nonisolated static func trainingMonotony(_ dailyStrains: [Double]) -> Double?",
-            "private nonisolated static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
-            "private nonisolated static func monotonyReadinessSignal(monotony: Double?, enoughAcute: Bool) -> String",
-            "private nonisolated static func trainingReadiness(acwrSignal: String,",
-            "return \"rundown\"",
-            "return \"strained\"",
-            "return \"primed\"",
-            "return \"balanced\"",
             "trainingLoadSummarySnapshot",
             "func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {\n        trainingLoadSummarySnapshot\n    }",
         ]:
             assert_contains(self, sessions, needle)
+
+        for needle in [
+            "enum AtriaAnalytics",
+            "enum TrainingLoad",
+            "static func summary(sessions: [SavedSession],",
+            "static func summary(dailyStrains: [Double]) -> TrainingLoadSummary",
+            "let monotony = trainingMonotony(acuteRollups)",
+            "static func trainingMonotony(_ dailyStrains: [Double]) -> Double?",
+            "static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
+            "static func monotonyReadinessSignal(monotony: Double?, enoughAcute: Bool) -> String",
+            "static func trainingReadiness(acwrSignal: String,",
+            "return \"rundown\"",
+            "return \"strained\"",
+            "return \"primed\"",
+            "return \"balanced\"",
+        ]:
+            assert_contains(self, analytics, needle)
 
         for needle in [
             "AtriaTrendChartCard(points: store.overviewTrendPoints,",
