@@ -585,14 +585,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "live.batteryLevel <= Self.lowBatteryThreshold",
             "var bluetoothPermissionDenied: Bool",
             "var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk",
-            "var needsRRContactCoach: Bool { rrContinuityState == \"poor_contact\" }",
+            "var needsRRQualityCoach: Bool { rrContinuityState == \"poor_contact\" }",
             "ble.$bluetoothPermissionDenied.removeDuplicates()",
             "ble.$officialAppCoexistenceRisk.removeDuplicates()",
             "live.bluetoothPermissionDenied",
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "case .connected where pulse.needsContactCoach:",
             "return AtriaConnectionDiagnosis(title: \"Connected, no pulse\"",
-            "case .connected where live.needsRRContactCoach:",
+            "case .connected where live.needsRRQualityCoach:",
             "Beat-to-beat settling",
             "Heart rate is live. Keep wearing normally while HRV settles.",
             "Beat-to-beat waiting",
@@ -642,6 +642,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, ble, needle)
 
         assert_not_contains(self, home, "showConnectionDiagnosisModal")
+        assert_not_contains(self, home, "needsRRContactCoach")
+        assert_not_contains(self, home, "Beat-to-beat signal weak")
+        assert_not_contains(self, home, "Tighten the strap fit or wet the sensor")
 
     def test_handoff_21_battery_saver_radio_mode_is_user_visible(self):
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
