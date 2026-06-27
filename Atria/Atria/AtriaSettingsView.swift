@@ -107,7 +107,6 @@ struct AtriaSettingsView: View {
                     sensorAvailabilitySection
                     alertsSection
                     dataSection
-                    shortcutsSection
                     aboutSection
                 }
                 .scrollContentBackground(.hidden)
@@ -664,20 +663,6 @@ struct AtriaSettingsView: View {
             Text("Local ownership, free export.")
         }
     }
-
-    // MARK: Shortcuts (stub)
-
-    private var shortcutsSection: some View {
-        Section {
-            settingsInfoRow(icon: "hand.tap.fill", tint: .blue,
-                            title: "Strap tap shortcuts",
-                            detail: "Single / double / triple-tap actions (music, calls) are coming once tap input from the band is confirmed.")
-        } header: {
-            Text("Shortcuts")
-        }
-    }
-
-    // MARK: Device
 
     // MARK: Today screen layout
 
