@@ -55,13 +55,41 @@ struct AtriaMetricTarget: Equatable, Codable {
     let direction: Direction
     let greenLower: Double
     let yellowLower: Double
+    let optimalRange: ClosedRange<Double>?
+    let yellowBuffer: Double?
+    let redThreshold: Double?
+    let goal: Double?
     let source: Source
 
     static let recoveryRecommended = AtriaMetricTarget(metricID: "recovery",
                                                        direction: .higherIsBetter,
                                                        greenLower: 67,
                                                        yellowLower: 34,
+                                                       optimalRange: 67...100,
+                                                       yellowBuffer: 33,
+                                                       redThreshold: 34,
+                                                       goal: 67,
                                                        source: .researchDefault)
+
+    init(metricID: String,
+         direction: Direction,
+         greenLower: Double,
+         yellowLower: Double,
+         optimalRange: ClosedRange<Double>? = nil,
+         yellowBuffer: Double? = nil,
+         redThreshold: Double? = nil,
+         goal: Double? = nil,
+         source: Source) {
+        self.metricID = metricID
+        self.direction = direction
+        self.greenLower = greenLower
+        self.yellowLower = yellowLower
+        self.optimalRange = optimalRange
+        self.yellowBuffer = yellowBuffer
+        self.redThreshold = redThreshold
+        self.goal = goal
+        self.source = source
+    }
 
     static func recovery(greenLower: Double, yellowLower: Double) -> AtriaMetricTarget {
         let clampedYellow = min(max(yellowLower, 1), 99)
@@ -71,11 +99,23 @@ struct AtriaMetricTarget: Equatable, Codable {
                                  direction: .higherIsBetter,
                                  greenLower: clampedGreen,
                                  yellowLower: clampedYellow,
+                                 optimalRange: clampedGreen...100,
+                                 yellowBuffer: clampedGreen - clampedYellow,
+                                 redThreshold: clampedYellow,
+                                 goal: clampedGreen,
                                  source: isDefault ? .researchDefault : .userEdited)
     }
 
     var summaryText: String {
-        "\(source.label) · Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
+        let base = "\(source.label) · Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
+        let details = [
+            optimalRange.map { "optimal \(Int($0.lowerBound.rounded()))-\(Int($0.upperBound.rounded()))" },
+            yellowBuffer.map { "yellow buffer \(Int($0.rounded()))" },
+            redThreshold.map { "red threshold \(Int($0.rounded()))" },
+            goal.map { "goal \(Int($0.rounded()))" },
+        ].compactMap { $0 }
+        guard !details.isEmpty else { return base }
+        return base + " · " + details.joined(separator: " · ")
     }
 }
 
@@ -92,6 +132,39 @@ struct AtriaMetricZone: Equatable {
     var showsWarning: Bool { warningSystemImage != nil }
 
     static let nonMedicalDisclaimer = "General wellness guidance only, not medical advice."
+}
+
+extension AtriaMetricZone {
+    static func zone(for value: Double, target: AtriaMetricTarget) -> AtriaMetricZoneLevel {
+        if let optimalRange = target.optimalRange,
+           optimalRange.contains(value) {
+            return .green
+        }
+
+        switch target.direction {
+        case .higherIsBetter:
+            if value >= target.greenLower { return .green }
+            if value >= target.yellowLower { return .yellow }
+            return .red
+        case .lowerIsBetter:
+            if value <= target.greenLower { return .green }
+            if value <= target.yellowLower { return .yellow }
+            return .red
+        case .targetBand:
+            guard let goal = target.goal else {
+                if value >= target.greenLower { return .green }
+                if value >= target.yellowLower { return .yellow }
+                return .red
+            }
+            let greenBand = target.optimalRange.map { max(abs(goal - $0.lowerBound), abs($0.upperBound - goal)) } ?? 0
+            let yellowBand = max(target.yellowBuffer ?? greenBand, greenBand)
+            let redBand = max(target.redThreshold ?? yellowBand, yellowBand)
+            let delta = abs(value - goal)
+            if delta <= greenBand { return .green }
+            if delta <= redBand || delta <= yellowBand { return .yellow }
+            return .red
+        }
+    }
 }
 
 extension Metrics {
