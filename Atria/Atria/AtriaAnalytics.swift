@@ -430,6 +430,55 @@ enum AtriaAnalytics {
         }
     }
 
+    enum Daily {
+        struct PhoneMotionSample: Equatable {
+            let steps: Int
+            let distanceMeters: Double?
+            let floorsAscended: Int?
+            let floorsDescended: Int?
+        }
+
+        struct PhoneMotionSummary: Equatable {
+            let steps: Int
+            let distanceMeters: Double?
+            let floorsAscended: Int?
+            let floorsDescended: Int?
+
+            var hasStepEvidence: Bool { steps > 0 }
+        }
+
+        static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
+            var steps = 0
+            var distance = 0.0
+            var hasDistance = false
+            var floorsAscended = 0
+            var hasFloorsAscended = false
+            var floorsDescended = 0
+            var hasFloorsDescended = false
+
+            for sample in samples {
+                steps += max(0, sample.steps)
+                if let meters = sample.distanceMeters, meters > 0 {
+                    distance += meters
+                    hasDistance = true
+                }
+                if let floors = sample.floorsAscended, floors > 0 {
+                    floorsAscended += floors
+                    hasFloorsAscended = true
+                }
+                if let floors = sample.floorsDescended, floors > 0 {
+                    floorsDescended += floors
+                    hasFloorsDescended = true
+                }
+            }
+
+            return PhoneMotionSummary(steps: steps,
+                                      distanceMeters: hasDistance ? distance : nil,
+                                      floorsAscended: hasFloorsAscended ? floorsAscended : nil,
+                                      floorsDescended: hasFloorsDescended ? floorsDescended : nil)
+        }
+    }
+
     enum Strain {
         struct MaxHeartRateZoneSeconds: Equatable {
             let rest: TimeInterval

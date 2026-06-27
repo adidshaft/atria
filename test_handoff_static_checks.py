@@ -2331,6 +2331,10 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "enum AtriaAnalytics",
+            "enum Daily",
+            "struct PhoneMotionSample: Equatable",
+            "struct PhoneMotionSummary: Equatable",
+            "static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary",
             "enum Strain",
             "enum TrainingLoad",
             "static func trimp(_ series: [(t: Double, bpm: Int)],",
@@ -2366,6 +2370,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary",
+            "typealias PhoneMotionSample = AtriaAnalytics.Daily.PhoneMotionSample",
+            "typealias PhoneMotionSummary = AtriaAnalytics.Daily.PhoneMotionSummary",
+            "AtriaAnalytics.Daily.stepsDaily(samples)",
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)",
             "AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)",
@@ -2381,8 +2388,15 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaTrendChartCard(points: store.overviewTrendPoints,",
             "baselineRestingHR: store.baseline.restingInt",
+            "let phoneMotion = Metrics.stepsDaily(overlapping.map",
+            "let phoneMotion = Metrics.stepsDaily(ordered.map",
+            "phoneStepSource: phoneMotion.hasStepEvidence ? \"phone_coremotion_pedometer\" : \"unavailable\"",
+            "phoneStepCount: phoneMotion.steps",
+            "phoneStepDistanceMeters: phoneMotion.distanceMeters",
+            "phoneStepFloorsAscended: phoneMotion.floorsAscended",
+            "phoneStepFloorsDescended: phoneMotion.floorsDescended",
         ]:
-            assert_contains(self, trend_chart, needle)
+            assert_contains(self, trend_chart + sessions, needle)
 
         for forbidden in [
             "private var trendPoints",
@@ -5239,6 +5253,35 @@ class HandoffStaticChecks(unittest.TestCase):
                 buckets[max_hr_zone_raw_value(current[1], max_hr)] += dt
             return buckets, dropped
 
+        def steps_daily(samples):
+            steps = 0
+            distance = 0
+            floors_up = 0
+            floors_down = 0
+            has_distance = False
+            has_up = False
+            has_down = False
+            for sample in samples:
+                steps += max(0, sample.get("steps", 0))
+                meters = sample.get("distance")
+                if meters is not None and meters > 0:
+                    distance += meters
+                    has_distance = True
+                up = sample.get("up")
+                if up is not None and up > 0:
+                    floors_up += up
+                    has_up = True
+                down = sample.get("down")
+                if down is not None and down > 0:
+                    floors_down += down
+                    has_down = True
+            return {
+                "steps": steps,
+                "distance": distance if has_distance else None,
+                "up": floors_up if has_up else None,
+                "down": floors_down if has_down else None,
+            }
+
         def resp_rate_rsa(resampled, sample_rate=4.0):
             mean = sum(resampled) / len(resampled)
             centered = [value - mean for value in resampled]
@@ -5282,6 +5325,11 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual([max_hr_zone_raw_value(bpm, 200) for bpm in [80, 100, 120, 140, 160, 180]], [0, 1, 2, 3, 4, 5])
         self.assertEqual(max_hr_zone_seconds([(0, 90), (60, 110), (120, 130), (180, 150), (240, 170), (300, 190), (900, 190)], 200),
                          ([0, 60, 60, 60, 60, 60], 600))
+        self.assertEqual(steps_daily([
+            {"steps": 120, "distance": 80, "up": 1, "down": 0},
+            {"steps": -20, "distance": None, "up": None, "down": 2},
+            {"steps": 380, "distance": 220, "up": 3, "down": -1},
+        ]), {"steps": 500, "distance": 300, "up": 4, "down": 2})
         synthetic_rr = [800 + 45 * math.sin(2 * math.pi * (15 / 60) * index / 4) for index in range(4 * 90)]
         self.assertEqual(resp_rate_rsa(synthetic_rr), 15)
 
