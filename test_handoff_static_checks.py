@@ -1013,24 +1013,19 @@ class HandoffStaticChecks(unittest.TestCase):
             ".compactMap(",
             "dailyRollups(",
             "detectedActivity(",
+            "aggregateSleepCandidates(",
+            "aggregateWorkoutCandidates(",
+            "session.trimp(",
+            "timeInZone(",
+            "AthleteProfile.load()",
         ]
         checked = 0
-        for rel in [
-            ROOT / "Atria" / "Atria" / "ContentView.swift",
-            ROOT / "Atria" / "Atria" / "AtriaHomeView.swift",
-            ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift",
-            ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift",
-            ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift",
-            ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift",
-            ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift",
-            ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift",
-            ROOT / "Atria" / "Atria" / "AtriaAICoachCard.swift",
-        ]:
+        for rel in (ROOT / "Atria" / "Atria").rglob("*.swift"):
             for start, body in swift_some_view_blocks(source(rel)):
                 checked += 1
                 for needle in forbidden:
                     self.assertNotIn(needle, body, f"{rel}:{start} keeps {needle} in a some View render block")
-        self.assertGreater(checked, 90)
+        self.assertGreater(checked, 160)
 
         checks = source(ROOT / "test_handoff_static_checks.py")
         assert_contains(self, checks, "def swift_some_view_blocks(text):")
