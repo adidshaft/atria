@@ -1709,12 +1709,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(defaults.integer(forKey: OfflineSyncDefaults.attempts) + 1, forKey: OfflineSyncDefaults.attempts)
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        startOfflineHistoricalSync(reason: reason, force: force)
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
-            defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
             defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
-            assignIfChanged(\.rangeLossBackfillPending, false)
         }
+        startOfflineHistoricalSync(reason: reason, force: force)
         return true
     }
 
@@ -1801,6 +1799,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               reason,
               rows,
               historicalArchiveWriteFailures)
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+            if rows > 0 {
+                defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+                defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
+                assignIfChanged(\.rangeLossBackfillPending, false)
+            } else {
+                scheduleRangeLossBackfillRetry(reason: reason)
+            }
+        }
         applyStandardHROnly(enabled: true, persist: true, reconnect: true, reason: "offline_sync_complete")
         if let peripheral {
             central.cancelPeripheralConnection(peripheral)
@@ -1856,11 +1864,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   forceStaleBackfill ? "force_stale_backfill" : (protectedLiveStream ? "defer_live_stream" : "sync_when_available"),
                   protectedLiveStream ? 1 : 0,
                   forceStaleBackfill ? 1 : 0)
-            if requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: forceStaleBackfill) {
-                UserDefaults.standard.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
-                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
-                assignIfChanged(\.rangeLossBackfillPending, false)
-            } else if UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+            if !requestOfflineHistoricalSyncIfNeeded(reason: backfillReason, force: forceStaleBackfill),
+               UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 scheduleRangeLossBackfillRetry(reason: reason)
             }
         }
