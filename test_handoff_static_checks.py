@@ -1019,12 +1019,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "@Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty",
             "private var historySnapshotRevision = 0",
             "private func refreshHistorySnapshotCache(deferred: Bool = true)",
-            "historySnapshot = HistorySnapshot.sessionsOnly(sessions)",
-            "await Task.yield()",
-            "try? await Task.sleep(nanoseconds: 120_000_000)",
-            "private func publishFullHistorySnapshotIfCurrent(revision: Int)",
-            "historySnapshot = HistorySnapshot(sessions: sessions,",
-            "sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,",
+            "let sourceSessions = sessions",
+            "historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions)",
+            "DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12)",
+            "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
+            "private func publishFullHistorySnapshotIfCurrent(revision: Int,\n                                                     history: HistorySnapshot,\n                                                     sleep: SleepHistorySnapshot)",
+            "historySnapshot = history",
+            "sleepHistorySnapshot = sleep",
+            "private nonisolated static func makeHistorySnapshots(sessions: [SavedSession],",
+            "private nonisolated static func makeHistoryDailyRollups(sessions: [SavedSession],",
+            "private nonisolated static func makeHistoryTrendSummaries(sessions: [SavedSession],",
+            "anomalySource: \"bounded_history_rollups\"",
             "private var snapshot: HistorySnapshot {\n        store.historySnapshot\n    }",
             "struct HistorySnapshot",
             "struct SleepHistorySnapshot: Equatable",
@@ -1032,6 +1037,18 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot",
         ]:
             assert_contains(self, sessions, needle)
+
+        refresh_start = sessions.index("private func refreshHistorySnapshotCache")
+        refresh_end = sessions.index("private func refreshOverviewTrendPointsCache")
+        refresh_source = sessions[refresh_start:refresh_end]
+        for forbidden in [
+            "dailyRollups(rest:",
+            "detectedActivities(rest:",
+            "trendSummaries(rest:",
+            "await Task.yield()",
+            "Task.sleep(nanoseconds: 120_000_000)",
+        ]:
+            assert_not_contains(self, refresh_source, forbidden)
 
         history_view_start = sessions.index("struct HistoryView: View")
         history_view_end = sessions.index("struct HistorySnapshot")
@@ -1065,9 +1082,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct SleepHistorySnapshot: Equatable",
             "struct Night: Identifiable, Equatable",
             "@Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty",
-            "let rollups = dailyRollups(rest: rest, maxHR: maxHR)",
-            "sleepHistorySnapshot = SleepHistorySnapshot(rollups: rollups,",
-            "confirmedSleeps: cachedConfirmedSleeps",
+            "let sleep = SleepHistorySnapshot(rollups: rollups,",
+            "confirmedSleeps: confirmedSleeps",
+            "sleepHistorySnapshot = sleep",
             "let sleepDuration: TimeInterval?",
             "let sleepSpan: TimeInterval?",
             "let sleepSource: String?",
