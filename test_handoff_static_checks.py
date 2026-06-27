@@ -1029,6 +1029,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case notCharging",
             "case full",
             "@Published var batteryChargeStatus: BatteryChargeStatus = .levelOnly",
+            "static let chargeStatus = \"atria.battery.chargeStatus\"",
+            "static let chargeAt = \"atria.battery.chargeAt\"",
             "static let batteryLevelStatus = CBUUID(string: \"2A1B\")",
             "return [UUIDs.batteryLevel, UUIDs.batteryLevelStatus]",
             "case UUIDs.heartRateMeasure, UUIDs.batteryLevel, UUIDs.batteryLevelStatus:",
@@ -1043,13 +1045,23 @@ class HandoffStaticChecks(unittest.TestCase):
             "if chargeState == 0x02 { return .notCharging }",
             "wiredExternalPower == 0x03 || wirelessExternalPower == 0x03",
             "source=2A1B",
-            "2A19 does not expose a",
-            "direct charge flag",
+            "hydrateCachedBatteryStateIfFresh()",
+            "private func hydrateCachedBatteryStateIfFresh(maxAge: TimeInterval = 86_400)",
+            "batteryChargeStatus = cached.chargeStatus",
+            "static func cachedBattery(maxAge: TimeInterval = 86_400) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool)",
+            "BatteryChargeStatus(rawValue: rawCharge) ?? .levelOnly",
+            "battery_charge_status=\\(battery.chargeStatus.rawValue)",
+            "battery_charge_age_s=\\(chargeAgeText)",
+            "let cachedBattery = Self.cachedBattery(maxAge: 10 * 60)",
+            "cachedBattery.chargeStatus != .levelOnly",
             "assignIfChanged(\\.batteryChargeStatus, .levelOnly)",
             "delta > 0 && delta <= 5",
             "assignIfChanged(\\.batteryChargeStatus, .charging)",
             "assignIfChanged(\\.batteryChargeStatus, .notCharging)",
             "assignIfChanged(\\.batteryChargeStatus, .full)",
+            "persistBatteryLevel(batteryLevel, source: \"live_2A19\", chargeStatus: batteryChargeStatus)",
+            "persistBatteryChargeStatus(status, source: \"live_2A1B\")",
+            "private func persistBatteryChargeStatus(_ status: BatteryChargeStatus, source: String)",
         ]:
             assert_contains(self, ble, needle)
 
@@ -4120,12 +4132,16 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, "if ble.status == .poweredOff")
         assert_contains(self, notifications, "return [bluetoothDecision]")
         assert_contains(self, notifications, "threshold=%d")
-        assert_contains(self, notifications, "let batteryIsCharging = ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full")
+        assert_contains(self, notifications, "let effectiveChargeStatus = battery.chargeStatus")
+        assert_contains(self, notifications, "let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full")
         assert_contains(self, notifications, "charge=%@")
-        assert_contains(self, notifications, "ble.batteryChargeStatus.rawValue")
+        assert_contains(self, notifications, "effectiveChargeStatus.rawValue")
         assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold")
         assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold && !batteryIsCharging")
-        assert_contains(self, notifications, "battery_\\(battery.level)_charging_\\(ble.batteryChargeStatus.rawValue)_source_\\(battery.source)")
+        assert_contains(self, notifications, "batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)")
+        assert_contains(self, notifications, "cachedBattery(maxAge: 10 * 60)")
+        assert_contains(self, notifications, "live_2A19_cached_charge")
+        assert_contains(self, notifications, "battery_\\(battery.level)_charging_\\(effectiveChargeStatus.rawValue)_source_\\(battery.source)")
         assert_contains(self, notifications, 'body: "Charge your strap before a workout or overnight wear. Battery is \\(battery.level)%."')
         assert_contains(self, notifications, 'bluetooth_off=%d')
         assert_contains(self, notifications, "title: \"Atria notification test\"")

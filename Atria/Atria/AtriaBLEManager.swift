@@ -664,6 +664,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let level = "atria.battery.level"
         static let at = "atria.battery.at"
         static let source = "atria.battery.source"
+        static let chargeStatus = "atria.battery.chargeStatus"
+        static let chargeAt = "atria.battery.chargeAt"
     }
     private struct WorkoutCaptureEvidence {
         let diagnosis: String
@@ -1121,6 +1123,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forceFreshScanOnRestore = true
         }
         applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
+        hydrateCachedBatteryStateIfFresh()
         updateSessionPointCacheMode()
         logActiveMotionIMUCheckPlanIfRequested(arguments: arguments)
         updatePhoneMotionAuditState(reason: "init")
@@ -1200,6 +1203,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         @unknown default:
             return "unknown"
         }
+    }
+
+    private func hydrateCachedBatteryStateIfFresh(maxAge: TimeInterval = 86_400) {
+        let cached = Self.cachedBattery(maxAge: maxAge)
+        guard cached.usable else { return }
+        batteryLevel = cached.level
+        batteryChargeStatus = cached.chargeStatus
+        batteryIsCharging = cached.chargeStatus == .charging
     }
 
     private func resetProductionCaptureDefaultsForDebug() {
@@ -2001,19 +2012,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       rrLabel)
     }
 
-    static func cachedBattery(maxAge: TimeInterval = 86_400) -> (level: Int, source: String, age: TimeInterval, usable: Bool) {
+    static func cachedBattery(maxAge: TimeInterval = 86_400) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool) {
         let defaults = UserDefaults.standard
         let level = defaults.object(forKey: BatteryDefaults.level) as? Int ?? -1
         let at = defaults.object(forKey: BatteryDefaults.at) as? Double
         let age = at.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
         let source = evidenceToken(defaults.string(forKey: BatteryDefaults.source) ?? (level >= 0 ? "cached_2A19" : "none"))
-        return (level, source, age, level >= 0 && age >= 0 && age <= maxAge)
+        let rawCharge = defaults.string(forKey: BatteryDefaults.chargeStatus) ?? BatteryChargeStatus.levelOnly.rawValue
+        let chargeStatus = BatteryChargeStatus(rawValue: rawCharge) ?? .levelOnly
+        let chargeAt = defaults.object(forKey: BatteryDefaults.chargeAt) as? Double
+        let chargeAge = chargeAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
+        let chargeFresh = chargeStatus == .levelOnly || (chargeAge >= 0 && chargeAge <= maxAge)
+        return (level, source, age, chargeStatus, chargeAge, level >= 0 && age >= 0 && age <= maxAge && chargeFresh)
     }
 
     static func batteryEvidence() -> String {
         let battery = cachedBattery()
         let ageText = battery.age >= 0 ? String(format: "%.0f", battery.age) : "learning"
-        return "battery_level=\(battery.level); battery_source=\(battery.source); battery_age_s=\(ageText); battery_usable=\(battery.usable ? 1 : 0)"
+        let chargeAgeText = battery.chargeAge >= 0 ? String(format: "%.0f", battery.chargeAge) : "learning"
+        return "battery_level=\(battery.level); battery_source=\(battery.source); battery_age_s=\(ageText); battery_charge_status=\(battery.chargeStatus.rawValue); battery_charge_age_s=\(chargeAgeText); battery_usable=\(battery.usable ? 1 : 0)"
     }
 
     private static func currentSampleStatusAndReason() -> (status: String, reason: String) {
@@ -9093,10 +9110,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask = nil
             isActivelyScanning = false
             recomputeConnectionStatus(reason: "did_connect")
-            // Start each live link with level-only evidence. 2A19 does not expose a
-            // direct charge flag, so a fresh link must prove charging by trend.
-            assignIfChanged(\.batteryIsCharging, false)
-            assignIfChanged(\.batteryChargeStatus, .levelOnly)
+            // Keep very fresh charge evidence visible while the immediate 2A19/2A1B
+            // reads arrive. Older links still start level-only so we do not imply a
+            // stale charger state is current.
+            let cachedBattery = Self.cachedBattery(maxAge: 10 * 60)
+            if cachedBattery.usable, cachedBattery.chargeStatus != .levelOnly {
+                assignIfChanged(\.batteryLevel, cachedBattery.level)
+                assignIfChanged(\.batteryIsCharging, cachedBattery.chargeStatus == .charging)
+                assignIfChanged(\.batteryChargeStatus, cachedBattery.chargeStatus)
+            } else {
+                assignIfChanged(\.batteryIsCharging, false)
+                assignIfChanged(\.batteryChargeStatus, .levelOnly)
+            }
             connectedAt = Date()
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -9386,7 +9411,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     assignIfChanged(\.batteryChargeStatus, .full)
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
-                persistBatteryLevel(batteryLevel, source: "live_2A19")
+                persistBatteryLevel(batteryLevel, source: "live_2A19", chargeStatus: batteryChargeStatus)
                 AtriaDebugLog("ATRIADBG battery level=%d source=2A19 bytes=%@ persisted=1",
                       batteryLevel,
                       Self.hex([UInt8](data)))
@@ -9403,6 +9428,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     let status: BatteryChargeStatus = batteryLevel >= 100 && parsedStatus == .charging ? .full : parsedStatus
                     assignIfChanged(\.batteryIsCharging, status == .charging)
                     assignIfChanged(\.batteryChargeStatus, status)
+                    persistBatteryChargeStatus(status, source: "live_2A1B")
                 }
                 AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=%@ bytes=%@",
                       self.batteryChargeStatus.rawValue,
@@ -9478,12 +9504,25 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         }
     }
 
-    private func persistBatteryLevel(_ level: Int, source: String) {
+    private func persistBatteryLevel(_ level: Int, source: String, chargeStatus: BatteryChargeStatus? = nil) {
         guard level >= 0 && level <= 100 else { return }
         let defaults = UserDefaults.standard
         defaults.set(level, forKey: BatteryDefaults.level)
         defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.at)
         defaults.set(source, forKey: BatteryDefaults.source)
+        if let chargeStatus {
+            defaults.set(chargeStatus.rawValue, forKey: BatteryDefaults.chargeStatus)
+            defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.chargeAt)
+        }
+    }
+
+    private func persistBatteryChargeStatus(_ status: BatteryChargeStatus, source: String) {
+        let defaults = UserDefaults.standard
+        defaults.set(status.rawValue, forKey: BatteryDefaults.chargeStatus)
+        defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.chargeAt)
+        if batteryLevel >= 0 {
+            persistBatteryLevel(batteryLevel, source: source, chargeStatus: status)
+        }
     }
 
     // Heart Rate Measurement per BLE spec: flags byte, uint8/uint16 BPM,
