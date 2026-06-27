@@ -345,6 +345,26 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("raw `502`, corrected `502`, kept `100%`, max gap `2.0s`", markdown)
         self.assertIn("- Strap battery: `75%`, charge `notCharging`, charging `0`, usable `1`", markdown)
 
+    def test_latest_device_pull_attention_when_rr_gate_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            pull = repo / "tmp/diag/current/pull-summary.txt"
+            write_ready_device_pull(pull)
+            text = pull.read_text(encoding="utf-8")
+            text = text.replace("active_journal_rr_gate_b_local_ready=1",
+                                "active_journal_rr_gate_b_local_ready=0")
+            text = text.replace("active_journal_rr_max_gap_s=2.0",
+                                "active_journal_rr_max_gap_s=4.0")
+            text = text.replace("active_journal_rr_gate_b_local_blocker=none_reference_still_required",
+                                "active_journal_rr_gate_b_local_blocker=rr_gap_4.0s_gt_3s")
+            pull.write_text(text, encoding="utf-8")
+
+            latest_pull = audit_handoff_status.evaluate_latest_device_pull(repo)
+
+        self.assertEqual(latest_pull["status"], "attention")
+        self.assertEqual(latest_pull["active_journal_rr_gate_b_local_ready"], "0")
+        self.assertEqual(latest_pull["active_journal_rr_gate_b_local_blocker"], "rr_gap_4.0s_gt_3s")
+
     def test_accessibility_performance_evidence_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
