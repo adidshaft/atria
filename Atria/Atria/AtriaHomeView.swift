@@ -2852,7 +2852,7 @@ final class AtriaHomeModel {
 }
 
 private struct AtriaToolbarIcon: View, Equatable {
-    private static let visualSize: CGFloat = 34
+    private static let visualSize: CGFloat = 32
     private static let hitSize: CGFloat = 44
 
     let symbol: String
@@ -2875,7 +2875,7 @@ private struct AtriaToolbarIcon: View, Equatable {
                         Circle()
                             .stroke(colorScheme == .dark ? Color.white.opacity(0.11) : Color.black.opacity(0.13), lineWidth: 1)
                     }
-                    .shadow(color: .black.opacity(0.07), radius: 10, y: 5)
+                    .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
             }
             .frame(width: Self.hitSize, height: Self.hitSize)
             .contentShape(Rectangle())
@@ -2901,7 +2901,7 @@ private struct AtriaHomeTopChrome: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 0) {
+            HStack(spacing: 6) {
                 if showWorkout {
                     Button(action: onStartWorkout) {
                         AtriaToolbarIcon(symbol: "figure.run")
@@ -2960,12 +2960,12 @@ private struct AtriaTopStatusChip: View {
         .frame(minWidth: 132, minHeight: 44)
         .background {
             Capsule()
-                .fill(tint.opacity(colorScheme == .light ? 0.28 : 0.22))
+                .fill(tint.opacity(colorScheme == .light ? 0.34 : 0.24))
                 .overlay {
                     Capsule()
-                        .stroke(tint.opacity(colorScheme == .light ? 0.45 : 0.35), lineWidth: 1)
+                        .stroke(tint.opacity(colorScheme == .light ? 0.50 : 0.36), lineWidth: 1)
                 }
-                .shadow(color: tint.opacity(colorScheme == .light ? 0.18 : 0.12), radius: 10, y: 5)
+                .shadow(color: tint.opacity(colorScheme == .light ? 0.16 : 0.10), radius: 8, y: 4)
         }
         .contentShape(.capsule)
         .onTapGesture {
