@@ -3075,6 +3075,16 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Tighten the strap fit or wet the sensor for HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .orange)
+        case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
+            return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
+                                            action: "Close or uninstall WHOOP if readings fragment.",
+                                            systemImage: "exclamationmark.triangle.fill",
+                                            tint: .orange)
+        case .connected where officialAppRiskActive:
+            return AtriaConnectionDiagnosis(title: "WHOOP coexistence watch",
+                                            action: "Atria is streaming; close WHOOP if drops return.",
+                                            systemImage: "app.connected.to.app.below.fill",
+                                            tint: .orange)
         case .scanning, .connecting:
             if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
