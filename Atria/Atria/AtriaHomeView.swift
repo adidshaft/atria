@@ -3005,12 +3005,8 @@ private struct AtriaHeaderActionButtonStyle: ButtonStyle {
     private static let size: CGFloat = AtriaHeaderControlMetrics.height
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .frame(width: Self.size, height: Self.size)
-            .glassEffect(.regular.interactive(), in: .circle)
-            .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
+        AtriaGlassIconButtonStyle(tint: .secondary, size: Self.size)
+            .makeBody(configuration: configuration)
     }
 }
 
@@ -3105,7 +3101,7 @@ private struct AtriaTopStatusChip: View {
         .frame(minWidth: 148,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
-        .glassEffect(.regular.tint(tint.opacity(colorScheme == .light ? 0.24 : 0.32)).interactive(), in: .capsule)
+        .atriaChromeCapsule(tint: tint)
         .contentShape(Capsule())
         .onTapGesture {
             if status != .connected { onTapWhenNotConnected() }
