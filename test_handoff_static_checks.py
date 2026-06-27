@@ -372,6 +372,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .personalBaseline:\n            return \"Personal baseline\"",
             "if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains(\"HRV baseline\")",
             "return \"Building baseline\"",
+            "&& lhs.live.status == rhs.live.status",
+            "&& lhs.live.sessionSampleCount == rhs.live.sessionSampleCount",
             "AtriaGlanceMetricCard(title: \"VO2max\"",
             "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
             "VO2max building from resting baseline and measured HR max",

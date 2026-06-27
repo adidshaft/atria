@@ -677,6 +677,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.hrvDetail == rhs.hero.hrvDetail
             && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
+            && lhs.live.status == rhs.live.status
+            && lhs.live.sessionSampleCount == rhs.live.sessionSampleCount
             && lhs.live.phoneStepsText == rhs.live.phoneStepsText
             && lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
