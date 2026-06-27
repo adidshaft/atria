@@ -4216,9 +4216,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func sleepDurationZone(_ hours: Double?, goalHours: Double = 8.0) -> AtriaMetricZone?",
             "AtriaAnalytics.TargetZones.sleepDuration(hours, goalHours: goalHours)",
             "static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone?",
-            "steps >= safeGoal / 2",
+            "AtriaAnalytics.TargetZones.steps(steps, goal: goal)",
             "static func activeCaloriesZone(_ calories: Double?, goal: Int = 500) -> AtriaMetricZone?",
-            "Estimated from heart rate/profile.",
+            "AtriaAnalytics.TargetZones.activeCalories(calories, goal: goal)",
             "static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,",
             "greenDelta: Double = 0.2",
             "redDelta: Double = -0.2",
@@ -4247,7 +4247,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research relative sleep-only deviation; not an absolute temperature.",
             "exclamationmark.circle",
             "exclamationmark.triangle.fill",
-            "Below your step goal -- a short walk closes the gap.",
             "General wellness guidance only, not medical advice.",
             "struct AtriaMetricZoneInfoSheet: View",
         ]:
@@ -4284,6 +4283,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "ratio >= 1.0",
             "ratio >= 0.85",
             "Under your sleep need -- aim for about",
+            "static func steps(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone?",
+            "steps >= safeGoal / 2",
+            "Below your step goal -- a short walk closes the gap.",
+            "static func activeCalories(_ calories: Double?, goal: Int = 500) -> AtriaMetricZone?",
+            "Estimated from heart rate/profile.",
         ]:
             assert_contains(self, analytics, needle)
 
