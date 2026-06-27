@@ -3205,6 +3205,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, content, "&& ProcessInfo.processInfo.arguments.contains(\"--atria-complete-onboarding\")")
         assert_contains(self, sessions, "func completeOnboardingFromLaunchIfRequested")
         assert_contains(self, sessions, "guard AtriaDeveloperMode.isEnabled else { return }\n        guard arguments.contains(\"--atria-complete-onboarding\") else { return }")
+        for needle in [
+            "if step == .coexistence && officialAppMayBeInstalled {\n                            recheckOfficialApp()",
+            "case .coexistence: return officialAppMayBeInstalled ? \"Recheck official app\" : \"Continue\"",
+            "Clear this before relying on Atria for overnight or workout metrics.",
+            "Close it, log out, disable Bluetooth access, and remove widgets.",
+        ]:
+            assert_contains(self, content, needle)
+        assert_not_contains(self, content, "I’ll do this — continue")
 
     def test_live_activity_uses_end_user_reading_language(self):
         app_attributes = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityAttributes.swift")
