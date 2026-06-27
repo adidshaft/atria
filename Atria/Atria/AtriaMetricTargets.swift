@@ -115,6 +115,93 @@ extension Metrics {
                                recommendation: recommendation,
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
+
+    static func hrvZone(_ rmssd: Int?, baseline: Int?, baselineSamples: Int) -> AtriaMetricZone? {
+        guard baselineSamples >= 7, let rmssd, let baseline, baseline > 0 else { return nil }
+        let ratio = Double(rmssd) / Double(baseline)
+        let level: AtriaMetricZoneLevel = ratio >= 0.95 ? .green : (ratio >= 0.85 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "HRV is near your personal baseline. Match your day to recovery and sleep."
+        case .yellow:
+            recommendation = "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load. Prioritize sleep and an easier day."
+        case .red:
+            recommendation = "HRV is well below your norm. Keep today easy and focus on sleep, hydration, and recovery."
+        }
+        let current = "\(rmssd) ms vs \(baseline) ms baseline."
+        let target = "Green >= \(Int((Double(baseline) * 0.95).rounded())) ms, yellow \(Int((Double(baseline) * 0.85).rounded()))-\(Int((Double(baseline) * 0.95).rounded()) - 1) ms, red below."
+        return AtriaMetricZone(level: level,
+                               title: "HRV target",
+                               current: current,
+                               targetSummary: target,
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
+    static func restingHeartRateZone(_ bpm: Int?, baseline: Int?, baselineSamples: Int) -> AtriaMetricZone? {
+        guard baselineSamples >= 7, let bpm, let baseline, baseline > 0 else { return nil }
+        let delta = bpm - baseline
+        let level: AtriaMetricZoneLevel = delta <= 3 ? .green : (delta <= 7 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Resting heart rate is near your baseline."
+        case .yellow:
+            recommendation = "Resting HR is up vs your norm -- fatigue, stress, dehydration, or poor sleep can move it. Hydrate and keep the day lighter."
+        case .red:
+            recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
+        }
+        let target = "Green <= \(baseline + 3) bpm, yellow \(baseline + 4)-\(baseline + 7) bpm, red above."
+        return AtriaMetricZone(level: level,
+                               title: "Resting HR target",
+                               current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",
+                               targetSummary: target,
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
+    static func sleepEfficiencyZone(_ efficiency: Double?) -> AtriaMetricZone? {
+        guard let efficiency else { return nil }
+        let pct = Int((efficiency * 100).rounded())
+        let level: AtriaMetricZoneLevel = pct >= 90 ? .green : (pct >= 80 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Sleep efficiency is in the target zone."
+        case .yellow:
+            recommendation = "Restless night -- cut late caffeine or alcohol, cool the room, and keep bed/wake times consistent."
+        case .red:
+            recommendation = "Sleep was inefficient. Keep the room cool and dark, reduce late stimulants, and protect a consistent schedule."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Sleep efficiency target",
+                               current: "\(pct)% sleep efficiency.",
+                               targetSummary: "Green >= 90%, yellow 80-89%, red below 80%.",
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
+    static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
+        guard let steps, steps > 0 else { return nil }
+        let safeGoal = max(goal, 1_000)
+        let level: AtriaMetricZoneLevel = steps >= safeGoal ? .green : (steps >= safeGoal / 2 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Steps are at or above your daily goal."
+        case .yellow:
+            recommendation = "Below your step goal -- a short walk closes the gap."
+        case .red:
+            recommendation = "Well below your step goal. Add easy movement when it fits your day."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Steps target",
+                               current: "\(steps) steps vs \(safeGoal) goal.",
+                               targetSummary: "Green >= \(safeGoal), yellow \(safeGoal / 2)-\(safeGoal - 1), red below \(safeGoal / 2).",
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
 }
 
 struct AtriaMetricZoneInfoSheet: View {
