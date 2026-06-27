@@ -572,21 +572,25 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .strapSteps: return \"figure.walk.motion\"",
             "case .calories: return \"flame.fill\"",
             "case .vo2max: return \"lungs.fill\"",
+            "case .bioAge: return \"figure.stand.line.dotted.figure.stand\"",
             "case .bloodOxygen: return \"drop.degreesign\"",
             "case .bodyTemp: return \"thermometer.variable\"",
             "case .insights: return \"sparkles\"",
             "case .hapticAlerts: return \"Alerts\"",
-            "[.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]",
+            "[.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]",
             "let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
             "let hapticSettings: AtriaHapticAlertSettings",
             "@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
             "hapticSettings: hapticSettings",
             "vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate",
+            "biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary",
             "let vo2MaxEstimate: VO2MaxEstimateSummary",
+            "let biologicalAgeSummary: BiologicalAgeSummary",
             "&& lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence",
             "&& lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail",
             "&& lhs.hero.strain == rhs.hero.strain",
             "&& lhs.vo2MaxEstimate == rhs.vo2MaxEstimate",
+            "&& lhs.biologicalAgeSummary == rhs.biologicalAgeSummary",
             "detail: recoveryDetailText",
             "private var recoveryDetailText: String",
             "case .validated:\n            return \"Validated\"",
@@ -615,6 +619,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"\\(confidence) · \\(vo2MaxEstimate.trendText)\"",
             "trend \\(vo2MaxEstimate.trendText), \\(vo2MaxEstimate.trendDetail)",
             "VO2max building from resting baseline and measured HR max",
+            "case .bioAge:",
+            "AtriaGlanceMetricCard(title: \"Body age\"",
+            "value: biologicalAgeSummary.valueText",
+            "Building your body-age baseline",
+            "Biological age estimate",
             "sensorSummary: store.imuAuditSummary",
             "let sensorSummary: IMUAuditSummary",
             "&& lhs.sensorSummary == rhs.sensorSummary",
@@ -2997,6 +3006,68 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, vitals, needle)
         assert_not_contains(self, vitals, "AtriaInlineQuickStat(label: \"VO2max\"")
+
+    def test_biological_age_is_local_estimate_and_fail_closed(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+
+        for needle in [
+            "struct BiologicalAgeSummary: Equatable",
+            "let biologicalAge: Int?",
+            "let ageDelta: Int?",
+            "let factors: [BioAgeFactor]",
+            "static let footnoteText = \"Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment.\"",
+            "Building your body-age baseline",
+            "func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary",
+            "guard let vo2Max = vo2MaxEstimate.value else",
+            "baseline.restingSampleCount >= 7",
+            "baseline.hrvSampleCount >= 7",
+            "guard sleepNights.count >= 3 else",
+            "guard profile.heightCm > 0, profile.weightKg > 0 else",
+            "trainingLoadSummarySnapshot.confidence != \"learning\"",
+            "VO2max",
+            "Resting HR",
+            "HRV",
+            "Sleep",
+            "Activity",
+            "BMI",
+            "min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)",
+            "ACSM/Cooper VO2max percentile tables",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "let biologicalAgeSummary: BiologicalAgeSummary",
+            "biologicalAgeSummary: store.biologicalAgeSummary(vo2MaxEstimate: vo2)",
+            "biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary",
+        ]:
+            assert_contains(self, home + overview, needle)
+
+        for needle in [
+            "case .bioAge: return \"Body age\"",
+            "case .bioAge: return \"figure.stand.line.dotted.figure.stand\"",
+            "case .bioAge:",
+            "AtriaGlanceMetricCard(title: \"Body age\"",
+            "biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : \"Building baseline\"",
+            "Building your body-age baseline",
+        ]:
+            assert_contains(self, overview, needle)
+
+        for needle in [
+            "let biologicalAgeSummary: BiologicalAgeSummary",
+            "AtriaMetricTile(label: \"Body age\"",
+            "state: biologicalAgeSummary.isReady ? .estimate : .learning",
+            "AtriaPanelSectionHeader(title: \"Biological Age\", subtitle: biologicalAgeSummary.narrative)",
+            "ForEach(biologicalAgeSummary.factors)",
+            "Text(biologicalAgeSummary.footnote)",
+        ]:
+            assert_contains(self, vitals, needle)
+
+        assert_not_contains(self, sessions + overview + vitals, "longevity")
+        assert_not_contains(self, sessions + overview + vitals, "lifespan")
+        assert_not_contains(self, sessions + overview + vitals, "disease risk")
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         text = source(ROOT / "Atria" / "Atria" / "Metrics.swift")

@@ -1679,6 +1679,7 @@ final class AtriaHomeModel {
 
     struct ProfileMetricsState: Equatable {
         let vo2MaxEstimate: VO2MaxEstimateSummary
+        let biologicalAgeSummary: BiologicalAgeSummary
     }
 
     final class HeroStore: ObservableObject {
@@ -2661,8 +2662,10 @@ final class AtriaHomeModel {
 
     private static func makeProfileMetricsState(store: SessionStore,
                                                 liveSessionDerived: LiveSessionDerived) -> ProfileMetricsState {
-        ProfileMetricsState(vo2MaxEstimate: store.vo2MaxEstimateSummary(rest: liveSessionDerived.rest,
-                                                                        maxHR: store.profile.maxHR))
+        let vo2 = store.vo2MaxEstimateSummary(rest: liveSessionDerived.rest,
+                                              maxHR: store.profile.maxHR)
+        return ProfileMetricsState(vo2MaxEstimate: vo2,
+                                   biologicalAgeSummary: store.biologicalAgeSummary(vo2MaxEstimate: vo2))
     }
 
     private static func makeSavedAggregate(store: SessionStore) -> SavedAggregate {

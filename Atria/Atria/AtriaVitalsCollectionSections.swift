@@ -355,6 +355,7 @@ private struct AtriaVitalsProfileCardHost: View {
         AtriaProfileCard(profile: profileStore.profile,
                          observedPeakHeartRateText: pulseStore.state.peakHeartRateText,
                          vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+                         biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
                          onUpdateProfile: onUpdateProfile)
             .equatable()
     }
@@ -1841,6 +1842,7 @@ private struct AtriaProfileCard: View, Equatable {
     let profile: AthleteProfile
     let observedPeakHeartRateText: String
     let vo2MaxEstimate: VO2MaxEstimateSummary
+    let biologicalAgeSummary: BiologicalAgeSummary
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1848,6 +1850,7 @@ private struct AtriaProfileCard: View, Equatable {
         lhs.profile == rhs.profile
             && lhs.observedPeakHeartRateText == rhs.observedPeakHeartRateText
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
+            && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
     }
 
     var body: some View {
@@ -1894,12 +1897,54 @@ private struct AtriaProfileCard: View, Equatable {
                                 state: vo2MaxEstimate.value == nil || vo2MaxEstimate.trendText == "Learning" ? .learning : .estimate,
                                 tint: .orange,
                                 footnote: vo2MaxEstimate.trendDetail)
+                AtriaMetricTile(label: "Body age",
+                                value: biologicalAgeSummary.valueText,
+                                state: biologicalAgeSummary.isReady ? .estimate : .learning,
+                                tint: biologicalAgeSummary.isReady ? .purple : .orange,
+                                footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building your body-age baseline")
             }
 
             Text(vo2MaxEstimate.narrative)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                AtriaPanelSectionHeader(title: "Biological Age", subtitle: biologicalAgeSummary.narrative)
+                if biologicalAgeSummary.factors.isEmpty {
+                    Text(biologicalAgeSummary.blockerText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(biologicalAgeSummary.factors) { factor in
+                        HStack(spacing: 10) {
+                            Image(systemName: factor.deltaVsChronological <= 0 ? "arrow.down.forward.circle.fill" : "arrow.up.forward.circle.fill")
+                                .foregroundStyle(factor.deltaVsChronological <= 0 ? .green : .orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(factor.label)
+                                    .font(.caption.weight(.semibold))
+                                Text(factor.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Text(factor.deltaText)
+                                .font(.caption.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(factor.deltaVsChronological <= 0 ? .green : .orange)
+                        }
+                        .padding(10)
+                        .atriaInsetCard(tint: factor.deltaVsChronological <= 0 ? .green : .orange)
+                    }
+                }
+                Text(biologicalAgeSummary.footnote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .atriaInsetCard(tint: .purple)
 
             Text("Atria uses the active HRmax right away for strain and workout interpretation.")
                 .font(.caption)

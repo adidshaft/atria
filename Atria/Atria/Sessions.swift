@@ -1534,6 +1534,61 @@ struct VO2MaxEstimateSummary: Equatable {
     }
 }
 
+struct BioAgeFactor: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let ageEquivalent: Int
+    let deltaVsChronological: Int
+    let weight: Double
+    let detail: String
+
+    var deltaText: String {
+        if deltaVsChronological == 0 { return "neutral" }
+        return "\(abs(deltaVsChronological))y \(deltaVsChronological < 0 ? "younger" : "older")"
+    }
+}
+
+struct BiologicalAgeSummary: Equatable {
+    let biologicalAge: Int?
+    let chronologicalAge: Int
+    let ageDelta: Int?
+    let factors: [BioAgeFactor]
+    let blockers: [String]
+    let footnote: String
+
+    static let footnoteText = "Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment."
+
+    static func building(chronologicalAge: Int, blockers: [String]) -> BiologicalAgeSummary {
+        BiologicalAgeSummary(biologicalAge: nil,
+                             chronologicalAge: chronologicalAge,
+                             ageDelta: nil,
+                             factors: [],
+                             blockers: blockers,
+                             footnote: footnoteText)
+    }
+
+    var isReady: Bool { biologicalAge != nil }
+
+    var valueText: String {
+        biologicalAge.map(String.init) ?? "--"
+    }
+
+    var detailText: String {
+        guard let ageDelta else { return "Building baseline" }
+        if ageDelta == 0 { return "Matches your age" }
+        return "\(abs(ageDelta))y \(ageDelta < 0 ? "younger" : "older")"
+    }
+
+    var narrative: String {
+        guard isReady else { return "Building your body-age baseline" }
+        return "Physiological age estimate, local only"
+    }
+
+    var blockerText: String {
+        blockers.isEmpty ? footnote : blockers.joined(separator: " · ")
+    }
+}
+
 private struct RRLedgerReplaySummary {
     let sessionsWithRR: Int
     let rrSamples: Int
@@ -7578,6 +7633,150 @@ final class SessionStore: ObservableObject {
                                      narrative: "Rough estimate from measured max HR and resting baseline.",
                                      trendText: trend.text,
                                      trendDetail: trend.detail)
+    }
+
+    func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
+        let chronologicalAge = profile.age
+        var blockers: [String] = []
+        guard profile.biologicalSex != .unspecified else {
+            return .building(chronologicalAge: chronologicalAge, blockers: ["Add sex in profile"])
+        }
+        guard let vo2Max = vo2MaxEstimate.value else {
+            blockers.append("VO2max estimate")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+        guard let restingHR = baseline.restingInt, baseline.restingSampleCount >= 7 else {
+            blockers.append("7 RHR baseline nights")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+        guard let hrv = baseline.hrvInt, baseline.hrvSampleCount >= 7 else {
+            blockers.append("7 HRV baseline nights")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+        let sleepNights = sleepHistorySnapshot.nights.prefix(14)
+        guard sleepNights.count >= 3 else {
+            blockers.append("3 sleep or nap records")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+        guard profile.heightCm > 0, profile.weightKg > 0 else {
+            blockers.append("height and weight")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+        guard trainingLoadSummarySnapshot.confidence != "learning", trainingLoadSummarySnapshot.chronicLoad > 0 else {
+            blockers.append("activity load baseline")
+            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+
+        let sleepDurationHours = sleepNights.reduce(0) { $0 + $1.durationHours } / Double(sleepNights.count)
+        let sleepEfficiencyValues = sleepNights.compactMap(\.sleepEfficiency)
+        let sleepEfficiency = sleepEfficiencyValues.isEmpty ? 0.82 : sleepEfficiencyValues.reduce(0, +) / Double(sleepEfficiencyValues.count)
+        let heightM = profile.heightCm / 100
+        let bmi = profile.weightKg / max(0.1, heightM * heightM)
+        let factors = [
+            Self.makeBioAgeFactor(id: "vo2max",
+                                  label: "VO2max",
+                                  ageEquivalent: Self.vo2AgeEquivalent(vo2Max, sex: profile.biologicalSex),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.30,
+                                  detail: String(format: "%.1f ml/kg/min", vo2Max)),
+            Self.makeBioAgeFactor(id: "rhr",
+                                  label: "Resting HR",
+                                  ageEquivalent: Self.rhrAgeEquivalent(restingHR),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.20,
+                                  detail: "\(restingHR) bpm baseline"),
+            Self.makeBioAgeFactor(id: "hrv",
+                                  label: "HRV",
+                                  ageEquivalent: Self.hrvAgeEquivalent(hrv),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.20,
+                                  detail: "\(hrv) ms baseline"),
+            Self.makeBioAgeFactor(id: "sleep",
+                                  label: "Sleep",
+                                  ageEquivalent: Self.sleepAgeEquivalent(durationHours: sleepDurationHours,
+                                                                         efficiency: sleepEfficiency,
+                                                                         chronologicalAge: chronologicalAge),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.15,
+                                  detail: String(format: "%.1fh · %.0f%% eff", sleepDurationHours, sleepEfficiency * 100)),
+            Self.makeBioAgeFactor(id: "activity",
+                                  label: "Activity",
+                                  ageEquivalent: Self.activityAgeEquivalent(trainingLoadSummarySnapshot.chronicLoad,
+                                                                            chronologicalAge: chronologicalAge),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.10,
+                                  detail: String(format: "load %.1f", trainingLoadSummarySnapshot.chronicLoad)),
+            Self.makeBioAgeFactor(id: "bmi",
+                                  label: "BMI",
+                                  ageEquivalent: Self.bmiAgeEquivalent(bmi, chronologicalAge: chronologicalAge),
+                                  chronologicalAge: chronologicalAge,
+                                  weight: 0.05,
+                                  detail: String(format: "BMI %.1f", bmi))
+        ]
+        let weighted = factors.reduce(0) { $0 + Double($1.ageEquivalent) * $1.weight }
+        let totalWeight = factors.reduce(0) { $0 + $1.weight }
+        let unclamped = Int((weighted / max(totalWeight, 0.01)).rounded())
+        let biologicalAge = min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)
+        return BiologicalAgeSummary(biologicalAge: biologicalAge,
+                                    chronologicalAge: chronologicalAge,
+                                    ageDelta: biologicalAge - chronologicalAge,
+                                    factors: factors,
+                                    blockers: [],
+                                    footnote: BiologicalAgeSummary.footnoteText)
+    }
+
+    private nonisolated static func makeBioAgeFactor(id: String,
+                                                     label: String,
+                                                     ageEquivalent: Int,
+                                                     chronologicalAge: Int,
+                                                     weight: Double,
+                                                     detail: String) -> BioAgeFactor {
+        BioAgeFactor(id: id,
+                     label: label,
+                     ageEquivalent: ageEquivalent,
+                     deltaVsChronological: ageEquivalent - chronologicalAge,
+                     weight: weight,
+                     detail: detail)
+    }
+
+    // Reference curves are compact local approximations of commonly published
+    // ACSM/Cooper VO2max percentile tables, resting-HR norms, age-related RMSSD
+    // decline, adult sleep guidance, activity norms, and BMI bands. They are
+    // monotonic and intentionally conservative; no network or medical inference.
+    private nonisolated static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int {
+        let baseAt20 = sex == .female ? 44.0 : 52.0
+        let yearlyDrop = sex == .female ? 0.30 : 0.35
+        return min(max(Int((20 + (baseAt20 - vo2) / yearlyDrop).rounded()), 18), 90)
+    }
+
+    private nonisolated static func rhrAgeEquivalent(_ restingHR: Int) -> Int {
+        min(max(Int((30 + Double(restingHR - 60) * 0.8).rounded()), 18), 90)
+    }
+
+    private nonisolated static func hrvAgeEquivalent(_ rmssd: Int) -> Int {
+        let safe = max(8, Double(rmssd))
+        return min(max(Int((20 - log(safe / 70.0) / 0.018).rounded()), 18), 90)
+    }
+
+    private nonisolated static func sleepAgeEquivalent(durationHours: Double,
+                                                       efficiency: Double,
+                                                       chronologicalAge: Int) -> Int {
+        let durationPenalty = abs(durationHours - 7.5) * 2.0
+        let efficiencyPenalty = max(0, 0.85 - efficiency) * 35
+        let bonus = durationPenalty < 1.0 && efficiency >= 0.88 ? -4.0 : 0
+        return min(max(Int((Double(chronologicalAge) + durationPenalty + efficiencyPenalty + bonus).rounded()), 18), 90)
+    }
+
+    private nonisolated static func activityAgeEquivalent(_ chronicLoad: Double,
+                                                          chronologicalAge: Int) -> Int {
+        let delta = min(max((chronicLoad - 25) / 3.0, -8), 8)
+        return min(max(Int((Double(chronologicalAge) - delta).rounded()), 18), 90)
+    }
+
+    private nonisolated static func bmiAgeEquivalent(_ bmi: Double,
+                                                     chronologicalAge: Int) -> Int {
+        let penalty = bmi < 18.5 ? (18.5 - bmi) * 1.2 : max(0, bmi - 24.9) * 0.8
+        return min(max(Int((Double(chronologicalAge) + penalty).rounded()), 18), 90)
     }
 
     private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String) {
