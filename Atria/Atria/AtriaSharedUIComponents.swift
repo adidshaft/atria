@@ -424,6 +424,11 @@ struct AtriaMetricTile: View, Equatable {
            !footnote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append(footnote)
         }
+        if let zone, zone.showsWarning {
+            parts.append(zone.level.label)
+            parts.append(zone.targetSummary)
+            parts.append("Tap info for guidance.")
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -528,6 +533,7 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(zone.title). \(zone.current)")
+        .accessibilityHint("Opens target guidance and general wellness recommendations.")
     }
 }
 

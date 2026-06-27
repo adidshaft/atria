@@ -4509,6 +4509,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
             "Text(\"(i)\")",
+            "if let zone, zone.showsWarning",
+            "parts.append(zone.level.label)",
+            "parts.append(zone.targetSummary)",
+            "parts.append(\"Tap info for guidance.\")",
+            ".accessibilityHint(\"Opens target guidance and general wellness recommendations.\")",
         ]:
             assert_contains(self, shared + overview + vitals, needle)
 
