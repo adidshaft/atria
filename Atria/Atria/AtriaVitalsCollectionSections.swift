@@ -615,19 +615,19 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 unit: summary.spo2CandidateFrames > 0 ? "frames" : nil,
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: .blue,
-                                footnote: "Evidence only; not a SpO2 value.")
+                                footnote: "Early signal; not a SpO2 value.")
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
                                 unit: summary.skinTempCandidateFrames > 0 ? "frames" : nil,
                                 state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
                                 tint: .orange,
-                                footnote: "Evidence only; not body temperature.")
+                                footnote: "Early signal; not body temperature.")
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
                                 tint: .teal,
-                                footnote: "Sleep beat-to-beat research; reference gated.")
+                                footnote: "Sleep-only estimate; needs comparison data.")
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
@@ -635,7 +635,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.agreementText)
             }
 
-            Text("Experimental. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show SpO2 or body-temperature values until the sensor layout is validated against a reference.")
+            Text("Early sensor rows show evidence counts, not measurements. Atria will not show SpO2 or body-temperature values until the sensor layout is proven against comparison data.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
@@ -699,7 +699,7 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 footnote: summary.probeDetail)
             }
 
-            Text("Research only; compare with phone motion before steps or sleep.")
+            Text("Early motion signals stay separate until they match phone motion reliably.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -771,7 +771,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
                                 footnote: latestMarkerDetail)
             }
 
-            Text("Research only; timestamps stay on device for probe correlation.")
+            Text("Markers stay on device and help compare probe timing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
