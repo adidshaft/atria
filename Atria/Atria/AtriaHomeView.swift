@@ -2852,7 +2852,7 @@ final class AtriaHomeModel {
 }
 
 private struct AtriaToolbarIcon: View, Equatable {
-    private static let visualSize: CGFloat = 32
+    private static let visualSize: CGFloat = 44
     private static let hitSize: CGFloat = 44
 
     let symbol: String
@@ -3072,13 +3072,15 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "battery.25percent",
                                             tint: .yellow)
         case .connected where pulse.needsContactCoach:
-            return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Fit check needed" : "Connected, no pulse",
-                                            action: "Tighten the strap fit or wet the sensor.",
+            return AtriaConnectionDiagnosis(title: "Connected, no pulse",
+                                            action: "Adjust the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
         case .connected where live.needsRRContactCoach:
-            return AtriaConnectionDiagnosis(title: "Beat-to-beat signal weak",
-                                            action: "Tighten the strap fit or wet the sensor for HRV and Recovery.",
+            return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Beat-to-beat settling" : "Beat-to-beat waiting",
+                                            action: pulse.hasPulseSignal
+                                                ? "Heart rate is live. Keep wearing normally while HRV settles."
+                                                : "Atria needs pulse before it can build HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .orange)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
