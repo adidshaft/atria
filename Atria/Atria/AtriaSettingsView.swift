@@ -296,7 +296,7 @@ struct AtriaSettingsView: View {
                 } else if canHideTodayMetric(metric, hidden: hidden) {
                     hidden.insert(metric.rawValue)
                 }
-                todayHiddenCSV = hidden.sorted().joined(separator: ",")
+                todayHiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
             }
         )
     }

@@ -328,6 +328,14 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "static let orderStorageKey = \"atria.overview.glanceOrderCSV\"",
+            "static let noHiddenMetricsSentinel = \"__atria_all_today_cards_visible__\"",
+            "static var defaultHiddenMetrics: Set<String>",
+            "let metrics: [AtriaTodayMetric] = [.respiratoryRate, .strapSteps, .bloodOxygen, .bodyTemp]",
+            "return Set(metrics.map(\\.rawValue))",
+            "if trimmed.isEmpty { return defaultHiddenMetrics }",
+            "if trimmed == noHiddenMetricsSentinel { return [] }",
+            "static func hiddenStorageValue(for hidden: Set<String>) -> String",
+            "hidden.isEmpty ? noHiddenMetricsSentinel : hidden.sorted().joined(separator: \",\")",
             "static var defaultGlanceOrder: [AtriaTodayMetric]",
             "static func visibleOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric]",
             "static func moving(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric, in csv: String) -> String",
@@ -529,6 +537,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func resetTodayLayout()",
             "todayOrderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\\.rawValue).joined(separator: \",\")",
             "todayHiddenCSV = \"\"",
+            "todayHiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)",
             "Label(\"Reset Today layout\", systemImage: \"arrow.counterclockwise\")",
             "AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)",
             "AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)",
