@@ -611,20 +611,22 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
             LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
                 AtriaMetricTile(label: "Blood oxygen",
                                 value: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames)" : "--",
+                                unit: summary.spo2CandidateFrames > 0 ? "frames" : nil,
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: .blue,
-                                footnote: "candidate frame count only")
+                                footnote: "Evidence only; not a SpO2 value.")
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTempCandidateFrames > 0 ? "\(summary.skinTempCandidateFrames)" : "--",
+                                unit: summary.skinTempCandidateFrames > 0 ? "frames" : nil,
                                 state: summary.skinTempCandidateFrames > 0 ? .research : .learning,
                                 tint: .orange,
-                                footnote: "candidate frame count only")
+                                footnote: "Evidence only; not body temperature.")
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
                                 tint: .teal,
-                                footnote: "RR-derived sleep research")
+                                footnote: "Sleep RR research; reference gated.")
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
@@ -632,7 +634,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: summary.agreementText)
             }
 
-            Text("Research only. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show absolute SpO2 or body temperature until the sensor layout is validated.")
+            Text("Research only. Oxygen and skin-temperature rows are evidence counts, not measurements; Atria will not show SpO2 or body-temperature values until the sensor layout is validated against a reference.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
