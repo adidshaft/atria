@@ -765,6 +765,38 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, "Label(\"End workout\", systemImage: \"stop.fill\")")
         assert_not_contains(self, home, "onStop: { workoutSession = nil }")
 
+    def test_live_workout_auto_detect_prompt_is_inline_and_conservative(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+
+        for needle in [
+            "private static let workoutPromptCooldown: TimeInterval = 45 * 60",
+            "private static let workoutPromptMinimumSamples = 180",
+            "private static let workoutPromptMinimumTRIMP = 1.2",
+            "private static let workoutPromptMinimumBPMOverRest = 25",
+            "fileprivate struct AtriaWorkoutDetectionPrompt: Equatable",
+            "@State private var workoutDetectionPrompt: AtriaWorkoutDetectionPrompt?",
+            "@State private var workoutPromptDismissedUntil: Date?",
+            "AtriaWorkoutDetectionBanner(prompt: prompt)",
+            "workoutPromptDismissedUntil = Date().addingTimeInterval(Self.workoutPromptCooldown)",
+            "workoutSession = AtriaWorkoutSession(start: Date())",
+            "updateWorkoutDetectionPrompt()",
+            "private func updateWorkoutDetectionPrompt(now: Date = Date())",
+            "guard selectedTab == .overview else { return }",
+            "guard workoutSession == nil else {",
+            "guard model.coreLiveStore.state.status == .connected else {",
+            "workoutPromptDismissedUntil > now",
+            "samples >= Self.workoutPromptMinimumSamples",
+            "liveTRIMP >= Self.workoutPromptMinimumTRIMP",
+            "heartRate >= rest + Self.workoutPromptMinimumBPMOverRest",
+            "private struct AtriaWorkoutDetectionBanner: View, Equatable",
+            "Text(\"Looks like a workout\")",
+            "Text(\"Start workout\")",
+            "Text(\"Dismiss\")",
+        ]:
+            assert_contains(self, home, needle)
+
+        assert_not_contains(self, home, ".alert(item: $workoutDetectionPrompt)")
+
     def test_session_detail_downsamples_once_for_render_perf(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 

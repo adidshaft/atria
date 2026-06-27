@@ -17,10 +17,20 @@ struct AtriaHomeContainer: View, Equatable {
     }
 }
 
+fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
+    let heartRate: Int
+    let strain: Double
+    let samples: Int
+}
+
 struct AtriaHomeView: View {
     private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
     private static let connectionDiagnosisTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 60
+    private static let workoutPromptCooldown: TimeInterval = 45 * 60
+    private static let workoutPromptMinimumSamples = 180
+    private static let workoutPromptMinimumTRIMP = 1.2
+    private static let workoutPromptMinimumBPMOverRest = 25
 
     private struct AtriaWorkoutEndNotice: Identifiable, Equatable {
         let id = UUID()
@@ -130,6 +140,8 @@ struct AtriaHomeView: View {
     @State private var missedDataBannerDismissedUntil: Date?
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
     @State private var lastLiveWidgetSnapshotAt: Date?
+    @State private var workoutDetectionPrompt: AtriaWorkoutDetectionPrompt?
+    @State private var workoutPromptDismissedUntil: Date?
 
     init(ble: AtriaBLEManager, store: SessionStore) {
         self.ble = ble
@@ -363,6 +375,7 @@ struct AtriaHomeView: View {
             updateLiveActivity()
             updateHapticCoordinator()
             publishLiveWidgetSnapshotIfNeeded()
+            updateWorkoutDetectionPrompt()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             batteryState = UIDevice.current.batteryState
@@ -575,6 +588,38 @@ struct AtriaHomeView: View {
         WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: "live_throttled")
     }
 
+    private func updateWorkoutDetectionPrompt(now: Date = Date()) {
+        guard scenePhase == .active else { return }
+        guard selectedTab == .overview else { return }
+        guard workoutSession == nil else {
+            workoutDetectionPrompt = nil
+            return
+        }
+        guard model.coreLiveStore.state.status == .connected else {
+            workoutDetectionPrompt = nil
+            return
+        }
+        if let workoutPromptDismissedUntil, workoutPromptDismissedUntil > now {
+            workoutDetectionPrompt = nil
+            return
+        }
+        let heartRate = model.pulseLiveStore.state.heartRate
+        let rest = model.homeStatsStore.state.restingHeartRate
+        let samples = model.coreLiveStore.state.sessionSampleCount
+        let liveTRIMP = model.coreLiveStore.state.liveTRIMP
+        let strain = Metrics.strain(fromTRIMP: liveTRIMP)
+        let looksActive = samples >= Self.workoutPromptMinimumSamples
+            && liveTRIMP >= Self.workoutPromptMinimumTRIMP
+            && heartRate >= rest + Self.workoutPromptMinimumBPMOverRest
+        if looksActive {
+            workoutDetectionPrompt = AtriaWorkoutDetectionPrompt(heartRate: heartRate,
+                                                                 strain: strain,
+                                                                 samples: samples)
+        } else {
+            workoutDetectionPrompt = nil
+        }
+    }
+
     private func endWorkoutSession(startedAt: Date) {
         let label = "Live workout"
         let checkpointed = ble.checkpointCurrentSession(label: label, reason: "live_workout_end")
@@ -716,6 +761,16 @@ struct AtriaHomeView: View {
                 AtriaConnectionDiagnosisBanner(diagnosis: diagnosis) {
                     connectionGuideSnoozedUntil = nil
                     showConnectionGuide = true
+                }
+            }
+
+            if let prompt = workoutDetectionPrompt, workoutSession == nil {
+                AtriaWorkoutDetectionBanner(prompt: prompt) {
+                    workoutDetectionPrompt = nil
+                    workoutPromptDismissedUntil = Date().addingTimeInterval(Self.workoutPromptCooldown)
+                } onStart: {
+                    workoutDetectionPrompt = nil
+                    workoutSession = AtriaWorkoutSession(start: Date())
                 }
             }
 
@@ -1198,6 +1253,57 @@ private struct AtriaMissedDataBanner: View, Equatable {
             }
             .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityLabel("Dismiss missed data banner")
+        }
+        .padding(14)
+        .atriaCard(emphasis: .soft)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct AtriaWorkoutDetectionBanner: View, Equatable {
+    let prompt: AtriaWorkoutDetectionPrompt
+    let onDismiss: () -> Void
+    let onStart: () -> Void
+
+    static func == (lhs: AtriaWorkoutDetectionBanner, rhs: AtriaWorkoutDetectionBanner) -> Bool {
+        lhs.prompt == rhs.prompt
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "figure.run.circle.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 34, height: 34)
+                    .background(AtriaIconTileBackground(cornerRadius: 11, tint: .orange))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Looks like a workout")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Live HR \(prompt.heartRate) bpm · strain \(String(format: "%.1f", prompt.strain)) · \(prompt.samples) readings")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 10) {
+                Button(action: onStart) {
+                    Text("Start workout")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(tint: .orange)
+
+                Button(action: onDismiss) {
+                    Text("Dismiss")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .secondary)
+            }
         }
         .padding(14)
         .atriaCard(emphasis: .soft)
