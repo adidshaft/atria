@@ -1627,6 +1627,7 @@ final class AtriaHomeModel {
         let loadConfidence: String
         let loadReadinessText: String
         let loadACWRSignalText: String
+        let loadMonotonyText: String
         let loadMonotonySignalText: String
         let loadACWRDetailText: String
         let loadMonotonyDetailText: String
@@ -1676,6 +1677,7 @@ final class AtriaHomeModel {
                 && lhs.loadConfidence == rhs.loadConfidence
                 && lhs.loadReadinessText == rhs.loadReadinessText
                 && lhs.loadACWRSignalText == rhs.loadACWRSignalText
+                && lhs.loadMonotonyText == rhs.loadMonotonyText
                 && lhs.loadMonotonySignalText == rhs.loadMonotonySignalText
                 && lhs.loadACWRDetailText == rhs.loadACWRDetailText
                 && lhs.loadMonotonyDetailText == rhs.loadMonotonyDetailText
@@ -2504,6 +2506,7 @@ final class AtriaHomeModel {
                             loadConfidence: load.confidence,
                             loadReadinessText: load.readinessText,
                             loadACWRSignalText: load.acwrSignalText,
+                            loadMonotonyText: load.monotonyText,
                             loadMonotonySignalText: load.monotonySignalText,
                             loadACWRDetailText: load.acwrDetailText,
                             loadMonotonyDetailText: load.monotonyDetailText,
@@ -2712,6 +2715,7 @@ final class AtriaHomeModel {
                             loadConfidence: "learning",
                             loadReadinessText: "Learning",
                             loadACWRSignalText: "Learning",
+                            loadMonotonyText: "Learning",
                             loadMonotonySignalText: "Learning",
                             loadACWRDetailText: TrainingLoadSummary.learning.acwrDetailText,
                             loadMonotonyDetailText: TrainingLoadSummary.learning.monotonyDetailText,

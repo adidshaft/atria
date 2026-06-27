@@ -2465,12 +2465,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "let load = store.trainingLoadSummarySnapshot")
         assert_contains(self, home, "let loadReadinessText: String")
         assert_contains(self, home, "let loadACWRSignalText: String")
+        assert_contains(self, home, "let loadMonotonyText: String")
         assert_contains(self, home, "let loadMonotonySignalText: String")
         assert_contains(self, home, "let loadACWRDetailText: String")
         assert_contains(self, home, "let loadMonotonyDetailText: String")
         assert_contains(self, home, "let loadSignalSummaryText: String")
         assert_contains(self, home, "loadReadinessText: load.readinessText")
         assert_contains(self, home, "loadACWRSignalText: load.acwrSignalText")
+        assert_contains(self, home, "loadMonotonyText: load.monotonyText")
         assert_contains(self, home, "loadMonotonySignalText: load.monotonySignalText")
         assert_contains(self, home, "loadACWRDetailText: load.acwrDetailText")
         assert_contains(self, home, "loadMonotonyDetailText: load.monotonyDetailText")
@@ -2479,13 +2481,14 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "readiness: hero.loadReadinessText",
             "acwrSignal: hero.loadACWRSignalText",
+            "monotony: hero.loadMonotonyText",
             "monotonySignal: hero.loadMonotonySignalText",
             "acwrDetail: hero.loadACWRDetailText",
             "monotonyDetail: hero.loadMonotonyDetailText",
             "signalSummary: hero.loadSignalSummaryText",
             "private struct AtriaTrainingSignalChip: View, Equatable",
             "AtriaTrainingSignalChip(title: \"ACWR\", value: ratio, signal: acwrSignal)",
-            "AtriaTrainingSignalChip(title: \"Monotony\", value: monotonySignal, signal: monotonySignal)",
+            "AtriaTrainingSignalChip(title: \"Monotony\", value: monotony, signal: monotonySignal)",
             "Label(acwrDetail, systemImage: \"gauge.with.dots.needle.50percent\")",
             "Label(monotonyDetail, systemImage: \"waveform.path\")",
             ".accessibilityLabel(\"Readiness \\(readiness). \\(signalSummary). \\(acwrDetail) \\(monotonyDetail) \\(narrative)\")",
