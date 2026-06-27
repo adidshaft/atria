@@ -584,6 +584,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "leadingTitle: \"Beat-to-beat window\"",
             "Text(\"Export beats\").frame(maxWidth: .infinity)",
             "Text(\"Import beats\").frame(maxWidth: .infinity)",
+            "AtriaPanelSectionHeader(title: \"Heart-rate check\", subtitle: \"\")",
+            "leadingTitle: \"Heart-rate status\"",
+            "leadingDetail: \"comparison workout\"",
+            "Text(\"Export heart rate\").frame(maxWidth: .infinity)",
+            "Text(\"Import heart rate\").frame(maxWidth: .infinity)",
             "private struct AtriaCollectionProfilePicker: View, Equatable",
             ".atriaInsetCard(tint: .purple)",
             "private struct AtriaRecoveryStrainCard: View, Equatable",
@@ -599,6 +604,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, vitals, "leadingTitle: \"RR window\"")
         assert_not_contains(self, vitals, "Text(\"Export RR\")")
         assert_not_contains(self, vitals, "Text(\"Import RR\")")
+        assert_not_contains(self, vitals, "AtriaPanelSectionHeader(title: \"HR reference\"")
+        assert_not_contains(self, vitals, "leadingTitle: \"HR status\"")
+        assert_not_contains(self, vitals, "leadingDetail: \"external workout check\"")
+        assert_not_contains(self, vitals, "Text(\"Export HR\")")
+        assert_not_contains(self, vitals, "Text(\"Import HR\")")
 
         for needle in [
             "struct AtriaHapticAlertSettingsCard: View, Equatable",
@@ -2228,6 +2238,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "Beat-to-beat data is ready as personal-baseline HRV.")
         assert_contains(self, home, "Saved beat-to-beat data is ready while the strap reconnects.")
         assert_contains(self, home, "Beat-to-beat reference validated")
+        assert_contains(self, home, "Heart-rate check passed")
+        assert_contains(self, home, "Heart-rate check still pending")
         assert_contains(self, overview + hero + home, "Beat-to-beat")
         assert_contains(self, home, "baselineMaturityText(sampleCount:")
         assert_contains(self, home, "sleepValue: \"Preparing\"")
@@ -2260,6 +2272,10 @@ class HandoffStaticChecks(unittest.TestCase):
                 "loggingText: \"warming up\"",
                 "Validation-ready",
                 "Not validation-ready",
+                "No HR file selected",
+                "HR reference validated",
+                "HR reference still pending",
+                "HR import failed",
             ]:
                 assert_not_contains(self, text, forbidden)
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
