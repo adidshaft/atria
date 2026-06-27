@@ -4270,6 +4270,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct AtriaMetricTarget: Equatable, Codable",
             "case higherIsBetter",
             "case researchDefault",
+            "case .red: return \"Out of range\"",
             "static let recoveryRecommended",
             "greenLower: 67",
             "yellowLower: 34",

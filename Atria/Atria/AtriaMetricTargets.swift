@@ -25,7 +25,7 @@ enum AtriaMetricZoneLevel: String, Equatable, Codable {
         switch self {
         case .green: return "In target"
         case .yellow: return "Watch"
-        case .red: return "Low"
+        case .red: return "Out of range"
         }
     }
 }
