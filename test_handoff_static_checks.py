@@ -2180,6 +2180,23 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, widget, "readings ·")
         assert_not_contains(self, widget, "samples ·")
 
+    def test_standby_overlay_is_charging_landscape_and_metric_rich(self):
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+
+        for needle in [
+            "private func shouldShowStandBy(isLandscape: Bool) -> Bool",
+            "guard isLandscape else { return false }",
+            "guard model.coreLiveStore.state.status == .connected else { return false }",
+            "guard batteryState == .charging || batteryState == .full else { return false }",
+            "AtriaStandByOverlay(coreLiveStore: model.coreLiveStore,",
+            "private struct AtriaStandByOverlay: View",
+            "AtriaStandByMetric(title: \"Calories\"",
+            "value: coreLiveStore.state.liveActiveCaloriesText",
+            "detail: coreLiveStore.state.liveActiveCalories == nil ? \"Profile needed\" : \"Active estimate\"",
+            "AtriaStandByMetric(title: \"Battery\"",
+        ]:
+            assert_contains(self, home, needle)
+
     def test_widget_snapshot_refreshes_from_live_bpm_on_safe_cadence(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
