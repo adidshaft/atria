@@ -1614,6 +1614,8 @@ final class AtriaHomeModel {
         let loadRatioText: String
         let loadTargetText: String
         let loadConfidence: String
+        let loadReadinessText: String
+        let loadSignalSummaryText: String
         let loadNarrative: String
 
         var recoveryValue: String {
@@ -1657,6 +1659,8 @@ final class AtriaHomeModel {
                 && lhs.loadRatioText == rhs.loadRatioText
                 && lhs.loadTargetText == rhs.loadTargetText
                 && lhs.loadConfidence == rhs.loadConfidence
+                && lhs.loadReadinessText == rhs.loadReadinessText
+                && lhs.loadSignalSummaryText == rhs.loadSignalSummaryText
                 && lhs.loadNarrative == rhs.loadNarrative
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
         }
@@ -2464,6 +2468,8 @@ final class AtriaHomeModel {
                             loadRatioText: load.ratioText,
                             loadTargetText: load.targetBandText,
                             loadConfidence: load.confidence,
+                            loadReadinessText: load.readinessText,
+                            loadSignalSummaryText: load.signalSummaryText,
                             loadNarrative: load.detail)
     }
 
@@ -2654,6 +2660,8 @@ final class AtriaHomeModel {
                             loadRatioText: "Learning",
                             loadTargetText: "Learning",
                             loadConfidence: "learning",
+                            loadReadinessText: "Learning",
+                            loadSignalSummaryText: "Learning",
                             loadNarrative: "Training load appears after local strain history builds.")
     }
 

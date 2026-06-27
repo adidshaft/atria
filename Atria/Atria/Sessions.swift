@@ -1500,14 +1500,22 @@ struct TrainingLoadSummary: Equatable {
     let acuteLoad: Double
     let chronicLoad: Double
     let ratio: Double?
+    let monotony: Double?
     let confidence: String
+    let readiness: String
+    let acwrSignal: String
+    let monotonySignal: String
     let targetBand: ClosedRange<Double>?
     let detail: String
 
     static let learning = TrainingLoadSummary(acuteLoad: 0,
                                               chronicLoad: 0,
                                               ratio: nil,
+                                              monotony: nil,
                                               confidence: "learning",
+                                              readiness: "learning",
+                                              acwrSignal: "learning",
+                                              monotonySignal: "learning",
                                               targetBand: nil,
                                               detail: "Atria needs more local strain history for load ratio.")
 
@@ -1518,6 +1526,19 @@ struct TrainingLoadSummary: Equatable {
     var targetBandText: String {
         guard let targetBand else { return "Learning" }
         return String(format: "%.1f-%.1f", targetBand.lowerBound, targetBand.upperBound)
+    }
+
+    var monotonyText: String {
+        monotony.map { String(format: "%.1f", $0) } ?? "Learning"
+    }
+
+    var readinessText: String {
+        readiness.capitalized
+    }
+
+    var signalSummaryText: String {
+        guard confidence != "learning" else { return "Learning" }
+        return "ACWR \(ratioText) \(acwrSignal), monotony \(monotonyText) \(monotonySignal)"
     }
 }
 
@@ -2691,6 +2712,7 @@ final class SessionStore: ObservableObject {
         let acute = averageDoubleSnapshot(acuteRollups) ?? 0
         let chronic = averageDoubleSnapshot(chronicRollups) ?? 0
         let ratio = chronic > 0 ? acute / chronic : nil
+        let monotony = trainingMonotony(acuteRollups)
         let enoughAcute = acuteRollups.count >= 3
         let enoughChronic = chronicRollups.count >= 14
         let confidence: String
@@ -2713,8 +2735,21 @@ final class SessionStore: ObservableObject {
             }
             return max(0, acute - 1.5)...min(21, acute + 1.5)
         }()
+        let acwrSignal = acwrReadinessSignal(ratio: ratio, enoughChronic: enoughChronic)
+        let monotonySignal = monotonyReadinessSignal(monotony: monotony, enoughAcute: enoughAcute)
+        let readiness = trainingReadiness(acwrSignal: acwrSignal,
+                                          monotonySignal: monotonySignal,
+                                          ratio: ratio)
         let detail: String
-        if let ratio {
+        if confidence == "learning" {
+            detail = TrainingLoadSummary.learning.detail
+        } else if readiness == "rundown" {
+            detail = "Rundown: training load is either spiking or too repetitive. Keep the next session easy."
+        } else if readiness == "strained" {
+            detail = "Strained: ACWR or monotony is elevated. Favor recovery or a lighter day."
+        } else if readiness == "primed" {
+            detail = "Primed: recent strain is below your base, with room to add load if recovery feels good."
+        } else if let ratio {
             if ratio > 1.30 {
                 detail = "Acute load is running ahead of your 28-day base."
             } else if ratio < 0.80 {
@@ -2728,9 +2763,49 @@ final class SessionStore: ObservableObject {
         return TrainingLoadSummary(acuteLoad: acute,
                                    chronicLoad: chronic,
                                    ratio: ratio,
+                                   monotony: monotony,
                                    confidence: confidence,
+                                   readiness: readiness,
+                                   acwrSignal: acwrSignal,
+                                   monotonySignal: monotonySignal,
                                    targetBand: targetBand,
                                    detail: detail)
+    }
+
+    private nonisolated static func trainingMonotony(_ dailyStrains: [Double]) -> Double? {
+        guard dailyStrains.count >= 3,
+              let mean = averageDoubleSnapshot(dailyStrains),
+              mean > 0 else { return nil }
+        let variance = dailyStrains.reduce(0) { total, value in
+            total + pow(value - mean, 2)
+        } / Double(dailyStrains.count)
+        let standardDeviation = sqrt(variance)
+        guard standardDeviation > 0.05 else { return 9.99 }
+        return min(mean / standardDeviation, 9.99)
+    }
+
+    private nonisolated static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String {
+        guard enoughChronic, let ratio else { return "learning" }
+        if ratio >= 1.50 || ratio < 0.60 { return "bad" }
+        if ratio > 1.30 || ratio < 0.80 { return "watch" }
+        return "good"
+    }
+
+    private nonisolated static func monotonyReadinessSignal(monotony: Double?, enoughAcute: Bool) -> String {
+        guard enoughAcute, let monotony else { return "learning" }
+        if monotony >= 2.50 { return "bad" }
+        if monotony >= 2.00 { return "watch" }
+        return "good"
+    }
+
+    private nonisolated static func trainingReadiness(acwrSignal: String,
+                                                      monotonySignal: String,
+                                                      ratio: Double?) -> String {
+        guard acwrSignal != "learning" || monotonySignal != "learning" else { return "learning" }
+        if acwrSignal == "bad" || monotonySignal == "bad" { return "rundown" }
+        if acwrSignal == "watch" || monotonySignal == "watch" { return "strained" }
+        if let ratio, ratio < 0.80 { return "primed" }
+        return "balanced"
     }
 
     private nonisolated static func makeHistorySnapshots(sessions: [SavedSession],

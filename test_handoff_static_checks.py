@@ -2045,6 +2045,11 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "@Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []",
             "@Published private(set) var trainingLoadSummarySnapshot = TrainingLoadSummary.learning",
+            "let monotony: Double?",
+            "let readiness: String",
+            "let acwrSignal: String",
+            "let monotonySignal: String",
+            "var signalSummaryText: String",
             "private var overviewTrendPointsRevision = 0",
             "private var trainingLoadSummaryRevision = 0",
             "private func refreshOverviewTrendPointsCache(deferred: Bool = true)",
@@ -2055,6 +2060,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
             "private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession]",
             "Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))",
+            "let monotony = trainingMonotony(acuteRollups)",
+            "private nonisolated static func trainingMonotony(_ dailyStrains: [Double]) -> Double?",
+            "private nonisolated static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
+            "private nonisolated static func monotonyReadinessSignal(monotony: Double?, enoughAcute: Bool) -> String",
+            "private nonisolated static func trainingReadiness(acwrSignal: String,",
+            "return \"rundown\"",
+            "return \"strained\"",
+            "return \"primed\"",
+            "return \"balanced\"",
             "trainingLoadSummarySnapshot",
             "func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {\n        trainingLoadSummarySnapshot\n    }",
         ]:
@@ -2082,8 +2096,21 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
 
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         assert_contains(self, home, "let load = store.trainingLoadSummarySnapshot")
+        assert_contains(self, home, "let loadReadinessText: String")
+        assert_contains(self, home, "let loadSignalSummaryText: String")
+        assert_contains(self, home, "loadReadinessText: load.readinessText")
+        assert_contains(self, home, "loadSignalSummaryText: load.signalSummaryText")
         assert_not_contains(self, home, "store.trainingLoadSummary(rest:")
+        for needle in [
+            "readiness: hero.loadReadinessText",
+            "signalSummary: hero.loadSignalSummaryText",
+            "AtriaMetricTile(label: \"Readiness\"",
+            "value: readiness",
+            "footnote: \"\\(signalSummary) · target \\(target)\"",
+        ]:
+            assert_contains(self, vitals, needle)
 
     def test_behavior_insights_compute_from_snapshots_off_actor_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
