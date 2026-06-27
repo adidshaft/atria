@@ -1313,6 +1313,13 @@ struct SleepEvidenceStatus {
     let fallbackSessions: Int
 }
 
+private struct IncompleteSleepFallback {
+    let duration: TimeInterval
+    let span: TimeInterval
+    let sessions: Int
+    let reason: String
+}
+
 struct CurrentCollectionStatus {
     let ready: Bool
     let source: String
@@ -6548,6 +6555,26 @@ final class SessionStore: ObservableObject {
                                        fallbackSessions: best.sessions)
         }
 
+        if let incomplete = incompleteSleepFallback(in: recent,
+                                                    rest: rest,
+                                                    maxHR: profile.maxHR,
+                                                    calendar: calendar) {
+            return SleepEvidenceStatus(ready: false,
+                                       state: "low_confidence",
+                                       blocker: "sleep_fragmented_below_minimum",
+                                       confidence: "low",
+                                       candidates: 0,
+                                       readyCandidates: 0,
+                                       motionSource: "unavailable",
+                                       motionValidated: false,
+                                       fallbackAvailable: true,
+                                       fallbackSource: "incomplete_fragmented_sleep",
+                                       fallbackReason: incomplete.reason,
+                                       fallbackDuration: incomplete.duration,
+                                       fallbackSpan: incomplete.span,
+                                       fallbackSessions: incomplete.sessions)
+        }
+
         let observedSleepDays = Set(recent.map { calendar.startOfDay(for: $0.start) }).count
         return SleepEvidenceStatus(ready: false,
                                    state: observedSleepDays > 0 ? "low_confidence" : "learning",
@@ -6607,6 +6634,26 @@ final class SessionStore: ObservableObject {
                                        fallbackSessions: best.sessions)
         }
 
+        if let incomplete = incompleteSleepFallback(in: canonicalSessions(),
+                                                    rest: rest,
+                                                    maxHR: profile.maxHR,
+                                                    calendar: calendar) {
+            return SleepEvidenceStatus(ready: false,
+                                       state: "low_confidence",
+                                       blocker: "sleep_fragmented_below_minimum",
+                                       confidence: "low",
+                                       candidates: 0,
+                                       readyCandidates: 0,
+                                       motionSource: "unavailable",
+                                       motionValidated: false,
+                                       fallbackAvailable: true,
+                                       fallbackSource: "incomplete_fragmented_sleep",
+                                       fallbackReason: incomplete.reason,
+                                       fallbackDuration: incomplete.duration,
+                                       fallbackSpan: incomplete.span,
+                                       fallbackSessions: incomplete.sessions)
+        }
+
         return SleepEvidenceStatus(ready: false,
                                    state: observedSleepDays > 0 ? "low_confidence" : "learning",
                                    blocker: observedSleepDays > 0 ? "sleep_low_confidence" : "sleep_learning",
@@ -6657,6 +6704,44 @@ final class SessionStore: ObservableObject {
     private func sleepFallbackSource(for candidate: AggregateSleepCandidate) -> String {
         if candidate.kind == "nap_candidate" { return "hr_only_nap" }
         return candidate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep"
+    }
+
+    private func incompleteSleepFallback(in sourceSessions: [SavedSession],
+                                         rest: Int,
+                                         maxHR: Int,
+                                         calendar: Calendar = .current) -> IncompleteSleepFallback? {
+        let fragments = sourceSessions.filter { session in
+            guard session.duration >= 60, !session.points.isEmpty else { return false }
+            let startHour = calendar.component(.hour, from: session.start)
+            let endHour = calendar.component(.hour, from: session.end)
+            let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
+            let plausibleRestHR = session.avg <= rest + 40 && session.peak <= rest + 65
+            return overnight
+                && plausibleRestHR
+                && !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
+        }
+        let grouped = Dictionary(grouping: fragments) { session in
+            aggregateSleepDay(for: session, calendar: calendar)
+        }
+        let clusters = grouped.values.flatMap { daySessions in
+            sleepClusters(from: daySessions.sorted { $0.start < $1.start }, maxGap: 2 * 60 * 60)
+        }
+        return clusters.compactMap { cluster -> IncompleteSleepFallback? in
+            guard let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
+            let duration = cluster.reduce(0) { $0 + $1.duration }
+            let span = end.timeIntervalSince(start)
+            guard duration >= 5 * 60 || span >= 30 * 60 else { return nil }
+            let reason = "Fragmented overnight HR persisted below the sleep minimum; historical backfill or steadier overnight capture is needed before Atria counts it as sleep."
+            return IncompleteSleepFallback(duration: duration,
+                                           span: span,
+                                           sessions: cluster.count,
+                                           reason: reason)
+        }
+        .sorted { lhs, rhs in
+            if lhs.span != rhs.span { return lhs.span > rhs.span }
+            return lhs.duration > rhs.duration
+        }
+        .first
     }
 
     func aggregateSleepDiagnostics(rest: Int, calendar: Calendar = .current) -> (evaluated: Int, eligible: Int, tooShort: Int, notOvernight: Int, hrTooHigh: Int, workoutLike: Int, candidates: Int) {
