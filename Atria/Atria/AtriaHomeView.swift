@@ -1449,10 +1449,17 @@ final class AtriaHomeModel {
         var phoneDistanceTodayMeters: Double?
         var phoneFloorsToday: Int?
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+        var lastScanRequestedAt: Date?
+        var lastScanMatchAt: Date?
+        var pendingKnownReconnectStartedAt: Date?
+        var pendingKnownReconnectReason: String
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
         var needsRRQualityCoach: Bool { rrContinuityState == "poor_contact" }
+        func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval? {
+            pendingKnownReconnectStartedAt.map { now.timeIntervalSince($0) }
+        }
         var liveActiveCaloriesText: String { liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "--" }
         var phoneStepsText: String { phoneStepsToday > 0 ? "\(phoneStepsToday)" : "--" }
         var phoneMotionDetailText: String {
@@ -1923,7 +1930,11 @@ final class AtriaHomeModel {
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneFloorsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$lastScanRequestedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$pendingKnownReconnectReason.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -2254,7 +2265,11 @@ final class AtriaHomeModel {
                              phoneStepsToday: ble.phoneStepsToday,
                              phoneDistanceTodayMeters: ble.phoneDistanceTodayMeters,
                              phoneFloorsToday: ble.phoneFloorsToday,
-                             officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
+                             officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
+                             lastScanRequestedAt: ble.lastScanRequestedAt,
+                             lastScanMatchAt: ble.lastScanMatchAt,
+                             pendingKnownReconnectStartedAt: ble.pendingKnownReconnectStartedAt,
+                             pendingKnownReconnectReason: ble.pendingKnownReconnectReason)
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager) -> PulseLiveState {
@@ -3038,6 +3053,7 @@ private struct AtriaTopStatusChip: View {
 
 private struct AtriaConnectionDiagnosis: Equatable {
     private static let lowBatteryThreshold = 20
+    private static let pendingKnownReconnectActionAge: TimeInterval = 15
 
     let title: String
     let action: String
@@ -3066,6 +3082,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
                        officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
         let officialAppRiskActive = officialAppInstalled && live.officialAppCoexistenceRisk != .cleared
         let stalePairingSuspected = !officialAppInstalled && live.officialAppCoexistenceRisk == .suspected
+        let pendingKnownReconnectAge = live.pendingKnownReconnectAge() ?? 0
+        let pendingKnownReconnectActive = pendingKnownReconnectAge >= Self.pendingKnownReconnectActionAge
 
         switch live.status {
         case .poweredOff:
@@ -3116,6 +3134,12 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                                 systemImage: "exclamationmark.triangle.fill",
                                                 tint: .orange)
             }
+            if pendingKnownReconnectActive {
+                return AtriaConnectionDiagnosis(title: "Strap out of range",
+                                                action: "Atria is still reconnecting to your saved strap. Bring it closer or keep wearing it.",
+                                                systemImage: "dot.radiowaves.left.and.right",
+                                                tint: .cyan)
+            }
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Connection keeps dropping",
                                                 action: "Forget the strap in Bluetooth, then reconnect.",
@@ -3132,6 +3156,12 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                                 action: "Close or uninstall WHOOP if it keeps reclaiming the strap.",
                                                 systemImage: "exclamationmark.triangle.fill",
                                                 tint: .orange)
+            }
+            if pendingKnownReconnectActive {
+                return AtriaConnectionDiagnosis(title: "Strap out of range",
+                                                action: "Atria is still waiting for your saved strap. Bring it closer or keep wearing it.",
+                                                systemImage: "dot.radiowaves.left.and.right",
+                                                tint: .cyan)
             }
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Stale Bluetooth pairing",
