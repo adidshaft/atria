@@ -414,8 +414,8 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .purple,
                             title: batterySaver ? "Heart-rate only" : "Full sensor mode",
                             detail: batterySaver
-                                ? "Uses the strap's low-power heart-rate stream. HR stays live; HRV, Recovery and sleep detail wait for validated RR windows."
-                                : "Keeps richer strap streams available for RR, HRV, Recovery and sleep research. Uses more strap battery.")
+                                ? "Uses the strap's low-power heart-rate stream. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
+                                : "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research. Uses more strap battery.")
         } header: {
             Text("Radio mode")
         } footer: {
