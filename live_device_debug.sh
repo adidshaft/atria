@@ -6,6 +6,7 @@ xcode_device_id=${ATRIA_XCODE_DEVICE_ID:-${WHOOP_XCODE_DEVICE_ID:-$device_id}}
 bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 seconds=${ATRIA_LIVE_DEBUG_SECONDS:-${WHOOP_LIVE_DEBUG_SECONDS:-120}}
 log_path=${ATRIA_LIVE_DEBUG_LOG:-${WHOOP_LIVE_DEBUG_LOG:-}}
+build_configuration=${ATRIA_BUILD_CONFIGURATION:-Debug}
 build=1
 pull_only=0
 seconds_explicit=0
@@ -132,7 +133,7 @@ gate_e_contract=0
 usage() {
   cat <<'EOF'
 Usage:
-  ./live_device_debug.sh [--device DEVICE_ID] [--xcode-device XCODE_DEVICE_ID] [--seconds N] [--log PATH] [--no-build] [--pull-only] [--until-realtime] [--until-ready] [--complete-onboarding] [--log-baseline] [--log-collection-health] [--log-collection-health-after N] [--log-gate-status] [--log-gate-readiness] [--log-gate-status-after N] [--log-gate-status-deep] [--log-activity-detections] [--log-daily-rollups] [--log-trends] [--log-widget-snapshot] [--log-workout-preflight] [--log-strain-validation] [--log-hr-consistency] [--log-hr-artifact-policy] [--log-hr-continuity-watchdog-state] [--quiet-ble-logs] [--full-protocol-mode] [--standard-hr-only] [--long-wear-mode] [--leave-running] [--reset-link-diagnostics] [--reset-sample-diagnostics] [--reset-protocol-diagnostics] [--active-motion-imu-check] [--flush-active-journal-after N] [--manual-checkpoint-after N] [--force-no-data-watchdog-after N] [--force-hr-continuity-watchdog-after N] [--force-rr-presence-watchdog-after N] [--force-missing-2a37-after N] [--force-accepted-hr-watchdog-after N] [--backup-sessions] [--verify-backup] [--restore-backup] [--push-backup PATH] [--push-rr-reference PATH] [--push-rr-reference-as NAME.csv] [--push-hr-reference PATH] [--push-hr-reference-as NAME.csv] [--clear-reference-inputs] [--healthkit-export] [--confirm-best-workout-candidate] [--confirm-best-sleep-candidate] [--export-rr-reference-package] [--validate-rr-reference] [--pull-reference-package DIR] [--morning-hrv-check] [--morning-hrv-force] [--gate-d-hr-comparison-capture] [--gate-e-workout-capture] [--gate-e-hr-only-workout-capture] [--auto-save-session-after N] [--auto-save-session-every N] [--checkpoint-session-every N] [--log-live-workout-every N] [--auto-save-workout-when-ready N] [--verify-workout-label LABEL] [--verify-workout-after N] [--verify-sleep] [--verify-sleep-label LABEL] [--verify-sleep-after N] [--schedule-notifications] [--test-notification] [--notification-delay N] [--auto-capture] [--strict-live-rr-capture] [--auto-capture-delay N] [--auto-capture-when-rr FRACTION] [--auto-capture-rr-window N] [--auto-capture-rr-min-frames N] [--auto-capture-max-rr-gap N] [--auto-capture-rr-timeout N] [--stop-when-ready] [--auto-stop-after N] [--label LABEL] [--realtime-start-retries N] [--realtime-restart-zero-rr-seconds N] [--realtime-reassert-zero-rr-seconds N] [--disable-history-ack] [--history-ack-mode trim|enddata|index|unix|zero|none] [--history-recent-sweep] [--history-recent-offsets N[,N...]] [--history-clock-handshake] [--history-noop-backfill] [--probe-command HEX] [--probe-command-delay N] [--probe-sweep HEX[,HEX...]] [--probe-sweep-interval N] [--probe-command-mode wwr|wr] [--pull-capture DIR] [--pull-backups DIR] [--pull-sessions DIR] [--pull-historical DIR] [--replay-log PATH]
+  ./live_device_debug.sh [--device DEVICE_ID] [--xcode-device XCODE_DEVICE_ID] [--configuration Debug|Release] [--release] [--seconds N] [--log PATH] [--no-build] [--pull-only] [--until-realtime] [--until-ready] [--complete-onboarding] [--log-baseline] [--log-collection-health] [--log-collection-health-after N] [--log-gate-status] [--log-gate-readiness] [--log-gate-status-after N] [--log-gate-status-deep] [--log-activity-detections] [--log-daily-rollups] [--log-trends] [--log-widget-snapshot] [--log-workout-preflight] [--log-strain-validation] [--log-hr-consistency] [--log-hr-artifact-policy] [--log-hr-continuity-watchdog-state] [--quiet-ble-logs] [--full-protocol-mode] [--standard-hr-only] [--long-wear-mode] [--leave-running] [--reset-link-diagnostics] [--reset-sample-diagnostics] [--reset-protocol-diagnostics] [--active-motion-imu-check] [--flush-active-journal-after N] [--manual-checkpoint-after N] [--force-no-data-watchdog-after N] [--force-hr-continuity-watchdog-after N] [--force-rr-presence-watchdog-after N] [--force-missing-2a37-after N] [--force-accepted-hr-watchdog-after N] [--backup-sessions] [--verify-backup] [--restore-backup] [--push-backup PATH] [--push-rr-reference PATH] [--push-rr-reference-as NAME.csv] [--push-hr-reference PATH] [--push-hr-reference-as NAME.csv] [--clear-reference-inputs] [--healthkit-export] [--confirm-best-workout-candidate] [--confirm-best-sleep-candidate] [--export-rr-reference-package] [--validate-rr-reference] [--pull-reference-package DIR] [--morning-hrv-check] [--morning-hrv-force] [--gate-d-hr-comparison-capture] [--gate-e-workout-capture] [--gate-e-hr-only-workout-capture] [--auto-save-session-after N] [--auto-save-session-every N] [--checkpoint-session-every N] [--log-live-workout-every N] [--auto-save-workout-when-ready N] [--verify-workout-label LABEL] [--verify-workout-after N] [--verify-sleep] [--verify-sleep-label LABEL] [--verify-sleep-after N] [--schedule-notifications] [--test-notification] [--notification-delay N] [--auto-capture] [--strict-live-rr-capture] [--auto-capture-delay N] [--auto-capture-when-rr FRACTION] [--auto-capture-rr-window N] [--auto-capture-rr-min-frames N] [--auto-capture-max-rr-gap N] [--auto-capture-rr-timeout N] [--stop-when-ready] [--auto-stop-after N] [--label LABEL] [--realtime-start-retries N] [--realtime-restart-zero-rr-seconds N] [--realtime-reassert-zero-rr-seconds N] [--disable-history-ack] [--history-ack-mode trim|enddata|index|unix|zero|none] [--history-recent-sweep] [--history-recent-offsets N[,N...]] [--history-clock-handshake] [--history-noop-backfill] [--probe-command HEX] [--probe-command-delay N] [--probe-sweep HEX[,HEX...]] [--probe-sweep-interval N] [--probe-command-mode wwr|wr] [--pull-capture DIR] [--pull-backups DIR] [--pull-sessions DIR] [--pull-historical DIR] [--replay-log PATH]
 
 Builds, installs, and launches the Atria app on a physical iPhone with
 devicectl --console so ATRIADBG lines stream in real time. Defaults to adidshaft's
@@ -141,10 +142,14 @@ paired iPhone. Set ATRIA_DEVICE_ID, legacy WHOOP_DEVICE_ID, or pass --device to 
 Options:
   --device DEVICE_ID   CoreDevice/devicectl physical iPhone identifier.
   --xcode-device ID    Xcode destination id for the same physical iPhone.
+  --configuration NAME Xcode build configuration. Allowed: Debug or Release.
+                       Default: ATRIA_BUILD_CONFIGURATION or Debug.
+  --release            Shorthand for --configuration Release. Use this for
+                       UX/performance evidence; Debug is diagnostic only.
   --seconds N          Console capture duration before stopping. Default: 120.
   --log PATH           Also write the console transcript to PATH.
                        Use --log auto for logs/live-device/<timestamp>.log.
-  --no-build           Reuse the existing Debug-iphoneos app bundle.
+  --no-build           Reuse the existing <configuration>-iphoneos app bundle.
   --pull-only          Do not build, install, launch, terminate, or relaunch.
                        Only copy requested app-container artifacts. Use with
                        --pull-sessions, --pull-backups, or other pull flags
@@ -503,6 +508,14 @@ while [[ $# -gt 0 ]]; do
     --xcode-device)
       xcode_device_id=${2:?--xcode-device requires a value}
       shift 2
+      ;;
+    --configuration)
+      build_configuration=${2:?--configuration requires a value}
+      shift 2
+      ;;
+    --release)
+      build_configuration=Release
+      shift
       ;;
     --seconds)
       seconds=${2:?--seconds requires a value}
@@ -1367,11 +1380,18 @@ case "$probe_command_mode" in
     exit 64
     ;;
 esac
+case "$build_configuration" in
+  Debug|Release) ;;
+  *)
+    printf 'Invalid --configuration value: %s (expected Debug or Release)\n' "$build_configuration" >&2
+    exit 64
+    ;;
+esac
 
 project="Atria/Atria.xcodeproj"
 scheme="Atria"
 derived_data="build/DerivedData"
-app_path="${derived_data}/Build/Products/Debug-iphoneos/Atria.app"
+app_path="${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.app"
 xcode_build_destination="id=${xcode_device_id}"
 devicectl_destination_state="unchecked"
 
@@ -1418,7 +1438,7 @@ xcode_destination_preflight() {
   output=$(xcodebuild \
     -project "$project" \
     -scheme "$scheme" \
-    -configuration Debug \
+    -configuration "$build_configuration" \
     -destination "id=${xcode_device_id}" \
     -destination-timeout 10 \
     -showdestinations 2>&1)
@@ -1489,7 +1509,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
     xcodebuild \
       -project "$project" \
       -scheme "$scheme" \
-      -configuration Debug \
+      -configuration "$build_configuration" \
       -destination "$xcode_build_destination" \
       -destination-timeout 10 \
       -derivedDataPath "$derived_data" \
@@ -1517,7 +1537,7 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
         xcodebuild \
           -project "$project" \
           -scheme "$scheme" \
-          -configuration Debug \
+          -configuration "$build_configuration" \
           -destination "$xcode_build_destination" \
           -destination-timeout 10 \
           -derivedDataPath "$derived_data" \

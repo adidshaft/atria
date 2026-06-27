@@ -2326,6 +2326,26 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
 
+    def test_live_device_harness_supports_release_build_configuration(self):
+        text = source(ROOT / "live_device_debug.sh")
+
+        for needle in [
+            "build_configuration=${ATRIA_BUILD_CONFIGURATION:-Debug}",
+            "--configuration Debug|Release",
+            "--release            Shorthand for --configuration Release.",
+            "build_configuration=${2:?--configuration requires a value}",
+            "build_configuration=Release",
+            "case \"$build_configuration\" in",
+            "Debug|Release) ;;",
+            "app_path=\"${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.app\"",
+            "-configuration \"$build_configuration\"",
+        ]:
+            assert_contains(self, text, needle)
+
+        assert_not_contains(self, text, "Build/Products/Debug-iphoneos/Atria.app\"")
+        assert_not_contains(self, text, "-configuration Debug \\")
+        self.assertGreaterEqual(text.count("-configuration \"$build_configuration\""), 3)
+
     def test_state_restoration_reuses_restored_peripheral(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
