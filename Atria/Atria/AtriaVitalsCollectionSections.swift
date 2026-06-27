@@ -188,6 +188,7 @@ struct AtriaCollectionTabContent: View {
     @Binding var rrImportStatus: String
     @Binding var hrImportStatus: String
     @Binding var hapticSettings: AtriaHapticAlertSettings
+    let officialAppInstalled: Bool
     let developerModeEnabled: Bool
 
     var body: some View {
@@ -281,7 +282,8 @@ struct AtriaCollectionTabContent: View {
                                       collectionLiveStore: collectionLiveStore,
                                       homeStatsStore: homeStatsStore,
                                       snapshotStore: snapshotStore,
-                                      store: store)
+                                      store: store,
+                                      officialAppInstalled: officialAppInstalled)
     }
 }
 
@@ -877,6 +879,7 @@ private struct AtriaCollectionStatusCardHost: View {
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
+    let officialAppInstalled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -889,7 +892,8 @@ private struct AtriaCollectionStatusCardHost: View {
             }
 
             if collectionLiveStore.state.officialAppCoexistenceRisk != .cleared {
-                AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialAppCoexistenceRisk)
+                AtriaCollectionCoexistenceWarning(risk: collectionLiveStore.state.officialAppCoexistenceRisk,
+                                                  officialAppInstalled: officialAppInstalled)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
@@ -982,15 +986,26 @@ private struct AtriaCollectionStatusCardHost: View {
 
 private struct AtriaCollectionCoexistenceWarning: View, Equatable {
     let risk: AtriaBLEManager.OfficialAppCoexistenceRisk
+    let officialAppInstalled: Bool
 
     private var title: String {
-        risk == .suspected ? "App conflict" : "Strap check"
+        if risk == .suspected {
+            return officialAppInstalled ? "App conflict" : "Connection keeps dropping"
+        }
+        return "Strap check"
     }
 
     private var detail: String {
-        risk == .suspected
-            ? "Remove the official strap app, then reconnect."
-            : "Remove the official strap app if drops return."
+        switch risk {
+        case .suspected where officialAppInstalled:
+            return "Remove the official strap app, then reconnect."
+        case .suspected:
+            return "Forget the strap in Bluetooth, then reconnect."
+        case .advisory:
+            return "Remove the official strap app if drops return."
+        case .cleared:
+            return "Atria has the strap."
+        }
     }
 
     private var tint: Color {
