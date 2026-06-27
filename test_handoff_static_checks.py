@@ -4058,6 +4058,7 @@ class HandoffStaticChecks(unittest.TestCase):
         # AtriaMediaController must be a no-op shell: no MediaPlayer import, no
         # system music player, no playback notifications, no polling loop.
         media = source(ROOT / "Atria" / "Atria" / "AtriaMediaControls.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
 
         for needle in [
             "final class AtriaMediaController",
@@ -4076,6 +4077,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "Task.sleep(nanoseconds: 10_000_000_000)",
         ]:
             assert_not_contains(self, media, forbidden)
+
+        for forbidden in [
+            "shortcutsSection",
+            "Strap tap shortcuts",
+            "music, calls",
+            "are coming once",
+        ]:
+            assert_not_contains(self, settings, forbidden)
 
     def test_deferred_home_diagnostics_do_not_overlap(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
