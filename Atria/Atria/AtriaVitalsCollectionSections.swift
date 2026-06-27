@@ -944,9 +944,16 @@ private struct AtriaCollectionStatusCardHost: View {
                         footnote: coexistenceFootnote)
         AtriaMetricTile(label: "Backfill",
                         value: store.historicalArchiveStatus.valueText,
-                        state: store.historicalArchiveStatus.metricReady ? .validated : (store.historicalArchiveStatus.hasArchiveRows ? .local : .learning),
+                        state: backfillState,
                         tint: .cyan,
                         footnote: store.historicalArchiveStatus.userFootnoteText)
+    }
+
+    private var backfillState: AtriaMetricState {
+        if !store.historicalArchiveStatus.parseOK { return .conflict }
+        if store.historicalArchiveStatus.metricReady { return .validated }
+        if store.historicalArchiveStatus.hasArchiveRows { return .local }
+        return .learning
     }
 
     private var coexistenceValue: String {
