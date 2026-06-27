@@ -151,9 +151,11 @@ enum AtriaAnalytics {
         static func hrv(_ rmssd: Int?,
                         baseline: Int?,
                         baselineSamples: Int,
+                        baselineTrusted: Bool,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
-            guard baselineSamples >= PersonalBaseline.trustedMinimumSamples,
+            guard baselineTrusted,
+                  baselineSamples >= PersonalBaseline.trustedMinimumSamples,
                   let rmssd, let baseline, baseline > 0 else { return nil }
             let ratio = Double(rmssd) / Double(baseline)
             let safeYellow = min(max(yellowRatio, 0.50), 0.98)
@@ -183,9 +185,11 @@ enum AtriaAnalytics {
         static func restingHeartRate(_ bpm: Int?,
                                      baseline: Int?,
                                      baselineSamples: Int,
+                                     baselineTrusted: Bool,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
-            guard baselineSamples >= PersonalBaseline.trustedMinimumSamples,
+            guard baselineTrusted,
+                  baselineSamples >= PersonalBaseline.trustedMinimumSamples,
                   let bpm, let baseline, baseline > 0 else { return nil }
             let delta = bpm - baseline
             let safeGreenDelta = min(max(greenDelta, 0), 12)

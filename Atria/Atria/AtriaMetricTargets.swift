@@ -185,11 +185,13 @@ extension Metrics {
     static func hrvZone(_ rmssd: Int?,
                         baseline: Int?,
                         baselineSamples: Int,
+                        baselineTrusted: Bool,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.hrv(rmssd,
                                        baseline: baseline,
                                        baselineSamples: baselineSamples,
+                                       baselineTrusted: baselineTrusted,
                                        greenRatio: greenRatio,
                                        yellowRatio: yellowRatio)
     }
@@ -197,11 +199,13 @@ extension Metrics {
     static func restingHeartRateZone(_ bpm: Int?,
                                      baseline: Int?,
                                      baselineSamples: Int,
+                                     baselineTrusted: Bool,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.restingHeartRate(bpm,
                                                     baseline: baseline,
                                                     baselineSamples: baselineSamples,
+                                                    baselineTrusted: baselineTrusted,
                                                     greenDelta: greenDelta,
                                                     yellowDelta: yellowDelta)
     }
