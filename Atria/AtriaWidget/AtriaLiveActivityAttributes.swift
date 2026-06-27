@@ -6,6 +6,8 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var heartRate: Int
         var strain: Double
         var batteryLevel: Int
+        var batteryChargeStatus: String
+        var batteryChargeText: String
         var readingCount: Int
         var mediaTitle: String
         var mediaArtist: String
