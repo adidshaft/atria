@@ -2880,8 +2880,6 @@ final class AtriaHomeModel {
 }
 
 private struct AtriaToolbarIcon: View, Equatable {
-    private static let size: CGFloat = AtriaHeaderControlMetrics.height
-
     let symbol: String
 
     static func == (lhs: AtriaToolbarIcon, rhs: AtriaToolbarIcon) -> Bool {
@@ -2893,9 +2891,19 @@ private struct AtriaToolbarIcon: View, Equatable {
             .font(.footnote.weight(.semibold))
             .imageScale(.small)
             .foregroundStyle(.primary)
+    }
+}
+
+private struct AtriaHeaderActionButtonStyle: ButtonStyle {
+    private static let size: CGFloat = AtriaHeaderControlMetrics.height
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
             .frame(width: Self.size, height: Self.size)
             .glassEffect(.regular.interactive(), in: .circle)
-            .contentShape(Rectangle())
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -2923,7 +2931,7 @@ private struct AtriaHomeTopChrome: View {
                     Button(action: onStartWorkout) {
                         AtriaToolbarIcon(symbol: "figure.run")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AtriaHeaderActionButtonStyle())
                     .accessibilityLabel("Start workout")
                 }
 
@@ -2931,7 +2939,7 @@ private struct AtriaHomeTopChrome: View {
                     Button(action: onShowHelp) {
                         AtriaToolbarIcon(symbol: "questionmark.circle")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AtriaHeaderActionButtonStyle())
                     .accessibilityLabel("Connection help")
                 }
 
@@ -2940,13 +2948,13 @@ private struct AtriaHomeTopChrome: View {
                 } label: {
                     AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaHeaderActionButtonStyle())
                 .accessibilityLabel("History")
 
                 Button(action: onShowSettings) {
                     AtriaToolbarIcon(symbol: "gearshape")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaHeaderActionButtonStyle())
                 .accessibilityLabel("Settings")
             }
             .frame(height: AtriaHeaderControlMetrics.height, alignment: .center)
@@ -2990,7 +2998,7 @@ private struct AtriaTopStatusChip: View {
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
         .glassEffect(.regular.tint(tint.opacity(colorScheme == .light ? 0.24 : 0.32)).interactive(), in: .capsule)
-        .contentShape(.capsule)
+        .contentShape(Capsule())
         .onTapGesture {
             if status != .connected { onTapWhenNotConnected() }
         }
