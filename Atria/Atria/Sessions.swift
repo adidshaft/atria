@@ -5843,6 +5843,11 @@ final class SessionStore: ObservableObject {
             return already
         }
         let confidence = best.motionEvidenceValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only"
+        let stageSegments = sleepStageResearchSegments(start: best.start,
+                                                       end: best.end,
+                                                       restingHR: best.restingHR,
+                                                       isNap: best.kind == "nap_candidate",
+                                                       motionValidated: best.motionEvidenceValidated)
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: best.start,
@@ -5859,10 +5864,10 @@ final class SessionStore: ObservableObject {
                                            reason: best.reason,
                                            motionSource: best.motionEvidenceSource,
                                            motionValidated: best.motionEvidenceValidated,
-                                           stageSegments: nil)
+                                           stageSegments: stageSegments.isEmpty ? nil : stageSegments)
         existing.append(confirmed)
         saveConfirmedSleeps(existing)
-        AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
+        AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
               confirmed.id,
               source,
               confirmed.source,
@@ -5879,8 +5884,32 @@ final class SessionStore: ObservableObject {
               confirmed.confidence,
               confirmed.motionSource,
               confirmed.motionValidated ? 1 : 0,
+              confirmed.stageSegments?.count ?? 0,
               confirmed.reason)
         return confirmed
+    }
+
+    private func sleepStageResearchSegments(start: Date,
+                                            end: Date,
+                                            restingHR: Int,
+                                            isNap: Bool,
+                                            motionValidated: Bool) -> [SleepStageSegment] {
+        let samples = canonicalSessions().flatMap { session -> [AtriaSleepWakeResearch.HeartSample] in
+            guard session.end >= start,
+                  session.start <= end,
+                  !session.points.isEmpty else { return [] }
+            return session.points.compactMap { point in
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                guard t >= start && t <= end else { return nil }
+                return AtriaSleepWakeResearch.HeartSample(t: t, bpm: point.bpm)
+            }
+        }
+        return AtriaSleepWakeResearch.stageSegments(samples: samples,
+                                                    start: start,
+                                                    end: end,
+                                                    restingHR: restingHR,
+                                                    isNap: isNap,
+                                                    motionValidated: motionValidated)
     }
 
     private static func readConfirmedSleeps() -> [UserConfirmedSleep] {
@@ -10394,7 +10423,10 @@ struct SleepHistorySnapshot: Equatable {
             if source == "manual_sleep" || source == "manual_nap" {
                 return .manualEstimate
             }
-            return confirmed ? .validated : .sensorResearch
+            if source == "validated_sleep_stages" {
+                return .validated
+            }
+            return .sensorResearch
         }
 
         private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval] {

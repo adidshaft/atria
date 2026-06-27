@@ -2065,10 +2065,13 @@ final class HealthKitExporter {
             "atria_sleep_resting_hr": sleep.restingHR,
             "atria_sleep_sessions": sleep.sessions,
             "atria_sleep_samples": sleep.samples,
+            "atria_sleep_stage_evidence": sleep.source == "validated_sleep_stages" ? "validated" : "non_validated",
             "atria_auto_gate_e_unchanged": true,
             "atria_metric_promotions": 0
         ]
-        guard let segments = sleep.stageSegments, !segments.isEmpty else {
+        guard sleep.source == "validated_sleep_stages",
+              let segments = sleep.stageSegments,
+              !segments.isEmpty else {
             return [HKCategorySample(type: sleepType,
                                      value: HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
                                      start: sleep.start,
