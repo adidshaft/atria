@@ -1034,6 +1034,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var snapshot: HistorySnapshot {\n        store.historySnapshot\n    }",
             "struct HistorySnapshot",
             "let sessionRows: [HistorySessionRowSnapshot]",
+            "let restingTrendPoints: [RestingTrendPoint]",
+            "private static func makeRestingTrendPoints(_ sessions: [SavedSession]) -> [RestingTrendPoint]",
             "struct HistorySessionRowSnapshot: Identifiable",
             "struct SleepHistorySnapshot: Equatable",
             "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [], maxHR: 200)",
@@ -1041,6 +1043,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "includeDerivedSessionRows: false",
             "HistorySessionRowSnapshot(session: $0,",
             "includeDerivedMetrics: includeDerivedSessionRows",
+            "? Self.makeRestingTrendPoints(sessions)",
+            ": []",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -1073,8 +1077,30 @@ class HandoffStaticChecks(unittest.TestCase):
             "session.resting",
             "session.points.count",
             "session.trimp(",
+            "RestingTrendChart(sessions: snapshot.sessions,",
         ]:
             assert_not_contains(self, history_view_source, forbidden)
+
+        insights = source(ROOT / "Atria" / "Atria" / "Insights.swift")
+        chart = re.search(
+            r"struct RestingTrendChart: View \{(?P<body>.*?)\n\}",
+            insights,
+            re.S,
+        )
+        self.assertIsNotNone(chart)
+        chart_body = chart.group("body")
+        for needle in [
+            "let points: [RestingTrendPoint]",
+            "ForEach(points) { point in",
+            "point.resting",
+        ]:
+            assert_contains(self, chart_body, needle)
+        for forbidden in [
+            "let sessions: [SavedSession]",
+            "sessions.sorted",
+            "restingStable",
+        ]:
+            assert_not_contains(self, chart_body, forbidden)
 
         history_snapshot_start = sessions.index("struct HistorySnapshot")
         history_snapshot_end = sessions.index("private struct HistoryQuickStat")

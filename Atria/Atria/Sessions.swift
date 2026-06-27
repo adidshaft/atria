@@ -9611,9 +9611,9 @@ struct HistoryView: View {
                             }
                         }
 
-                        if snapshot.sessions.count >= 2 {
+                        if snapshot.restingTrendPoints.count >= 2 {
                             historySection(title: "Resting trend", subtitle: "Saved resting HR over time") {
-                                RestingTrendChart(sessions: snapshot.sessions,
+                                RestingTrendChart(points: snapshot.restingTrendPoints,
                                                   baseline: store.baseline.restingInt)
                             }
                         }
@@ -9743,6 +9743,7 @@ struct HistoryView: View {
 struct HistorySnapshot {
     let sessions: [SavedSession]
     let sessionRows: [HistorySessionRowSnapshot]
+    let restingTrendPoints: [RestingTrendPoint]
     let detections: [ActivityDetection]
     let trends: [TrendSummary]
     let rollups: [DailyRollup]
@@ -9770,9 +9771,18 @@ struct HistorySnapshot {
                                       maxHR: maxHR,
                                       includeDerivedMetrics: includeDerivedSessionRows)
         }
+        self.restingTrendPoints = includeDerivedSessionRows
+            ? Self.makeRestingTrendPoints(sessions)
+            : []
         self.detections = detections
         self.trends = trends
         self.rollups = rollups
+    }
+
+    private static func makeRestingTrendPoints(_ sessions: [SavedSession]) -> [RestingTrendPoint] {
+        sessions
+            .sorted { $0.start < $1.start }
+            .map { RestingTrendPoint(id: $0.id, start: $0.start, resting: $0.restingStable) }
     }
 }
 
