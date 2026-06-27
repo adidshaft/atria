@@ -376,7 +376,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
             // layout measurement during scroll.
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
                 AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
-                AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/7")
+                AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)")
                 AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }
 
@@ -2436,11 +2436,11 @@ struct AtriaOverviewLaunchChecklist: View, Equatable {
             // Connection status lives in the toolbar chip; not repeated here.
             AtriaLaunchChecklistItem(id: "baseline",
                                      title: "HRV baseline",
-                                     value: "\(stats.baselineSamples)/7",
-                                     detail: stats.baselineSamples >= 7 ? "Personal baseline is ready." : "Wear overnight to improve recovery confidence.",
+                                     value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
+                                     detail: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? "Trusted personal baseline is ready." : "Wear overnight to build a trusted recovery baseline.",
                                      systemImage: "waveform.path.ecg",
-                                     tint: stats.baselineSamples >= 7 ? .green : .pink,
-                                     isComplete: stats.baselineSamples >= 7,
+                                     tint: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? .green : .pink,
+                                     isComplete: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples,
                                      actionTitle: nil,
                                      action: nil),
             AtriaLaunchChecklistItem(id: "capture",
@@ -3052,7 +3052,7 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
                                      detail: live.batteryChargeStatus == .levelOnly
                                         ? "Waiting for charger signal"
                                         : "Current strap status")
-                AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/7")
+                AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)")
                 AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
             }
         }
@@ -3385,8 +3385,8 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
                         state: .local,
                         tint: tint)
         AtriaMetricTile(label: "Saved HRV",
-                        value: "\(stats.baselineSamples)/7",
-                        state: stats.baselineSamples >= 7 ? .validated : .learning,
+                        value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
+                        state: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? .validated : .learning,
                         tint: .pink)
     }
 }

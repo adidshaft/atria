@@ -3193,6 +3193,7 @@ class HandoffStaticChecks(unittest.TestCase):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
 
@@ -3265,6 +3266,22 @@ class HandoffStaticChecks(unittest.TestCase):
             "profileMetricsStore: model.profileMetricsStore",
         ]:
             assert_contains(self, home + overview, needle)
+        for needle in [
+            r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
+            r"\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
+            r"\(store.baseline.hrvSampleCount)/\(PersonalBaseline.trustedMinimumSamples)",
+            "sampleCount >= PersonalBaseline.trustedMinimumSamples",
+            "Trusted personal baseline is ready.",
+            "Wear overnight to build a trusted recovery baseline.",
+        ]:
+            assert_contains(self, home + hero + overview + sessions, needle)
+        for forbidden in [
+            r"\(hero.baselineSamples)/7",
+            r"\(stats.baselineSamples)/7",
+            r"\(store.baseline.hrvSampleCount)/7",
+            "Personal baseline is ready.",
+        ]:
+            assert_not_contains(self, home + hero + overview + sessions, forbidden)
 
         for needle in [
             "case .bioAge: return \"Body age\"",
