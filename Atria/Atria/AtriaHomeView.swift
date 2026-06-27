@@ -1324,6 +1324,7 @@ final class AtriaHomeModel {
         var phoneStepsToday: Int
         var phoneDistanceTodayMeters: Double?
         var phoneFloorsToday: Int?
+        var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
@@ -1796,7 +1797,8 @@ final class AtriaHomeModel {
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneStepsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$phoneDistanceTodayMeters.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$phoneFloorsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$phoneFloorsToday.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -2126,7 +2128,8 @@ final class AtriaHomeModel {
                              liveActiveCalories: liveSessionDerived.activeCalories,
                              phoneStepsToday: ble.phoneStepsToday,
                              phoneDistanceTodayMeters: ble.phoneDistanceTodayMeters,
-                             phoneFloorsToday: ble.phoneFloorsToday)
+                             phoneFloorsToday: ble.phoneFloorsToday,
+                             officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager) -> PulseLiveState {
@@ -2936,6 +2939,9 @@ private struct AtriaConnectionDiagnosis: Equatable {
     static func derive(live: AtriaHomeModel.CoreLiveState,
                        pulse: AtriaHomeModel.PulseLiveState,
                        officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
+        let officialAppRiskActive = officialAppInstalled && live.officialAppCoexistenceRisk != .cleared
+        let stalePairingSuspected = !officialAppInstalled && live.officialAppCoexistenceRisk == .suspected
+
         if live.batteryLevel >= 0, live.batteryLevel <= Self.lowBatteryThreshold, !live.batteryIsCharging {
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
@@ -2961,10 +2967,16 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "heart.slash",
                                             tint: .orange)
         case .scanning, .connecting:
-            if officialAppInstalled {
+            if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Keep the strap nearby and close WHOOP if it keeps reclaiming it.",
                                                 systemImage: "exclamationmark.triangle.fill",
+                                                tint: .orange)
+            }
+            if stalePairingSuspected {
+                return AtriaConnectionDiagnosis(title: "Connection keeps dropping",
+                                                action: "Forget the strap in Bluetooth, then reconnect.",
+                                                systemImage: "arrow.triangle.2.circlepath.circle.fill",
                                                 tint: .orange)
             }
             return AtriaConnectionDiagnosis(title: "Looking for your strap",
@@ -2972,10 +2984,16 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "dot.radiowaves.left.and.right",
                                             tint: .cyan)
         case .disconnected:
-            if officialAppInstalled {
+            if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Close or uninstall WHOOP if it keeps reclaiming the strap.",
                                                 systemImage: "exclamationmark.triangle.fill",
+                                                tint: .orange)
+            }
+            if stalePairingSuspected {
+                return AtriaConnectionDiagnosis(title: "Stale Bluetooth pairing",
+                                                action: "Forget the strap in Bluetooth, then reconnect.",
+                                                systemImage: "arrow.triangle.2.circlepath.circle.fill",
                                                 tint: .orange)
             }
             return AtriaConnectionDiagnosis(title: "Strap disconnected",
