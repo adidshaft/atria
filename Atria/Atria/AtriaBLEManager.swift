@@ -5316,7 +5316,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             captureCleanWindowStart = startedAt
             captureElapsedSeconds = 0
             capturedRows = 0
-            assignIfChanged(\.captureSummary, "Recording a clean heart-rate window")
+            assignIfChanged(\.captureSummary, "Recording a beat-to-beat heart-rate window")
             assignIfChanged(\.captureWasValidationReady, false)
             captureAbortReason = nil
             captureQualityResetCount = 0
@@ -5548,7 +5548,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let summaryLogValue: String
         if let h = hrvSnapshot {
             ready = h.isReady && finalAbortReason == nil
-            summary = String(format: "%@ · saved %.0fs · HRV %.0fs · clean beats %d/%d · max gap %.1fs · confidence %d%% · RMSSD %@ · SDNN %@ · pNN50 %@ · ln %@ · breathing %@",
+            summary = String(format: "%@ · saved %.0fs · HRV %.0fs · kept beats %d/%d · max gap %.1fs · confidence %d%% · RMSSD %@ · SDNN %@ · pNN50 %@ · ln %@ · breathing %@",
                              ready ? "Personal baseline ready" : "Still learning",
                              captureElapsedSeconds, h.windowSeconds, h.kept, h.raw,
                              h.maxRRGapSeconds,
@@ -5581,7 +5581,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                    value: summaryLogValue)
         } else {
             ready = false
-            summary = String(format: "Still learning · saved %.0fs · waiting for clean RR",
+            summary = String(format: "Still learning · saved %.0fs · waiting for beat-to-beat samples",
                              captureElapsedSeconds)
             let reason = finalAbortReason ?? "no_realtime_rr"
             let cleanElapsed = Date().timeIntervalSince(captureCleanWindowStart)
@@ -7926,7 +7926,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if !hrvGateWasOpen {
             resetRRBuffer()
             hrvGateWasOpen = true
-            assignIfChanged(\.hrvQuality, "collecting clean RR")
+            assignIfChanged(\.hrvQuality, "collecting beat-to-beat samples")
             logRow(kind: "hrv_quality", source: "app", opcode: "", len: "",
                    value: "clean_rr_window_started")
             return
@@ -7965,7 +7965,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if shouldOpenGate {
             resetRRBuffer()
             hrvGateWasOpen = true
-            assignIfChanged(\.hrvQuality, "collecting clean RR")
+            assignIfChanged(\.hrvQuality, "collecting beat-to-beat samples")
             logRow(kind: "hrv_quality", source: "app", opcode: "", len: "",
                    value: "clean_rr_window_started")
         }
