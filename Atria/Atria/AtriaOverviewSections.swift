@@ -1108,12 +1108,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
                                   value: sleepHistory.latest?.respiratoryRateText ?? "--",
-                                  detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep research" : "Sleep-only",
+                                  detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep research" : "Research",
                                   systemImage: metric.systemImage,
                                   tint: sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal)
                 .accessibilityLabel(sleepHistory.latest?.respiratoryRate == nil
                                     ? "Respiratory rate is building from sleep-only evidence"
-                                    : "Respiratory rate sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute")
+                                    : "Respiratory rate research sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute")
         case .steps:
             AtriaGlanceMetricCard(title: "Steps",
                                   value: live.phoneStepsText,
