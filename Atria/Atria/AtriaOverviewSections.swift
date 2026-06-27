@@ -500,8 +500,7 @@ struct AtriaOverviewLeadingSection: View {
                 // setup checklist, no strain-target maths — kept direct.
                 AtriaOverviewGuidanceSectionHost(heroStore: heroStore)
 
-                AtriaOverviewMorningJournalHost(heroStore: heroStore,
-                                                snapshotStore: snapshotStore,
+                AtriaOverviewMorningJournalHost(snapshotStore: snapshotStore,
                                                 store: store)
             }
 
@@ -2729,7 +2728,6 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
 }
 
 struct AtriaOverviewMorningJournalHost: View {
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
 
