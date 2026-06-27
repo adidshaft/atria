@@ -2773,9 +2773,12 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertNotIn(".buttonStyle(.glass", missed_banner.group("body"))
         self.assertNotIn(".glassEffect(", missed_banner.group("body"))
 
-        assert_contains(self, ble, "currentSessionUsable: false")
+        assert_contains(self, ble, "currentSessionUsable: currentSessionUsable")
         assert_contains(self, ble, "metricUsable: false")
-        assert_contains(self, ble, "usabilityReason: \"provisional_historical_layout_old_or_unvalidated\"")
+        assert_contains(self, ble, "private nonisolated static func historicalCurrentSessionUsable")
+        assert_contains(self, ble, "current_session_replay_ready_metric_reference_pending")
+        assert_contains(self, ble, "let usabilityReason = currentSessionUsable")
+        assert_contains(self, ble, "\"provisional_historical_layout_old_or_unvalidated\"")
 
     def test_advanced_metrics_imu_decoder_is_research_gated(self):
         decoder = source(ROOT / "Atria" / "Atria" / "AtriaIMUDecoder.swift")

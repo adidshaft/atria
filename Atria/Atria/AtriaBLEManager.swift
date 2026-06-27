@@ -7872,6 +7872,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
         }
 
+        let currentSessionUsable = Self.historicalCurrentSessionUsable(unix: correctedUnix ?? unix,
+                                                                       gravityValidated: gravity?.validated == true,
+                                                                       rrValues: whoofRR + kRevisionRR,
+                                                                       candidateCount: candidates.count)
+        let usabilityReason = currentSessionUsable
+            ? "current_session_replay_ready_metric_reference_pending"
+            : "provisional_historical_layout_old_or_unvalidated"
         let payloadHex = Self.hex(payload)
         let logMessage = String(
             format: "ATRIADBG historicalData provisional=1 validated=0 seq=%02x cmd=%02x unix7=%u subsec11=%u flash13=%u len=%d strap4_v24_hr17=%d strap4_v24_rrnum18=%d strap4_v24_rr19=%@ k_rr64=%@ noop_gravity_mag=%@ noop_gravity_validated=%d clock_status=%@ clock_device_ref=%@ clock_wall_ref=%@ clock_drift_s=%@ clock_snapped_drift_s=%@ clock_corrected_unix7=%@ candidate_rr=%@ payload=%@",
@@ -7923,9 +7930,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                               clockDriftSeconds: drift,
                                               clockCorrectedUnix7: correctedUnix,
                                               clockCorrectionStatus: clockStatus,
-                                              currentSessionUsable: false,
+                                              currentSessionUsable: currentSessionUsable,
                                               metricUsable: false,
-                                              usabilityReason: "provisional_historical_layout_old_or_unvalidated")
+                                              usabilityReason: usabilityReason)
         return HistoricalArchiveComputation(logMessage: logMessage, payload: .record(record))
     }
 
@@ -7964,6 +7971,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let value = Int(u16le(payload, offset))
             return (300...2000).contains(value) ? value : nil
         }
+    }
+
+    private nonisolated static func historicalCurrentSessionUsable(unix: UInt32,
+                                                                   gravityValidated: Bool,
+                                                                   rrValues: [Int],
+                                                                   candidateCount: Int) -> Bool {
+        unix > 0 && gravityValidated && (!rrValues.isEmpty || candidateCount >= 2)
     }
 
     private nonisolated static func joinInts(_ values: [Int]) -> String {

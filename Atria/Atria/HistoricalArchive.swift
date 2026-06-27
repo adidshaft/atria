@@ -202,7 +202,8 @@ enum HistoricalArchive {
                 if object["metricUsable"] as? Bool == true {
                     metricUsableRows += 1
                 }
-                if object["currentSessionUsable"] as? Bool == true {
+                let inferredCurrentSessionUsable = currentSessionUsable(object: object)
+                if object["currentSessionUsable"] as? Bool == true || inferredCurrentSessionUsable {
                     currentSessionUsableRows += 1
                 }
                 if let rawPayload = object["rawPayloadHex"] as? String, !rawPayload.isEmpty {
@@ -267,6 +268,19 @@ enum HistoricalArchive {
                                gravityValidatedRows: 0,
                                reason: "read_failed")
         }
+    }
+
+    private static func currentSessionUsable(object: [String: Any]) -> Bool {
+        let correctedUnix = (object["clockCorrectedUnix7"] as? NSNumber)?.uint32Value ?? 0
+        let rawUnix = (object["unix7"] as? NSNumber)?.uint32Value ?? 0
+        guard max(correctedUnix, rawUnix) > 0 else { return false }
+        guard let payloadHex = object["rawPayloadHex"] as? String,
+              let payload = bytes(fromHex: payloadHex),
+              historicalGravity(payload)?.validated == true else { return false }
+        let directRRCount = ((object["whoofRR19"] as? [Any])?.count ?? 0)
+            + ((object["kRR64"] as? [Any])?.count ?? 0)
+        let candidateRRCount = (object["candidateRR"] as? [Any])?.count ?? 0
+        return directRRCount > 0 || candidateRRCount >= 2
     }
 
     static func motionWindowDiagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
