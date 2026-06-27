@@ -2268,7 +2268,7 @@ final class AtriaHomeModel {
     private static func liveHeartRate(ble: AtriaBLEManager) -> Int {
         if ble.heartRate > 0 { return ble.heartRate }
         guard let latest = ble.session.last, latest.bpm > 0,
-              Date().timeIntervalSince(latest.t) <= 75 else {
+              Date().timeIntervalSince(latest.t) <= 180 else {
             return 0
         }
         return latest.bpm
@@ -2928,9 +2928,10 @@ private struct AtriaHomeTopChrome: View {
                 }
                 .accessibilityLabel("Settings")
             }
+            .frame(height: 44, alignment: .center)
             .fixedSize()
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .center)
     }
 }
 
@@ -2957,7 +2958,7 @@ private struct AtriaTopStatusChip: View {
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
         .padding(.horizontal, 22)
-        .frame(minWidth: 132, minHeight: 44)
+        .frame(minWidth: 132, minHeight: 44, maxHeight: 44)
         .background {
             Capsule()
                 .fill(tint.opacity(colorScheme == .light ? 0.34 : 0.24))
@@ -3076,11 +3077,9 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Adjust the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
-        case .connected where live.needsRRQualityCoach:
-            return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Beat-to-beat settling" : "Beat-to-beat waiting",
-                                            action: pulse.hasPulseSignal
-                                                ? "Heart rate is live. Keep wearing normally while HRV settles."
-                                                : "Atria needs pulse before it can build HRV and Recovery.",
+        case .connected where live.needsRRQualityCoach && !pulse.hasPulseSignal:
+            return AtriaConnectionDiagnosis(title: "Beat-to-beat waiting",
+                                            action: "Atria needs pulse before it can build HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .orange)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
