@@ -340,6 +340,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round)",
             "case .recovery: return \"gauge.with.dots.needle.67percent\"",
             "case .strain: return \"figure.run\"",
+            "case .workout: return \"stopwatch.fill\"",
             "case .hrv: return \"waveform.path.ecg\"",
             "case .sleep: return \"bed.double.fill\"",
             "case .sleepEfficiency: return \"percent\"",
@@ -352,7 +353,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .bloodOxygen: return \"drop.degreesign\"",
             "case .bodyTemp: return \"thermometer.variable\"",
             "case .insights: return \"sparkles\"",
-            "[.recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]",
+            "[.recovery, .strain, .workout, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]",
             "let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
             "@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
             "vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate",
@@ -392,7 +393,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
             "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
+            "let onStartWorkout: () -> Void",
             "&& lhs.insights == rhs.insights",
+            "AtriaGlanceMetricCard(title: \"Workout\"",
+            "value: live.status == .connected ? \"Start\" : \"Connect\"",
+            "detail: live.sessionSampleCount > 0 ? \"\\(live.sessionSampleCount) readings\" : \"Live mode\"",
+            ".accessibilityLabel(live.status == .connected",
             "private var insightsCard: some View",
             "AtriaGlanceMetricCard(title: \"Insights\"",
             "detail: topInsight?.tagLabel ?? (taggedDays > 0 ? \"Learning patterns\" : \"Tag today\")",
@@ -411,6 +417,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, overview, needle)
 
         assert_contains(self, home, "profileMetricsStore: model.profileMetricsStore")
+        assert_contains(self, home, "onStartWorkout: {\n                                        workoutSession = AtriaWorkoutSession(start: Date())\n                                    }")
 
         assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
         assert_not_contains(self, overview, "row.map(\\.glanceColumnSpan).reduce")

@@ -51,6 +51,7 @@ struct AtriaOverviewTabContent: View {
     let onShowConnectionGuide: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onStartWorkout: () -> Void
 
     @State private var segment: AtriaTodaySegment = .today
 
@@ -102,7 +103,8 @@ struct AtriaOverviewTabContent: View {
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                              onOpenVitals: onOpenVitals,
-                                             onOpenCollection: onOpenCollection)
+                                             onOpenCollection: onOpenCollection,
+                                             onStartWorkout: onStartWorkout)
                     AtriaLoadingPanel(title: "Preparing saved insights",
                                       subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
                 }
@@ -125,7 +127,8 @@ struct AtriaOverviewTabContent: View {
                                                      onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                                      onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                                      onOpenVitals: onOpenVitals,
-                                                     onOpenCollection: onOpenCollection)
+                                                     onOpenCollection: onOpenCollection,
+                                                     onStartWorkout: onStartWorkout)
                         }
                         .frame(maxWidth: .infinity, alignment: .top)
 
@@ -157,7 +160,8 @@ struct AtriaOverviewTabContent: View {
                                              onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                              onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                              onOpenVitals: onOpenVitals,
-                                             onOpenCollection: onOpenCollection)
+                                             onOpenCollection: onOpenCollection,
+                                             onStartWorkout: onStartWorkout)
                     AtriaOverviewTrailingHost(liveStore: liveStore,
                                               homeStatsStore: homeStatsStore,
                                               snapshotStore: snapshotStore,
@@ -389,6 +393,7 @@ private struct AtriaOverviewLeadingHost: View {
     let onDeleteAICoachAPIKey: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onStartWorkout: () -> Void
 
     var body: some View {
         AtriaOverviewLeadingSection(liveStore: liveStore,
@@ -405,7 +410,8 @@ private struct AtriaOverviewLeadingHost: View {
                                    onSaveAICoachAPIKey: onSaveAICoachAPIKey,
                                    onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
                                    onOpenVitals: onOpenVitals,
-                                   onOpenCollection: onOpenCollection)
+                                   onOpenCollection: onOpenCollection,
+                                   onStartWorkout: onStartWorkout)
     }
 }
 
@@ -443,6 +449,7 @@ struct AtriaOverviewLeadingSection: View {
     let onDeleteAICoachAPIKey: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
+    let onStartWorkout: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -452,7 +459,8 @@ struct AtriaOverviewLeadingSection: View {
                                                  profileMetricsStore: profileMetricsStore,
                                                  snapshotStore: snapshotStore,
                                                  store: store,
-                                                 subtitle: "")
+                                                 subtitle: "",
+                                                 onStartWorkout: onStartWorkout)
 
                 // Simple one-line "what to do today" guidance. No AI coach, no
                 // setup checklist, no strain-target maths — kept direct.
@@ -484,6 +492,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
     let subtitle: String
+    var onStartWorkout: () -> Void = {}
 
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
     @AppStorage(AtriaTodayMetric.orderStorageKey) private var orderCSV: String = ""
@@ -502,7 +511,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
                                      onMoveMetric: moveMetric,
-                                     onShiftMetric: shiftMetric)
+                                     onShiftMetric: shiftMetric,
+                                     onStartWorkout: onStartWorkout)
             .equatable()
             .sensoryFeedback(.selection, trigger: orderCSV)
     }
@@ -519,12 +529,13 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, workout, hrv, sleep, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recovery: return "Recovery"
         case .strain: return "Strain"
+        case .workout: return "Workout"
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
         case .sleepEfficiency: return "Sleep eff"
@@ -544,6 +555,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         switch self {
         case .recovery: return "gauge.with.dots.needle.67percent"
         case .strain: return "figure.run"
+        case .workout: return "stopwatch.fill"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
         case .sleepEfficiency: return "percent"
@@ -579,7 +591,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -641,6 +653,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
+    let onStartWorkout: () -> Void
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -810,6 +823,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: .orange,
                                   ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1))
+        case .workout:
+            workoutCard(metric)
         case .hrv:
             AtriaGlanceMetricCard(title: "HRV",
                                   value: metricDisplayValue(hero.hrvValue),
@@ -901,6 +916,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .insights:
             insightsCard
         }
+    }
+
+    private func workoutCard(_ metric: AtriaTodayMetric) -> some View {
+        Button(action: onStartWorkout) {
+            AtriaGlanceMetricCard(title: "Workout",
+                                  value: live.status == .connected ? "Start" : "Connect",
+                                  detail: live.sessionSampleCount > 0 ? "\(live.sessionSampleCount) readings" : "Live mode",
+                                  systemImage: metric.systemImage,
+                                  tint: live.status == .connected ? .green : .orange)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(live.status == .connected
+                            ? "Start live workout"
+                            : "Connect strap before starting live workout")
     }
 
     private var trendCard: some View {

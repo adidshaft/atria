@@ -810,6 +810,9 @@ struct AtriaHomeView: View {
                                         performMotionAwareUpdate {
                                             selectedTab = .collection
                                         }
+                                    },
+                                    onStartWorkout: {
+                                        workoutSession = AtriaWorkoutSession(start: Date())
                                     })
         }
     }
