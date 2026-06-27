@@ -966,7 +966,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "DispatchQueue.global(qos: .utility).async",
             "HistoricalArchive.diagnostics()",
             "return \"Gated\"",
-            "return \"\\(rows) saved locally\"",
+            "return \"\\(rows) saved · metric gated\"",
             "var userFootnoteText: String",
             "return \"Backfill archived locally; HRV, Recovery and Sleep stay gated until historical RR is validated.\"",
             "return \"\\(metricUsableRows)/\\(rows) rows metric-ready.\"",
