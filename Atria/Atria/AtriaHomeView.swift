@@ -1439,7 +1439,7 @@ final class AtriaHomeModel {
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
-        var needsRRContactCoach: Bool { rrContinuityState == "poor_contact" }
+        var needsRRQualityCoach: Bool { rrContinuityState == "poor_contact" }
         var liveActiveCaloriesText: String { liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "--" }
         var phoneStepsText: String { phoneStepsToday > 0 ? "\(phoneStepsToday)" : "--" }
         var phoneMotionDetailText: String {
@@ -3076,7 +3076,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Adjust the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
-        case .connected where live.needsRRContactCoach:
+        case .connected where live.needsRRQualityCoach:
             return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Beat-to-beat settling" : "Beat-to-beat waiting",
                                             action: pulse.hasPulseSignal
                                                 ? "Heart rate is live. Keep wearing normally while HRV settles."

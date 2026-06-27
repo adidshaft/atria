@@ -170,7 +170,8 @@ TASKS:
    reference (timing, `withResponse` vs `withoutResponse`, char order). Confirm
    whether RR must come via 0x2A37 (RR-flag) or 0x28 and under what contact/mode.
 2. Surface a **contact/quality coach**: when connected + `poor_contact`, tell the
-   user to tighten the strap / wet the sensor (ties into Part C).
+   user to adjust fit only if pulse is absent; when live HR is present, treat it as
+   beat-to-beat/HRV settling and do not imply the strap is dirty.
 3. Only feed HRV/Recovery from a clean RR window with enough beats; else "building".
 4. DECIDE the radio default trade-off (docs/20 §3): full-protocol (RR, more strap
    drain) vs standard-HR-only (battery). Add a Settings **"Battery saver"** toggle;
@@ -205,7 +206,8 @@ status already exists — extend it), mapping the real cause → a one-line acti
 | Bluetooth off | `central.state == .poweredOff` | "Turn on Bluetooth in Settings." |
 | BT permission denied | `.unauthorized` | "Allow Bluetooth for Atria in Settings." |
 | Strap out of range / app can't find it | saved strap, pending connect, no connect for N s | "Bring your strap closer / it may be off your wrist." |
-| Connected but no pulse (off-wrist/loose) | `status==.connected && !hasContact` (poor_contact) | "Strap's connected but not reading — tighten the fit." |
+| Connected but no pulse (off-wrist/loose) | `status==.connected && !hasContact` | "Strap is connected; adjust fit so Atria can read pulse." |
+| HR live, RR/beat-to-beat not ready | `status==.connected && hasPulseSignal && rr_quality==poor_contact` | "Heart rate is live. Keep wearing normally while HRV settles." |
 | Low strap battery | `batteryLevel` low + drops | "Charge your strap — battery low." |
 | Stale pairing / phantom contention | short-disconnect heuristic (NO WHOOP installed) | "Forget the strap in Settings → Bluetooth, then reconnect." |
 | Official strap app installed & may grab BLE | `canOpenURL("whoop://")` true | the existing coexistence modal (only when truly installed). |
