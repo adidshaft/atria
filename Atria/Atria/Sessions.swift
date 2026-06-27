@@ -7393,14 +7393,15 @@ final class SessionStore: ObservableObject {
     }
 
     func logDailyRollupsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-log-daily-rollups") else { return }
+        let deepDiagnosticsRequested = arguments.contains("--atria-log-daily-rollups-deep")
+        guard arguments.contains("--atria-log-daily-rollups") || deepDiagnosticsRequested else { return }
         let sourceSessions = sessions
         let confirmedWorkouts = cachedConfirmedWorkouts
         let confirmedSleeps = cachedConfirmedSleeps
         let baselineSnapshot = baseline
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
-        guard arguments.contains("--atria-log-daily-rollups-deep") else {
+        guard deepDiagnosticsRequested else {
             DispatchQueue.global(qos: .utility).async {
                 let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
                                                           confirmedWorkouts: confirmedWorkouts,
