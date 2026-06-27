@@ -583,7 +583,7 @@ struct AtriaSettingsView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")
                         .foregroundStyle(.pink)
-                    Text("HRV and resting HR zones personalize from your 7-night baseline before warning.")
+                    Text("HRV and resting HR zones personalize from your trusted \(PersonalBaseline.trustedMinimumSamples)-sample baseline before warning.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
