@@ -1619,6 +1619,8 @@ final class AtriaHomeModel {
         let loadTargetText: String
         let loadConfidence: String
         let loadReadinessText: String
+        let loadACWRSignalText: String
+        let loadMonotonySignalText: String
         let loadSignalSummaryText: String
         let loadNarrative: String
 
@@ -1664,6 +1666,8 @@ final class AtriaHomeModel {
                 && lhs.loadTargetText == rhs.loadTargetText
                 && lhs.loadConfidence == rhs.loadConfidence
                 && lhs.loadReadinessText == rhs.loadReadinessText
+                && lhs.loadACWRSignalText == rhs.loadACWRSignalText
+                && lhs.loadMonotonySignalText == rhs.loadMonotonySignalText
                 && lhs.loadSignalSummaryText == rhs.loadSignalSummaryText
                 && lhs.loadNarrative == rhs.loadNarrative
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
@@ -2473,6 +2477,8 @@ final class AtriaHomeModel {
                             loadTargetText: load.targetBandText,
                             loadConfidence: load.confidence,
                             loadReadinessText: load.readinessText,
+                            loadACWRSignalText: load.acwrSignalText,
+                            loadMonotonySignalText: load.monotonySignalText,
                             loadSignalSummaryText: load.signalSummaryText,
                             loadNarrative: load.detail)
     }
@@ -2665,6 +2671,8 @@ final class AtriaHomeModel {
                             loadTargetText: "Learning",
                             loadConfidence: "learning",
                             loadReadinessText: "Learning",
+                            loadACWRSignalText: "Learning",
+                            loadMonotonySignalText: "Learning",
                             loadSignalSummaryText: "Learning",
                             loadNarrative: "Training load appears after local strain history builds.")
     }

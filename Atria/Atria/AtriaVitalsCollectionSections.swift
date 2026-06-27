@@ -1803,6 +1803,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               target: hero.loadTargetText,
                               confidence: hero.loadConfidence,
                               readiness: hero.loadReadinessText,
+                              acwrSignal: hero.loadACWRSignalText,
+                              monotonySignal: hero.loadMonotonySignalText,
                               signalSummary: hero.loadSignalSummaryText,
                               narrative: hero.loadNarrative)
     }
@@ -2146,6 +2148,8 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     let target: String
     let confidence: String
     let readiness: String
+    let acwrSignal: String
+    let monotonySignal: String
     let signalSummary: String
     let narrative: String
 
@@ -2159,12 +2163,71 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     }
 
     var body: some View {
-        AtriaMetricTile(label: "Readiness",
-                        value: readiness,
-                        state: confidence == "local" ? .local : .learning,
-                        tint: confidenceTint,
-                        footnote: "\(signalSummary) · target \(target)")
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("Readiness")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                AtriaStateBadge(state: confidence == "local" ? .local : .learning)
+            }
+
+            Text(readiness)
+                .font(.system(size: 29, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+
+            HStack(spacing: 6) {
+                AtriaTrainingSignalChip(title: "ACWR", value: ratio, signal: acwrSignal)
+                AtriaTrainingSignalChip(title: "Monotony", value: monotonySignal, signal: monotonySignal)
+            }
+
+            Text("Target \(target)")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity,
+               minHeight: 122,
+               maxHeight: 122,
+               alignment: .leading)
+        .padding(13)
+        .atriaInsetCard(tint: confidenceTint)
             .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(narrative)")
+    }
+}
+
+private struct AtriaTrainingSignalChip: View, Equatable {
+    let title: String
+    let value: String
+    let signal: String
+
+    private var tint: Color {
+        switch signal.lowercased() {
+        case "good": return .green
+        case "neutral": return .blue
+        case "watch": return .orange
+        case "bad": return .red
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+            Text(value)
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.12), in: Capsule(style: .continuous))
+        .foregroundStyle(tint)
     }
 }
 
