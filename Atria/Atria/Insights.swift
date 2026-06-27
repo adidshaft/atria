@@ -12,6 +12,8 @@ struct PersonalBaseline: Codable {
 
     private static let alpha = 0.25   // weight on the newest session
     private static let maxSamples = 90
+    static let trustedMinimumSamples = 14
+    static let staleAfter: TimeInterval = 21 * 24 * 60 * 60
 
     struct BaselineSample: Codable {
         let date: Date
@@ -71,6 +73,18 @@ struct PersonalBaseline: Codable {
     var hrvInt: Int? { hrvEMA.map { Int($0.rounded()) } }
     var hrvSampleCount: Int { samples.compactMap(\.lnRMSSD).count }
     var restingSampleCount: Int { samples.count }
+    func isStale(now: Date = Date()) -> Bool {
+        guard let updated else { return true }
+        return now.timeIntervalSince(updated) > Self.staleAfter
+    }
+
+    func hasTrustedRestingBaseline(now: Date = Date()) -> Bool {
+        restingSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)
+    }
+
+    func hasTrustedHRVBaseline(now: Date = Date()) -> Bool {
+        hrvSampleCount >= Self.trustedMinimumSamples && !isStale(now: now)
+    }
 
     var restingStats: (mean: Double, sd: Double, count: Int)? {
         stats(samples.map(\.restingHR)) ?? restingHR.map { ($0, 0, max(sessions, 1)) }
