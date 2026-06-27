@@ -188,7 +188,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Sleep duration target",
                                    current: String(format: "%.1fh sleep vs %.1fh goal.", hours, safeGoal),
-                                   targetSummary: String(format: "Green >= %.1fh, yellow %.1f-%.1fh, red below %.1fh.",
+                                   targetSummary: String(format: "User goal · Green >= %.1fh, yellow %.1f-%.1fh, red below %.1fh.",
                                                          safeGoal,
                                                          safeGoal * 0.85,
                                                          safeGoal - 0.1,
@@ -213,7 +213,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Steps target",
                                    current: "\(steps) steps vs \(safeGoal) goal.",
-                                   targetSummary: "Green >= \(safeGoal), yellow \(safeGoal / 2)-\(safeGoal - 1), red below \(safeGoal / 2).",
+                                   targetSummary: "User goal · Green >= \(safeGoal), yellow \(safeGoal / 2)-\(safeGoal - 1), red below \(safeGoal / 2).",
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -235,7 +235,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Calories target",
                                    current: "\(roundedCalories) kcal vs \(safeGoal) kcal goal.",
-                                   targetSummary: "Green >= \(safeGoal) kcal, yellow \(safeGoal / 2)-\(safeGoal - 1) kcal, red below \(safeGoal / 2) kcal.",
+                                   targetSummary: "User goal · Green >= \(safeGoal) kcal, yellow \(safeGoal / 2)-\(safeGoal - 1) kcal, red below \(safeGoal / 2) kcal.",
                                    recommendation: recommendation,
                                    disclaimer: "Estimated from heart rate/profile. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
