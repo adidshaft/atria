@@ -3129,6 +3129,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_biological_age_is_local_estimate_and_fail_closed(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
@@ -3140,7 +3141,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "let factors: [BioAgeFactor]",
             "enum Direction: String, Equatable",
             "let direction: Direction",
-            "direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older)",
             "static let footnoteText = \"Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment.\"",
             "Building your body-age baseline",
             "func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary",
@@ -3156,10 +3156,25 @@ class HandoffStaticChecks(unittest.TestCase):
             "Sleep",
             "Activity",
             "BMI",
-            "min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)",
-            "ACSM/Cooper VO2max percentile tables",
+            "AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,",
         ]:
             assert_contains(self, sessions, needle)
+
+        for needle in [
+            "enum BiologicalAge",
+            "static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary",
+            "min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)",
+            "static func factor(id: String,",
+            "direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older)",
+            "ACSM/Cooper VO2max percentile tables",
+            "static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int",
+            "static func rhrAgeEquivalent(_ restingHR: Int) -> Int",
+            "static func hrvAgeEquivalent(_ rmssd: Int) -> Int",
+            "static func sleepAgeEquivalent(durationHours: Double,",
+            "static func activityAgeEquivalent(_ chronicLoad: Double,",
+            "static func bmiAgeEquivalent(_ bmi: Double,",
+        ]:
+            assert_contains(self, analytics, needle)
 
         for needle in [
             "let biologicalAgeSummary: BiologicalAgeSummary",
