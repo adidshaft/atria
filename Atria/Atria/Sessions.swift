@@ -7634,8 +7634,9 @@ final class SessionStore: ObservableObject {
     private func logSleepValidation(label: String?) {
         let rest = baseline.restingInt ?? 60
         let calendar = Calendar.current
+        let aggregateSleepCandidatesForValidation = label == nil ? aggregateSleepCandidates(rest: rest, calendar: calendar) : []
         if label == nil,
-           let aggregate = aggregateSleepCandidates(rest: rest, calendar: calendar).first {
+           let aggregate = aggregateSleepCandidatesForValidation.first {
             let startHour = calendar.component(.hour, from: aggregate.start)
             let endHour = calendar.component(.hour, from: aggregate.end)
             let matchedLabel = aggregate.sessions > 1
@@ -7660,7 +7661,7 @@ final class SessionStore: ObservableObject {
                   aggregate.restingHR,
                   startHour,
                   endHour,
-                  aggregateSleepCandidates(rest: rest, calendar: calendar).count,
+                  aggregateSleepCandidatesForValidation.count,
                   aggregate.confidence.rawValue,
                   aggregate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep",
                   aggregate.duration,
