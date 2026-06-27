@@ -524,7 +524,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .recovery: return "gauge.with.dots.needle.67percent"
         case .strain: return "figure.run"
         case .hrv: return "waveform.path.ecg"
-        case .sleep: return "moon.zzz.fill"
+        case .sleep: return "bed.double.fill"
         case .rhr: return "heart.fill"
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
@@ -973,7 +973,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 
 private struct AtriaGlanceMetricMarker: View, Equatable {
     private static let size: CGFloat = 44
-    private static let innerSize: CGFloat = 30
+    private static let iconCircleSize: CGFloat = 30
     private static let iconSize: CGFloat = 15
     private static let ringLineWidth: CGFloat = 3.5
 
@@ -985,10 +985,18 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
         min(max(progressFraction ?? 0, 0), 1)
     }
 
+    private var ringEnd: Double {
+        progressFraction == nil ? 1 : clampedProgress
+    }
+
+    private var ringOpacity: Double {
+        progressFraction == nil ? 0.38 : 1
+    }
+
     var body: some View {
         ZStack {
             Circle()
-                .fill(tint.opacity(0.12))
+                .fill(tint.opacity(0.10))
 
             Circle()
                 .stroke(Color.primary.opacity(0.09), lineWidth: Self.ringLineWidth)
@@ -997,7 +1005,7 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
 
             Circle()
                 .fill(Color(.systemBackground).opacity(0.78))
-                .frame(width: Self.innerSize, height: Self.innerSize)
+                .frame(width: Self.iconCircleSize, height: Self.iconCircleSize)
                 .overlay {
                     Circle()
                         .stroke(tint.opacity(0.26), lineWidth: 1)
@@ -1007,7 +1015,7 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
                 .font(.system(size: Self.iconSize, weight: .bold, design: .rounded))
                 .foregroundStyle(tint)
                 .symbolRenderingMode(.hierarchical)
-                .frame(width: Self.innerSize, height: Self.innerSize)
+                .frame(width: Self.iconCircleSize, height: Self.iconCircleSize)
         }
         .frame(width: Self.size, height: Self.size)
         .accessibilityHidden(true)
@@ -1015,17 +1023,11 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
 
     @ViewBuilder
     private var markerRing: some View {
-        if progressFraction != nil {
-            Circle()
-                .trim(from: 0, to: clampedProgress)
-                .stroke(tint.gradient,
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-        } else {
-            Circle()
-                .stroke(tint.opacity(0.36),
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
-        }
+        Circle()
+            .trim(from: 0, to: ringEnd)
+            .stroke(tint.opacity(ringOpacity),
+                    style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
+            .rotationEffect(.degrees(-90))
     }
 }
 
