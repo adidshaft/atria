@@ -7340,7 +7340,8 @@ final class SessionStore: ObservableObject {
     }
 
     func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-log-trends") else { return }
+        guard arguments.contains("--atria-log-trends")
+                || arguments.contains("--atria-log-trend-summaries") else { return }
         let sourceSessions = sessions
         let confirmedWorkouts = cachedConfirmedWorkouts
         let confirmedSleeps = cachedConfirmedSleeps
