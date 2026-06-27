@@ -7394,8 +7394,42 @@ final class SessionStore: ObservableObject {
 
     func logDailyRollupsFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-log-daily-rollups") else { return }
+        let sourceSessions = sessions
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let confirmedSleeps = cachedConfirmedSleeps
+        let baselineSnapshot = baseline
         let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        guard arguments.contains("--atria-log-daily-rollups-deep") else {
+            DispatchQueue.global(qos: .utility).async {
+                let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                          confirmedWorkouts: confirmedWorkouts,
+                                                          confirmedSleeps: confirmedSleeps,
+                                                          baseline: baselineSnapshot,
+                                                          rest: rest,
+                                                          maxHR: maxHR)
+                Self.logDailyRollups(rollups: snapshots.history.rollups,
+                                     sessionsCount: sourceSessions.count,
+                                     rest: rest,
+                                     maxHR: maxHR)
+            }
+            return
+        }
         let rollups = dailyRollups(rest: rest, maxHR: profile.maxHR)
+        Self.logDailyRollups(rollups: rollups,
+                             sessionsCount: sessions.count,
+                             rest: rest,
+                             maxHR: profile.maxHR)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        logDeepDailyRollupDiagnostics(formatter: formatter, rest: rest)
+    }
+
+    private nonisolated static func logDailyRollups(rollups: [DailyRollup],
+                                                    sessionsCount: Int,
+                                                    rest: Int,
+                                                    maxHR: Int) {
         let sleepReadyDays = rollups.filter { $0.sleepReady > 0 }.count
         let sleepCandidateDays = rollups.filter { $0.sleepCandidates > 0 }.count
         let workoutDays = rollups.filter { $0.workouts > 0 }.count
@@ -7404,7 +7438,7 @@ final class SessionStore: ObservableObject {
         let restCandidateDays = rollups.filter { $0.restCandidates > 0 }.count
         let restCandidateCount = rollups.reduce(0) { $0 + $1.restCandidates }
         AtriaDebugLog("ATRIADBG daily_rollup_summary sessions=%d days=%d sleep_ready_days=%d sleep_candidate_days=%d rest_candidate_days=%d rest_candidates=%d workout_days=%d confirmed_workout_days=%d confirmed_workouts=%d rest_hr=%d max_hr=%d",
-              sessions.count, rollups.count, sleepReadyDays, sleepCandidateDays, restCandidateDays, restCandidateCount, workoutDays, confirmedWorkoutDays, confirmedWorkoutCount, rest, profile.maxHR)
+              sessionsCount, rollups.count, sleepReadyDays, sleepCandidateDays, restCandidateDays, restCandidateCount, workoutDays, confirmedWorkoutDays, confirmedWorkoutCount, rest, maxHR)
         let formatter = DateFormatter()
         formatter.calendar = Calendar.current
         formatter.dateFormat = "yyyy-MM-dd"
@@ -7420,10 +7454,13 @@ final class SessionStore: ObservableObject {
                   rollup.sleepCandidates,
                   rollup.duration,
                   rollup.strain,
-                  formatInt(rollup.avgHRV),
-                  formatInt(rollup.restingHR),
-                  formatDouble(rollup.avgRespiratoryRate))
+                  formatIntSnapshot(rollup.avgHRV),
+                  formatIntSnapshot(rollup.restingHR),
+                  formatDoubleSnapshot(rollup.avgRespiratoryRate))
         }
+    }
+
+    private func logDeepDailyRollupDiagnostics(formatter: DateFormatter, rest: Int) {
         let aggregateWorkouts = aggregateWorkoutCandidates(rest: rest, maxHR: profile.maxHR, calendar: Calendar.current)
         let readyAggregateWorkouts = aggregateWorkouts.filter { $0.readiness.ready }.count
         let bestAggregateWorkout = aggregateWorkouts.first

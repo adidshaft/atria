@@ -1331,6 +1331,49 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
 
+    def test_launch_daily_rollup_diagnostics_use_snapshot_builder_by_default(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        logger = re.search(
+            r"func logDailyRollupsFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(logger)
+        body = logger.group("body")
+        for needle in [
+            "let sourceSessions = sessions",
+            "let confirmedWorkouts = cachedConfirmedWorkouts",
+            "let confirmedSleeps = cachedConfirmedSleeps",
+            "let baselineSnapshot = baseline",
+            'guard arguments.contains("--atria-log-daily-rollups-deep") else {',
+            "DispatchQueue.global(qos: .utility).async",
+            "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
+            "Self.logDailyRollups(rollups: snapshots.history.rollups,",
+            "return",
+            "logDeepDailyRollupDiagnostics(formatter: formatter, rest: rest)",
+        ]:
+            assert_contains(self, body, needle)
+
+        fast_path = body.split('guard arguments.contains("--atria-log-daily-rollups-deep") else {', 1)[1].split("\n        let rollups = dailyRollups", 1)[0]
+        for forbidden in [
+            "dailyRollups(rest:",
+            "aggregateWorkoutCandidates(",
+            "aggregateSleepDiagnostics(",
+            "aggregateSleepCandidates(",
+            "workoutReadiness(",
+        ]:
+            assert_not_contains(self, fast_path, forbidden)
+
+        for needle in [
+            "private nonisolated static func logDailyRollups(rollups: [DailyRollup],",
+            "private func logDeepDailyRollupDiagnostics(formatter: DateFormatter, rest: Int)",
+            "aggregateWorkoutCandidates(rest:",
+            "aggregateSleepDiagnostics(rest:",
+            "aggregateSleepCandidates(rest:",
+        ]:
+            assert_contains(self, sessions, needle)
+
     def test_sleep_validation_reuses_aggregate_candidates(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
