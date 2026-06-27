@@ -342,14 +342,18 @@ extension Metrics {
 
     static func respiratoryRateZone(_ breathsPerMinute: Double?,
                                     baseline: Double?,
-                                    baselineSamples: Int) -> AtriaMetricZone? {
+                                    baselineSamples: Int,
+                                    greenDelta: Double = 1.5,
+                                    yellowDelta: Double = 3.0) -> AtriaMetricZone? {
         guard baselineSamples >= 3,
               let breathsPerMinute,
               let baseline,
               baseline > 0 else { return nil }
         let delta = breathsPerMinute - baseline
         let absDelta = abs(delta)
-        let level: AtriaMetricZoneLevel = absDelta <= 1.5 ? .green : (absDelta <= 3.0 ? .yellow : .red)
+        let safeGreenDelta = min(max(greenDelta, 0.5), 4.0)
+        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 0.5), 8.0)
+        let level: AtriaMetricZoneLevel = absDelta <= safeGreenDelta ? .green : (absDelta <= safeYellowDelta ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -362,15 +366,19 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "Respiratory rate baseline",
                                current: String(format: "%.1f/min, %+.1f vs %.1f baseline.", breathsPerMinute, delta, baseline),
-                               targetSummary: String(format: "Green within +/-1.5/min, yellow within +/-3.0/min, red farther from %.1f/min.", baseline),
+                               targetSummary: String(format: "Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
                                recommendation: recommendation,
                                disclaimer: "Research sleep-only estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
     }
 
-    static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary) -> AtriaMetricZone? {
+    static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
+                                             greenDelta: Double = 0.5,
+                                             yellowDelta: Double = 1.0) -> AtriaMetricZone? {
         guard summary.isReady, let delta = summary.latestDeltaCelsius else { return nil }
         let absDelta = abs(delta)
-        let level: AtriaMetricZoneLevel = absDelta <= 0.5 ? .green : (absDelta <= 1.0 ? .yellow : .red)
+        let safeGreenDelta = min(max(greenDelta, 0.2), 2.0)
+        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 0.1), 4.0)
+        let level: AtriaMetricZoneLevel = absDelta <= safeGreenDelta ? .green : (absDelta <= safeYellowDelta ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -383,7 +391,7 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "Skin temperature baseline",
                                current: String(format: "%+.1f delta C vs sleep baseline.", delta),
-                               targetSummary: "Green within +/-0.5 delta C, yellow within +/-1.0, red farther from baseline.",
+                               targetSummary: String(format: "Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
                                recommendation: recommendation,
                                disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
     }

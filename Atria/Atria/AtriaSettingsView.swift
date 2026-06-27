@@ -43,6 +43,10 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
     @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
     @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
+    @AppStorage("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
+    @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
+    @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
+    @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -115,18 +119,42 @@ struct AtriaSettingsView: View {
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
-        .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
-        .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
-        .onChange(of: strainGreenBand) { _, _ in normalizeStrainTargets() }
-        .onChange(of: strainYellowBand) { _, _ in normalizeStrainTargets() }
-        .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
-        .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
-        .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
-        .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
-        .onChange(of: hrvGreenRatio) { _, _ in normalizeHRVTargets() }
-        .onChange(of: hrvYellowRatio) { _, _ in normalizeHRVTargets() }
-        .onChange(of: restingGreenDelta) { _, _ in normalizeRestingTargets() }
-        .onChange(of: restingYellowDelta) { _, _ in normalizeRestingTargets() }
+        .onChange(of: targetSettingsSignature) { _, _ in normalizeAllTargets() }
+    }
+
+    private var targetSettingsSignature: String {
+        [
+            recoveryGreenLower,
+            recoveryYellowLower,
+            strainGreenBand,
+            strainYellowBand,
+            Double(stepsGoal),
+            sleepGoalHours,
+            sleepEfficiencyGreenLower,
+            sleepEfficiencyYellowLower,
+            hrvGreenRatio,
+            hrvYellowRatio,
+            Double(restingGreenDelta),
+            Double(restingYellowDelta),
+            respiratoryGreenDelta,
+            respiratoryYellowDelta,
+            skinTemperatureGreenDelta,
+            skinTemperatureYellowDelta,
+        ]
+        .map { String(format: "%.3f", $0) }
+        .joined(separator: "|")
+    }
+
+    private func normalizeAllTargets() {
+        normalizeRecoveryTargets()
+        normalizeStrainTargets()
+        normalizeStepsGoal()
+        normalizeSleepGoal()
+        normalizeSleepEfficiencyTargets()
+        normalizeHRVTargets()
+        normalizeRestingTargets()
+        normalizeRespiratoryTargets()
+        normalizeSkinTemperatureTargets()
     }
 
     private func normalizeRecoveryTargets() {
@@ -160,6 +188,16 @@ struct AtriaSettingsView: View {
     private func normalizeRestingTargets() {
         restingGreenDelta = min(max(restingGreenDelta, 0), 12)
         restingYellowDelta = min(max(restingYellowDelta, restingGreenDelta + 1), 20)
+    }
+
+    private func normalizeRespiratoryTargets() {
+        respiratoryGreenDelta = min(max(respiratoryGreenDelta, 0.5), 4.0)
+        respiratoryYellowDelta = min(max(respiratoryYellowDelta, respiratoryGreenDelta + 0.5), 8.0)
+    }
+
+    private func normalizeSkinTemperatureTargets() {
+        skinTemperatureGreenDelta = min(max(skinTemperatureGreenDelta, 0.2), 2.0)
+        skinTemperatureYellowDelta = min(max(skinTemperatureYellowDelta, skinTemperatureGreenDelta + 0.1), 4.0)
     }
 
     // MARK: Appearance
@@ -411,6 +449,46 @@ struct AtriaSettingsView: View {
                     Label("Reset baseline targets", systemImage: "heart.text.square.fill")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
+
+                Divider()
+
+                Stepper(value: $respiratoryGreenDelta, in: 0.5...4.0, step: 0.5) {
+                    LabeledContent("Resp green band") {
+                        Text(String(format: "+/-%.1f/min", respiratoryGreenDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $respiratoryYellowDelta, in: 1.0...8.0, step: 0.5) {
+                    LabeledContent("Resp yellow band") {
+                        Text(String(format: "+/-%.1f/min", respiratoryYellowDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $skinTemperatureGreenDelta, in: 0.2...2.0, step: 0.1) {
+                    LabeledContent("Temp green band") {
+                        Text(String(format: "+/-%.1f C", skinTemperatureGreenDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $skinTemperatureYellowDelta, in: 0.3...4.0, step: 0.1) {
+                    LabeledContent("Temp yellow band") {
+                        Text(String(format: "+/-%.1f C", skinTemperatureYellowDelta))
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    respiratoryGreenDelta = 1.5
+                    respiratoryYellowDelta = 3.0
+                    skinTemperatureGreenDelta = 0.5
+                    skinTemperatureYellowDelta = 1.0
+                } label: {
+                    Label("Reset research targets", systemImage: "waveform.path.ecg")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")

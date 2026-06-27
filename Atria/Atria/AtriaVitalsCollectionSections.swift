@@ -347,6 +347,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
     @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
     @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
+    @AppStorage("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
+    @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
@@ -363,6 +365,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 restingBaselineSamples: store.baseline.restingSampleCount,
                                 restingGreenDelta: restingGreenDelta,
                                 restingYellowDelta: restingYellowDelta,
+                                respiratoryGreenDelta: respiratoryGreenDelta,
+                                respiratoryYellowDelta: respiratoryYellowDelta,
                                 sleepGoalHours: sleepGoalHours,
                                 sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                 sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
@@ -643,6 +647,10 @@ private struct AtriaCollectionHRReferenceCardHost: View {
 private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     let summary: IMUAuditSummary
     let sleepHistory: SleepHistorySnapshot
+    @AppStorage("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
+    @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
+    @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
+    @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
 
     static func == (lhs: AtriaCollectionResearchSignalsCard, rhs: AtriaCollectionResearchSignalsCard) -> Bool {
         lhs.summary == rhs.summary && lhs.sleepHistory == rhs.sleepHistory
@@ -663,11 +671,15 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         return Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,
                                            baseline: baseline,
-                                           baselineSamples: baselineValues.count)
+                                           baselineSamples: baselineValues.count,
+                                           greenDelta: respiratoryGreenDelta,
+                                           yellowDelta: respiratoryYellowDelta)
     }
 
     private var skinTemperatureDeviationZone: AtriaMetricZone? {
-        Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation)
+        Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation,
+                                             greenDelta: skinTemperatureGreenDelta,
+                                             yellowDelta: skinTemperatureYellowDelta)
     }
 
     var body: some View {
@@ -1684,6 +1696,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let restingBaselineSamples: Int
     let restingGreenDelta: Int
     let restingYellowDelta: Int
+    let respiratoryGreenDelta: Double
+    let respiratoryYellowDelta: Double
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
@@ -1703,6 +1717,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.restingGreenDelta == rhs.restingGreenDelta
             && lhs.restingYellowDelta == rhs.restingYellowDelta
+            && lhs.respiratoryGreenDelta == rhs.respiratoryGreenDelta
+            && lhs.respiratoryYellowDelta == rhs.respiratoryYellowDelta
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
@@ -1735,6 +1751,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                                   restingBaselineSamples: restingBaselineSamples,
                                   restingGreenDelta: restingGreenDelta,
                                   restingYellowDelta: restingYellowDelta,
+                                  respiratoryGreenDelta: respiratoryGreenDelta,
+                                  respiratoryYellowDelta: respiratoryYellowDelta,
                                   sleepGoalHours: sleepGoalHours,
                                   sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                   sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
@@ -1797,6 +1815,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let restingBaselineSamples: Int
     let restingGreenDelta: Int
     let restingYellowDelta: Int
+    let respiratoryGreenDelta: Double
+    let respiratoryYellowDelta: Double
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
@@ -1813,6 +1833,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.restingGreenDelta == rhs.restingGreenDelta
             && lhs.restingYellowDelta == rhs.restingYellowDelta
+            && lhs.respiratoryGreenDelta == rhs.respiratoryGreenDelta
+            && lhs.respiratoryYellowDelta == rhs.respiratoryYellowDelta
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
@@ -1866,7 +1888,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         return Metrics.respiratoryRateZone(snapshot.latest?.respiratoryRate,
                                            baseline: baseline,
-                                           baselineSamples: baselineValues.count)
+                                           baselineSamples: baselineValues.count,
+                                           greenDelta: respiratoryGreenDelta,
+                                           yellowDelta: respiratoryYellowDelta)
     }
 
     var body: some View {
