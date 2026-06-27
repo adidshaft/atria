@@ -847,10 +847,25 @@ struct AtriaHomeView: View {
             if visibleConnectionDiagnosis != nil || connectionDiagnosisCandidate != nil {
                 AtriaDebugLog("ATRIADBG connection_diagnosis status=hidden reason=%@ action=clear", reason)
             }
+            if visibleConnectionDiagnosis?.sendsLocalNotification == true ||
+                connectionDiagnosisCandidate?.sendsLocalNotification == true {
+                LocalNotificationScheduler.cancelActionableConnectionDiagnosis(reason: "diagnosis_cleared_\(reason)")
+            }
             connectionDiagnosisCandidate = nil
             connectionDiagnosisCandidateSince = nil
             visibleConnectionDiagnosis = nil
             return
+        }
+
+        if visibleConnectionDiagnosis?.sendsLocalNotification == true,
+           visibleConnectionDiagnosis?.title != next.title {
+            LocalNotificationScheduler.cancelActionableConnectionDiagnosis(title: visibleConnectionDiagnosis?.title,
+                                                                           reason: "diagnosis_changed_\(reason)")
+        }
+        if !next.sendsLocalNotification,
+           visibleConnectionDiagnosis?.sendsLocalNotification == true ||
+            connectionDiagnosisCandidate?.sendsLocalNotification == true {
+            LocalNotificationScheduler.cancelActionableConnectionDiagnosis(reason: "diagnosis_non_actionable_\(reason)")
         }
 
         if next.showsImmediately {

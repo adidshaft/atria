@@ -101,6 +101,23 @@ enum LocalNotificationScheduler {
         }
     }
 
+    static func cancelActionableConnectionDiagnosis(title: String? = nil, reason: String) {
+        let identifiers: [String]
+        if let title,
+           let decision = actionableConnectionDiagnosisDecision(title: title,
+                                                               body: "",
+                                                               reason: reason) {
+            identifiers = [decision.identifier]
+        } else {
+            identifiers = [Identifier.battery, Identifier.bluetoothOff]
+        }
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        AtriaDebugLog("ATRIADBG notification_cancel kind=actionable_connection reason=%@ identifiers=%@",
+                      reason,
+                      identifiers.joined(separator: ","))
+    }
+
     private static func configureDeliveryLogger() {
         UNUserNotificationCenter.current().delegate = NotificationDeliveryLogger.shared
     }
