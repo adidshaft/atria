@@ -2611,6 +2611,7 @@ final class SessionStore: ObservableObject {
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
+    private var hasCompletedDeferredSessionLoad = false
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
     private var trainingLoadSummaryRevision = 0
@@ -10024,6 +10025,7 @@ final class SessionStore: ObservableObject {
             guard let data = try? Data(contentsOf: sourceURL),
                   let decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
                 await MainActor.run {
+                    self.hasCompletedDeferredSessionLoad = true
                     AtriaDebugLog("ATRIADBG session_store_load status=empty")
                 }
                 return
@@ -10040,6 +10042,18 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func waitForDeferredSessionLoadIfNeeded(timeoutSeconds: TimeInterval = 8) async {
+        guard !hasCompletedDeferredSessionLoad else { return }
+        let startedAt = Date()
+        while !hasCompletedDeferredSessionLoad && Date().timeIntervalSince(startedAt) < timeoutSeconds {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        AtriaDebugLog("ATRIADBG session_store_load_wait status=%@ elapsed_ms=%d sessions=%d",
+              hasCompletedDeferredSessionLoad ? "ready" : "timeout",
+              Int(Date().timeIntervalSince(startedAt) * 1000),
+              sessions.count)
+    }
+
     private func finishDeferredLoad(_ decoded: [SavedSession],
                                     preparation: DeferredLoadPreparation,
                                     elapsedMS: Int) {
@@ -10049,6 +10063,7 @@ final class SessionStore: ObservableObject {
         cachedHomeSavedAggregate = nil
         cachedCurrentCollectionStatus = nil
         cachedSessionBackupStatus = preparation.backupStatus
+        hasCompletedDeferredSessionLoad = true
 
         if preparation.didRebuildBaseline {
             baseline = preparation.baseline

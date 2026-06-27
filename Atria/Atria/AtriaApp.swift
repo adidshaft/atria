@@ -239,23 +239,26 @@ struct AtriaApp: App {
             return
         }
 
-        store.logBaselineMaturityFromLaunchIfRequested(arguments: arguments)
-        store.logCollectionHealthFromLaunchIfRequested(arguments: arguments)
-        store.logGateReadinessFromLaunchIfRequested(arguments: arguments)
-        store.logActivityDetectionsFromLaunchIfRequested(arguments: arguments)
-        store.logDailyRollupsFromLaunchIfRequested(arguments: arguments)
-        store.logWorkoutPreflightFromLaunchIfRequested(arguments: arguments)
-        store.logStrainValidationFromLaunchIfRequested(arguments: arguments)
-        store.scheduleSleepValidationFromLaunchIfRequested(arguments: arguments)
-        store.scheduleWorkoutValidationFromLaunchIfRequested(arguments: arguments)
-        store.logTrendSummariesFromLaunchIfRequested(arguments: arguments)
-        store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)
-        store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
-        store.logGateStatusFromLaunchIfRequested(arguments: arguments)
-        scheduleLaunchExportsIfRequested(store: store, arguments: arguments)
-        LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store, ble: ble)
-        WidgetSnapshotPublisher.publishFromLaunchIfRequested(store: store, ble: ble)
-        logLaunchTiming(event: "deferred_launch_complete")
+        Task { @MainActor in
+            await store.waitForDeferredSessionLoadIfNeeded()
+            store.logBaselineMaturityFromLaunchIfRequested(arguments: arguments)
+            store.logCollectionHealthFromLaunchIfRequested(arguments: arguments)
+            store.logGateReadinessFromLaunchIfRequested(arguments: arguments)
+            store.logActivityDetectionsFromLaunchIfRequested(arguments: arguments)
+            store.logDailyRollupsFromLaunchIfRequested(arguments: arguments)
+            store.logWorkoutPreflightFromLaunchIfRequested(arguments: arguments)
+            store.logStrainValidationFromLaunchIfRequested(arguments: arguments)
+            store.scheduleSleepValidationFromLaunchIfRequested(arguments: arguments)
+            store.scheduleWorkoutValidationFromLaunchIfRequested(arguments: arguments)
+            store.logTrendSummariesFromLaunchIfRequested(arguments: arguments)
+            store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)
+            store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
+            store.logGateStatusFromLaunchIfRequested(arguments: arguments)
+            scheduleLaunchExportsIfRequested(store: store, arguments: arguments)
+            LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store, ble: ble)
+            WidgetSnapshotPublisher.publishFromLaunchIfRequested(store: store, ble: ble)
+            logLaunchTiming(event: "deferred_launch_complete")
+        }
     }
 
     private func shouldRunDeferredLaunchWork(arguments: [String]) -> Bool {

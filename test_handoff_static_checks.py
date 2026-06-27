@@ -2209,10 +2209,28 @@ class HandoffStaticChecks(unittest.TestCase):
             'store.restoreLatestSessionBackupFromLaunchIfRequested()',
             'arguments.contains("--atria-write-session-backup")',
             'arguments.contains("--atria-verify-session-backup")',
+            "await store.waitForDeferredSessionLoadIfNeeded()",
             "store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)",
             "store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)",
         ]:
             assert_contains(self, app, needle)
+        self.assertLess(
+            app.index("await store.waitForDeferredSessionLoadIfNeeded()"),
+            app.index("store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)"),
+        )
+        self.assertLess(
+            app.index("store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)"),
+            app.index("store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)"),
+        )
+
+        for needle in [
+            "private var hasCompletedDeferredSessionLoad = false",
+            "func waitForDeferredSessionLoadIfNeeded(timeoutSeconds: TimeInterval = 8) async",
+            'AtriaDebugLog("ATRIADBG session_store_load_wait status=%@ elapsed_ms=%d sessions=%d"',
+            "self.hasCompletedDeferredSessionLoad = true",
+            "hasCompletedDeferredSessionLoad = true",
+        ]:
+            assert_contains(self, sessions, needle)
 
         write_backup = re.search(
             r"func writeSessionBackupFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
