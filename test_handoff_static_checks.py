@@ -1464,6 +1464,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_sleep_history_snapshot_is_cached_and_shown_in_vitals(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        manual_sheet = source(ROOT / "Atria" / "Atria" / "AtriaManualSleepSheet.swift")
 
         for needle in [
             "struct SleepHistorySnapshot: Equatable",
@@ -1571,7 +1572,6 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaCardAction(prominent: false, tint: .cyan)",
             ".accessibilityLabel(\"Add sleep manually\")",
             "AtriaManualSleepSheet { start, end, isNap in",
-            "private struct AtriaManualSleepSheet: View",
             "Picker(\"Type\", selection: $isNap)",
             "Text(\"Sleep\").tag(false)",
             "Text(\"Nap\").tag(true)",
@@ -1621,7 +1621,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "HRV \\(night.hrvText)",
             "Resp \\(night.respiratoryRateText)",
         ]:
-            assert_contains(self, sessions + vitals, needle)
+            assert_contains(self, sessions + vitals + manual_sheet, needle)
+
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        for needle in [
+            "onAddManualSleep: addManualSleep",
+            "source: \"manual_today_glance\"",
+            "rest: store.baseline.restingInt ?? 60",
+            "AtriaManualSleepSheet { start, end, isNap in",
+            "showManualSleepSheet = false",
+            "Image(systemName: \"moon.zzz.badge.plus\")",
+            ".accessibilityLabel(\"Add sleep manually\")",
+        ]:
+            assert_contains(self, overview, needle)
 
         assert_contains(self, vitals, "case pulse, hrv, recoveryStrain, profile")
         assert_not_contains(self, vitals, "case pulse, hrv, recoveryStrain, sleep")
