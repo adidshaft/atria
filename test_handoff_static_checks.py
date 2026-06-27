@@ -193,6 +193,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".glassEffect(.regular.tint(tint.opacity(0.55)).interactive(), in: .capsule)",
             ".glassEffect(.regular.interactive(), in: .circle)",
             ".atriaChromeCapsule(tint: .white)\n            .fixedSize()",
+            "private struct AtriaLiquidStatusPillBackground",
+            "private var baseFill: AnyShapeStyle",
+            "private var liquidWash: LinearGradient",
             "case .connected where !pulse.hasContact:",
             "guard let self, self.prefersPulseSparklineUpdates else { return }\n                self.publishPulseLive()",
         ]:
