@@ -3,6 +3,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tools import audit_handoff_status
@@ -102,6 +103,23 @@ def current_test_commit(path: Path) -> str:
 
 
 class AuditHandoffStatusTests(unittest.TestCase):
+    def test_running_long_wear_progress_reports_eta_and_remaining_samples(self):
+        progress = audit_handoff_status.running_long_wear_progress(
+            {
+                "planned_samples": 11,
+                "planned_duration_s": 36_000,
+                "planned_interval_s": 3_600,
+                "monitor_started_at": "2026-06-27T23:00:00Z",
+            },
+            2,
+            now=datetime(2026, 6, 28, 0, 30, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(progress["running_elapsed_s"], 5_400)
+        self.assertEqual(progress["running_remaining_samples"], 9)
+        self.assertEqual(progress["running_next_sample_due_at"], "2026-06-28T01:00:00Z")
+        self.assertEqual(progress["running_expected_finish_at"], "2026-06-28T09:00:00Z")
+
     def test_reports_physical_blockers_from_failed_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -361,6 +379,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["app_commit"], "installed-app")
         self.assertEqual(physical["monitor_commit"], "monitor-tooling")
         self.assertEqual(physical["monitor_started_at"], "2026-06-27T23:19:29Z")
+        self.assertEqual(physical["running_remaining_samples"], 10)
+        self.assertEqual(physical["running_next_sample_due_at"], "2026-06-28T00:19:29Z")
+        self.assertEqual(physical["running_expected_finish_at"], "2026-06-28T09:19:29Z")
 
     def test_markdown_summary_includes_current_blocking_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
