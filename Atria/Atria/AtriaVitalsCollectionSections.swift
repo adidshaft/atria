@@ -1711,6 +1711,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         AtriaTrainingLoadTile(ratio: hero.loadRatioText,
                               target: hero.loadTargetText,
                               confidence: hero.loadConfidence,
+                              readiness: hero.loadReadinessText,
+                              signalSummary: hero.loadSignalSummaryText,
                               narrative: hero.loadNarrative)
     }
 
@@ -2009,18 +2011,26 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     let ratio: String
     let target: String
     let confidence: String
+    let readiness: String
+    let signalSummary: String
     let narrative: String
 
     private var confidenceTint: Color {
-        confidence == "local" ? .green : .orange
+        switch readiness.lowercased() {
+        case "balanced", "primed": return .green
+        case "strained": return .orange
+        case "rundown": return .red
+        default: return confidence == "local" ? .green : .orange
+        }
     }
 
     var body: some View {
-        AtriaMetricTile(label: "Load",
-                        value: ratio,
+        AtriaMetricTile(label: "Readiness",
+                        value: readiness,
                         state: confidence == "local" ? .local : .learning,
                         tint: confidenceTint,
-                        footnote: target)
+                        footnote: "\(signalSummary) · target \(target)")
+            .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(narrative)")
     }
 }
 
