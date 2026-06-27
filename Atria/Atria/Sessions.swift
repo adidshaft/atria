@@ -2998,8 +2998,6 @@ final class SessionStore: ObservableObject {
 
     func performBackgroundMaintenance(reason: String) {
         flushScheduledPersistence(reason: "\(reason)_persistence")
-        _ = dailyRollups(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
-        _ = trendSummaries(rest: baseline.restingInt ?? 60, maxHR: profile.maxHR)
         writeAutomaticSessionBackup(reason: reason)
         let health = HealthKitExporter.diagnostics(for: sessions,
                                                     rest: baseline.restingInt ?? 60,
