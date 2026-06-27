@@ -121,6 +121,58 @@ enum AtriaAnalytics {
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
+
+        static func sleepEfficiency(_ efficiency: Double?,
+                                    greenLower: Double = 90,
+                                    yellowLower: Double = 80) -> AtriaMetricZone? {
+            guard let efficiency else { return nil }
+            let pct = Int((efficiency * 100).rounded())
+            let safeYellow = min(max(yellowLower, 50), 95)
+            let safeGreen = min(max(greenLower, safeYellow + 1), 99)
+            let level: AtriaMetricZoneLevel = Double(pct) >= safeGreen ? .green : (Double(pct) >= safeYellow ? .yellow : .red)
+            let recommendation: String
+            switch level {
+            case .green:
+                recommendation = "Sleep efficiency is in the target zone."
+            case .yellow:
+                recommendation = "Restless night -- cut late caffeine or alcohol, cool the room, and keep bed/wake times consistent."
+            case .red:
+                recommendation = "Sleep was inefficient. Keep the room cool and dark, reduce late stimulants, and protect a consistent schedule."
+            }
+            return AtriaMetricZone(level: level,
+                                   title: "Sleep efficiency target",
+                                   current: "\(pct)% sleep efficiency.",
+                                   targetSummary: "Green >= \(Int(safeGreen.rounded()))%, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
+                                   recommendation: recommendation,
+                                   disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        }
+
+        static func sleepDuration(_ hours: Double?, goalHours: Double = 8.0) -> AtriaMetricZone? {
+            guard let hours, hours > 0 else { return nil }
+            let safeGoal = min(max(goalHours, 4.0), 12.0)
+            let ratio = hours / safeGoal
+            let level: AtriaMetricZoneLevel = ratio >= 1.0 ? .green : (ratio >= 0.85 ? .yellow : .red)
+            let remaining = max(0, safeGoal - hours)
+            let recommendation: String
+            switch level {
+            case .green:
+                recommendation = "Sleep duration met your goal. Keep bed and wake times consistent."
+            case .yellow:
+                recommendation = String(format: "A little under your sleep goal -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+            case .red:
+                recommendation = String(format: "Under your sleep need -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+            }
+            return AtriaMetricZone(level: level,
+                                   title: "Sleep duration target",
+                                   current: String(format: "%.1fh sleep vs %.1fh goal.", hours, safeGoal),
+                                   targetSummary: String(format: "Green >= %.1fh, yellow %.1f-%.1fh, red below %.1fh.",
+                                                         safeGoal,
+                                                         safeGoal * 0.85,
+                                                         safeGoal - 0.1,
+                                                         safeGoal * 0.85),
+                                   recommendation: recommendation,
+                                   disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        }
     }
 
     enum Strain {
