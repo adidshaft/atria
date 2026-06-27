@@ -484,7 +484,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
     if not app_commit:
         blockers.append("missing_app_commit")
     expected_commit = current_git_commit(repo)
-    if app_commit and expected_commit and app_commit != expected_commit:
+    if app_commit and expected_commit and not proof_only_changes_since_app_commit(repo, app_commit, expected_commit):
         blockers.append("app_commit_mismatch")
 
     app_build = str(data.get("app_build", "")).strip()

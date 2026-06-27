@@ -168,6 +168,8 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
                     "60",
                     "--instruments-trace",
                     str(trace),
+                    "--app-commit",
+                    "installed-app",
                 ],
                 text=True,
                 stdout=subprocess.PIPE,
@@ -178,6 +180,7 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
             data = json.loads(out.read_text(encoding="utf-8"))
 
         self.assertEqual(data["dashboard_scroll_fps"], 60.0)
+        self.assertEqual(data["app_commit"], "installed-app")
         self.assertTrue(all(data["accessibility_checks"].values()))
         self.assertTrue(data["instruments_trace"].endswith("trace.trace"))
 

@@ -603,6 +603,64 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["accessibility_performance"]["status"], "fail")
         self.assertIn("app_commit_mismatch", report["blockers"])
 
+    def test_accessibility_performance_app_commit_can_precede_proof_only_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "app"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            app_commit = current_test_commit(repo / "tools/prepare_accessibility_performance_evidence.py")
+            (repo / "tools/prepare_accessibility_performance_evidence.py").write_text("proof tooling\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tools/prepare_accessibility_performance_evidence.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "proof tooling"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            data = json.loads(accessibility.read_text(encoding="utf-8"))
+            data["app_commit"] = app_commit
+            accessibility.write_text(json.dumps(data), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo,
+                                                   summary,
+                                                   skip_external_reference=True,
+                                                   accessibility_performance_path=accessibility)
+
+        self.assertNotIn("app_commit_mismatch", report["blockers"])
+
+    def test_accessibility_performance_app_commit_blocks_after_app_source_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "app"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            app_commit = current_test_commit(repo / "Atria/Atria/AtriaBLEManager.swift")
+            (repo / "Atria/Atria/AtriaBLEManager.swift").write_text("app source\n", encoding="utf-8")
+            subprocess.run(["git", "add", "Atria/Atria/AtriaBLEManager.swift"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "app source"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            data = json.loads(accessibility.read_text(encoding="utf-8"))
+            data["app_commit"] = app_commit
+            accessibility.write_text(json.dumps(data), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo,
+                                                   summary,
+                                                   skip_external_reference=True,
+                                                   accessibility_performance_path=accessibility)
+
+        self.assertIn("app_commit_mismatch", report["blockers"])
+
     def test_default_accessibility_performance_summary_is_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

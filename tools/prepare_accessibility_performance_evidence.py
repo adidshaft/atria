@@ -101,6 +101,14 @@ def default_manifest(repo: Path, measured_at: str) -> dict[str, object]:
     }
 
 
+def apply_app_commit(manifest: dict[str, object], app_commit: str | None) -> dict[str, object]:
+    if not app_commit:
+        return manifest
+    updated = dict(manifest)
+    updated["app_commit"] = app_commit.strip()
+    return updated
+
+
 def repo_relative_path(repo: Path, path: Path) -> str:
     resolved = path if path.is_absolute() else repo / path
     try:
@@ -197,6 +205,7 @@ def main() -> int:
         help="Mark all required accessibility checks as passing after a real physical-device pass.",
     )
     parser.add_argument("--instruments-trace", type=Path, help="Path to the measured Instruments trace artifact.")
+    parser.add_argument("--app-commit", help="Installed app source commit measured by the evidence pass.")
     parser.add_argument("--notes", help="Replace the manifest notes with measured-run context.")
     parser.add_argument(
         "--final",
@@ -213,7 +222,7 @@ def main() -> int:
         print(f"{out} already exists; pass --force to overwrite.")
         return 1
     manifest = apply_measured_inputs(
-        default_manifest(repo, args.measured_at),
+        apply_app_commit(default_manifest(repo, args.measured_at), args.app_commit),
         repo,
         dashboard_scroll_fps=args.dashboard_scroll_fps,
         passed_checks=args.pass_check,
