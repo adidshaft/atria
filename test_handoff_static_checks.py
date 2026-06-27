@@ -144,7 +144,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaHomeTopChrome(statusStore: model.statusStore",
             ".toolbar(.hidden, for: .navigationBar)",
             "private static func liveHeartRate(ble: AtriaBLEManager) -> Int",
-            "Date().timeIntervalSince(latest.t) <= 75",
+            "Date().timeIntervalSince(latest.t) <= 180",
             ".onTapGesture",
             "ble.startScan(reason: \"home_status_chip\")",
             "var hasPulseSignal: Bool { heartRate > 0 || hasContact }",
@@ -176,10 +176,12 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(width: Self.hitSize, height: Self.hitSize)",
             ".contentShape(Rectangle())",
             "HStack(spacing: 6)",
+            ".frame(height: 44, alignment: .center)",
+            ".frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .center)",
             ".fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.84))",
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
             "Capsule()\n                .fill(tint.opacity(colorScheme == .light ? 0.34 : 0.24))",
-            ".frame(minWidth: 132, minHeight: 44)",
+            ".frame(minWidth: 132, minHeight: 44, maxHeight: 44)",
         ]:
             assert_contains(self, home, needle)
 
@@ -601,9 +603,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "case .connected where pulse.needsContactCoach:",
             "return AtriaConnectionDiagnosis(title: \"Connected, no pulse\"",
-            "case .connected where live.needsRRQualityCoach:",
-            "Beat-to-beat settling",
-            "Heart rate is live. Keep wearing normally while HRV settles.",
+            "case .connected where live.needsRRQualityCoach && !pulse.hasPulseSignal:",
             "Beat-to-beat waiting",
             "Atria needs pulse before it can build HRV and Recovery.",
             "case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:",
@@ -653,6 +653,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, home, "showConnectionDiagnosisModal")
         assert_not_contains(self, home, "needsRRContactCoach")
         assert_not_contains(self, home, "Beat-to-beat signal weak")
+        assert_not_contains(self, home, "Heart rate is live. Keep wearing normally while HRV settles.")
         assert_not_contains(self, home, "Tighten the strap fit or wet the sensor")
 
     def test_handoff_21_battery_saver_radio_mode_is_user_visible(self):
