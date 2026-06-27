@@ -1605,6 +1605,8 @@ struct BiologicalAgeSummary: Equatable {
     let biologicalAge: Int?
     let chronologicalAge: Int
     let ageDelta: Int?
+    let agingPaceText: String
+    let agingPaceDetail: String
     let factors: [BioAgeFactor]
     let blockers: [String]
     let footnote: String
@@ -1615,6 +1617,8 @@ struct BiologicalAgeSummary: Equatable {
         BiologicalAgeSummary(biologicalAge: nil,
                              chronologicalAge: chronologicalAge,
                              ageDelta: nil,
+                             agingPaceText: "Learning",
+                             agingPaceDetail: "Needs your local body-age baseline first.",
                              factors: [],
                              blockers: blockers,
                              footnote: footnoteText)

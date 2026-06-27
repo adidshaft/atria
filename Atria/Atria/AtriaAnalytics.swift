@@ -699,12 +699,40 @@ enum AtriaAnalytics {
             let totalWeight = factors.reduce(0) { $0 + $1.weight }
             let unclamped = Int((weighted / max(totalWeight, 0.01)).rounded())
             let biologicalAge = min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)
+            let pace = agingPace(biologicalAge: biologicalAge,
+                                 chronologicalAge: chronologicalAge,
+                                 factors: factors)
             return BiologicalAgeSummary(biologicalAge: biologicalAge,
                                         chronologicalAge: chronologicalAge,
                                         ageDelta: biologicalAge - chronologicalAge,
+                                        agingPaceText: pace.text,
+                                        agingPaceDetail: pace.detail,
                                         factors: factors,
                                         blockers: [],
                                         footnote: BiologicalAgeSummary.footnoteText)
+        }
+
+        static func agingPace(biologicalAge: Int,
+                              chronologicalAge: Int,
+                              factors: [BioAgeFactor]) -> (text: String, detail: String) {
+            let delta = biologicalAge - chronologicalAge
+            let youngerWeight = factors
+                .filter { $0.direction == .younger }
+                .reduce(0) { $0 + $1.weight }
+            let olderWeight = factors
+                .filter { $0.direction == .older }
+                .reduce(0) { $0 + $1.weight }
+            let dominant = youngerWeight >= olderWeight ? "younger" : "older"
+            if delta <= -3 {
+                return ("Younger pace",
+                        "Current estimate is \(abs(delta))y younger; \(dominant) factors carry the most weight.")
+            }
+            if delta >= 3 {
+                return ("Older pace",
+                        "Current estimate is \(delta)y older; \(dominant) factors carry the most weight.")
+            }
+            return ("On pace",
+                    "Current estimate is close to chronological age; weekly trend unlocks after more local estimates.")
         }
 
         static func factor(id: String,
