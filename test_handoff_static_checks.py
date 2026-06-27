@@ -1224,6 +1224,21 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, sleep_card_source, forbidden)
 
+    def test_sleep_validation_reuses_aggregate_candidates(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        logger = re.search(
+            r"private func logSleepValidation\(label: String\?\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(logger)
+        body = logger.group("body")
+        assert_contains(self, body, "let aggregateSleepCandidatesForValidation = label == nil ? aggregateSleepCandidates(rest: rest, calendar: calendar) : []")
+        assert_contains(self, body, "let aggregate = aggregateSleepCandidatesForValidation.first")
+        assert_contains(self, body, "aggregateSleepCandidatesForValidation.count")
+        self.assertEqual(body.count("aggregateSleepCandidates(rest: rest, calendar: calendar)"), 1)
+
     def test_morning_journal_uses_cached_sleep_and_explicit_confirm(self):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
