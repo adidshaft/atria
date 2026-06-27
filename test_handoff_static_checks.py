@@ -2760,6 +2760,22 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreaterEqual(live_defer_index, 0)
         self.assertGreater(start_index, live_defer_index)
         assert_contains(self, request_body, "return false")
+        assert_contains(self, request_body, "OfflineSyncDefaults.rangeLossBackfillStartedAt")
+        self.assertNotIn("defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)", request_body)
+        self.assertNotIn("assignIfChanged(\\.rangeLossBackfillPending, false)", request_body)
+
+        finish_sync = re.search(
+            r"private func finishOfflineHistoricalSync\(reason: String\) \{(?P<body>.*?)\n    \}",
+            ble,
+            re.S,
+        )
+        self.assertIsNotNone(finish_sync)
+        finish_body = finish_sync.group("body")
+        assert_contains(self, finish_body, "if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)")
+        assert_contains(self, finish_body, "if rows > 0")
+        assert_contains(self, finish_body, "defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)")
+        assert_contains(self, finish_body, "assignIfChanged(\\.rangeLossBackfillPending, false)")
+        assert_contains(self, finish_body, "scheduleRangeLossBackfillRetry(reason: reason)")
 
         start_sync = re.search(
             r"private func startOfflineHistoricalSync\(reason: String, force: Bool\) \{(?P<body>.*?)\n    \}",
