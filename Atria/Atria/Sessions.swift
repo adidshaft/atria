@@ -10007,7 +10007,9 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         var isNapEvidence: Bool {
-            source == "nap_candidate" || (!confirmed && duration <= AggregateSleepCandidate.napMaximumSpan)
+            if source == "manual_nap" { return true }
+            if source == "manual_sleep" { return false }
+            return source == "nap_candidate" || (!confirmed && duration <= AggregateSleepCandidate.napMaximumSpan)
         }
 
         var evidenceLabel: String {
