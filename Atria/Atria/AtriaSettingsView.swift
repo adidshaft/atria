@@ -47,6 +47,8 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -140,6 +142,8 @@ struct AtriaSettingsView: View {
             respiratoryYellowDelta,
             skinTemperatureGreenDelta,
             skinTemperatureYellowDelta,
+            Double(biologicalAgeGreenOlderDelta),
+            Double(biologicalAgeYellowOlderDelta),
         ]
         .map { String(format: "%.3f", $0) }
         .joined(separator: "|")
@@ -155,6 +159,7 @@ struct AtriaSettingsView: View {
         normalizeRestingTargets()
         normalizeRespiratoryTargets()
         normalizeSkinTemperatureTargets()
+        normalizeBiologicalAgeTargets()
     }
 
     private func normalizeRecoveryTargets() {
@@ -198,6 +203,11 @@ struct AtriaSettingsView: View {
     private func normalizeSkinTemperatureTargets() {
         skinTemperatureGreenDelta = min(max(skinTemperatureGreenDelta, 0.2), 2.0)
         skinTemperatureYellowDelta = min(max(skinTemperatureYellowDelta, skinTemperatureGreenDelta + 0.1), 4.0)
+    }
+
+    private func normalizeBiologicalAgeTargets() {
+        biologicalAgeGreenOlderDelta = min(max(biologicalAgeGreenOlderDelta, -10), 10)
+        biologicalAgeYellowOlderDelta = min(max(biologicalAgeYellowOlderDelta, biologicalAgeGreenOlderDelta + 1), 20)
     }
 
     // MARK: Appearance
@@ -489,6 +499,30 @@ struct AtriaSettingsView: View {
                     Label("Reset research targets", systemImage: "waveform.path.ecg")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
+
+                Divider()
+
+                Stepper(value: $biologicalAgeGreenOlderDelta, in: -10...10, step: 1) {
+                    LabeledContent("Body age green") {
+                        Text("\(biologicalAgeGreenOlderDelta > 0 ? "+" : "")\(biologicalAgeGreenOlderDelta)y")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $biologicalAgeYellowOlderDelta, in: -9...20, step: 1) {
+                    LabeledContent("Body age yellow") {
+                        Text("\(biologicalAgeYellowOlderDelta > 0 ? "+" : "")\(biologicalAgeYellowOlderDelta)y")
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    biologicalAgeGreenOlderDelta = 0
+                    biologicalAgeYellowOlderDelta = 3
+                } label: {
+                    Label("Reset body-age target", systemImage: "figure.stand")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")

@@ -551,6 +551,8 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -582,6 +584,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      respiratoryYellowDelta: respiratoryYellowDelta,
                                      skinTemperatureGreenDelta: skinTemperatureGreenDelta,
                                      skinTemperatureYellowDelta: skinTemperatureYellowDelta,
+                                     biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
+                                     biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
                                      stepsGoal: stepsGoal,
                                      sleepGoalHours: sleepGoalHours,
                                      sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
@@ -809,7 +813,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .bioAge, .bodyTemp:
             return true
         default:
             return false
@@ -875,6 +879,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let respiratoryYellowDelta: Double
     let skinTemperatureGreenDelta: Double
     let skinTemperatureYellowDelta: Double
+    let biologicalAgeGreenOlderDelta: Int
+    let biologicalAgeYellowOlderDelta: Int
     let stepsGoal: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
@@ -944,6 +950,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.respiratoryYellowDelta == rhs.respiratoryYellowDelta
             && lhs.skinTemperatureGreenDelta == rhs.skinTemperatureGreenDelta
             && lhs.skinTemperatureYellowDelta == rhs.skinTemperatureYellowDelta
+            && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
+            && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
             && lhs.stepsGoal == rhs.stepsGoal
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
@@ -1542,7 +1550,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var biologicalAgeZone: AtriaMetricZone? {
-        Metrics.biologicalAgeZone(biologicalAgeSummary)
+        Metrics.biologicalAgeZone(biologicalAgeSummary,
+                                  greenOlderDelta: biologicalAgeGreenOlderDelta,
+                                  yellowOlderDelta: biologicalAgeYellowOlderDelta)
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
@@ -1728,6 +1738,8 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
 
     var body: some View {
         let summary = metric.targetEditorSummary
@@ -1771,22 +1783,45 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
             }
         }
-        .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
-        .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
-        .onChange(of: strainGreenBand) { _, _ in normalizeStrainTargets() }
-        .onChange(of: strainYellowBand) { _, _ in normalizeStrainTargets() }
-        .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
-        .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
-        .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
-        .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
-        .onChange(of: hrvGreenRatio) { _, _ in normalizeHRVTargets() }
-        .onChange(of: hrvYellowRatio) { _, _ in normalizeHRVTargets() }
-        .onChange(of: restingGreenDelta) { _, _ in normalizeRestingTargets() }
-        .onChange(of: restingYellowDelta) { _, _ in normalizeRestingTargets() }
-        .onChange(of: respiratoryGreenDelta) { _, _ in normalizeRespiratoryTargets() }
-        .onChange(of: respiratoryYellowDelta) { _, _ in normalizeRespiratoryTargets() }
-        .onChange(of: skinTemperatureGreenDelta) { _, _ in normalizeSkinTemperatureTargets() }
-        .onChange(of: skinTemperatureYellowDelta) { _, _ in normalizeSkinTemperatureTargets() }
+        .onChange(of: targetEditorSignature) { _, _ in normalizeAllTargets() }
+    }
+
+    private var targetEditorSignature: String {
+        [
+            recoveryGreenLower,
+            recoveryYellowLower,
+            strainGreenBand,
+            strainYellowBand,
+            Double(stepsGoal),
+            sleepGoalHours,
+            sleepEfficiencyGreenLower,
+            sleepEfficiencyYellowLower,
+            hrvGreenRatio,
+            hrvYellowRatio,
+            Double(restingGreenDelta),
+            Double(restingYellowDelta),
+            respiratoryGreenDelta,
+            respiratoryYellowDelta,
+            skinTemperatureGreenDelta,
+            skinTemperatureYellowDelta,
+            Double(biologicalAgeGreenOlderDelta),
+            Double(biologicalAgeYellowOlderDelta),
+        ]
+        .map { String(format: "%.3f", $0) }
+        .joined(separator: "|")
+    }
+
+    private func normalizeAllTargets() {
+        normalizeRecoveryTargets()
+        normalizeStrainTargets()
+        normalizeStepsGoal()
+        normalizeSleepGoal()
+        normalizeSleepEfficiencyTargets()
+        normalizeHRVTargets()
+        normalizeRestingTargets()
+        normalizeRespiratoryTargets()
+        normalizeSkinTemperatureTargets()
+        normalizeBiologicalAgeTargets()
     }
 
     @ViewBuilder
@@ -1939,6 +1974,28 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
             }
+        case .bioAge:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $biologicalAgeGreenOlderDelta, in: -10...10, step: 1) {
+                    LabeledContent("Green up to") {
+                        Text("\(biologicalAgeGreenOlderDelta > 0 ? "+" : "")\(biologicalAgeGreenOlderDelta)y")
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $biologicalAgeYellowOlderDelta, in: -9...20, step: 1) {
+                    LabeledContent("Yellow up to") {
+                        Text("\(biologicalAgeYellowOlderDelta > 0 ? "+" : "")\(biologicalAgeYellowOlderDelta)y")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    biologicalAgeGreenOlderDelta = 0
+                    biologicalAgeYellowOlderDelta = 3
+                } label: {
+                    Label("Reset body-age target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
+            }
         case .steps:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
@@ -2025,6 +2082,11 @@ private struct AtriaGlanceTargetEditorSheet: View {
         skinTemperatureGreenDelta = min(max(skinTemperatureGreenDelta, 0.2), 2.0)
         skinTemperatureYellowDelta = min(max(skinTemperatureYellowDelta, skinTemperatureGreenDelta + 0.1), 4.0)
     }
+
+    private func normalizeBiologicalAgeTargets() {
+        biologicalAgeGreenOlderDelta = min(max(biologicalAgeGreenOlderDelta, -10), 10)
+        biologicalAgeYellowOlderDelta = min(max(biologicalAgeYellowOlderDelta, biologicalAgeGreenOlderDelta + 1), 20)
+    }
 }
 
 private extension AtriaTodayMetric {
@@ -2034,6 +2096,7 @@ private extension AtriaTodayMetric {
         case .strain: return .orange
         case .hrv: return .pink
         case .rhr: return .red
+        case .bioAge: return .purple
         case .respiratoryRate, .bodyTemp: return .teal
         case .sleep, .sleepEfficiency: return .cyan
         default: return .blue
@@ -2056,6 +2119,8 @@ private extension AtriaTodayMetric {
             return "Adjust the sleep respiratory-rate deviation allowed around your baseline."
         case .bodyTemp:
             return "Adjust the relative sleep skin-temperature deviation allowed around baseline."
+        case .bioAge:
+            return "Adjust the younger/older delta bands for the body-age estimate."
         case .steps:
             return "Adjust the daily step goal used by the steps card."
         case .sleepEfficiency:

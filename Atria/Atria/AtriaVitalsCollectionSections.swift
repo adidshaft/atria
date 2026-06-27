@@ -386,6 +386,8 @@ private struct AtriaVitalsProfileCardHost: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
 
     var body: some View {
@@ -393,6 +395,8 @@ private struct AtriaVitalsProfileCardHost: View {
                          observedPeakHeartRateText: pulseStore.state.peakHeartRateText,
                          vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                          biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
+                         biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
+                         biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
                          onUpdateProfile: onUpdateProfile)
             .equatable()
     }
@@ -734,15 +738,21 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
 
 private struct AtriaCollectionBiologicalAgeCardHost: View {
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
 
     var body: some View {
-        AtriaCollectionBiologicalAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
+        AtriaCollectionBiologicalAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary,
+                                         greenOlderDelta: biologicalAgeGreenOlderDelta,
+                                         yellowOlderDelta: biologicalAgeYellowOlderDelta)
             .equatable()
     }
 }
 
 private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
     let summary: BiologicalAgeSummary
+    let greenOlderDelta: Int
+    let yellowOlderDelta: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -828,7 +838,9 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
     }
 
     private var biologicalAgeZone: AtriaMetricZone? {
-        Metrics.biologicalAgeZone(summary)
+        Metrics.biologicalAgeZone(summary,
+                                  greenOlderDelta: greenOlderDelta,
+                                  yellowOlderDelta: yellowOlderDelta)
     }
 
     private func tint(for direction: BioAgeFactor.Direction) -> Color {
@@ -2157,6 +2169,8 @@ private struct AtriaProfileCard: View, Equatable {
     let observedPeakHeartRateText: String
     let vo2MaxEstimate: VO2MaxEstimateSummary
     let biologicalAgeSummary: BiologicalAgeSummary
+    let biologicalAgeGreenOlderDelta: Int
+    let biologicalAgeYellowOlderDelta: Int
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2165,6 +2179,8 @@ private struct AtriaProfileCard: View, Equatable {
             && lhs.observedPeakHeartRateText == rhs.observedPeakHeartRateText
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
+            && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
+            && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
     }
 
     var body: some View {
@@ -2292,7 +2308,9 @@ private struct AtriaProfileCard: View, Equatable {
     }
 
     private var biologicalAgeZone: AtriaMetricZone? {
-        Metrics.biologicalAgeZone(biologicalAgeSummary)
+        Metrics.biologicalAgeZone(biologicalAgeSummary,
+                                  greenOlderDelta: biologicalAgeGreenOlderDelta,
+                                  yellowOlderDelta: biologicalAgeYellowOlderDelta)
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns

@@ -311,12 +311,16 @@ extension Metrics {
                                disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
     }
 
-    static func biologicalAgeZone(_ summary: BiologicalAgeSummary) -> AtriaMetricZone? {
+    static func biologicalAgeZone(_ summary: BiologicalAgeSummary,
+                                  greenOlderDelta: Int = 0,
+                                  yellowOlderDelta: Int = 3) -> AtriaMetricZone? {
         guard summary.isReady, let delta = summary.ageDelta else { return nil }
+        let safeGreenDelta = min(max(greenOlderDelta, -10), 10)
+        let safeYellowDelta = min(max(yellowOlderDelta, safeGreenDelta + 1), 20)
         let level: AtriaMetricZoneLevel
-        if delta <= 0 {
+        if delta <= safeGreenDelta {
             level = .green
-        } else if delta <= 3 {
+        } else if delta <= safeYellowDelta {
             level = .yellow
         } else {
             level = .red
@@ -335,7 +339,7 @@ extension Metrics {
         return AtriaMetricZone(level: level,
                                title: "Body age target",
                                current: "\(summary.valueText), \(summary.detailText).",
-                               targetSummary: "Green younger than chronological age, yellow slightly older, red older.",
+                               targetSummary: "Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
                                recommendation: recommendation,
                                disclaimer: summary.footnote)
     }
