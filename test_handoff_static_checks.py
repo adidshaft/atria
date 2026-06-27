@@ -2901,6 +2901,22 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, maintenance_body, forbidden)
 
+        bounded_gate = re.search(
+            r"private func logBoundedLargeStoreGateStatus\(mode: String,(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(bounded_gate)
+        bounded_gate_body = bounded_gate.group("body")
+        assert_contains(self, bounded_gate_body, "let boundedTrend90 = trendSummaryFast(rest: rest, maxHR: profile.maxHR, days: 90)")
+        for forbidden in [
+            "dailyRollups(",
+            "detectedActivities(",
+            "trendSummaries(",
+            "aggregateSleepCandidates(",
+        ]:
+            assert_not_contains(self, bounded_gate_body, forbidden)
+
         for needle in [
             "BGTaskSchedulerPermittedIdentifiers",
             "com.adidshaft.atria.refresh",
