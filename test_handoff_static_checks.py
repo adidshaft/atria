@@ -3371,6 +3371,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .hrv, .bpm:",
             "return atriaVitalsURL",
             ".widgetURL(metric.deepLinkURL)",
+            "deepLinkURL: AtriaWidgetMetric.strain.deepLinkURL",
+            "deepLinkURL: AtriaWidgetMetric.bpm.deepLinkURL",
+            "private func widgetMetricLink(_ metric: AtriaWidgetMetric, tint: Color) -> some View",
+            "Link(destination: metric.deepLinkURL)",
         ]:
             assert_contains(self, widget, needle)
 
@@ -3381,16 +3385,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var systemSmallWidget: some View",
             "private var systemMediumWidget: some View",
             "private var widgetHeader: some View",
-            "private func compactMetric(_ title: String, value: String, icon: String, tint: Color) -> some View",
+            "private func compactMetric(_ title: String,",
             "private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View",
+            "private func widgetMetricLink(_ metric: AtriaWidgetMetric, tint: Color) -> some View",
             "private struct AtriaWidgetRecoveryGauge: View",
             "AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)",
             ".frame(width: 72, height: 72)",
             ".frame(width: 92, height: 92)",
-            "widgetMetricTile(\"Strain\"",
-            "widgetMetricTile(\"BPM\"",
-            "widgetMetricTile(\"HRV\"",
-            "widgetMetricTile(\"Steps\"",
+            "widgetMetricLink(.strain, tint: .orange)",
+            "widgetMetricLink(.bpm, tint: .red)",
+            "widgetMetricLink(.hrv, tint: .pink)",
+            "widgetMetricLink(.steps, tint: .blue)",
             ".accessibilityLabel(percent.map { \"Recovery \\($0) percent\" } ?? \"Recovery learning\")",
         ]:
             assert_contains(self, widget, needle)
