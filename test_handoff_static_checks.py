@@ -4633,10 +4633,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "normalizeSkinTemperatureTargets()",
             "normalizeBiologicalAgeTargets()",
             "normalizeVO2Targets()",
-            "HRV and resting HR zones personalize from your 7-night baseline before warning.",
+            r"HRV and resting HR zones personalize from your trusted \(PersonalBaseline.trustedMinimumSamples)-sample baseline before warning.",
             "Guidance is general wellness information, not medical advice.",
         ]:
             assert_contains(self, settings, needle)
+        assert_not_contains(self, settings, "7-night baseline")
 
 
 if __name__ == "__main__":
