@@ -129,6 +129,54 @@ def is_utc_timestamp(value: str) -> bool:
     return parsed.tzinfo == timezone.utc
 
 
+def parse_utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo == timezone.utc else None
+
+
+def running_long_wear_progress(metadata: dict[str, object],
+                               sample_count: int,
+                               *,
+                               now: datetime | None = None) -> dict[str, object]:
+    started = parse_utc_timestamp(metadata.get("monitor_started_at"))
+    planned_samples = metadata.get("planned_samples", MIN_OVERNIGHT_PLANNED_SAMPLES)
+    planned_duration = metadata.get("planned_duration_s", MIN_OVERNIGHT_PLANNED_DURATION_S)
+    interval = metadata.get("planned_interval_s", 0)
+    if not isinstance(planned_samples, int):
+        planned_samples = MIN_OVERNIGHT_PLANNED_SAMPLES
+    if not isinstance(planned_duration, (int, float)):
+        planned_duration = MIN_OVERNIGHT_PLANNED_DURATION_S
+    if not isinstance(interval, (int, float)) or interval <= 0:
+        interval = float(planned_duration) / max(1, int(planned_samples) - 1)
+
+    remaining_samples = max(0, int(planned_samples) - sample_count)
+    progress: dict[str, object] = {
+        "running_elapsed_s": "pending",
+        "running_expected_finish_at": "pending",
+        "running_next_sample_due_at": "pending",
+        "running_remaining_samples": remaining_samples,
+    }
+    if started is None:
+        return progress
+
+    current = now or datetime.now(timezone.utc)
+    elapsed = max(0.0, (current - started).total_seconds())
+    expected_finish = started.timestamp() + float(planned_duration)
+    next_sample_index = min(sample_count, max(0, int(planned_samples) - 1))
+    next_sample_due = started.timestamp() + (next_sample_index * float(interval))
+    progress.update({
+        "running_elapsed_s": elapsed,
+        "running_expected_finish_at": datetime.fromtimestamp(expected_finish, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "running_next_sample_due_at": datetime.fromtimestamp(next_sample_due, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
+    return progress
+
+
 def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     if explicit:
         candidate = explicit if explicit.is_absolute() else repo / explicit
@@ -190,7 +238,7 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         active = {}
     if not isinstance(sessions, dict):
         sessions = {}
-    return {
+    result = {
         "status": "in_progress",
         "summary": str(samples_path),
         "acceptance_status": "running",
@@ -214,6 +262,8 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         "monitor_started_at": metadata.get("monitor_started_at", "pending"),
         "monitor_finished_at": "pending",
     }
+    result.update(running_long_wear_progress(metadata, samples))
+    return result
 
 
 def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) -> dict[str, object]:
@@ -603,6 +653,10 @@ def markdown_summary(report: dict[str, object]) -> str:
     if physical.get("status") == "in_progress":
         lines.extend([
             f"- Running samples: `{physical.get('running_samples', 'missing')}`",
+            f"- Running elapsed seconds: `{format_diagnostic_value(physical.get('running_elapsed_s', 'missing'))}`",
+            f"- Remaining samples: `{physical.get('running_remaining_samples', 'missing')}`",
+            f"- Next sample due: `{physical.get('running_next_sample_due_at', 'missing')}`",
+            f"- Expected finish: `{physical.get('running_expected_finish_at', 'missing')}`",
             f"- Latest sample: `{physical.get('latest_sample', 'missing')}` at `{physical.get('latest_sample_at', 'missing')}`",
             f"- Latest sample log: `{physical.get('latest_sample_log', 'missing')}`",
         ])
