@@ -783,6 +783,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func updateConnectionDiagnosisVisibility(reason: String, now: Date = Date())",
             "AtriaConnectionDiagnosis.derive(live: model.coreLiveStore.state",
             "AtriaConnectionDiagnosisBanner(diagnosis: diagnosis)",
+            "private struct AtriaConnectionDiagnosisBanner: View, Equatable",
+            ".atriaCardAction(prominent: false, tint: diagnosis.tint)",
+            ".atriaInsetCard(tint: diagnosis.tint)",
             "guard elapsed >= Self.connectionDiagnosisPersistenceDelay else",
             "visibleConnectionDiagnosis = nil",
             "var showsImmediately: Bool",
@@ -848,6 +851,14 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, home, needle)
         assert_not_contains(self, home, "Connected, no pulse")
+        diagnosis_banner = re.search(
+            r"private struct AtriaConnectionDiagnosisBanner: View, Equatable \{(?P<body>.*?)\n\}",
+            home,
+            re.S,
+        )
+        self.assertIsNotNone(diagnosis_banner)
+        self.assertNotIn(".buttonStyle(.glass", diagnosis_banner.group("body"))
+        self.assertNotIn(".glassEffect(", diagnosis_banner.group("body"))
 
         diagnosis = re.search(
             r"static func derive\(live: AtriaHomeModel\.CoreLiveState,\n                       pulse: AtriaHomeModel\.PulseLiveState,\n                       officialAppInstalled: Bool\) -> AtriaConnectionDiagnosis\? \{(?P<body>.*?)\n    \}",
@@ -2063,9 +2074,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "Live HR stays protected. Sync when you can pause the stream.",
             "Text(protectsLiveStream ? \"Sync now\" : \"Sync\")",
             ".frame(minWidth: protectsLiveStream ? 76 : 48)",
+            ".atriaCardAction(tint: .cyan)",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
+            ".atriaInsetCard(tint: .cyan)",
             "requestOfflineHistoricalSyncIfNeeded(reason: \"home_missed_data_banner\",\n                                                                 force: true)",
         ]:
             assert_contains(self, home, needle)
+
+        missed_banner = re.search(
+            r"private struct AtriaMissedDataBanner: View, Equatable \{(?P<body>.*?)\n\}",
+            home,
+            re.S,
+        )
+        self.assertIsNotNone(missed_banner)
+        self.assertNotIn(".buttonStyle(.glass", missed_banner.group("body"))
+        self.assertNotIn(".glassEffect(", missed_banner.group("body"))
 
         assert_contains(self, ble, "currentSessionUsable: false")
         assert_contains(self, ble, "metricUsable: false")
