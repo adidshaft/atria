@@ -33,6 +33,7 @@ struct AtriaSettingsView: View {
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -107,11 +108,16 @@ struct AtriaSettingsView: View {
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
         .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
     }
 
     private func normalizeRecoveryTargets() {
         recoveryYellowLower = min(max(recoveryYellowLower, 5), 66)
         recoveryGreenLower = min(max(recoveryGreenLower, recoveryYellowLower + 1), 95)
+    }
+
+    private func normalizeStepsGoal() {
+        stepsGoal = min(max(stepsGoal, 1_000), 30_000)
     }
 
     // MARK: Appearance
@@ -260,6 +266,24 @@ struct AtriaSettingsView: View {
                     Label("Reset to recommended", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+
+                Divider()
+
+                Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
+                    LabeledContent("Steps goal") {
+                        Text("\(stepsGoal)")
+                            .monospacedDigit()
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: "heart.text.square.fill")
+                        .foregroundStyle(.pink)
+                    Text("HRV and resting HR zones personalize from your 7-night baseline before warning.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(14)
             .atriaInsetCard(tint: .green)

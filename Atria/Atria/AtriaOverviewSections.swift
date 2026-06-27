@@ -537,6 +537,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = ""
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -554,6 +555,11 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      subtitle: subtitle,
                                      recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
                                                                                 yellowLower: recoveryYellowLower),
+                                     hrvBaseline: store.baseline.hrvInt,
+                                     hrvBaselineSamples: store.baseline.hrvSampleCount,
+                                     restingBaseline: store.baseline.restingInt,
+                                     restingBaselineSamples: store.baseline.restingSampleCount,
+                                     stepsGoal: stepsGoal,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
                                      hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
@@ -820,6 +826,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let taggedDays: Int
     let subtitle: String
     let recoveryTarget: AtriaMetricTarget
+    let hrvBaseline: Int?
+    let hrvBaselineSamples: Int
+    let restingBaseline: Int?
+    let restingBaselineSamples: Int
+    let stepsGoal: Int
     let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
     let sizeOverridesCSV: String
@@ -869,6 +880,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.recoveryTarget == rhs.recoveryTarget
+            && lhs.hrvBaseline == rhs.hrvBaseline
+            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.restingBaseline == rhs.restingBaseline
+            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.stepsGoal == rhs.stepsGoal
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
             && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
@@ -1166,7 +1182,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(hero.hrvValue),
                                   detail: hrvDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: .pink)
+                                  tint: hrvZone?.tint ?? .pink,
+                                  zone: hrvZone)
         case .sleep:
             AtriaGlanceMetricCard(title: "Sleep",
                                   value: metricDisplayValue(snapshot.sleepValue),
@@ -1180,7 +1197,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sleepHistory.latest?.sleepEfficiencyText ?? "--",
                                   detail: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based",
                                   systemImage: metric.systemImage,
-                                  tint: sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan)
+                                  tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan),
+                                  zone: sleepEfficiencyZone)
                 .accessibilityLabel(sleepHistory.latest?.sleepEfficiency == nil
                                     ? "Sleep efficiency is building from saved sleep duration"
                                     : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "--")")
@@ -1189,7 +1207,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(hero.restingHeartRateText),
                                   detail: "Baseline",
                                   systemImage: metric.systemImage,
-                                  tint: .red)
+                                  tint: restingHeartRateZone?.tint ?? .red,
+                                  zone: restingHeartRateZone)
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
                                   value: sleepHistory.latest?.respiratoryRateText ?? "--",
@@ -1204,7 +1223,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: live.phoneStepsText,
                                   detail: live.phoneMotionDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: .green)
+                                  tint: stepsZone?.tint ?? .green,
+                                  zone: stepsZone)
                 .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText), \(live.phoneMotionDetailText)")
         case .strapSteps:
             AtriaGlanceMetricCard(title: "Strap steps",
@@ -1392,6 +1412,32 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var recoveryZone: AtriaMetricZone? {
         Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
+    }
+
+    private var hrvZone: AtriaMetricZone? {
+        Metrics.hrvZone(parseInt(hero.hrvValue),
+                        baseline: hrvBaseline,
+                        baselineSamples: hrvBaselineSamples)
+    }
+
+    private var restingHeartRateZone: AtriaMetricZone? {
+        Metrics.restingHeartRateZone(hero.restingHeartRate,
+                                     baseline: restingBaseline,
+                                     baselineSamples: restingBaselineSamples)
+    }
+
+    private var sleepEfficiencyZone: AtriaMetricZone? {
+        Metrics.sleepEfficiencyZone(sleepHistory.latest?.sleepEfficiency)
+    }
+
+    private var stepsZone: AtriaMetricZone? {
+        Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,
+                          goal: stepsGoal)
+    }
+
+    private func parseInt(_ value: String) -> Int? {
+        Int(value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0.isNumber })
     }
 
 }
