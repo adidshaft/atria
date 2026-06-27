@@ -76,7 +76,9 @@ enum WidgetSnapshotPublisher {
                                           baseline: store.baseline,
                                           hrvReferenceValidated: validatedHRV != nil,
                                           sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours)
+                                          sleepDurationHours: latestSleep?.durationHours,
+                                          respiratoryRate: latestSleep?.respiratoryRate,
+                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let hrvRMSSD: Int?
         if recovery.usesHRV {

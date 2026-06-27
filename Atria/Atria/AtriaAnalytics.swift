@@ -539,7 +539,9 @@ enum AtriaAnalytics {
                              baseline: PersonalBaseline,
                              hrvReferenceValidated: Bool = false,
                              sleepEfficiency: Double? = nil,
-                             sleepDurationHours: Double? = nil) -> Estimate {
+                             sleepDurationHours: Double? = nil,
+                             respiratoryRate: Double? = nil,
+                             respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> Estimate {
             guard let restingNow else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false, detail: "learning: need resting HR")
@@ -578,13 +580,17 @@ enum AtriaAnalytics {
                                 detail: "learning: need saved sleep")
             }
 
-            let respirationZ = 0.0
+            let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
+                                                    baseline: respiratoryBaseline)
             let blendedZ = 0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ
             let percent = logisticRecoveryPercent(z: blendedZ)
             let confidence: Estimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
+            let respirationDetail = respirationZ == 0
+                ? "Resp neutral"
+                : String(format: "Resp z %.1f", respirationZ)
             return Estimate(percent: percent, confidence: confidence,
                             usesHRV: true,
-                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · Resp neutral", hrvZ, restingZ, sleepZ))
+                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail))
         }
 
         private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
@@ -611,6 +617,16 @@ enum AtriaAnalytics {
             guard !components.isEmpty else { return nil }
             let average = components.reduce(0, +) / Double(components.count)
             return min(max(average, -2), 2)
+        }
+
+        private static func respiratoryRecoveryZ(rate: Double?,
+                                                 baseline: (mean: Double, sd: Double, count: Int)?) -> Double {
+            guard let rate,
+                  rate > 0,
+                  let baseline,
+                  baseline.count >= PersonalBaseline.trustedMinimumSamples,
+                  baseline.sd > 0.1 else { return 0 }
+            return min(max(-zScore(rate, mean: baseline.mean, sd: baseline.sd), -2), 2)
         }
     }
 
