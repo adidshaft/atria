@@ -1187,7 +1187,9 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                         .foregroundStyle(.secondary)
                 }
 
-                AtriaHeartRateAxisChart(points: points, selectedTime: .constant(nil))
+                AtriaHeartRateAxisChart(points: points,
+                                        yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                        selectedTime: .constant(nil))
                     .frame(height: 170)
 
                 HStack {
@@ -1206,26 +1208,78 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
     }
 }
 
+private struct AtriaHeartRateChartSeries: Equatable {
+    let visiblePoints: [AtriaHomeModel.HeartRateChartPoint]
+    let yDomain: ClosedRange<Int>
+
+    static func make(points: [AtriaHomeModel.HeartRateChartPoint], zoom: Double) -> AtriaHeartRateChartSeries {
+        let visiblePoints: [AtriaHomeModel.HeartRateChartPoint]
+        if zoom > 1, points.count > 8 {
+            let keep = max(8, Int(Double(points.count) / zoom))
+            visiblePoints = Array(points.suffix(keep))
+        } else {
+            visiblePoints = points
+        }
+        return AtriaHeartRateChartSeries(visiblePoints: visiblePoints,
+                                         yDomain: yDomain(for: visiblePoints))
+    }
+
+    static func yDomain(for points: [AtriaHomeModel.HeartRateChartPoint]) -> ClosedRange<Int> {
+        var minimumBPM: Int?
+        var maximumBPM: Int?
+        for point in points {
+            minimumBPM = min(minimumBPM ?? point.bpm, point.bpm)
+            maximumBPM = max(maximumBPM ?? point.bpm, point.bpm)
+        }
+        let low = max((minimumBPM ?? 60) - 8, 35)
+        let high = min((maximumBPM ?? 120) + 8, 220)
+        return low...max(high, low + 20)
+    }
+
+    func nearestPoint(to selectedTime: Date?) -> AtriaHomeModel.HeartRateChartPoint? {
+        guard let selectedTime else { return visiblePoints.last }
+        guard !visiblePoints.isEmpty else { return nil }
+        var low = 0
+        var high = visiblePoints.count
+        while low < high {
+            let mid = (low + high) / 2
+            if visiblePoints[mid].t < selectedTime {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        if low == 0 { return visiblePoints[0] }
+        if low >= visiblePoints.count { return visiblePoints[visiblePoints.count - 1] }
+        let before = visiblePoints[low - 1]
+        let after = visiblePoints[low]
+        return abs(before.t.timeIntervalSince(selectedTime)) <= abs(after.t.timeIntervalSince(selectedTime))
+            ? before
+            : after
+    }
+}
+
 private struct AtriaHeartRateExplorer: View {
     let points: [AtriaHomeModel.HeartRateChartPoint]
     let currentBPM: Int
     let onDismiss: () -> Void
     @State private var selectedTime: Date?
     @State private var zoom: Double = 1
+    @State private var series: AtriaHeartRateChartSeries
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    private var visiblePoints: [AtriaHomeModel.HeartRateChartPoint] {
-        guard zoom > 1, points.count > 8 else { return points }
-        let keep = max(8, Int(Double(points.count) / zoom))
-        return Array(points.suffix(keep))
+    init(points: [AtriaHomeModel.HeartRateChartPoint],
+         currentBPM: Int,
+         onDismiss: @escaping () -> Void) {
+        self.points = points
+        self.currentBPM = currentBPM
+        self.onDismiss = onDismiss
+        _series = State(initialValue: AtriaHeartRateChartSeries.make(points: points, zoom: 1))
     }
 
     private var selectedPoint: AtriaHomeModel.HeartRateChartPoint? {
-        guard let selectedTime else { return visiblePoints.last }
-        return visiblePoints.min { lhs, rhs in
-            abs(lhs.t.timeIntervalSince(selectedTime)) < abs(rhs.t.timeIntervalSince(selectedTime))
-        }
+        series.nearestPoint(to: selectedTime)
     }
 
     var body: some View {
@@ -1251,7 +1305,9 @@ private struct AtriaHeartRateExplorer: View {
                         .foregroundStyle(.secondary)
                 }
 
-                AtriaHeartRateAxisChart(points: visiblePoints, selectedTime: $selectedTime)
+                AtriaHeartRateAxisChart(points: series.visiblePoints,
+                                        yDomain: series.yDomain,
+                                        selectedTime: $selectedTime)
                     .frame(maxHeight: .infinity)
                     .frame(minHeight: 320)
 
@@ -1269,9 +1325,19 @@ private struct AtriaHeartRateExplorer: View {
             .navigationTitle("Heart rate")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", action: onDismiss)
-                        .buttonStyle(.borderedProminent)
+                    Button(action: onDismiss) {
+                        Label("Done", systemImage: "xmark")
+                    }
+                    .labelStyle(.iconOnly)
+                    .atriaCardAction(prominent: false, tint: .secondary)
+                    .accessibilityLabel("Done")
                 }
+            }
+            .onChange(of: zoom) { _, newValue in
+                series = AtriaHeartRateChartSeries.make(points: points, zoom: newValue)
+            }
+            .onChange(of: points) { _, newValue in
+                series = AtriaHeartRateChartSeries.make(points: newValue, zoom: zoom)
             }
         }
     }
@@ -1279,17 +1345,11 @@ private struct AtriaHeartRateExplorer: View {
 
 private struct AtriaHeartRateAxisChart: View, Equatable {
     let points: [AtriaHomeModel.HeartRateChartPoint]
+    let yDomain: ClosedRange<Int>
     @Binding var selectedTime: Date?
 
     static func == (lhs: AtriaHeartRateAxisChart, rhs: AtriaHeartRateAxisChart) -> Bool {
-        lhs.points == rhs.points
-    }
-
-    private var yDomain: ClosedRange<Int> {
-        let values = points.map(\.bpm)
-        let low = max((values.min() ?? 60) - 8, 35)
-        let high = min((values.max() ?? 120) + 8, 220)
-        return low...max(high, low + 20)
+        lhs.points == rhs.points && lhs.yDomain == rhs.yDomain
     }
 
     var body: some View {
