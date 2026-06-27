@@ -341,24 +341,21 @@ struct RestingTrendChart: View {
 
 // MARK: - Session time-in-zone breakdown
 
+struct TimeInZoneRow: Identifiable {
+    let zone: HRZone
+    let seconds: Double
+
+    var id: Int { zone.rawValue }
+}
+
 struct TimeInZoneView: View {
-    let session: SavedSession
-    let maxHR: Int
-
-    private var rows: [(zone: HRZone, seconds: Double)] {
-        let map = session.timeInZone(maxHR: maxHR)
-        return HRZone.allCases.compactMap { z in
-            guard let s = map[z], s > 0 else { return nil }
-            return (z, s)
-        }.sorted { $0.seconds > $1.seconds }
-    }
-
-    private var total: Double { max(rows.reduce(0) { $0 + $1.seconds }, 1) }
+    let rows: [TimeInZoneRow]
+    let total: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Time in zone").font(.headline)
-            ForEach(rows, id: \.zone.rawValue) { row in
+            ForEach(rows) { row in
                 HStack(spacing: 8) {
                     Text(row.zone.name)
                         .font(.caption).frame(width: 78, alignment: .leading)

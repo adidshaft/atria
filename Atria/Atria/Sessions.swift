@@ -10396,11 +10396,12 @@ struct DetectionRow: View {
 struct SessionDetail: View {
     let session: SavedSession
     private let displayedPoints: [SavedSession.Point]
-    private var maxHR: Int { AthleteProfile.load().maxHR }
+    private let summary: SessionDetailSummary
 
     init(session: SavedSession) {
         self.session = session
         self.displayedPoints = Self.downsampledPoints(session.points)
+        self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)
     }
 
     var body: some View {
@@ -10420,12 +10421,11 @@ struct SessionDetail: View {
                     .atriaCard(cornerRadius: 22, emphasis: .soft)
 
                     HStack(spacing: 0) {
-                        stat("Resting", session.resting)
-                        stat("Average", session.avg)
-                        stat("Peak", session.peak)
+                        stat("Resting", summary.resting)
+                        stat("Average", summary.average)
+                        stat("Peak", summary.peak)
                         VStack(spacing: 2) {
-                            Text(String(format: "%.1f",
-                                Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable, max: maxHR))))
+                            Text(summary.strainText)
                                 .font(.title2.weight(.semibold).monospacedDigit())
                             Text("Strain").font(.caption2).foregroundStyle(.secondary)
                         }
@@ -10434,7 +10434,7 @@ struct SessionDetail: View {
                     .padding()
                     .atriaCard(cornerRadius: 22, emphasis: .soft)
 
-                    TimeInZoneView(session: session, maxHR: maxHR)
+                    TimeInZoneView(rows: summary.zoneRows, total: summary.zoneTotal)
                         .padding()
                         .atriaCard(cornerRadius: 22, emphasis: .soft)
                 }
@@ -10461,5 +10461,31 @@ struct SessionDetail: View {
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+private struct SessionDetailSummary {
+    let resting: Int
+    let average: Int
+    let peak: Int
+    let strainText: String
+    let zoneRows: [TimeInZoneRow]
+    let zoneTotal: Double
+
+    init(session: SavedSession, maxHR: Int) {
+        resting = session.resting
+        average = session.avg
+        peak = session.peak
+        let resolvedMaxHR = max(maxHR, session.restingStable + 1)
+        strainText = String(format: "%.1f",
+                            Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable,
+                                                                     max: resolvedMaxHR)))
+        let zoneMap = session.timeInZone(maxHR: resolvedMaxHR)
+        zoneRows = HRZone.allCases.compactMap { zone in
+            guard let seconds = zoneMap[zone], seconds > 0 else { return nil }
+            return TimeInZoneRow(zone: zone, seconds: seconds)
+        }
+        .sorted { $0.seconds > $1.seconds }
+        zoneTotal = max(zoneRows.reduce(0) { $0 + $1.seconds }, 1)
     }
 }
