@@ -328,6 +328,29 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertNotIn("external_reference_validation", report["blockers"])
 
+    def test_running_overnight_samples_are_reported_before_final_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            old_summary = repo / "logs/live-device/long-wear-monitor/smoke/summary.json"
+            write_passing_long_wear_summary(old_summary)
+            running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
+            running.parent.mkdir(parents=True)
+            running.write_text(json.dumps({
+                "sample": 0,
+                "captured_at": "20260627T231930Z",
+                "log": "/tmp/pull.log",
+                "active_journal": {"status": "ok", "thermal": "nominal"},
+                "sessions": {"status": "ok", "recent_span_s": 43578.6, "recent_coverage_percent": 48.8},
+            }) + "\n", encoding="utf-8")
+
+            physical = audit_handoff_status.evaluate_physical_long_wear(repo)
+
+        self.assertEqual(physical["status"], "in_progress")
+        self.assertEqual(physical["acceptance_status"], "running")
+        self.assertIn("overnight_summary_pending", physical["audit_blockers"])
+        self.assertEqual(physical["running_samples"], 1)
+        self.assertEqual(physical["latest_recent_session_span_s"], 43578.6)
+
     def test_markdown_summary_includes_current_blocking_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
