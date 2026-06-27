@@ -684,11 +684,6 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
                                 value: summary.gravityText,
                                 state: summary.validatedFrames > 0 ? .validated : .learning,
                                 tint: summary.validatedFrames > 0 ? .green : .orange)
-                AtriaMetricTile(label: "Strap steps",
-                                value: summary.strapStepText,
-                                state: summary.strapStepCount > 0 ? .research : .learning,
-                                tint: .orange,
-                                footnote: summary.agreementText)
                 AtriaMetricTile(label: "Sleep/wake",
                                 value: summary.sleepWakeText,
                                 state: summary.sleepWakeText == "--" ? .learning : .research,

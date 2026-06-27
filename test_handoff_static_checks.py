@@ -2385,7 +2385,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaPanelSectionHeader(title: \"IMU audit\", subtitle: \"\")",
             "Early motion signals stay separate until they match phone motion reliably.",
             ".lineLimit(2)",
-            "AtriaMetricTile(label: \"Strap steps\"",
             "AtriaMetricTile(label: \"Sleep/wake\"",
             "AtriaMetricTile(label: \"Probes\"",
             "agreementText",
@@ -2415,6 +2414,10 @@ class HandoffStaticChecks(unittest.TestCase):
             collection.index("private struct AtriaCollectionResearchSignalsCard"):
             collection.index("private struct AtriaCollectionIMUAuditCard")
         ]
+        imu_audit_card = collection[
+            collection.index("private struct AtriaCollectionIMUAuditCard"):
+            collection.index("private struct AtriaResearchManeuverMarkerCard")
+        ]
         for forbidden in [
             "dailyRollups(",
             "detectedActivity(",
@@ -2423,6 +2426,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "SleepHistorySnapshot(rollups:",
         ]:
             assert_not_contains(self, research_card, forbidden)
+        assert_contains(self, research_card, "AtriaMetricTile(label: \"Strap steps\"")
+        assert_not_contains(self, imu_audit_card, "AtriaMetricTile(label: \"Strap steps\"")
 
         for forbidden in [
             "title: \"Low radio HR\"",
