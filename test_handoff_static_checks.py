@@ -4352,7 +4352,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Strain is inside today's recovery-scaled target band.",
             "You're past today's suggested strain for your recovery -- ease off to protect tomorrow.",
             "static func hrv(_ rmssd: Int?,",
-            "baselineSamples >= 7",
+            "baselineSamples >= PersonalBaseline.trustedMinimumSamples",
             "ratio >= safeGreen",
             "ratio >= safeYellow",
             "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load.",
@@ -4393,6 +4393,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research relative sleep-only deviation; not an absolute temperature.",
         ]:
             assert_contains(self, analytics, needle)
+        assert_not_contains(self, analytics, "guard baselineSamples >= 7, let rmssd")
+        assert_not_contains(self, analytics, "guard baselineSamples >= 7, let bpm")
 
         for needle in [
             "var zone: AtriaMetricZone? = nil",
