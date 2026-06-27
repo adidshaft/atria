@@ -1783,6 +1783,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "let sleepStart: Date?",
             "let sleepEnd: Date?",
             "let sleepSource: String?",
+            "private nonisolated static func sleepSpan(duration: TimeInterval,",
+            "return max(duration, end.timeIntervalSince(start))",
+            "let sleepSpan = Self.sleepSpan(duration: sleepDuration,",
+            "sleepSpan: sleepSpan",
+            "let singleSessionSleepSpan = Self.sleepSpan(duration: singleSessionSleepDuration,",
+            "sleepSpan: aggregateSleep?.span ?? singleSessionSleepSpan",
             "let sleepEfficiency: Double?",
             "var sleepEfficiencyText: String",
             "var isNapEvidence: Bool",
@@ -2066,6 +2072,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, sessions, "estimatedStageSegments")
         assert_not_contains(self, sessions, "let resolvedSegments = stageSegments.isEmpty")
         assert_not_contains(self, sessions, "guard session.duration >= 20 * 60, !session.points.isEmpty else { return false }")
+        assert_not_contains(self, sessions, "sleepSpan: sleepDuration > 0 ? sleepDuration : nil")
+        assert_not_contains(self, sessions, "sleepSpan: aggregateSleep?.span ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil)")
 
         sleep_card_start = vitals.index("private struct AtriaSleepHistoryCard")
         sleep_card_end = vitals.index("private struct AtriaSleepNightRow")
@@ -4899,6 +4907,15 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityHint(\"Opens target guidance and general wellness recommendations.\")",
         ]:
             assert_contains(self, shared + overview + vitals, needle)
+        for needle in [
+            "private var accessibilityText: String",
+            "var parts = [\"\\(title) \\(displayValue)\", detail]",
+            "parts.append(zone.level.label)",
+            "parts.append(zone.targetSummary)",
+            "parts.append(\"Tap info for guidance.\")",
+            ".accessibilityLabel(accessibilityText)",
+        ]:
+            assert_contains(self, overview, needle)
 
         for needle in [
             "@AppStorage(\"atria.target.recovery.greenLower\")",

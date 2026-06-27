@@ -1688,6 +1688,16 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         return trimmed.isEmpty ? "--" : value
     }
 
+    private var accessibilityText: String {
+        var parts = ["\(title) \(displayValue)", detail]
+        if let zone, zone.showsWarning {
+            parts.append(zone.level.label)
+            parts.append(zone.targetSummary)
+            parts.append("Tap info for guidance.")
+        }
+        return parts.joined(separator: ", ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 10) {
@@ -1739,7 +1749,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         .atriaInsetCard(tint: tint)
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title) \(value), \(detail)")
+        .accessibilityLabel(accessibilityText)
         .sheet(isPresented: $showingZoneInfo) {
             if let zone {
                 AtriaMetricZoneInfoSheet(zone: zone)
