@@ -2737,6 +2737,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, notifications, 'body: ble.bluetoothPermissionDenied')
         assert_contains(self, notifications, 'Allow Bluetooth for Atria in Settings.')
         assert_contains(self, notifications, 'Turn on Bluetooth in Settings so Atria can read your strap.')
+        assert_contains(self, notifications, "if ble.status == .poweredOff")
+        assert_contains(self, notifications, "return [bluetoothDecision]")
         assert_contains(self, notifications, "threshold=%d")
         assert_contains(self, notifications, "battery.level <= Self.actionableBatteryThreshold")
         assert_contains(self, notifications, 'body: "Charge your strap before a workout or overnight wear. Battery is \\(battery.level)%."')
@@ -2746,6 +2748,18 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         assert_contains(self, home, "LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,")
         assert_contains(self, home, "if visibleConnectionDiagnosis != next")
+
+        actionable = re.search(
+            r"private static func makeActionableConnectionDecisions\(ble: AtriaBLEManager\) -> \[NotificationDecision\] \{(?P<body>.*?)\n    \}",
+            notifications,
+            re.S,
+        )
+        self.assertIsNotNone(actionable)
+        actionable_body = actionable.group("body")
+        bluetooth_index = actionable_body.find("if ble.status == .poweredOff")
+        battery_index = actionable_body.find("let battery = batterySnapshot")
+        self.assertGreaterEqual(bluetooth_index, 0)
+        self.assertGreater(battery_index, bluetooth_index)
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, diagnostic]")
         assert_not_contains(self, notifications, "static let active = [recovery, strain, battery, bluetoothOff, diagnostic]")
         assert_not_contains(self, notifications, "includeMetricDecisions: productionCadence || debugMetricRequest")
