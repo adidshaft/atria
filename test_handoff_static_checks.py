@@ -1021,7 +1021,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var historySnapshotRevision = 0",
             "private func refreshHistorySnapshotCache(deferred: Bool = true)",
             "let sourceSessions = sessions",
-            "historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions)",
+            "historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions, maxHR: maxHR)",
             "DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12)",
             "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
             "private func publishFullHistorySnapshotIfCurrent(revision: Int,\n                                                     history: HistorySnapshot,\n                                                     sleep: SleepHistorySnapshot)",
@@ -1033,9 +1033,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "anomalySource: \"bounded_history_rollups\"",
             "private var snapshot: HistorySnapshot {\n        store.historySnapshot\n    }",
             "struct HistorySnapshot",
+            "let sessionRows: [HistorySessionRowSnapshot]",
+            "struct HistorySessionRowSnapshot: Identifiable",
             "struct SleepHistorySnapshot: Equatable",
-            "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [])",
-            "static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot",
+            "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [], maxHR: 200)",
+            "static func sessionsOnly(_ sessions: [SavedSession], maxHR: Int) -> HistorySnapshot",
+            "includeDerivedSessionRows: false",
+            "HistorySessionRowSnapshot(session: $0,",
+            "includeDerivedMetrics: includeDerivedSessionRows",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -1061,6 +1066,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "detectedActivities(rest:",
             "trendSummaries(rest:",
             "dailyRollups(rest:",
+            "ForEach(snapshot.sessions) { session in",
+            "historySessionRow(session)",
+            "session.avg",
+            "session.peak",
+            "session.resting",
+            "session.points.count",
+            "session.trimp(",
         ]:
             assert_not_contains(self, history_view_source, forbidden)
 

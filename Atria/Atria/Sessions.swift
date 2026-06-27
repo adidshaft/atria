@@ -2367,7 +2367,7 @@ final class SessionStore: ObservableObject {
         let baselineSnapshot = baseline
         let rest = baselineSnapshot.restingInt ?? 60
         let maxHR = profile.maxHR
-        historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions)
+        historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions, maxHR: maxHR)
         if deferred {
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12) {
                 let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
@@ -2489,7 +2489,8 @@ final class SessionStore: ObservableObject {
         let history = HistorySnapshot(sessions: canonical,
                                       detections: detections,
                                       trends: trends,
-                                      rollups: rollups)
+                                      rollups: rollups,
+                                      maxHR: maxHR)
         let sleep = SleepHistorySnapshot(rollups: rollups,
                                          confirmedSleeps: confirmedSleeps,
                                          calendar: calendar)
@@ -9619,16 +9620,16 @@ struct HistoryView: View {
 
                         historySection(title: "Saved sessions", subtitle: "Open any session for detail") {
                             LazyVStack(spacing: 12) {
-                                ForEach(snapshot.sessions) { session in
+                                ForEach(snapshot.sessionRows) { row in
                                     NavigationLink {
-                                        SessionDetail(session: session)
+                                        SessionDetail(session: row.session)
                                     } label: {
-                                        historySessionRow(session)
+                                        historySessionRow(row)
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu {
                                         Button(role: .destructive) {
-                                            store.deleteSession(id: session.id)
+                                            store.deleteSession(id: row.id)
                                         } label: {
                                             Label("Delete session", systemImage: "trash")
                                         }
@@ -9696,30 +9697,26 @@ struct HistoryView: View {
         .atriaCard(cornerRadius: 22, emphasis: .soft)
     }
 
-    private func historySessionRow(_ session: SavedSession) -> some View {
+    private func historySessionRow(_ row: HistorySessionRowSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(session.label.isEmpty ? "Session" : session.label)
+                Text(row.title)
                     .font(.headline.weight(.semibold))
                     .lineLimit(2)
                 Spacer(minLength: 12)
-                Text(session.start, style: .date)
+                Text(row.start, style: .date)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Text("\(session.durationText) · avg \(session.avg) · peak \(session.peak) · rest \(session.resting)")
+            Text(row.summaryText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 10) {
-                historySessionPill("HRV", value: session.hrv.map(String.init) ?? "Learning", tint: .purple)
-                historySessionPill("Samples", value: "\(session.points.count)", tint: .cyan)
-                historySessionPill("TRIMP",
-                                   value: String(format: "%.1f",
-                                                 session.trimp(rest: session.restingStable,
-                                                               max: max(store.profile.maxHR, session.restingStable + 1))),
-                                   tint: .orange)
+                historySessionPill("HRV", value: row.hrvText, tint: .purple)
+                historySessionPill("Samples", value: row.samplesText, tint: .cyan)
+                historySessionPill("TRIMP", value: row.trimpText, tint: .orange)
             }
         }
         .padding(16)
@@ -9745,24 +9742,69 @@ struct HistoryView: View {
 
 struct HistorySnapshot {
     let sessions: [SavedSession]
+    let sessionRows: [HistorySessionRowSnapshot]
     let detections: [ActivityDetection]
     let trends: [TrendSummary]
     let rollups: [DailyRollup]
 
-    static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [])
+    static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [], maxHR: 200)
 
-    static func sessionsOnly(_ sessions: [SavedSession]) -> HistorySnapshot {
-        HistorySnapshot(sessions: sessions, detections: [], trends: [], rollups: [])
+    static func sessionsOnly(_ sessions: [SavedSession], maxHR: Int) -> HistorySnapshot {
+        HistorySnapshot(sessions: sessions,
+                        detections: [],
+                        trends: [],
+                        rollups: [],
+                        maxHR: maxHR,
+                        includeDerivedSessionRows: false)
     }
 
     init(sessions: [SavedSession],
          detections: [ActivityDetection],
          trends: [TrendSummary],
-         rollups: [DailyRollup]) {
+         rollups: [DailyRollup],
+         maxHR: Int,
+         includeDerivedSessionRows: Bool = true) {
         self.sessions = sessions
+        self.sessionRows = sessions.map {
+            HistorySessionRowSnapshot(session: $0,
+                                      maxHR: maxHR,
+                                      includeDerivedMetrics: includeDerivedSessionRows)
+        }
         self.detections = detections
         self.trends = trends
         self.rollups = rollups
+    }
+}
+
+struct HistorySessionRowSnapshot: Identifiable {
+    let session: SavedSession
+    let id: UUID
+    let title: String
+    let start: Date
+    let summaryText: String
+    let hrvText: String
+    let samplesText: String
+    let trimpText: String
+
+    init(session: SavedSession, maxHR: Int, includeDerivedMetrics: Bool) {
+        self.session = session
+        id = session.id
+        title = session.label.isEmpty ? "Session" : session.label
+        start = session.start
+        hrvText = session.hrv.map(String.init) ?? "Learning"
+        samplesText = "\(session.points.count)"
+        guard includeDerivedMetrics else {
+            summaryText = "\(session.durationText) · \(session.points.count) samples"
+            trimpText = "..."
+            return
+        }
+        let bpms = session.points.map(\.bpm)
+        let avg = bpms.isEmpty ? 0 : bpms.reduce(0, +) / bpms.count
+        let peak = bpms.max() ?? 0
+        let resting = bpms.min() ?? 0
+        summaryText = "\(session.durationText) · avg \(avg) · peak \(peak) · rest \(resting)"
+        let resolvedMaxHR = max(maxHR, session.restingStable + 1)
+        trimpText = String(format: "%.1f", session.trimp(rest: session.restingStable, max: resolvedMaxHR))
     }
 }
 
