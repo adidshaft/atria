@@ -368,6 +368,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard let self, self.prefersPulseSparklineUpdates else { return }\n                self.publishPulseLive()",
             "clean beat-to-beat",
             "Clean beat-to-beat",
+            "clean strap",
+            "Clean strap",
         ]:
             assert_not_contains(self, home, forbidden)
 
@@ -4335,6 +4337,7 @@ class HandoffStaticChecks(unittest.TestCase):
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
@@ -4404,6 +4407,17 @@ class HandoffStaticChecks(unittest.TestCase):
                 "HR import failed",
             ]:
                 assert_not_contains(self, text, forbidden)
+
+        for text in [overview, vitals, content, hero, home]:
+            for forbidden in [
+                "clean strap",
+                "Clean strap",
+                "clean RR window",
+                "clean HRV window",
+            ]:
+                assert_not_contains(self, text, forbidden)
+        assert_contains(self, vitals, "Secondary HRV metric from the same steady beat-to-beat window.")
+        assert_contains(self, source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift"), "learning: need a steady HRV window")
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"Reference\"")
         assert_not_contains(self, overview, "AtriaInlineQuickStat(label: \"RR package\"")
         assert_contains(self, intents, "subtitle: \"Start live backup\"")
@@ -5044,7 +5058,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"SDNN\"",
             "value: live.hrvSDNNText",
             "unit: live.hrvSDNN == nil ? nil : \"ms\"",
-            "Secondary HRV metric from the same clean RR window.",
+            "Secondary HRV metric from the same steady beat-to-beat window.",
             "AtriaMetricTile(label: \"pNN50\"",
             "value: live.hrvPNN50Text",
             "Share of adjacent beat intervals differing by more than 50 ms.",
