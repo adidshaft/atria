@@ -288,8 +288,73 @@ your strap closer" — each correct, calm, and actionable on a Release build.
 
 ---
 
+## PART D — Personal target zones, traffic-light status & "(i)" coaching
+
+OWNER-REQUESTED. Every metric card gets a **target zone** with a **green / yellow /
+red** traffic-light state, a **warning glyph + "(i)" button** when out of range, and
+the zones are **user-editable** — both by tapping the card directly and from Settings.
+Tapping "(i)" explains *why* it's off and *what to do* to bring it back. Recommendations
+are general lifestyle guidance, **never medical**; ranges are personalized to the
+user's own baseline where the metric is personal, and editable everywhere.
+
+### D1. Data model
+- `AtriaMetricTarget` per metric: `{ direction, optimalRange, yellowBuffer, redThreshold,
+  goal?, source: .researchDefault | .personalBaseline | .userEdited }`.
+  - `direction`: `.higherIsBetter` (HRV, Recovery, Sleep eff), `.lowerIsBetter` (RHR),
+    `.targetBand` (Strain, Steps, Sleep duration, temp/resp deviation).
+- Persist user edits in `@AppStorage` (e.g. `atria.target.<metric>`); when unset, use
+  the **researched default** (table below), re-derived from the user's baseline where
+  marked "personal" (HRV/RHR baselines already live in `SessionStore.baseline`).
+- A pure function `zone(for value, target) -> .green | .yellow | .red` + the matching
+  tint + SF Symbol (green: none; yellow: `exclamationmark.circle`; red:
+  `exclamationmark.triangle.fill`). Compute in the derived store / a cheap helper —
+  NOT in a `body` (docs/20 §A0).
+
+### D2. Researched default zones + "(i)" recommendation (all editable; personal where noted)
+| Metric | Direction | Green (optimal) | Yellow | Red (warning) | "(i)" recommendation when yellow/red |
+|---|---|---|---|---|---|
+| **Recovery %** | higher | 67–100 | 34–66 | 1–33 | "Low recovery — keep today light, hydrate, and get to bed earlier. Your body is under-recovered." (WHOOP's own 67/34 thresholds) |
+| **Day Strain** | targetBand (recovery-scaled) | within ±1.5 of the recovery-suggested target | a bit over/under | far over target (overreaching) | Over: "You're past your suggested strain for today's recovery — ease off to protect tomorrow." Under: "Room to add load if you feel good." Target strain rises with recovery (green recovery → higher target). |
+| **HRV (RMSSD)** | higher (vs **personal** baseline) | ≥ baseline −5% | −5% to −15% | < baseline −15% | "HRV below your norm — usually stress, short/poor sleep, alcohol, or oncoming illness. Prioritize sleep + an easy day." |
+| **Resting HR** | lower (vs **personal** baseline) | ≤ baseline +3 bpm | +3 to +7 | > baseline +7 | "Resting HR up vs your norm — fatigue, stress, dehydration, or illness onset. Hydrate and rest." |
+| **Sleep duration** | targetBand (vs need/goal) | ≥ 100% of sleep need | 85–99% | < 85% | "Under your sleep need — aim for ~{N}h more and keep bed/wake times consistent." |
+| **Sleep efficiency** | higher | ≥ 90% | 80–89% | < 80% | "Restless night — cut late caffeine/alcohol, cool/dark room, consistent schedule." |
+| **Steps** | targetBand (goal, default 8k) | ≥ goal | 50–99% of goal | < 50% | "Below your step goal — a short walk closes the gap." |
+| **VO₂max / Biological Age** | higher / younger | improving vs trend | flat | declining | "Trending the wrong way — consistent cardio (Zone 2 + intervals) and sleep move this most." |
+| **Skin temp / SpO₂ / Resp rate** | targetBand (vs baseline) | within baseline band | slightly off | largely off | Informational only (research tier): "Off your baseline — could be environment, illness onset, or cycle. Not a diagnosis." |
+
+### D3. Interaction
+- **On the card:** value renders in the zone tint; when yellow/red show the glyph +
+  a small **"(i)"** button. Tapping "(i)" opens a sheet: what the metric is, its
+  current zone + the personalized reason, and the recommendation above.
+- **Edit by tapping the card:** long-press / a card "edit" affordance opens an inline
+  target editor (sliders/steppers for the optimal range + goal). Reuse the Part-A
+  edit affordance so customization is discoverable from the widget itself.
+- **Edit from Settings:** a "Targets & zones" screen lists every metric with its
+  current range, a **Reset to recommended** action, and a note when a default is
+  personalized to the user's baseline.
+- Live: the color + glyph update the instant the value crosses a threshold (the card
+  must observe the live/derived store — same observation fix as the status chip).
+
+### D4. Honesty guardrails (REQUIRED)
+- Recommendations are **general guidance, not medical advice** — every "(i)" sheet
+  carries a one-line non-medical disclaimer. No disease/severity claims, no alarms
+  beyond the calm warning glyph (respect docs/20 "never auto-interrupt").
+- Personal-baseline zones (HRV, RHR) require a built baseline first; until then show
+  the metric without a red zone (or "building baseline"), never a false alarm.
+- Defaults are sourced (cite WHOOP recovery thresholds / sleep-need / step-goal norms
+  in comments) and always **user-overridable**.
+
+DoD for Part D: each metric shows green/yellow/red with a warning glyph + "(i)" when
+out of range; "(i)" gives a personalized, actionable, non-medical recommendation;
+ranges are editable from the card and from Settings, with researched personalized
+defaults and a Reset; colors update live; all zone logic off the hot path.
+
+---
+
 ## Suggested order
 1. **B-RR** (unblocks the headline metrics) → 2. **Part C** (the contact/connection
 coach the owner is frustrated about) → 3. **Part B** metrics through the derived
-store → 4. **Part A** drag-drop + uniformity → 5. **B-HISTORICAL** backfill.
+store → 4. **Part D** target zones + "(i)" coaching (rides on the Part B metrics) →
+5. **Part A** drag-drop + uniformity → 6. **B-HISTORICAL** backfill.
 Log a status block at the end of each, like docs/18.
