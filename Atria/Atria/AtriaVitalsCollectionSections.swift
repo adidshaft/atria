@@ -98,12 +98,14 @@ struct AtriaVitalsTabContent: View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
                                  pulseStore: pulseStore,
                                  homeStatsStore: homeStatsStore,
+                                 store: store,
                                  pulseSparklineStore: pulseSparklineStore)
     }
 
     private var hrvCard: some View {
         AtriaVitalsHRVCardHost(liveStore: liveStore,
-                               heroStore: heroStore)
+                               heroStore: heroStore,
+                               store: store)
     }
 
     private var recoveryStrainCard: some View {
@@ -311,13 +313,21 @@ private struct AtriaVitalsPulseCardHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var store: SessionStore
+    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     var body: some View {
         AtriaPulseCard(isConnected: liveStore.state.status == .connected,
                        live: pulseStore.state,
                        sparklineStore: pulseSparklineStore,
-                       restingHeartRateText: homeStatsStore.state.restingHeartRateText)
+                       restingHeartRate: homeStatsStore.state.restingHeartRate,
+                       restingHeartRateText: homeStatsStore.state.restingHeartRateText,
+                       restingBaseline: store.baseline.restingInt,
+                       restingBaselineSamples: store.baseline.restingSampleCount,
+                       restingGreenDelta: restingGreenDelta,
+                       restingYellowDelta: restingYellowDelta)
             .equatable()
     }
 }
@@ -325,10 +335,17 @@ private struct AtriaVitalsPulseCardHost: View {
 private struct AtriaVitalsHRVCardHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var store: SessionStore
+    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
 
     var body: some View {
         AtriaHRVCard(live: liveStore.state,
-                     hero: heroStore.state)
+                     hero: heroStore.state,
+                     hrvBaseline: store.baseline.hrvInt,
+                     hrvBaselineSamples: store.baseline.hrvSampleCount,
+                     hrvGreenRatio: hrvGreenRatio,
+                     hrvYellowRatio: hrvYellowRatio)
             .equatable()
     }
 }
@@ -1394,13 +1411,23 @@ private struct AtriaPulseCard: View, Equatable {
     let isConnected: Bool
     let live: AtriaHomeModel.PulseLiveState
     let sparklineStore: AtriaHomeModel.PulseSparklineStore
+    let restingHeartRate: Int
     let restingHeartRateText: String
+    let restingBaseline: Int?
+    let restingBaselineSamples: Int
+    let restingGreenDelta: Int
+    let restingYellowDelta: Int
     @State private var showHeartRateExplorer = false
 
     static func == (lhs: AtriaPulseCard, rhs: AtriaPulseCard) -> Bool {
         lhs.isConnected == rhs.isConnected
             && lhs.live == rhs.live
+            && lhs.restingHeartRate == rhs.restingHeartRate
             && lhs.restingHeartRateText == rhs.restingHeartRateText
+            && lhs.restingBaseline == rhs.restingBaseline
+            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.restingGreenDelta == rhs.restingGreenDelta
+            && lhs.restingYellowDelta == rhs.restingYellowDelta
     }
 
     private var hasReadablePulse: Bool {
@@ -1409,6 +1436,14 @@ private struct AtriaPulseCard: View, Equatable {
 
     private var pulseState: AtriaMetricState {
         hasReadablePulse ? .live : .noContact
+    }
+
+    private var restingHeartRateZone: AtriaMetricZone? {
+        Metrics.restingHeartRateZone(restingHeartRate,
+                                     baseline: restingBaseline,
+                                     baselineSamples: restingBaselineSamples,
+                                     greenDelta: restingGreenDelta,
+                                     yellowDelta: restingYellowDelta)
     }
 
     var body: some View {
@@ -1456,7 +1491,8 @@ private struct AtriaPulseCard: View, Equatable {
         AtriaMetricTile(label: "Resting",
                         value: restingHeartRateText,
                         state: .personalBaseline,
-                        tint: .blue)
+                        tint: restingHeartRateZone?.tint ?? .blue,
+                        zone: restingHeartRateZone)
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
@@ -1722,9 +1758,30 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
 private struct AtriaHRVCard: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
     let hero: AtriaHomeModel.HeroSnapshot
+    let hrvBaseline: Int?
+    let hrvBaselineSamples: Int
+    let hrvGreenRatio: Double
+    let hrvYellowRatio: Double
+
+    static func == (lhs: AtriaHRVCard, rhs: AtriaHRVCard) -> Bool {
+        lhs.live == rhs.live
+            && lhs.hero == rhs.hero
+            && lhs.hrvBaseline == rhs.hrvBaseline
+            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.hrvGreenRatio == rhs.hrvGreenRatio
+            && lhs.hrvYellowRatio == rhs.hrvYellowRatio
+    }
 
     private var continuityTint: Color {
         live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .orange : .pink
+    }
+
+    private var hrvZone: AtriaMetricZone? {
+        Metrics.hrvZone(Self.parseInt(hero.hrvValue),
+                        baseline: hrvBaseline,
+                        baselineSamples: hrvBaselineSamples,
+                        greenRatio: hrvGreenRatio,
+                        yellowRatio: hrvYellowRatio)
     }
 
     var body: some View {
@@ -1761,8 +1818,9 @@ private struct AtriaHRVCard: View, Equatable {
         AtriaMetricTile(label: "RMSSD",
                         value: hero.hrvValue,
                         state: hrvState,
-                        tint: .pink,
-                        footnote: hero.hrvDetail)
+                        tint: hrvZone?.tint ?? .pink,
+                        footnote: hero.hrvDetail,
+                        zone: hrvZone)
         AtriaMetricTile(label: "Window",
                         value: hero.rrPackageText,
                         state: isConnected && !live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .live : .learning,
@@ -1774,6 +1832,12 @@ private struct AtriaHRVCard: View, Equatable {
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
+
+    private static func parseInt(_ text: String) -> Int? {
+        let digits = text.filter(\.isNumber)
+        guard !digits.isEmpty else { return nil }
+        return Int(digits)
+    }
 }
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
