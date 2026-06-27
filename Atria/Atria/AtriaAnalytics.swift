@@ -1356,4 +1356,149 @@ enum AtriaAnalytics {
             return values.reduce(0, +) / Double(values.count)
         }
     }
+
+    enum CalibrationExamples {
+        struct Check: Equatable {
+            let name: String
+            let actual: Double
+            let expected: Double
+            let tolerance: Double
+
+            var passed: Bool {
+                abs(actual - expected) <= tolerance
+            }
+        }
+
+        struct LabelCheck: Equatable {
+            let name: String
+            let actual: String
+            let expected: String
+
+            var passed: Bool {
+                actual == expected
+            }
+        }
+
+        static let strainTRIMP = Check(name: "banister_strain_score",
+                                       actual: Strain.score(fromTRIMP: 50),
+                                       expected: 14.98,
+                                       tolerance: 0.05)
+
+        static let strainEdwards = Check(name: "edwards_strain_score",
+                                         actual: Strain.score(fromEdwardsLoad: 120),
+                                         expected: 17.69,
+                                         tolerance: 0.05)
+
+        static let recoveryHRV = Check(name: "hrv_recovery_score",
+                                       actual: Double(Recovery.estimate(hrvNow: 70,
+                                                                        hrvBaseline: 50,
+                                                                        restingNow: 58,
+                                                                        restingBaseline: 60)),
+                                       expected: 98,
+                                       tolerance: 1)
+
+        static let respiratoryRate = Check(name: "resp_rate_rsa",
+                                           actual: RespRateRsa.estimate(resampledRR: respiratorySineWave,
+                                                                        sampleRate: 4.0) ?? 0,
+                                           expected: 15.0,
+                                           tolerance: 0.5)
+
+        static let bodyAgeVO2 = Check(name: "bio_age_vo2_male",
+                                      actual: Double(BiologicalAge.vo2AgeEquivalent(48.5, sex: .male)),
+                                      expected: 30,
+                                      tolerance: 1)
+
+        static let bodyAgeSummary = Check(name: "bio_age_summary",
+                                          actual: Double(BiologicalAge.summary(chronologicalAge: 38,
+                                                                               factors: strongBodyAgeFactors).biologicalAge ?? 0),
+                                          expected: 23,
+                                          tolerance: 1)
+
+        static let acwrWatch = LabelCheck(name: "acwr_watch",
+                                          actual: TrainingLoad.acwrReadinessSignal(ratio: 1.35,
+                                                                                   enoughChronic: true),
+                                          expected: "watch")
+
+        static let monotonyBad = LabelCheck(name: "monotony_bad",
+                                            actual: TrainingLoad.monotonyReadinessSignal(monotony: 2.7,
+                                                                                         enoughAcute: true),
+                                            expected: "bad")
+
+        static let readinessRundown = LabelCheck(name: "readiness_rundown",
+                                                 actual: TrainingLoad.trainingReadiness(acwrSignal: acwrWatch.actual,
+                                                                                        monotonySignal: monotonyBad.actual,
+                                                                                        ratio: 1.35),
+                                                 expected: "rundown")
+
+        static var numericChecks: [Check] {
+            [
+                strainTRIMP,
+                strainEdwards,
+                recoveryHRV,
+                respiratoryRate,
+                bodyAgeVO2,
+                bodyAgeSummary
+            ]
+        }
+
+        static var labelChecks: [LabelCheck] {
+            [
+                acwrWatch,
+                monotonyBad,
+                readinessRundown
+            ]
+        }
+
+        static var allPassed: Bool {
+            numericChecks.allSatisfy(\.passed) && labelChecks.allSatisfy(\.passed)
+        }
+
+        private static let respiratorySineWave: [Double] = (0..<240).map { index in
+            900 + 50 * sin(2 * .pi * (15.0 / 60.0) * Double(index) / 4.0)
+        }
+
+        private static let strongBodyAgeFactors: [BioAgeFactor] = [
+            BiologicalAge.factor(id: "vo2",
+                                  label: "VO2max",
+                                  ageEquivalent: BiologicalAge.vo2AgeEquivalent(55, sex: .male),
+                                  chronologicalAge: 38,
+                                  weight: 0.30,
+                                  detail: "VO2max 55"),
+            BiologicalAge.factor(id: "rhr",
+                                  label: "RHR",
+                                  ageEquivalent: BiologicalAge.rhrAgeEquivalent(55),
+                                  chronologicalAge: 38,
+                                  weight: 0.20,
+                                  detail: "RHR 55"),
+            BiologicalAge.factor(id: "hrv",
+                                  label: "HRV",
+                                  ageEquivalent: BiologicalAge.hrvAgeEquivalent(70),
+                                  chronologicalAge: 38,
+                                  weight: 0.20,
+                                  detail: "RMSSD 70"),
+            BiologicalAge.factor(id: "sleep",
+                                  label: "Sleep",
+                                  ageEquivalent: BiologicalAge.sleepAgeEquivalent(durationHours: 7.5,
+                                                                                  efficiency: 0.90,
+                                                                                  consistencyPercent: 92,
+                                                                                  chronologicalAge: 38),
+                                  chronologicalAge: 38,
+                                  weight: 0.15,
+                                  detail: "7.5h, 90%, consistent"),
+            BiologicalAge.factor(id: "activity",
+                                  label: "Activity",
+                                  ageEquivalent: BiologicalAge.activityAgeEquivalent(36,
+                                                                                    chronologicalAge: 38),
+                                  chronologicalAge: 38,
+                                  weight: 0.10,
+                                  detail: "load 36"),
+            BiologicalAge.factor(id: "bmi",
+                                  label: "BMI",
+                                  ageEquivalent: BiologicalAge.bmiAgeEquivalent(22,
+                                                                                chronologicalAge: 38),
+                                  chronologicalAge: 38,
+                                  weight: 0.05,
+                                  detail: "BMI 22")
+        ]
+    }
 }
