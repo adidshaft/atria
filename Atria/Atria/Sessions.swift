@@ -7677,7 +7677,7 @@ final class SessionStore: ObservableObject {
     }
 
     func scheduleSleepValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-verify-sleep") else { return }
+        guard arguments.contains("--atria-verify-sleep") || arguments.contains("--atria-schedule-sleep-validation") else { return }
         let label = value(after: "--atria-verify-sleep-label", in: arguments)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let delay = doubleValue(after: "--atria-verify-sleep-after",
@@ -7823,6 +7823,8 @@ final class SessionStore: ObservableObject {
     }
 
     func scheduleWorkoutValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-schedule-workout-validation")
+                || value(after: "--atria-verify-workout-label", in: arguments) != nil else { return }
         guard let label = value(after: "--atria-verify-workout-label", in: arguments),
               !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let delay = doubleValue(after: "--atria-verify-workout-after",
