@@ -4,6 +4,8 @@ import UserNotifications
 @MainActor
 enum LocalNotificationScheduler {
     private static let actionableBatteryThreshold = 20
+    private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
+    private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
 
     private enum Identifier {
         static let recovery = "atria.recovery.ready"
@@ -45,6 +47,57 @@ enum LocalNotificationScheduler {
                            includeActionableConnectionDecisions: productionCadence || debugMetricRequest,
                            includeDiagnostic: debugDiagnosticRequest,
                            productionCadence: productionCadence)
+        }
+    }
+
+    static func scheduleActionableConnectionDiagnosis(title: String,
+                                                      body: String,
+                                                      reason: String,
+                                                      now: Date = Date()) {
+        guard let decision = actionableConnectionDiagnosisDecision(title: title,
+                                                                  body: body,
+                                                                  reason: reason) else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=actionable_connection reason=diagnosis_%@", title)
+            return
+        }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=%@",
+                              status,
+                              decision.kind)
+                return
+            }
+
+            let pending = await pendingRequests(center: center)
+            if pending.contains(where: { $0.identifier == decision.identifier }) {
+                AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=pending_request", decision.kind)
+                return
+            }
+
+            let defaults = UserDefaults.standard
+            let cooldownKey = actionableDiagnosisLastScheduledPrefix + decision.identifier
+            let last = defaults.double(forKey: cooldownKey)
+            if last > 0, now.timeIntervalSince(Date(timeIntervalSince1970: last)) < actionableDiagnosisCooldown {
+                AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=cooldown", decision.kind)
+                return
+            }
+
+            do {
+                try await add(decision: decision, center: center)
+                defaults.set(now.timeIntervalSince1970, forKey: cooldownKey)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=%@ error=%@",
+                              decision.kind,
+                              String(describing: error))
+            }
         }
     }
 
@@ -259,6 +312,31 @@ enum LocalNotificationScheduler {
         }
 
         return [batteryDecision, bluetoothDecision]
+    }
+
+    private static func actionableConnectionDiagnosisDecision(title: String,
+                                                              body: String,
+                                                              reason: String) -> NotificationDecision? {
+        switch title {
+        case "Strap battery low":
+            return NotificationDecision(kind: "battery",
+                                        identifier: Identifier.battery,
+                                        title: title,
+                                        body: body,
+                                        reason: "visible_diagnosis_\(reason)",
+                                        shouldSchedule: true,
+                                        delay: 9)
+        case "Bluetooth is off", "Bluetooth permission needed":
+            return NotificationDecision(kind: "bluetooth_off",
+                                        identifier: Identifier.bluetoothOff,
+                                        title: title,
+                                        body: body,
+                                        reason: "visible_diagnosis_\(reason)",
+                                        shouldSchedule: true,
+                                        delay: 11)
+        default:
+            return nil
+        }
     }
 
     private static func batterySnapshot(liveLevel: Int) -> (level: Int, source: String, age: TimeInterval, usable: Bool) {

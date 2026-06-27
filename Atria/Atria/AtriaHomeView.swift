@@ -726,6 +726,12 @@ struct AtriaHomeView: View {
         }
 
         if next.showsImmediately {
+            if visibleConnectionDiagnosis != next {
+                LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,
+                                                                                 body: next.action,
+                                                                                 reason: reason,
+                                                                                 now: now)
+            }
             connectionDiagnosisCandidate = next
             connectionDiagnosisCandidateSince = now
             visibleConnectionDiagnosis = next
