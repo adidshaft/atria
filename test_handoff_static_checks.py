@@ -1265,6 +1265,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_offline_historical_sync_is_bounded_standard_hr_exception(self):
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
 
         for needle in [
             "enum OfflineSyncDefaults",
@@ -1393,6 +1394,17 @@ class HandoffStaticChecks(unittest.TestCase):
         cancel_index = start_body.find("central.cancelPeripheralConnection(peripheral)")
         self.assertGreaterEqual(late_defer_index, 0)
         self.assertGreater(cancel_index, late_defer_index)
+
+        for needle in [
+            "AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream)",
+            "private var missedDataBackfillIsDeferredForLiveStream: Bool",
+            "case .connected:\n            return model.coreLiveStore.state.sessionSampleCount > 0",
+            "Text(protectsLiveStream ? \"Missed data queued\" : \"New data on your strap\")",
+            "Live HR stays protected. Sync when you can pause the stream.",
+            "Button(protectsLiveStream ? \"Sync now\" : \"Sync\", action: onSync)",
+            "requestOfflineHistoricalSyncIfNeeded(reason: \"home_missed_data_banner\",\n                                                                 force: true)",
+        ]:
+            assert_contains(self, home, needle)
 
         assert_contains(self, ble, "currentSessionUsable: false")
         assert_contains(self, ble, "metricUsable: false")
