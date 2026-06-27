@@ -391,6 +391,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "offline_sync_namespace=",
             "pref(prefs, 'offlineSync.lastStatus'",
             "link_namespace=",
+            "def emit_historical_archive_summary():",
+            "historical_archive_summary_status=ok",
+            "historical_archive_metric_usable_rows=",
+            "historical_archive_current_session_usable_rows=",
+            "historical_archive_metric_ready=",
+            "archive_persisted_fail_closed_rows",
         ]:
             assert_contains(self, pull_script, needle)
 
