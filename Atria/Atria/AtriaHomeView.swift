@@ -1628,6 +1628,8 @@ final class AtriaHomeModel {
         let loadReadinessText: String
         let loadACWRSignalText: String
         let loadMonotonySignalText: String
+        let loadACWRDetailText: String
+        let loadMonotonyDetailText: String
         let loadSignalSummaryText: String
         let loadNarrative: String
 
@@ -1675,6 +1677,8 @@ final class AtriaHomeModel {
                 && lhs.loadReadinessText == rhs.loadReadinessText
                 && lhs.loadACWRSignalText == rhs.loadACWRSignalText
                 && lhs.loadMonotonySignalText == rhs.loadMonotonySignalText
+                && lhs.loadACWRDetailText == rhs.loadACWRDetailText
+                && lhs.loadMonotonyDetailText == rhs.loadMonotonyDetailText
                 && lhs.loadSignalSummaryText == rhs.loadSignalSummaryText
                 && lhs.loadNarrative == rhs.loadNarrative
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
@@ -2501,6 +2505,8 @@ final class AtriaHomeModel {
                             loadReadinessText: load.readinessText,
                             loadACWRSignalText: load.acwrSignalText,
                             loadMonotonySignalText: load.monotonySignalText,
+                            loadACWRDetailText: load.acwrDetailText,
+                            loadMonotonyDetailText: load.monotonyDetailText,
                             loadSignalSummaryText: load.signalSummaryText,
                             loadNarrative: load.detail)
     }
@@ -2707,6 +2713,8 @@ final class AtriaHomeModel {
                             loadReadinessText: "Learning",
                             loadACWRSignalText: "Learning",
                             loadMonotonySignalText: "Learning",
+                            loadACWRDetailText: TrainingLoadSummary.learning.acwrDetailText,
+                            loadMonotonyDetailText: TrainingLoadSummary.learning.monotonyDetailText,
                             loadSignalSummaryText: "Learning",
                             loadNarrative: "Training load appears after local strain history builds.")
     }

@@ -2033,6 +2033,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               readiness: hero.loadReadinessText,
                               acwrSignal: hero.loadACWRSignalText,
                               monotonySignal: hero.loadMonotonySignalText,
+                              acwrDetail: hero.loadACWRDetailText,
+                              monotonyDetail: hero.loadMonotonyDetailText,
                               signalSummary: hero.loadSignalSummaryText,
                               narrative: hero.loadNarrative)
     }
@@ -2538,6 +2540,8 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     let readiness: String
     let acwrSignal: String
     let monotonySignal: String
+    let acwrDetail: String
+    let monotonyDetail: String
     let signalSummary: String
     let narrative: String
 
@@ -2571,6 +2575,15 @@ private struct AtriaTrainingLoadTile: View, Equatable {
                 AtriaTrainingSignalChip(title: "Monotony", value: monotonySignal, signal: monotonySignal)
             }
 
+            VStack(alignment: .leading, spacing: 3) {
+                Label(acwrDetail, systemImage: "gauge.with.dots.needle.50percent")
+                Label(monotonyDetail, systemImage: "waveform.path")
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .minimumScaleFactor(0.76)
+
             Text("Target \(target)")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -2578,12 +2591,12 @@ private struct AtriaTrainingLoadTile: View, Equatable {
                 .minimumScaleFactor(0.78)
         }
         .frame(maxWidth: .infinity,
-               minHeight: 122,
-               maxHeight: 122,
+               minHeight: 164,
+               maxHeight: 164,
                alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: confidenceTint)
-            .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(narrative)")
+            .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(acwrDetail) \(monotonyDetail) \(narrative)")
     }
 }
 
