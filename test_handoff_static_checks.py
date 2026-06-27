@@ -693,8 +693,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Duration-based",
             "Sleep efficiency is building from saved sleep duration",
             "private var sleepHistoryCard: some View",
-            "Button(action: onOpenVitals)",
-            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,\n                                            sleepGoalHours: sleepGoalHours)",
+            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
+            "onOpenVitals: onOpenVitals",
             "private struct AtriaSleepHistoryGlanceCard: View, Equatable",
             "Text(\"Sleep history\")",
             "return \"\\(latest.evidenceLabel) · debt \\(snapshot.sleepDebtText(goalHours: sleepGoalHours))\"",
@@ -781,9 +781,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "onShiftMetric(metric, -1)",
             "onShiftMetric(metric, 1)",
             ".accessibilityAction(named: Text(\"Edit \\(metric.label) widget\"))",
-            "if isEditingGlance && metric.supportsGlanceTargetEditing",
             ".contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,",
-            ".accessibilityHidden(true)",
             ".accessibilityAction(named: Text(\"Edit \\(metric.label) target\"))",
             ".accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)",
             "? \"Make \\(metric.label) compact\"",
@@ -803,8 +801,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "if metric.supportsGlanceTargetEditing",
             "case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps",
             "targetEditorMetric = metric",
-            "Image(systemName: \"slider.horizontal.3\")",
-            ".accessibilityLabel(\"Edit \\(metric.label) target\")",
             "AtriaGlanceTargetEditorSheet(metric: metric)",
             "case .sleep, .sleepHistory:",
             "Adjust the sleep goal used by sleep history, debt, and consistency.",
@@ -817,6 +813,16 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaGlassIconAction(tint: .secondary, size: 30)",
             ".atriaGlassIconAction(tint: .red, size: 30)",
             ".accessibilityLabel(\"Add Today widget\")",
+            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
+            "onOpenVitals: onOpenVitals",
+            "onAddManualSleep: {",
+            "Image(systemName: \"moon.zzz.badge.plus\")",
+            "stage.shortLabel",
+            "case .awake: return \"AWAKE\"",
+            "case .light: return \"LIGHT\"",
+            "case .rem: return \"REM\"",
+            "case .sws: return \"SWS\"",
+            "case .deep: return \"DEEP\"",
             ".accessibilityHint(hiddenMetrics.isEmpty",
             "\"Opens the list of hidden Today widgets.\"",
             "Menu {",
@@ -839,6 +845,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "Label(isEditingGlance ? \"Done editing\" : \"Edit widgets\", systemImage: \"square.grid.2x2\")")
         assert_not_contains(self, overview, "Section(\"Hide widget\")")
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))")
+        assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.74), in: Capsule(style: .continuous))")
+        assert_not_contains(self, overview, "Image(systemName: \"slider.horizontal.3\")")
         assert_not_contains(self, overview, "Label(\"Reset widgets\", systemImage: \"arrow.counterclockwise\")")
         assert_not_contains(self, overview, "figure.run.circle.fill")
         assert_not_contains(self, overview, "heart.text.square.fill")
