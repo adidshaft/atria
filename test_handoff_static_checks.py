@@ -353,6 +353,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "onShiftMetric(metric, -1)",
             "onShiftMetric(metric, 1)",
             "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
+            ".sensoryFeedback(.selection, trigger: orderCSV)",
         ]:
             assert_contains(self, overview, needle)
 
@@ -392,6 +393,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func resetVitalsLayout()",
             "sectionOrderCSV = AtriaVitalsSection.allCases.map(\\.rawValue).joined(separator: \",\")",
             "Label(\"Reset Vitals layout\", systemImage: \"arrow.counterclockwise\")",
+            ".sensoryFeedback(.selection, trigger: sectionOrderCSV)",
             "static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String",
             "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
         ]:

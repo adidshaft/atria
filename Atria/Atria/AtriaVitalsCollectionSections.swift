@@ -52,6 +52,7 @@ struct AtriaVitalsTabContent: View {
                 .accessibilityLabel("Reset Vitals layout")
             }
         }
+        .sensoryFeedback(.selection, trigger: sectionOrderCSV)
     }
 
     @ViewBuilder

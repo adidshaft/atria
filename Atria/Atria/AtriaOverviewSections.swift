@@ -489,6 +489,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric)
             .equatable()
+            .sensoryFeedback(.selection, trigger: orderCSV)
     }
 
     private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
