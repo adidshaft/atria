@@ -68,7 +68,8 @@ enum AtriaAnalytics {
                         baselineSamples: Int,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
-            guard baselineSamples >= 7, let rmssd, let baseline, baseline > 0 else { return nil }
+            guard baselineSamples >= PersonalBaseline.trustedMinimumSamples,
+                  let rmssd, let baseline, baseline > 0 else { return nil }
             let ratio = Double(rmssd) / Double(baseline)
             let safeYellow = min(max(yellowRatio, 0.50), 0.98)
             let safeGreen = min(max(greenRatio, safeYellow + 0.01), 1.20)
@@ -99,7 +100,8 @@ enum AtriaAnalytics {
                                      baselineSamples: Int,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
-            guard baselineSamples >= 7, let bpm, let baseline, baseline > 0 else { return nil }
+            guard baselineSamples >= PersonalBaseline.trustedMinimumSamples,
+                  let bpm, let baseline, baseline > 0 else { return nil }
             let delta = bpm - baseline
             let safeGreenDelta = min(max(greenDelta, 0), 12)
             let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 1), 20)
