@@ -134,6 +134,34 @@ struct AtriaMetricZone: Equatable {
     static let nonMedicalDisclaimer = "General wellness guidance only, not medical advice."
 }
 
+struct AtriaBaselineTargetSnapshot: Equatable {
+    let hrvBaseline: Int?
+    let hrvSampleCount: Int
+    let hrvLnMean: Double?
+    let hrvLnSD: Double?
+    let hrvTrusted: Bool
+    let restingBaseline: Int?
+    let restingSampleCount: Int
+    let restingMean: Double?
+    let restingSD: Double?
+    let restingTrusted: Bool
+
+    init(_ baseline: PersonalBaseline) {
+        let hrvStats = baseline.lnRMSSDStats
+        let restingStats = baseline.restingStats
+        hrvBaseline = baseline.hrvInt
+        hrvSampleCount = baseline.hrvSampleCount
+        hrvLnMean = hrvStats?.mean
+        hrvLnSD = hrvStats?.sd
+        hrvTrusted = baseline.hasTrustedHRVBaseline() && (hrvStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
+        restingBaseline = baseline.restingInt
+        restingSampleCount = baseline.restingSampleCount
+        restingMean = restingStats?.mean
+        restingSD = restingStats?.sd
+        restingTrusted = baseline.hasTrustedRestingBaseline() && (restingStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
+    }
+}
+
 extension AtriaMetricZone {
     static func zone(for value: Double, target: AtriaMetricTarget) -> AtriaMetricZoneLevel {
         if let optimalRange = target.optimalRange,
@@ -186,12 +214,14 @@ extension Metrics {
                         baseline: Int?,
                         baselineSamples: Int,
                         baselineTrusted: Bool,
+                        baselineTarget: AtriaBaselineTargetSnapshot? = nil,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.hrv(rmssd,
                                        baseline: baseline,
                                        baselineSamples: baselineSamples,
                                        baselineTrusted: baselineTrusted,
+                                       baselineTarget: baselineTarget,
                                        greenRatio: greenRatio,
                                        yellowRatio: yellowRatio)
     }
@@ -200,12 +230,14 @@ extension Metrics {
                                      baseline: Int?,
                                      baselineSamples: Int,
                                      baselineTrusted: Bool,
+                                     baselineTarget: AtriaBaselineTargetSnapshot? = nil,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.restingHeartRate(bpm,
                                                     baseline: baseline,
                                                     baselineSamples: baselineSamples,
                                                     baselineTrusted: baselineTrusted,
+                                                    baselineTarget: baselineTarget,
                                                     greenDelta: greenDelta,
                                                     yellowDelta: yellowDelta)
     }

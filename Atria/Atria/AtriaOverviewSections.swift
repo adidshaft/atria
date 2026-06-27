@@ -578,6 +578,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      hrvBaseline: store.baseline.hrvInt,
                                      hrvBaselineSamples: store.baseline.hrvSampleCount,
                                      hrvBaselineTrusted: store.baseline.hasTrustedHRVBaseline(),
+                                     baselineTarget: AtriaBaselineTargetSnapshot(store.baseline),
                                      hrvGreenRatio: hrvGreenRatio,
                                      hrvYellowRatio: hrvYellowRatio,
                                      restingBaseline: store.baseline.restingInt,
@@ -878,6 +879,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
+    let baselineTarget: AtriaBaselineTargetSnapshot
     let hrvGreenRatio: Double
     let hrvYellowRatio: Double
     let restingBaseline: Int?
@@ -954,6 +956,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
+            && lhs.baselineTarget == rhs.baselineTarget
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
             && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
@@ -1558,6 +1561,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         baseline: hrvBaseline,
                         baselineSamples: hrvBaselineSamples,
                         baselineTrusted: hrvBaselineTrusted,
+                        baselineTarget: baselineTarget,
                         greenRatio: hrvGreenRatio,
                         yellowRatio: hrvYellowRatio)
     }
@@ -1567,6 +1571,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples,
                                      baselineTrusted: restingBaselineTrusted,
+                                     baselineTarget: baselineTarget,
                                      greenDelta: restingGreenDelta,
                                      yellowDelta: restingYellowDelta)
     }
