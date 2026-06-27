@@ -899,7 +899,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Forget the strap in Bluetooth, then reconnect.",
             "Turn on Bluetooth in Settings.",
             "Allow Bluetooth for Atria in Settings.",
-            "Adjust the strap fit so Atria can read pulse.",
+            "Tighten the strap fit so Atria can read pulse.",
             "Bring your strap closer and keep it on your wrist.",
             "Charge your strap before a workout or overnight wear.",
             "Close or uninstall WHOOP if it keeps reclaiming the strap.",
