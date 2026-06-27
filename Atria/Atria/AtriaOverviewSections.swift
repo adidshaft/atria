@@ -528,9 +528,13 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      subtitle: subtitle,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
+                                     hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
+                                                                                  hiddenCSV: hiddenCSV),
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric,
                                      onHideMetric: hideMetric,
+                                     onShowMetric: showMetric,
+                                     onResetMetrics: resetMetrics,
                                      onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
                                      onOpenInsights: onOpenInsights,
@@ -553,6 +557,17 @@ struct AtriaOverviewReadinessSectionHost: View {
         guard visibleCount > 1 else { return }
         hidden.insert(metric.rawValue)
         hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
+    }
+
+    private func showMetric(_ metric: AtriaTodayMetric) {
+        var hidden = AtriaTodayMetric.hidden(from: hiddenCSV)
+        hidden.remove(metric.rawValue)
+        hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
+    }
+
+    private func resetMetrics() {
+        orderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
+        hiddenCSV = ""
     }
 
 }
@@ -664,6 +679,11 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         return ordered(from: orderCSV).filter { !hidden.contains($0.rawValue) }
     }
 
+    static func hiddenOrdered(orderCSV: String, hiddenCSV: String) -> [AtriaTodayMetric] {
+        let hidden = hidden(from: hiddenCSV)
+        return ordered(from: orderCSV).filter { hidden.contains($0.rawValue) }
+    }
+
     fileprivate var dragPayload: String {
         Self.dragPayloadPrefix + rawValue
     }
@@ -711,9 +731,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let taggedDays: Int
     let subtitle: String
     let visibleMetrics: [AtriaTodayMetric]
+    let hiddenMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
     let onHideMetric: (AtriaTodayMetric) -> Void
+    let onShowMetric: (AtriaTodayMetric) -> Void
+    let onResetMetrics: () -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onOpenInsights: () -> Void
@@ -749,19 +772,30 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
+            && lhs.hiddenMetrics == rhs.hiddenMetrics
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
+
+                Spacer(minLength: 0)
+
+                customizeMenu
+            }
 
             if visibleMetrics.isEmpty {
-                Text("Choose Today cards in Settings.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .atriaInsetCard(tint: .secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Choose widgets from the customize menu.")
+                        .font(.footnote.weight(.semibold))
+                    Text("Recovery, strain, sleep, HRV, steps and research cards can be restored here anytime.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .atriaInsetCard(tint: .secondary)
             } else {
                 VStack(spacing: Self.glanceGridSpacing) {
                     ForEach(glanceRows, id: \.glanceRowID) { row in
@@ -775,15 +809,54 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     }
                 }
                 .frame(maxWidth: .infinity)
+                // Cache the metric grid only. The header customize menu remains
+                // interactive native Liquid Glass instead of being flattened.
+                .drawingGroup()
             }
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
-        // Flatten this heavy card (card + rings + tiles + sparkline) into one
-        // cached GPU texture. It's Equatable so it rarely rebuilds, so the texture
-        // stays valid and scrolling just blits it instead of recompositing ~20
-        // layers per frame.
-        .drawingGroup()
+    }
+
+    private var customizeMenu: some View {
+        Menu {
+            if !hiddenMetrics.isEmpty {
+                Section("Add widget") {
+                    ForEach(hiddenMetrics) { metric in
+                        Button {
+                            onShowMetric(metric)
+                        } label: {
+                            Label(metric.label, systemImage: metric.systemImage)
+                        }
+                    }
+                }
+            }
+
+            if visibleMetrics.count > 1 {
+                Section("Hide widget") {
+                    ForEach(visibleMetrics) { metric in
+                        Button(role: .destructive) {
+                            onHideMetric(metric)
+                        } label: {
+                            Label(metric.label, systemImage: "minus.circle")
+                        }
+                    }
+                }
+            }
+
+            Button {
+                onResetMetrics()
+            } label: {
+                Label("Reset widgets", systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.callout.weight(.semibold))
+                .frame(width: 38, height: 38)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Customize Today widgets")
     }
 
     private static let glanceGridSpacing: CGFloat = 10
@@ -851,28 +924,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
-            .overlay(alignment: .topTrailing) {
-                Menu {
-                    Button(role: .destructive) {
-                        onHideMetric(metric)
-                    } label: {
-                        Label("Remove \(metric.label)", systemImage: "minus.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30)
-                        .background(Color(.systemBackground).opacity(0.82), in: Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                        }
-                }
-                .buttonStyle(.plain)
-                .padding(8)
-                .accessibilityLabel("Widget options for \(metric.label)")
-            }
             .draggable(metric.dragPayload)
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
