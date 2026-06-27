@@ -1591,11 +1591,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
-        let baselineValues = sleepHistory.nights.dropFirst().compactMap(\.respiratoryRate).filter { $0 > 0 }
-        let baseline = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         return Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,
-                                           baseline: baseline,
-                                           baselineSamples: baselineValues.count,
+                                           baseline: sleepHistory.respiratoryBaselineMean,
+                                           baselineSamples: sleepHistory.respiratoryBaselineCount,
                                            greenDelta: respiratoryGreenDelta,
                                            yellowDelta: respiratoryYellowDelta)
     }

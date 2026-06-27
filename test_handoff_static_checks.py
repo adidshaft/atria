@@ -3546,7 +3546,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, metrics, "respiratoryBaseline: respiratoryBaseline")
         assert_contains(self, sessions, "var respiratoryBaselineStats: (mean: Double, sd: Double, count: Int)?")
         assert_contains(self, sessions, "values.count >= PersonalBaseline.trustedMinimumSamples")
-        assert_contains(self, sessions, "self.nights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))")
+        assert_contains(self, sessions, "let clippedNights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))")
+        assert_contains(self, sessions, "self.nights = clippedNights")
+        assert_contains(self, sessions, "let respiratoryBaselineMean: Double?")
+        assert_contains(self, sessions, "let respiratoryBaselineCount: Int")
         assert_not_contains(self, metrics, "let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)")
         assert_not_contains(self, metrics, "let restingPenalty = restingNow > 0 && restingBaseline > 0")
         assert_not_contains(self, analytics, "hrvStats.count >= 7")
@@ -4748,6 +4751,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenOlderDelta: biologicalAgeGreenOlderDelta",
             "yellowOlderDelta: biologicalAgeYellowOlderDelta",
             "Metrics.respiratoryRateZone(sleepHistory.latest?.respiratoryRate,",
+            "baseline: sleepHistory.respiratoryBaselineMean",
+            "baselineSamples: sleepHistory.respiratoryBaselineCount",
             "greenDelta: respiratoryGreenDelta",
             "yellowDelta: respiratoryYellowDelta",
             "Metrics.skinTemperatureDeviationZone(sensorSummary.skinTemperatureDeviation,",
@@ -4805,6 +4810,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenOlderDelta: biologicalAgeGreenOlderDelta",
             "yellowOlderDelta: biologicalAgeYellowOlderDelta",
             "Metrics.respiratoryRateZone(snapshot.latest?.respiratoryRate,",
+            "baseline: snapshot.respiratoryBaselineMean",
+            "baselineSamples: snapshot.respiratoryBaselineCount",
             "greenDelta: respiratoryGreenDelta",
             "yellowDelta: respiratoryYellowDelta",
             "Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation,",
@@ -4812,6 +4819,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "yellowDelta: skinTemperatureYellowDelta",
         ]:
             assert_contains(self, vitals, needle)
+
+        for path in [overview, vitals]:
+            assert_not_contains(self, path, "let baselineValues = sleepHistory.nights.dropFirst().compactMap(\\.respiratoryRate)")
+            assert_not_contains(self, path, "let baselineValues = snapshot.nights.dropFirst().compactMap(\\.respiratoryRate)")
 
         for needle in [
             "targetsSection",
