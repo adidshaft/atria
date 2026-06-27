@@ -1342,11 +1342,13 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertIsNotNone(logger)
         body = logger.group("body")
         for needle in [
+            "let deepDiagnosticsRequested = arguments.contains(\"--atria-log-daily-rollups-deep\")",
+            "guard arguments.contains(\"--atria-log-daily-rollups\") || deepDiagnosticsRequested else { return }",
             "let sourceSessions = sessions",
             "let confirmedWorkouts = cachedConfirmedWorkouts",
             "let confirmedSleeps = cachedConfirmedSleeps",
             "let baselineSnapshot = baseline",
-            'guard arguments.contains("--atria-log-daily-rollups-deep") else {',
+            "guard deepDiagnosticsRequested else {",
             "DispatchQueue.global(qos: .utility).async",
             "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
             "Self.logDailyRollups(rollups: snapshots.history.rollups,",
@@ -1355,7 +1357,7 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, body, needle)
 
-        fast_path = body.split('guard arguments.contains("--atria-log-daily-rollups-deep") else {', 1)[1].split("\n        let rollups = dailyRollups", 1)[0]
+        fast_path = body.split("guard deepDiagnosticsRequested else {", 1)[1].split("\n        let rollups = dailyRollups", 1)[0]
         for forbidden in [
             "dailyRollups(rest:",
             "aggregateWorkoutCandidates(",
@@ -1373,6 +1375,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "aggregateSleepCandidates(rest:",
         ]:
             assert_contains(self, sessions, needle)
+
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        assert_contains(self, app, 'arguments.contains("--atria-log-daily-rollups-deep")')
 
     def test_sleep_validation_reuses_aggregate_candidates(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")

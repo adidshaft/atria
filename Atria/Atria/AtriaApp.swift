@@ -211,6 +211,7 @@ struct AtriaApp: App {
             || arguments.contains("--atria-log-gate-readiness")
             || arguments.contains("--atria-log-activity-detections")
             || arguments.contains("--atria-log-daily-rollups")
+            || arguments.contains("--atria-log-daily-rollups-deep")
             || arguments.contains("--atria-log-workout-preflight")
             || arguments.contains("--atria-log-strain-validation")
             || arguments.contains("--atria-schedule-sleep-validation")
