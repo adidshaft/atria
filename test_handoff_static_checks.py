@@ -2218,6 +2218,29 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, widget, needle)
 
+    def test_home_screen_widgets_use_richer_small_and_medium_layouts(self):
+        widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+
+        for needle in [
+            "private var systemSmallWidget: some View",
+            "private var systemMediumWidget: some View",
+            "private var widgetHeader: some View",
+            "private func compactMetric(_ title: String, value: String, icon: String, tint: Color) -> some View",
+            "private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View",
+            "private struct AtriaWidgetRecoveryGauge: View",
+            "AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)",
+            ".frame(width: 72, height: 72)",
+            ".frame(width: 92, height: 92)",
+            "widgetMetricTile(\"Strain\"",
+            "widgetMetricTile(\"BPM\"",
+            "widgetMetricTile(\"HRV\"",
+            "widgetMetricTile(\"Steps\"",
+            ".accessibilityLabel(percent.map { \"Recovery \\($0) percent\" } ?? \"Recovery learning\")",
+        ]:
+            assert_contains(self, widget, needle)
+
+        assert_not_contains(self, widget, "// Recovery + Strain are the headline pair.")
+
     def test_live_activity_updates_are_throttled_off_the_sample_hot_path(self):
         coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
 

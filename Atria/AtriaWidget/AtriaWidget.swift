@@ -78,57 +78,146 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var systemWidget: some View {
+        Group {
+            switch family {
+            case .systemSmall:
+                systemSmallWidget
+            case .systemMedium:
+                systemMediumWidget
+            default:
+                systemMediumWidget
+            }
+        }
+        .containerBackground(.background, for: .widget)
+    }
+
+    private var systemSmallWidget: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text("Atria")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if let recovery = entry.snapshot?.recoveryPercent {
-                    Text("\(recovery)%")
-                        .font(.caption.weight(.bold))
-                        .monospacedDigit()
-                        .foregroundStyle(recoveryColor(recovery))
-                }
-            }
+            widgetHeader
 
-            // Recovery + Strain are the headline pair.
-            HStack(spacing: 12) {
-                homeMetric("Recovery", entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "--", "heart.circle.fill", .green)
-                homeMetric("Strain", entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--", "bolt.fill", .orange)
-            }
+            Spacer(minLength: 0)
 
-            if family == .systemMedium {
-                HStack(spacing: 12) {
-                    homeMetric("BPM", entry.snapshot?.heartRate.map(String.init) ?? "--", "heart.fill", .red)
-                    homeMetric("HRV", entry.snapshot?.hrvRMSSD.map { "\($0)" } ?? "--", "waveform.path.ecg", .pink)
-                    homeMetric("Steps", stepsText, "figure.walk", .blue)
+            HStack(alignment: .center, spacing: 10) {
+                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
+                    .frame(width: 72, height: 72)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    compactMetric("Strain",
+                                  value: entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
+                                  icon: "bolt.fill",
+                                  tint: .orange)
+                    compactMetric("BPM",
+                                  value: entry.snapshot?.heartRate.map(String.init) ?? "--",
+                                  icon: "heart.fill",
+                                  tint: .red)
                 }
             }
 
             Spacer(minLength: 0)
+
             Text(footerText)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
-        .containerBackground(.background, for: .widget)
     }
 
-    private func homeMetric(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View {
+    private var systemMediumWidget: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                widgetHeader
+
+                Spacer(minLength: 0)
+
+                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
+                    .frame(width: 92, height: 92)
+
+                Spacer(minLength: 0)
+
+                Text(secondaryText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(width: 108, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    widgetMetricTile("Strain",
+                                     value: entry.snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
+                                     icon: "bolt.fill",
+                                     tint: .orange)
+                    widgetMetricTile("BPM",
+                                     value: entry.snapshot?.heartRate.map(String.init) ?? "--",
+                                     icon: "heart.fill",
+                                     tint: .red)
+                }
+                HStack(spacing: 8) {
+                    widgetMetricTile("HRV",
+                                     value: entry.snapshot?.hrvRMSSD.map { "\($0)" } ?? "--",
+                                     icon: "waveform.path.ecg",
+                                     tint: .pink)
+                    widgetMetricTile("Steps",
+                                     value: stepsText,
+                                     icon: "figure.walk",
+                                     tint: .blue)
+                }
+            }
+        }
+    }
+
+    private var widgetHeader: some View {
+        HStack(spacing: 6) {
+            Text("Atria")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            if let recovery = entry.snapshot?.recoveryPercent {
+                Text("\(recovery)%")
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(recoveryColor(recovery))
+            }
+        }
+    }
+
+    private func compactMetric(_ title: String, value: String, icon: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Label(title, systemImage: icon)
-                .font(.caption2.weight(.semibold))
+            Image(systemName: icon)
+                .font(.caption.weight(.bold))
                 .foregroundStyle(tint)
-                .labelStyle(.titleAndIcon)
             Text(value)
-                .font(.title3.weight(.bold))
+                .font(.headline.weight(.bold))
                 .monospacedDigit()
-                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(title, systemImage: icon)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(value)
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+        }
+        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var stepsText: String {
@@ -212,6 +301,44 @@ struct AtriaWidgetEntryView: View {
     private var accessoryCode: String {
         guard let snapshot = entry.snapshot else { return "LRN" }
         return String(format: "%.0f", snapshot.strain)
+    }
+}
+
+private struct AtriaWidgetRecoveryGauge: View {
+    let percent: Int?
+
+    private var progress: Double {
+        guard let percent else { return 0 }
+        return min(1, max(0, Double(percent) / 100))
+    }
+
+    private var tint: Color {
+        guard let percent else { return .secondary }
+        if percent >= 67 { return .green }
+        if percent >= 34 { return .yellow }
+        return .red
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(tint.opacity(0.16), lineWidth: 9)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(tint, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text(percent.map { "\($0)" } ?? "--")
+                    .font(.title3.monospacedDigit().weight(.heavy))
+                    .minimumScaleFactor(0.55)
+                    .lineLimit(1)
+                Text("REC")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(percent.map { "Recovery \($0) percent" } ?? "Recovery learning")
     }
 }
 
