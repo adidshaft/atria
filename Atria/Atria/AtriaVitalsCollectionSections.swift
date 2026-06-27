@@ -684,10 +684,13 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
     @State private var showResearchInfo = false
 
     static func == (lhs: AtriaCollectionResearchSignalsCard, rhs: AtriaCollectionResearchSignalsCard) -> Bool {
-        lhs.summary == rhs.summary && lhs.sleepHistory == rhs.sleepHistory
+        lhs.summary == rhs.summary
+            && lhs.sleepHistory == rhs.sleepHistory
+            && lhs.bloodOxygenCandidateGoal == rhs.bloodOxygenCandidateGoal
     }
 
     private var hasEvidence: Bool {
@@ -712,6 +715,11 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
         Metrics.skinTemperatureDeviationZone(summary.skinTemperatureDeviation,
                                              greenDelta: skinTemperatureGreenDelta,
                                              yellowDelta: skinTemperatureYellowDelta)
+    }
+
+    private var bloodOxygenResearchZone: AtriaMetricZone? {
+        Metrics.bloodOxygenResearchZone(candidateFrames: summary.spo2CandidateFrames,
+                                        goalFrames: bloodOxygenCandidateGoal)
     }
 
     private var strapStepsZone: AtriaMetricZone? {
@@ -748,8 +756,9 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 value: summary.spo2CandidateFrames > 0 ? "Research" : "--",
                                 unit: nil,
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
-                                tint: .blue,
-                                footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.")
+                                tint: bloodOxygenResearchZone?.tint ?? .blue,
+                                footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.",
+                                zone: bloodOxygenResearchZone)
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTemperatureDeviation.valueText,
                                 unit: summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
