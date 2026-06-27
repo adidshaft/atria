@@ -1329,6 +1329,7 @@ final class AtriaHomeModel {
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
+        var needsRRContactCoach: Bool { rrContinuityState == "poor_contact" }
         var liveActiveCaloriesText: String { liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "--" }
         var phoneStepsText: String { phoneStepsToday > 0 ? "\(phoneStepsToday)" : "--" }
         var phoneMotionDetailText: String {
@@ -2966,6 +2967,11 @@ private struct AtriaConnectionDiagnosis: Equatable {
             return AtriaConnectionDiagnosis(title: pulse.hasPulseSignal ? "Fit check needed" : "Connected, no pulse",
                                             action: "Tighten the strap fit or wet the sensor.",
                                             systemImage: "heart.slash",
+                                            tint: .orange)
+        case .connected where live.needsRRContactCoach:
+            return AtriaConnectionDiagnosis(title: "Beat-to-beat signal weak",
+                                            action: "Tighten the strap fit or wet the sensor for HRV and Recovery.",
+                                            systemImage: "waveform.path.ecg",
                                             tint: .orange)
         case .scanning, .connecting:
             if officialAppRiskActive {
