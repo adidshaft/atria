@@ -106,30 +106,11 @@ extension Metrics {
                         baselineSamples: Int,
                         greenRatio: Double = 0.95,
                         yellowRatio: Double = 0.85) -> AtriaMetricZone? {
-        guard baselineSamples >= 7, let rmssd, let baseline, baseline > 0 else { return nil }
-        let ratio = Double(rmssd) / Double(baseline)
-        let safeYellow = min(max(yellowRatio, 0.50), 0.98)
-        let safeGreen = min(max(greenRatio, safeYellow + 0.01), 1.20)
-        let level: AtriaMetricZoneLevel = ratio >= safeGreen ? .green : (ratio >= safeYellow ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "HRV is near your personal baseline. Match your day to recovery and sleep."
-        case .yellow:
-            recommendation = "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load. Prioritize sleep and an easier day."
-        case .red:
-            recommendation = "HRV is well below your norm. Keep today easy and focus on sleep, hydration, and recovery."
-        }
-        let current = "\(rmssd) ms vs \(baseline) ms baseline."
-        let greenValue = Int((Double(baseline) * safeGreen).rounded())
-        let yellowValue = Int((Double(baseline) * safeYellow).rounded())
-        let target = "Green >= \(greenValue) ms, yellow \(yellowValue)-\(greenValue - 1) ms, red below."
-        return AtriaMetricZone(level: level,
-                               title: "HRV target",
-                               current: current,
-                               targetSummary: target,
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        AtriaAnalytics.TargetZones.hrv(rmssd,
+                                       baseline: baseline,
+                                       baselineSamples: baselineSamples,
+                                       greenRatio: greenRatio,
+                                       yellowRatio: yellowRatio)
     }
 
     static func restingHeartRateZone(_ bpm: Int?,
@@ -137,27 +118,11 @@ extension Metrics {
                                      baselineSamples: Int,
                                      greenDelta: Int = 3,
                                      yellowDelta: Int = 7) -> AtriaMetricZone? {
-        guard baselineSamples >= 7, let bpm, let baseline, baseline > 0 else { return nil }
-        let delta = bpm - baseline
-        let safeGreenDelta = min(max(greenDelta, 0), 12)
-        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 1), 20)
-        let level: AtriaMetricZoneLevel = delta <= safeGreenDelta ? .green : (delta <= safeYellowDelta ? .yellow : .red)
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = "Resting heart rate is near your baseline."
-        case .yellow:
-            recommendation = "Resting HR is up vs your norm -- fatigue, stress, dehydration, or poor sleep can move it. Hydrate and keep the day lighter."
-        case .red:
-            recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
-        }
-        let target = "Green <= \(baseline + safeGreenDelta) bpm, yellow \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
-        return AtriaMetricZone(level: level,
-                               title: "Resting HR target",
-                               current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",
-                               targetSummary: target,
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+        AtriaAnalytics.TargetZones.restingHeartRate(bpm,
+                                                    baseline: baseline,
+                                                    baselineSamples: baselineSamples,
+                                                    greenDelta: greenDelta,
+                                                    yellowDelta: yellowDelta)
     }
 
     static func sleepEfficiencyZone(_ efficiency: Double?,
