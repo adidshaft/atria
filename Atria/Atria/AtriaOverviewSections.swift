@@ -539,6 +539,8 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
+    @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -562,6 +564,8 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      restingBaselineSamples: store.baseline.restingSampleCount,
                                      stepsGoal: stepsGoal,
                                      sleepGoalHours: sleepGoalHours,
+                                     sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
+                                     sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
                                      visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
                                                                                     hiddenCSV: hiddenCSV),
                                      hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
@@ -783,6 +787,15 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         Self.dragPayloadPrefix + rawValue
     }
 
+    fileprivate var supportsGlanceTargetEditing: Bool {
+        switch self {
+        case .recovery, .sleep, .sleepEfficiency, .steps:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func draggedMetric(from payload: String) -> AtriaTodayMetric? {
         guard payload.hasPrefix(dragPayloadPrefix) else { return nil }
         let raw = String(payload.dropFirst(dragPayloadPrefix.count))
@@ -834,6 +847,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let restingBaselineSamples: Int
     let stepsGoal: Int
     let sleepGoalHours: Double
+    let sleepEfficiencyGreenLower: Double
+    let sleepEfficiencyYellowLower: Double
     let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
     let sizeOverridesCSV: String
@@ -850,6 +865,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onStartWorkout: () -> Void
     @State private var isEditingGlance = false
     @State private var showManualSleepSheet = false
+    @State private var targetEditorMetric: AtriaTodayMetric?
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -890,6 +906,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.stepsGoal == rhs.stepsGoal
             && lhs.sleepGoalHours == rhs.sleepGoalHours
+            && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
+            && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
             && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
@@ -945,6 +963,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 onAddManualSleep(start, end, isNap)
                 showManualSleepSheet = false
             }
+        }
+        .sheet(item: $targetEditorMetric) { metric in
+            AtriaGlanceTargetEditorSheet(metric: metric)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -1116,6 +1139,17 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
         HStack(spacing: 4) {
+            if metric.supportsGlanceTargetEditing {
+                Button {
+                    targetEditorMetric = metric
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.caption.weight(.bold))
+                }
+                .atriaGlassIconAction(tint: .blue, size: 30)
+                .accessibilityLabel("Edit \(metric.label) target")
+            }
+
             Button {
                 onToggleMetricSize(metric)
             } label: {
@@ -1442,7 +1476,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(sleepHistory.latest?.sleepEfficiency)
+        Metrics.sleepEfficiencyZone(sleepHistory.latest?.sleepEfficiency,
+                                    greenLower: sleepEfficiencyGreenLower,
+                                    yellowLower: sleepEfficiencyYellowLower)
     }
 
     private var sleepDurationZone: AtriaMetricZone? {
@@ -1618,6 +1654,193 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             .foregroundStyle(tint.opacity(0.72))
             .frame(height: Self.footerHeight, alignment: .center)
             .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct AtriaGlanceTargetEditorSheet: View {
+    let metric: AtriaTodayMetric
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
+    @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    Image(systemName: metric.systemImage)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(metric.targetEditorTint)
+                        .frame(width: 42, height: 42)
+                        .background(AtriaIconTileBackground(cornerRadius: 14, tint: metric.targetEditorTint))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(metric.label) target")
+                            .font(.headline.weight(.semibold))
+                        Text(metric.targetEditorSummary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                editorContent
+                    .padding(14)
+                    .atriaInsetCard(tint: metric.targetEditorTint)
+
+                Text("Guidance is general wellness information, not medical advice. Changes update Today cards immediately.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .navigationTitle("Target")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
+                }
+            }
+        }
+        .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
+        .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
+        .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
+        .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
+    }
+
+    @ViewBuilder
+    private var editorContent: some View {
+        switch metric {
+        case .recovery:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $recoveryGreenLower, in: 40...95, step: 1) {
+                    LabeledContent("Green starts") {
+                        Text("\(Int(recoveryGreenLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $recoveryYellowLower, in: 5...66, step: 1) {
+                    LabeledContent("Yellow starts") {
+                        Text("\(Int(recoveryYellowLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    recoveryGreenLower = 67
+                    recoveryYellowLower = 34
+                } label: {
+                    Label("Reset recovery target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+            }
+        case .sleep:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
+                    LabeledContent("Sleep goal") {
+                        Text(String(format: "%.2g h", sleepGoalHours))
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    sleepGoalHours = 8.0
+                } label: {
+                    Label("Reset sleep goal", systemImage: "bed.double.fill")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+            }
+        case .steps:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
+                    LabeledContent("Steps goal") {
+                        Text("\(stepsGoal)")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    stepsGoal = 8_000
+                } label: {
+                    Label("Reset steps goal", systemImage: "figure.walk")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+            }
+        case .sleepEfficiency:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $sleepEfficiencyGreenLower, in: 60...99, step: 1) {
+                    LabeledContent("Green starts") {
+                        Text("\(Int(sleepEfficiencyGreenLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $sleepEfficiencyYellowLower, in: 50...95, step: 1) {
+                    LabeledContent("Yellow starts") {
+                        Text("\(Int(sleepEfficiencyYellowLower.rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    sleepEfficiencyGreenLower = 90
+                    sleepEfficiencyYellowLower = 80
+                } label: {
+                    Label("Reset efficiency target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+            }
+        default:
+            Text("This widget does not have an editable target yet.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func normalizeRecoveryTargets() {
+        recoveryYellowLower = min(max(recoveryYellowLower, 5), 66)
+        recoveryGreenLower = min(max(recoveryGreenLower, recoveryYellowLower + 1), 95)
+    }
+
+    private func normalizeStepsGoal() {
+        stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+    }
+
+    private func normalizeSleepGoal() {
+        sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
+    }
+
+    private func normalizeSleepEfficiencyTargets() {
+        sleepEfficiencyYellowLower = min(max(sleepEfficiencyYellowLower, 50), 95)
+        sleepEfficiencyGreenLower = min(max(sleepEfficiencyGreenLower, sleepEfficiencyYellowLower + 1), 99)
+    }
+}
+
+private extension AtriaTodayMetric {
+    var targetEditorTint: Color {
+        switch self {
+        case .recovery, .steps: return .green
+        case .sleep, .sleepEfficiency: return .cyan
+        default: return .blue
+        }
+    }
+
+    var targetEditorSummary: String {
+        switch self {
+        case .recovery:
+            return "Adjust the green/yellow recovery thresholds used by target zones."
+        case .sleep:
+            return "Adjust the sleep duration goal used by sleep target zones."
+        case .steps:
+            return "Adjust the daily step goal used by the steps card."
+        case .sleepEfficiency:
+            return "Adjust the sleep-efficiency green/yellow target bands."
+        default:
+            return "Target editing is not available for this widget yet."
         }
     }
 }

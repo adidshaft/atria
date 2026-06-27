@@ -339,6 +339,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
+    @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
@@ -350,6 +352,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 restingBaseline: store.baseline.restingInt,
                                 restingBaselineSamples: store.baseline.restingSampleCount,
                                 sleepGoalHours: sleepGoalHours,
+                                sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
+                                sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
                                 onAddManualSleep: addManualSleep)
             .equatable()
     }
@@ -1663,6 +1667,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let restingBaseline: Int?
     let restingBaselineSamples: Int
     let sleepGoalHours: Double
+    let sleepEfficiencyGreenLower: Double
+    let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
@@ -1674,6 +1680,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.sleepGoalHours == rhs.sleepGoalHours
+            && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
+            && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
     }
 
     private var recoveryState: AtriaMetricState {
@@ -1700,6 +1708,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                                   restingBaseline: restingBaseline,
                                   restingBaselineSamples: restingBaselineSamples,
                                   sleepGoalHours: sleepGoalHours,
+                                  sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
+                                  sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
                                   onAddManualSleep: onAddManualSleep)
         }
         .padding(18)
@@ -1753,6 +1763,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let restingBaseline: Int?
     let restingBaselineSamples: Int
     let sleepGoalHours: Double
+    let sleepEfficiencyGreenLower: Double
+    let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     @State private var showManualSleepSheet = false
 
@@ -1763,6 +1775,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
             && lhs.sleepGoalHours == rhs.sleepGoalHours
+            && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
+            && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
     }
 
     private var chartNights: [SleepHistorySnapshot.Night] {
@@ -1793,7 +1807,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(snapshot.latest?.sleepEfficiency)
+        Metrics.sleepEfficiencyZone(snapshot.latest?.sleepEfficiency,
+                                    greenLower: sleepEfficiencyGreenLower,
+                                    yellowLower: sleepEfficiencyYellowLower)
     }
 
     private var hrvZone: AtriaMetricZone? {
