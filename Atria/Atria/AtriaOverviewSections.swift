@@ -541,6 +541,10 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
+    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
 
     var body: some View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
@@ -560,8 +564,12 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                 yellowLower: recoveryYellowLower),
                                      hrvBaseline: store.baseline.hrvInt,
                                      hrvBaselineSamples: store.baseline.hrvSampleCount,
+                                     hrvGreenRatio: hrvGreenRatio,
+                                     hrvYellowRatio: hrvYellowRatio,
                                      restingBaseline: store.baseline.restingInt,
                                      restingBaselineSamples: store.baseline.restingSampleCount,
+                                     restingGreenDelta: restingGreenDelta,
+                                     restingYellowDelta: restingYellowDelta,
                                      stepsGoal: stepsGoal,
                                      sleepGoalHours: sleepGoalHours,
                                      sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
@@ -789,7 +797,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .sleep, .sleepEfficiency, .steps:
+        case .recovery, .hrv, .sleep, .sleepEfficiency, .rhr, .steps:
             return true
         default:
             return false
@@ -843,8 +851,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let recoveryTarget: AtriaMetricTarget
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
+    let hrvGreenRatio: Double
+    let hrvYellowRatio: Double
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let restingGreenDelta: Int
+    let restingYellowDelta: Int
     let stepsGoal: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
@@ -902,8 +914,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.recoveryTarget == rhs.recoveryTarget
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.hrvGreenRatio == rhs.hrvGreenRatio
+            && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.restingGreenDelta == rhs.restingGreenDelta
+            && lhs.restingYellowDelta == rhs.restingYellowDelta
             && lhs.stepsGoal == rhs.stepsGoal
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
@@ -1466,13 +1482,17 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var hrvZone: AtriaMetricZone? {
         Metrics.hrvZone(parseInt(hero.hrvValue),
                         baseline: hrvBaseline,
-                        baselineSamples: hrvBaselineSamples)
+                        baselineSamples: hrvBaselineSamples,
+                        greenRatio: hrvGreenRatio,
+                        yellowRatio: hrvYellowRatio)
     }
 
     private var restingHeartRateZone: AtriaMetricZone? {
         Metrics.restingHeartRateZone(hero.restingHeartRate,
                                      baseline: restingBaseline,
-                                     baselineSamples: restingBaselineSamples)
+                                     baselineSamples: restingBaselineSamples,
+                                     greenDelta: restingGreenDelta,
+                                     yellowDelta: restingYellowDelta)
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
@@ -1667,8 +1687,13 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
+    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
 
     var body: some View {
+        let summary = metric.targetEditorSummary
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 12) {
@@ -1681,7 +1706,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(metric.label) target")
                             .font(.headline.weight(.semibold))
-                        Text(metric.targetEditorSummary)
+                        Text(summary)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1715,6 +1740,10 @@ private struct AtriaGlanceTargetEditorSheet: View {
         .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
         .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
         .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
+        .onChange(of: hrvGreenRatio) { _, _ in normalizeHRVTargets() }
+        .onChange(of: hrvYellowRatio) { _, _ in normalizeHRVTargets() }
+        .onChange(of: restingGreenDelta) { _, _ in normalizeRestingTargets() }
+        .onChange(of: restingYellowDelta) { _, _ in normalizeRestingTargets() }
     }
 
     @ViewBuilder
@@ -1756,6 +1785,50 @@ private struct AtriaGlanceTargetEditorSheet: View {
                     Label("Reset sleep goal", systemImage: "bed.double.fill")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+            }
+        case .hrv:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $hrvGreenRatio, in: 0.70...1.10, step: 0.01) {
+                    LabeledContent("Green starts") {
+                        Text("\(Int((hrvGreenRatio * 100).rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $hrvYellowRatio, in: 0.50...0.98, step: 0.01) {
+                    LabeledContent("Yellow starts") {
+                        Text("\(Int((hrvYellowRatio * 100).rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    hrvGreenRatio = 0.95
+                    hrvYellowRatio = 0.85
+                } label: {
+                    Label("Reset HRV target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
+            }
+        case .rhr:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $restingGreenDelta, in: 0...12, step: 1) {
+                    LabeledContent("Green within") {
+                        Text("+\(restingGreenDelta) bpm")
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $restingYellowDelta, in: 1...20, step: 1) {
+                    LabeledContent("Yellow within") {
+                        Text("+\(restingYellowDelta) bpm")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    restingGreenDelta = 3
+                    restingYellowDelta = 7
+                } label: {
+                    Label("Reset RHR target", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .red))
             }
         case .steps:
             VStack(alignment: .leading, spacing: 12) {
@@ -1818,12 +1891,24 @@ private struct AtriaGlanceTargetEditorSheet: View {
         sleepEfficiencyYellowLower = min(max(sleepEfficiencyYellowLower, 50), 95)
         sleepEfficiencyGreenLower = min(max(sleepEfficiencyGreenLower, sleepEfficiencyYellowLower + 1), 99)
     }
+
+    private func normalizeHRVTargets() {
+        hrvYellowRatio = min(max(hrvYellowRatio, 0.50), 0.98)
+        hrvGreenRatio = min(max(hrvGreenRatio, hrvYellowRatio + 0.01), 1.20)
+    }
+
+    private func normalizeRestingTargets() {
+        restingGreenDelta = min(max(restingGreenDelta, 0), 12)
+        restingYellowDelta = min(max(restingYellowDelta, restingGreenDelta + 1), 20)
+    }
 }
 
 private extension AtriaTodayMetric {
     var targetEditorTint: Color {
         switch self {
         case .recovery, .steps: return .green
+        case .hrv: return .pink
+        case .rhr: return .red
         case .sleep, .sleepEfficiency: return .cyan
         default: return .blue
         }
@@ -1835,6 +1920,10 @@ private extension AtriaTodayMetric {
             return "Adjust the green/yellow recovery thresholds used by target zones."
         case .sleep:
             return "Adjust the sleep duration goal used by sleep target zones."
+        case .hrv:
+            return "Adjust how close HRV should stay to your personal baseline."
+        case .rhr:
+            return "Adjust the resting-HR rise allowed above your personal baseline."
         case .steps:
             return "Adjust the daily step goal used by the steps card."
         case .sleepEfficiency:
