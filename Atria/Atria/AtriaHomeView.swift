@@ -733,6 +733,7 @@ struct AtriaHomeView: View {
 
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
+                           coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            store: store,
                            showWorkout: model.statusStore.state.status == .connected,
@@ -3016,6 +3017,7 @@ private struct AtriaHeaderActionButtonStyle: ButtonStyle {
 
 private struct AtriaHomeTopChrome: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let store: SessionStore
     let showWorkout: Bool
@@ -3034,6 +3036,8 @@ private struct AtriaHomeTopChrome: View {
             Spacer(minLength: 12)
 
             HStack(spacing: 6) {
+                AtriaHeaderBatteryIndicator(liveStore: coreLiveStore)
+
                 if showWorkout {
                     Button(action: onStartWorkout) {
                         AtriaToolbarIcon(symbol: "figure.run")
@@ -3076,6 +3080,29 @@ private struct AtriaHomeTopChrome: View {
 
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 42
+}
+
+private struct AtriaHeaderBatteryIndicator: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+
+    private var tint: Color {
+        switch liveStore.state.batteryChargeStatus {
+        case .charging, .full: return .green
+        case .notCharging: return .blue
+        case .levelOnly: return liveStore.state.batteryLevel >= 0 ? .cyan : .gray
+        }
+    }
+
+    var body: some View {
+        Image(systemName: liveStore.state.batterySymbol)
+            .font(.footnote.weight(.semibold))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(tint)
+            .frame(width: AtriaHeaderControlMetrics.height,
+                   height: AtriaHeaderControlMetrics.height)
+            .atriaChromeCapsule(tint: tint)
+            .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
+    }
 }
 
 /// The top-left connection chip. A dedicated subview so it OBSERVES both stores —
