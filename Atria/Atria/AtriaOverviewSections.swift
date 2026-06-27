@@ -530,6 +530,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                     hiddenCSV: hiddenCSV),
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric,
+                                     onHideMetric: hideMetric,
                                      onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
                                      onOpenInsights: onOpenInsights,
@@ -544,6 +545,14 @@ struct AtriaOverviewReadinessSectionHost: View {
 
     private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int) {
         orderCSV = AtriaTodayMetric.moving(metric, direction: direction, in: orderCSV)
+    }
+
+    private func hideMetric(_ metric: AtriaTodayMetric) {
+        var hidden = AtriaTodayMetric.hidden(from: hiddenCSV)
+        let visibleCount = AtriaTodayMetric.defaultGlanceOrder.filter { !hidden.contains($0.rawValue) }.count
+        guard visibleCount > 1 else { return }
+        hidden.insert(metric.rawValue)
+        hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
     }
 
 }
@@ -704,6 +713,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
+    let onHideMetric: (AtriaTodayMetric) -> Void
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onOpenInsights: () -> Void
@@ -841,6 +851,28 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
+            .overlay(alignment: .topTrailing) {
+                Menu {
+                    Button(role: .destructive) {
+                        onHideMetric(metric)
+                    } label: {
+                        Label("Remove \(metric.label)", systemImage: "minus.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .background(Color(.systemBackground).opacity(0.82), in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .accessibilityLabel("Widget options for \(metric.label)")
+            }
             .draggable(metric.dragPayload)
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
@@ -1104,9 +1136,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 }
 
 private struct AtriaGlanceMetricCard: View, Equatable {
-    static let cardHeight: CGFloat = 154
-    private static let headerHeight: CGFloat = 44
-    private static let valueHeight: CGFloat = 38
+    static let cardHeight: CGFloat = 166
+    private static let headerHeight: CGFloat = 48
+    private static let valueHeight: CGFloat = 40
     private static let footerHeight: CGFloat = 34
 
     let title: String
@@ -1157,6 +1189,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                         .minimumScaleFactor(0.7)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, 28)
             }
             .frame(height: Self.headerHeight, alignment: .center)
 
@@ -1176,6 +1209,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: tint)
+        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title) \(value), \(detail)")
     }

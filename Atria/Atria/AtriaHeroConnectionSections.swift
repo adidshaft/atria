@@ -214,7 +214,7 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                                               heartRateText: heartRateText)
                     .equatable()
             } else {
-                AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Connected, no pulse",
+                AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Waiting for pulse",
                                     detail: needsContactCoach ? "Strap is connected; adjust fit so Atria can read pulse." : "Waiting for the next live heart-rate sample.",
                                     systemImage: "heart.slash",
                                     tint: .orange)
