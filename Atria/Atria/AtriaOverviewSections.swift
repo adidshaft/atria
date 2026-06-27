@@ -819,7 +819,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .recovery:
             AtriaGlanceMetricCard(title: "Recovery",
                                   value: hero.recoveryEstimate.percent == nil ? "--" : hero.recoveryValue,
-                                  detail: "Today",
+                                  detail: recoveryDetailText,
                                   systemImage: metric.systemImage,
                                   tint: recoveryColor(hero.recoveryEstimate.percent),
                                   ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 })
@@ -1003,6 +1003,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var hrvLearningState: AtriaMetricState {
         hero.hrvDetail.localizedCaseInsensitiveContains("personal") ? .personalBaseline : .learning
+    }
+
+    private var recoveryDetailText: String {
+        switch hero.recoveryEstimate.confidence {
+        case .validated:
+            return "Validated"
+        case .personalBaseline:
+            return "Personal baseline"
+        case .unverified:
+            return "Unverified"
+        case .learning:
+            if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV baseline") {
+                return "Building baseline"
+            }
+            return "Building"
+        }
     }
 
     private func metricDisplayValue(_ value: String) -> String {
