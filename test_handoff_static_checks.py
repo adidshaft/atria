@@ -679,11 +679,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : \"--\"",
             "detail: sensorSummary.skinTemperatureDeviation.detailText",
             "relative deviation",
+            "delta C from baseline",
             "does not show an absolute temperature",
             "insights: store.behaviorInsights",
             "taggedDays: store.behaviorJournalEntries.count",
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
+            "AtriaPanelSectionHeader(title: \"Insights\", subtitle: \"What moves your HRV\")",
+            "Atria learns what moves your HRV.",
             "let hiddenMetrics: [AtriaTodayMetric]",
             "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
             "let onHideMetric: (AtriaTodayMetric) -> Void",
@@ -777,6 +780,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Circle())")
         assert_not_contains(self, overview, ".buttonStyle(.glass)")
         assert_not_contains(self, overview, ".buttonBorderShape(.circle)")
+        assert_not_contains(self, overview, "degrees Celsius from baseline")
 
         for needle in [
             "@AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = \"\"",
@@ -2028,6 +2032,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "journalEntries: [BehaviorJournalEntry]",
             "Self.makeBehaviorCorrelationSummaries(sessions: canonicalSessions(),",
             "private nonisolated static func averageDoubleSnapshot(_ values: [Double]) -> Double?",
+            "Recovery correlations stay fail-closed until they can use real",
+            "strain-derived recovery proxies would",
+            "return InsightDayMetrics(recovery: nil, hrv: hrv)",
+            "let taggedRecovery = averageDoubleSnapshot(tagged.compactMap(\\.recovery))",
+            "let untaggedRecovery = averageDoubleSnapshot(untagged.compactMap(\\.recovery))",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -2040,6 +2049,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "detectedActivities(rest:",
         ]:
             assert_not_contains(self, recompute_source, forbidden)
+
+        insight_source_start = sessions.index("private nonisolated static func makeBehaviorCorrelationSummaries")
+        insight_source_end = sessions.index("private nonisolated static func averageDoubleSnapshot")
+        insight_source = sessions[insight_source_start:insight_source_end]
+        for forbidden in [
+            "100 - Metrics.strain(fromTRIMP:",
+            "let recovery = max(0, 100",
+            "tagged.map(\\.recovery)",
+            "untagged.map(\\.recovery)",
+        ]:
+            assert_not_contains(self, insight_source, forbidden)
 
     def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
@@ -3319,6 +3339,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Close it, log out, disable Bluetooth access, and remove widgets.",
         ]:
             assert_contains(self, content, needle)
+
         assert_not_contains(self, content, "I’ll do this — continue")
 
     def test_live_activity_uses_end_user_reading_language(self):
