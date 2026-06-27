@@ -125,6 +125,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
 
         for required in [
             "xcrun xctrace record",
+            "xcrun xctrace export",
+            "--toc",
+            "${trace_path}.toc.xml",
             "--attach \"$pid\"",
             "devicectl device capture screenshot",
             "devicectl device settings appearance",

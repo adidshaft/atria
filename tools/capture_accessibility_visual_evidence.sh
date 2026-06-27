@@ -126,6 +126,10 @@ xcrun xctrace record \
   --time-limit "$time_limit" \
   --output "$trace_path" \
   --no-prompt 2>&1 | tee "$log_path"
+xcrun xctrace export \
+  --input "$trace_path" \
+  --toc \
+  --output "${trace_path}.toc.xml" >/dev/null
 
 xcrun devicectl device settings appearance --device "$device_id" --mode dark --increase-contrast off --reduce-motion off --reduce-transparency off >/dev/null
 sleep 1
@@ -152,7 +156,7 @@ prepare_args=(
   --out docs/evidence/accessibility-performance/summary.draft.json
   --all-accessibility-checks-pass
   --instruments-trace "$trace_path"
-  --notes "Physical iPhone 15 Pro accessibility visual pass captured via devicectl at ${stamp}; screenshots are in ${screenshot_dir#$repo_root/}. Fresh Time Profiler trace attached to already-running Atria at ${trace_path#$repo_root/}. Dashboard scroll FPS remains pending before final proof."
+  --notes "Physical iPhone 15 Pro accessibility visual pass captured via devicectl at ${stamp}; screenshots are in ${screenshot_dir#$repo_root/}. Fresh Time Profiler trace attached to already-running Atria at ${trace_path#$repo_root/}; TOC sidecar is ${trace_path#$repo_root/}.toc.xml. Dashboard scroll FPS remains pending before final proof."
 )
 if [[ -n "$app_commit" ]]; then
   prepare_args+=(--app-commit "$app_commit")
@@ -169,8 +173,9 @@ summary_name="summary.draft.json"
 if [[ "$final" -eq 1 ]]; then
   summary_name="summary.json"
 fi
-printf 'ATRIA_ACCESSIBILITY_VISUAL_EVIDENCE screenshot_dir=%s trace=%s log=%s summary=%s\n' \
+printf 'ATRIA_ACCESSIBILITY_VISUAL_EVIDENCE screenshot_dir=%s trace=%s trace_toc=%s log=%s summary=%s\n' \
   "$screenshot_dir" \
   "$trace_path" \
+  "${trace_path}.toc.xml" \
   "$log_path" \
   "$evidence_root/$summary_name"
