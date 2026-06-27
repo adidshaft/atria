@@ -8,6 +8,7 @@ final class AtriaLiveActivityCoordinator {
         var heartRate: Int
         var strain: Double
         var batteryLevel: Int
+        var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
         var readingCount: Int
         var mediaTitle: String
         var mediaArtist: String
@@ -98,6 +99,8 @@ final class AtriaLiveActivityCoordinator {
         AtriaLiveActivityAttributes.ContentState(heartRate: snapshot.heartRate,
                                                  strain: snapshot.strain,
                                                  batteryLevel: snapshot.batteryLevel,
+                                                 batteryChargeStatus: snapshot.batteryChargeStatus.rawValue,
+                                                 batteryChargeText: snapshot.batteryChargeStatus.label,
                                                  readingCount: snapshot.readingCount,
                                                  mediaTitle: snapshot.mediaTitle,
                                                  mediaArtist: snapshot.mediaArtist,
@@ -132,7 +135,8 @@ final class AtriaLiveActivityCoordinator {
             || snapshot.mediaArtist != lastActivitySnapshot.mediaArtist
             || snapshot.mediaIsPlaying != lastActivitySnapshot.mediaIsPlaying
             || snapshot.mediaHasNowPlayingInfo != lastActivitySnapshot.mediaHasNowPlayingInfo
-            || snapshot.batteryLevel != lastActivitySnapshot.batteryLevel {
+            || snapshot.batteryLevel != lastActivitySnapshot.batteryLevel
+            || snapshot.batteryChargeStatus != lastActivitySnapshot.batteryChargeStatus {
             return true
         }
 

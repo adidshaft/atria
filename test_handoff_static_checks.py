@@ -1061,6 +1061,9 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_strap_battery_charge_status_is_visible_and_honest(self):
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        live_activity = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityAttributes.swift")
+        live_activity_widget_attrs = source(ROOT / "Atria" / "AtriaWidget" / "AtriaLiveActivityAttributes.swift")
+        live_activity_coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         data = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
@@ -1127,6 +1130,22 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, home, needle)
 
+        for path in [live_activity, live_activity_widget_attrs]:
+            for needle in [
+                "var batteryChargeStatus: String",
+                "var batteryChargeText: String",
+            ]:
+                assert_contains(self, path, needle)
+
+        for needle in [
+            "var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus",
+            "batteryChargeStatus: snapshot.batteryChargeStatus.rawValue",
+            "batteryChargeText: snapshot.batteryChargeStatus.label",
+            "|| snapshot.batteryChargeStatus != lastActivitySnapshot.batteryChargeStatus",
+            "batteryChargeStatus: model.coreLiveStore.state.batteryChargeStatus",
+        ]:
+            assert_contains(self, live_activity_coordinator + home, needle)
+
         for needle in [
             "value: live.batteryStatusSummaryText",
             "AtriaInlineQuickStat(label: \"Charge\"",
@@ -1159,6 +1178,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "Label(battery, systemImage: batterySymbol)",
             "if snapshot.batteryChargeStatus == \"charging\" { return \"battery.100percent.bolt\" }",
             "case \"charging\", \"full\": return .green",
+            "liveActivityBatteryText(for: context.state)",
+            "liveActivityBatterySymbol(for: context.state)",
+            "liveActivityBatteryTint(for: context.state)",
+            "private func liveActivityBatteryText(for state: AtriaLiveActivityAttributes.ContentState) -> String",
+            "return state.batteryChargeText.isEmpty ? \"\\(state.batteryLevel)%\" : \"\\(state.batteryLevel)% · \\(state.batteryChargeText)\"",
         ]:
             assert_contains(self, widget, needle)
 

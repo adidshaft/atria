@@ -499,7 +499,8 @@ struct AtriaLiveActivityWidget: Widget {
                         HStack {
                             Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
                             Spacer(minLength: 10)
-                            Label(context.state.batteryLevel >= 0 ? "\(context.state.batteryLevel)%" : "Battery", systemImage: "battery.100")
+                            Label(liveActivityBatteryText(for: context.state), systemImage: liveActivityBatterySymbol(for: context.state))
+                                .foregroundStyle(liveActivityBatteryTint(for: context.state))
                             Button(intent: AtriaControlCaptureIntent(command: .stop)) {
                                 Label("Stop", systemImage: "stop.circle")
                                     .labelStyle(.titleAndIcon)
@@ -528,6 +529,38 @@ struct AtriaLiveActivityWidget: Widget {
             }
             .keylineTint(.red)
         }
+    }
+}
+
+private func liveActivityBatteryText(for state: AtriaLiveActivityAttributes.ContentState) -> String {
+    guard state.batteryLevel >= 0 else { return "Battery" }
+    switch state.batteryChargeStatus {
+    case "charging", "full":
+        return state.batteryChargeText.isEmpty ? "\(state.batteryLevel)%" : "\(state.batteryLevel)% · \(state.batteryChargeText)"
+    case "notCharging":
+        return "\(state.batteryLevel)% · Not chg"
+    default:
+        return "\(state.batteryLevel)%"
+    }
+}
+
+private func liveActivityBatterySymbol(for state: AtriaLiveActivityAttributes.ContentState) -> String {
+    if state.batteryChargeStatus == "charging" { return "battery.100percent.bolt" }
+    if state.batteryChargeStatus == "full" { return "battery.100percent" }
+    guard state.batteryLevel >= 0 else { return "battery.0percent" }
+    switch state.batteryLevel {
+    case ..<13: return "battery.0percent"
+    case ..<38: return "battery.25percent"
+    case ..<63: return "battery.50percent"
+    case ..<88: return "battery.75percent"
+    default: return "battery.100percent"
+    }
+}
+
+private func liveActivityBatteryTint(for state: AtriaLiveActivityAttributes.ContentState) -> Color {
+    switch state.batteryChargeStatus {
+    case "charging", "full": return .green
+    default: return .secondary
     }
 }
 
@@ -578,6 +611,11 @@ private struct AtriaLiveActivityLockScreenView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(String(format: "Strain %.1f", context.state.strain))
                         .font(.subheadline.monospacedDigit().weight(.semibold))
+                    Label(liveActivityBatteryText(for: context.state), systemImage: liveActivityBatterySymbol(for: context.state))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(liveActivityBatteryTint(for: context.state))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                     Text("\(context.state.readingCount) readings · \(elapsedText(since: context.attributes.startedAt))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
