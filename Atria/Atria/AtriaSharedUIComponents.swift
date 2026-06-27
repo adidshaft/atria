@@ -523,9 +523,12 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
                 if let warningSystemImage = zone.warningSystemImage {
                     Image(systemName: warningSystemImage)
                         .font(.caption2.weight(.bold))
+                        .accessibilityHidden(true)
                 }
-                Text("(i)")
+                Image(systemName: "info.circle")
                     .font(.caption2.weight(.bold))
+                    .symbolRenderingMode(.hierarchical)
+                    .accessibilityHidden(true)
             }
             .foregroundStyle(zone.tint)
             .frame(minWidth: 36, minHeight: 28)
