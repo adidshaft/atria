@@ -3124,7 +3124,8 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text + sessions, needle)
         assert_not_contains(self, text, "let respiratoryRate = session.respiratoryRate")
         assert_not_contains(self, text, "respiratoryRateExported: (session.respiratoryRate ?? 0) > 0")
-        assert_not_contains(self, sessions, "compactMap(\\.respiratoryRate)")
+        assert_not_contains(self, sessions, "let respiratoryRates = recent.compactMap(\\.respiratoryRate)")
+        assert_not_contains(self, sessions, "let respiratoryRates = daySessions.compactMap(\\.respiratoryRate)")
 
     def test_healthkit_step_count_is_read_only(self):
         text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
@@ -3414,6 +3415,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
         metrics = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         text = metrics + analytics
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
@@ -3429,14 +3431,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "PersonalBaseline.trustedMinimumSamples",
             "sleepEfficiency: Double? = nil",
             "sleepDurationHours: Double? = nil",
+            "respiratoryRate: Double? = nil",
+            "respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil",
             "guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,",
             "detail: \"learning: need saved sleep\"",
-            "let respirationZ = 0.0",
+            "let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,",
             "0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ",
             "let percent = logisticRecoveryPercent(z: blendedZ)",
             "private static func logisticRecoveryPercent(z: Double) -> Int",
             "100.0 / (1.0 + exp(-k * (z - z0)))",
-            "Sleep z %.1f · Resp neutral",
+            "private static func respiratoryRecoveryZ(rate: Double?,",
+            "baseline.count >= PersonalBaseline.trustedMinimumSamples",
+            "-zScore(rate, mean: baseline.mean, sd: baseline.sd)",
+            "? \"Resp neutral\"",
+            "String(format: \"Resp z %.1f\", respirationZ)",
+            "Sleep z %.1f · %@",
             "private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double?",
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
@@ -3449,6 +3458,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, metrics, "AtriaAnalytics.Recovery.restingOnly(restingNow: restingNow, baseline: baseline)")
         assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvNow: hrvNow,")
         assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,")
+        assert_contains(self, metrics, "respiratoryRate: respiratoryRate")
+        assert_contains(self, metrics, "respiratoryBaseline: respiratoryBaseline")
+        assert_contains(self, sessions, "var respiratoryBaselineStats: (mean: Double, sd: Double, count: Int)?")
+        assert_contains(self, sessions, "values.count >= PersonalBaseline.trustedMinimumSamples")
+        assert_contains(self, sessions, "self.nights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))")
         assert_not_contains(self, metrics, "let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)")
         assert_not_contains(self, metrics, "let restingPenalty = restingNow > 0 && restingBaseline > 0")
         assert_not_contains(self, analytics, "hrvStats.count >= 7")

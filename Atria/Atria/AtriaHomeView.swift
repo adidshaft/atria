@@ -2446,7 +2446,9 @@ final class AtriaHomeModel {
                                           baseline: store.baseline,
                                           hrvReferenceValidated: validatedHRV != nil,
                                           sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours)
+                                          sleepDurationHours: latestSleep?.durationHours,
+                                          respiratoryRate: latestSleep?.respiratoryRate,
+                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
         let stress = stressState(ble: ble, baseline: store.baseline)
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = savedAggregate.savedTodayTRIMP + liveTRIMP
@@ -2745,7 +2747,9 @@ final class AtriaHomeModel {
                                           baseline: store.baseline,
                                           hrvReferenceValidated: validatedHRV != nil,
                                           sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours)
+                                          sleepDurationHours: latestSleep?.durationHours,
+                                          respiratoryRate: latestSleep?.respiratoryRate,
+                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
         let rrPackage = diagnostics.rrPackage
         let sleep = diagnostics.sleep
         let workout = diagnostics.workout

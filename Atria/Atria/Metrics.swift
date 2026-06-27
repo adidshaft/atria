@@ -59,14 +59,18 @@ enum Metrics {
                            restingNow: Int?, baseline: PersonalBaseline,
                            hrvReferenceValidated: Bool = false,
                            sleepEfficiency: Double? = nil,
-                           sleepDurationHours: Double? = nil) -> RecoveryEstimate {
+                           sleepDurationHours: Double? = nil,
+                           respiratoryRate: Double? = nil,
+                           respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> RecoveryEstimate {
         AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,
                                          fallbackRMSSD: fallbackRMSSD,
                                          restingNow: restingNow,
                                          baseline: baseline,
                                          hrvReferenceValidated: hrvReferenceValidated,
                                          sleepEfficiency: sleepEfficiency,
-                                         sleepDurationHours: sleepDurationHours)
+                                         sleepDurationHours: sleepDurationHours,
+                                         respiratoryRate: respiratoryRate,
+                                         respiratoryBaseline: respiratoryBaseline)
     }
 
     static func recoveryColor(_ pct: Int) -> Color {

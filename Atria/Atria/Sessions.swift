@@ -2858,6 +2858,7 @@ final class SessionStore: ObservableObject {
             let respiratoryRates = recent.compactMap {
                 $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
             }
+            let respiratoryBaseline = respiratoryBaselineStatsSnapshot(respiratoryRates)
             let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (calendar.startOfDay(for: $0.day), $0) })
             let recoveries: [Int] = recent.compactMap { session in
                 let sleepRollup = rollupsByDay[calendar.startOfDay(for: session.start)]
@@ -2868,7 +2869,9 @@ final class SessionStore: ObservableObject {
                                                   hrvReferenceValidated: session.hrvReferenceValidated == true,
                                                   sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
                                                                                         span: sleepRollup?.sleepSpan),
-                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 })
+                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 },
+                                                  respiratoryRate: session.sleepRespiratoryRate(rest: rest, maxHR: maxHR, calendar: calendar),
+                                                  respiratoryBaseline: respiratoryBaseline)
                 return recovery.percent
             }
             let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
@@ -2914,6 +2917,14 @@ final class SessionStore: ObservableObject {
     private nonisolated static func averageIntSnapshot(_ values: [Int]) -> Int? {
         guard !values.isEmpty else { return nil }
         return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
+    }
+
+    private nonisolated static func respiratoryBaselineStatsSnapshot(_ values: [Double]) -> (mean: Double, sd: Double, count: Int)? {
+        guard values.count >= PersonalBaseline.trustedMinimumSamples else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        guard values.count > 1 else { return (mean, 0, values.count) }
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
+        return (mean, sqrt(variance), values.count)
     }
 
     private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
@@ -7594,7 +7605,9 @@ final class SessionStore: ObservableObject {
                                                   hrvReferenceValidated: session.hrvReferenceValidated == true,
                                                   sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
                                                                                         span: sleepRollup?.sleepSpan),
-                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 })
+                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 },
+                                                  respiratoryRate: session.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
+                                                  respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
                 return recovery.percent
             }
 
@@ -7766,7 +7779,9 @@ final class SessionStore: ObservableObject {
                                               baseline: baseline,
                                               hrvReferenceValidated: $0.hrvReferenceValidated == true,
                                               sleepEfficiency: latestSleep?.sleepEfficiency,
-                                              sleepDurationHours: latestSleep?.durationHours)
+                                              sleepDurationHours: latestSleep?.durationHours,
+                                              respiratoryRate: $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
+                                              respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
             return recovery.percent
         }
         let validatedHRVs = recent.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
@@ -10525,7 +10540,7 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
-        self.nights = Array(sorted.prefix(14))
+        self.nights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))
         self.confirmedCount = confirmedSleeps.count
         self.candidateCount = rollups.reduce(0) { $0 + $1.sleepCandidates }
     }
@@ -10546,6 +10561,18 @@ struct SleepHistorySnapshot: Equatable {
 
     var latest: Night? {
         nights.first
+    }
+
+    var respiratoryBaselineStats: (mean: Double, sd: Double, count: Int)? {
+        let values = nights
+            .dropFirst()
+            .compactMap(\.respiratoryRate)
+            .filter { $0 > 0 }
+        guard values.count >= PersonalBaseline.trustedMinimumSamples else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        guard values.count > 1 else { return (mean, 0, values.count) }
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
+        return (mean, sqrt(variance), values.count)
     }
 
     var averageDurationText: String {

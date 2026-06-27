@@ -200,7 +200,9 @@ enum LocalNotificationScheduler {
                                           baseline: store.baseline,
                                           hrvReferenceValidated: validatedHRV != nil,
                                           sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours)
+                                          sleepDurationHours: latestSleep?.durationHours,
+                                          respiratoryRate: latestSleep?.respiratoryRate,
+                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
         let recoveryDecision: NotificationDecision
         if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(
