@@ -269,6 +269,9 @@ def evaluate_latest_device_pull(repo: Path, explicit: Path | None = None) -> dic
     continuity = values.get("active_journal_continuity_status", "missing")
     official_whoop_risk = values.get("official_whoop_coexistence_risk", "missing")
     battery_usable = values.get("battery_usable", "missing")
+    rr_status = values.get("active_journal_rr_status", "missing")
+    rr_local_ready = values.get("active_journal_rr_gate_b_local_ready", "missing")
+    rr_healthy = rr_status != "rr_present" or rr_local_ready in {"1", "missing"}
 
     healthy = (
         process_running
@@ -276,6 +279,7 @@ def evaluate_latest_device_pull(repo: Path, explicit: Path | None = None) -> dic
         and continuity == "active"
         and official_whoop_risk == "0"
         and battery_usable in {"1", "missing"}
+        and rr_healthy
     )
 
     return {
@@ -285,8 +289,8 @@ def evaluate_latest_device_pull(repo: Path, explicit: Path | None = None) -> dic
         "official_whoop_coexistence_risk": official_whoop_risk,
         "active_journal_final_status": values.get("active_journal_final_status", "missing"),
         "active_journal_continuity_status": continuity,
-        "active_journal_rr_status": values.get("active_journal_rr_status", "missing"),
-        "active_journal_rr_gate_b_local_ready": values.get("active_journal_rr_gate_b_local_ready", "missing"),
+        "active_journal_rr_status": rr_status,
+        "active_journal_rr_gate_b_local_ready": rr_local_ready,
         "active_journal_rr_raw_beats": values.get("active_journal_rr_raw_beats", "missing"),
         "active_journal_rr_corrected_beats": values.get("active_journal_rr_corrected_beats", "missing"),
         "active_journal_rr_kept_percent": values.get("active_journal_rr_kept_percent", "missing"),
