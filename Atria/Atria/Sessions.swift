@@ -7606,9 +7606,11 @@ final class SessionStore: ObservableObject {
             blockers.append("7 HRV baseline nights")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        let sleepNights = sleepHistorySnapshot.nights.prefix(14)
+        let sleepNights = sleepHistorySnapshot.nights
+            .filter { !$0.isNapEvidence }
+            .prefix(14)
         guard sleepNights.count >= 3 else {
-            blockers.append("3 sleep or nap records")
+            blockers.append("3 sleep night records")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
         guard profile.heightCm > 0, profile.weightKg > 0 else {

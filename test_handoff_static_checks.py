@@ -3197,7 +3197,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard let vo2Max = vo2MaxEstimate.value else",
             "baseline.restingSampleCount >= 7",
             "baseline.hrvSampleCount >= 7",
+            "let sleepNights = sleepHistorySnapshot.nights\n            .filter { !$0.isNapEvidence }\n            .prefix(14)",
             "guard sleepNights.count >= 3 else",
+            "3 sleep night records",
             "guard profile.heightCm > 0, profile.weightKg > 0 else",
             "trainingLoadSummarySnapshot.confidence != \"learning\"",
             "VO2max",
@@ -3209,6 +3211,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,",
         ]:
             assert_contains(self, sessions, needle)
+        assert_not_contains(self, sessions, "3 sleep or nap records")
 
         for needle in [
             "enum BiologicalAge",
