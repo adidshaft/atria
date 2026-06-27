@@ -10199,6 +10199,46 @@ struct SleepHistorySnapshot: Equatable {
         let source: String
         let confirmed: Bool
         let stageSegments: [SleepStageSegment]
+        let displayStageSegments: [SleepStageSegment]
+        private let stageDurationsByStage: [SleepStageKind: TimeInterval]
+
+        init(id: String,
+             day: Date,
+             duration: TimeInterval,
+             restingHR: Int?,
+             hrv: Int?,
+             respiratoryRate: Double?,
+             sleepEfficiency: Double?,
+             confidence: String,
+             source: String,
+             confirmed: Bool,
+             stageSegments: [SleepStageSegment]) {
+            self.id = id
+            self.day = day
+            self.duration = duration
+            self.restingHR = restingHR
+            self.hrv = hrv
+            self.respiratoryRate = respiratoryRate
+            self.sleepEfficiency = sleepEfficiency
+            self.confidence = confidence
+            self.source = source
+            self.confirmed = confirmed
+            self.stageSegments = stageSegments
+
+            let napEvidence: Bool
+            if Self.explicitNapSources.contains(source) {
+                napEvidence = true
+            } else if Self.explicitSleepSources.contains(source) {
+                napEvidence = false
+            } else {
+                napEvidence = !confirmed && duration <= AggregateSleepCandidate.napMaximumSpan
+            }
+            let resolvedSegments = stageSegments.isEmpty
+                ? Self.estimatedStageSegments(day: day, duration: duration, isNap: napEvidence)
+                : stageSegments
+            self.displayStageSegments = resolvedSegments
+            self.stageDurationsByStage = Self.stageDurations(from: resolvedSegments)
+        }
 
         var durationHours: Double {
             max(0, duration / 3_600)
@@ -10249,13 +10289,8 @@ struct SleepHistorySnapshot: Equatable {
             return isNapEvidence ? "Nap candidate" : "Sleep candidate"
         }
 
-        var displayStageSegments: [SleepStageSegment] {
-            if !stageSegments.isEmpty { return stageSegments }
-            return Self.estimatedStageSegments(day: day, duration: duration, isNap: isNapEvidence)
-        }
-
         func stageDuration(_ stage: SleepStageKind) -> TimeInterval {
-            displayStageSegments.filter { $0.stage == stage }.reduce(0) { $0 + $1.duration }
+            stageDurationsByStage[stage] ?? 0
         }
 
         func stageText(_ stage: SleepStageKind) -> String {
@@ -10284,6 +10319,14 @@ struct SleepHistorySnapshot: Equatable {
                                          end: next,
                                          stage: item.0)
             }
+        }
+
+        private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval] {
+            var totals: [SleepStageKind: TimeInterval] = [:]
+            for segment in segments {
+                totals[segment.stage, default: 0] += segment.duration
+            }
+            return totals
         }
 
         private static let explicitNapSources: Set<String> = [
