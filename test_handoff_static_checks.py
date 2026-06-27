@@ -3227,7 +3227,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard sleepNights.count >= 3 else",
             "3 sleep night records",
             "guard profile.heightCm > 0, profile.weightKg > 0 else",
-            "trainingLoadSummarySnapshot.confidence != \"learning\"",
+            "trainingLoadSummarySnapshot.confidence == \"local\"",
+            "14 activity load days",
             "VO2max",
             "Resting HR",
             "HRV",
@@ -3238,6 +3239,8 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
         assert_not_contains(self, sessions, "3 sleep or nap records")
+        assert_not_contains(self, sessions, "trainingLoadSummarySnapshot.confidence != \"learning\"")
+        assert_not_contains(self, sessions, "activity load baseline")
         assert_not_contains(self, sessions, "guard let restingHR = baseline.restingInt, baseline.restingSampleCount >= 7 else")
         assert_not_contains(self, sessions, "guard let hrv = baseline.hrvInt, baseline.hrvSampleCount >= 7 else")
 

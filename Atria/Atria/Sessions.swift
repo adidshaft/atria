@@ -7617,8 +7617,8 @@ final class SessionStore: ObservableObject {
             blockers.append("height and weight")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
-        guard trainingLoadSummarySnapshot.confidence != "learning", trainingLoadSummarySnapshot.chronicLoad > 0 else {
-            blockers.append("activity load baseline")
+        guard trainingLoadSummarySnapshot.confidence == "local", trainingLoadSummarySnapshot.chronicLoad > 0 else {
+            blockers.append("14 activity load days")
             return .building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
 
