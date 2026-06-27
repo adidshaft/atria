@@ -55,11 +55,11 @@ struct HRVSnapshot: Equatable {
         case "window":
             return "learning: build 5-min window"
         case "gap":
-            return "learning: RR gaps"
+            return "learning: beat-to-beat gaps"
         case "beats":
-            return "learning: need 240 clean RR"
+            return "learning: need 240 beat-to-beat samples"
         case "confidence":
-            return "learning: low RR confidence"
+            return "learning: beat-to-beat confidence"
         default:
             return "learning"
         }

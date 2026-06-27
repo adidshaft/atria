@@ -3454,6 +3454,7 @@ class HandoffStaticChecks(unittest.TestCase):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         intents = source(ROOT / "Atria" / "Atria" / "AtriaAppIntents.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        hrv = source(ROOT / "Atria" / "Atria" / "HRV.swift")
 
         assert_contains(self, content, "The official strap app can reclaim the strap and fragment readings.")
         assert_contains(self, content, "Switch apps freely; don’t force quit.")
@@ -3481,7 +3482,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "Saved trends are preparing.")
         assert_contains(self, ble, "@Published var captureSummary = \"No backup yet\"")
         assert_contains(self, ble, "Personal baseline ready")
-        assert_contains(self, ble, "Recording a clean heart-rate window")
+        assert_contains(self, ble, "Recording a beat-to-beat heart-rate window")
+        assert_contains(self, ble, "waiting for beat-to-beat samples")
+        assert_contains(self, ble, "collecting beat-to-beat samples")
+        assert_contains(self, hrv, "learning: need 240 beat-to-beat samples")
         assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
 
         for text in [content, hero, home, overview, sessions, ble]:
@@ -3503,6 +3507,10 @@ class HandoffStaticChecks(unittest.TestCase):
                 "Saved insights will finish loading",
                 "Warming up trends",
                 "Saved trends are loading.",
+                "Recording a clean heart-rate window",
+                "waiting for clean RR",
+                "collecting clean RR",
+                "clean beats",
                 "loggingText: \"warming up\"",
                 "Validation-ready",
                 "Not validation-ready",
