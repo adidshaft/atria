@@ -3536,17 +3536,20 @@ class HandoffStaticChecks(unittest.TestCase):
             "static let footnoteText = \"Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment.\"",
             "Building your body-age baseline",
             "func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary",
-            "guard let vo2Max = vo2MaxEstimate.value else",
+            "if profile.biologicalSex == .unspecified",
+            "blockers.append(\"Add sex in profile\")",
+            "if vo2MaxEstimate.value == nil",
             "baseline.hasTrustedRestingBaseline()",
             "14 fresh RHR baseline nights",
             "baseline.hasTrustedHRVBaseline()",
             "14 fresh HRV baseline nights",
             "let sleepNights = sleepHistorySnapshot.nights\n            .filter { !$0.isNapEvidence }\n            .prefix(14)",
-            "guard sleepNights.count >= 3 else",
+            "if sleepNights.count < 3",
             "3 sleep night records",
-            "guard profile.heightCm > 0, profile.weightKg > 0 else",
-            "trainingLoadSummarySnapshot.confidence == \"local\"",
+            "if profile.heightCm <= 0 || profile.weightKg <= 0",
+            "trainingLoadSummarySnapshot.confidence != \"local\"",
             "14 activity load days",
+            "guard blockers.isEmpty,\n              let vo2Max = vo2MaxEstimate.value,",
             "VO2max",
             "Resting HR",
             "HRV",
@@ -5178,6 +5181,8 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_pure_analytics_calibration_examples_are_monotonic_and_gated(self):
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        debug_logging = source(ROOT / "Atria" / "Atria" / "AtriaDebugLogging.swift")
 
         for needle in [
             "enum BiologicalAge",
@@ -5217,13 +5222,28 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, analytics, needle)
 
         for needle in [
-            "guard let vo2Max = vo2MaxEstimate.value else",
+            "if vo2MaxEstimate.value == nil",
             "baseline.hasTrustedRestingBaseline()",
             "baseline.hasTrustedHRVBaseline()",
-            "guard sleepNights.count >= 3 else",
-            "trainingLoadSummarySnapshot.confidence == \"local\"",
+            "if sleepNights.count < 3",
+            "trainingLoadSummarySnapshot.confidence != \"local\"",
+            "guard blockers.isEmpty,",
         ]:
             assert_contains(self, sessions, needle)
+
+        for needle in [
+            "--atria-analytics-calibration-audit",
+            "logAnalyticsCalibrationAuditIfRequested(arguments: arguments)",
+            "private func logAnalyticsCalibrationAuditIfRequested(arguments: [String])",
+            "AtriaAnalytics.CalibrationExamples.numericChecks",
+            "AtriaAnalytics.CalibrationExamples.labelChecks",
+            "ATRIADBG analytics_calibration_check kind=numeric",
+            "ATRIADBG analytics_calibration_check kind=label",
+            "ATRIADBG analytics_calibration_audit status=%@ numeric_checks=%d label_checks=%d",
+            "AtriaAnalytics.CalibrationExamples.allPassed ? \"ok\" : \"failed\"",
+        ]:
+            assert_contains(self, app, needle)
+        assert_contains(self, debug_logging, "--atria-analytics-calibration-audit")
 
         def interpolated_age(value, reference, higher_is_younger):
             if higher_is_younger:
