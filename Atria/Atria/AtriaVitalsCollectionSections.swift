@@ -1382,7 +1382,9 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
 
     var body: some View {
         Chart(points) { point in
-            AreaMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+            AreaMark(x: .value("Time", point.t),
+                     yStart: .value("Visible floor", yDomain.lowerBound),
+                     yEnd: .value("BPM", point.bpm))
                 .interpolationMethod(.catmullRom)
                 .foregroundStyle(.red.opacity(0.12).gradient)
             LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
@@ -1415,7 +1417,7 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
         }
         .chartPlotStyle { plotArea in
             plotArea
-                .padding(.vertical, 4)
+                .contentShape(Rectangle())
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .clipped()
         }
@@ -1431,6 +1433,7 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
         .transaction { transaction in
             transaction.animation = nil
         }
+        .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .clipped()
     }
@@ -1794,14 +1797,27 @@ private struct AtriaSleepStageSummary: View, Equatable {
             .frame(height: 12)
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
-                    Label {
-                        Text("\(stage.label) \(night.stageText(stage))")
-                    } icon: {
+                    HStack(spacing: 7) {
                         Image(systemName: Self.symbol(for: stage))
+                            .font(.caption2.weight(.bold))
+                            .frame(width: 16, height: 16)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(stage.label.uppercased())
+                                .font(.caption2.weight(.bold))
+                            Text(night.stageText(stage))
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 0)
                     }
-                    .font(.caption2.weight(.semibold))
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(color(for: stage).opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .foregroundStyle(color(for: stage))
                 }
             }
