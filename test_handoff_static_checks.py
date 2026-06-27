@@ -460,7 +460,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Toggle(isOn: $batterySaver)",
             "Label(\"Battery saver\", systemImage: \"battery.75percent\")",
             "title: batterySaver ? \"Heart-rate only\" : \"Full sensor mode\"",
-            "HRV, Recovery and sleep detail wait for validated RR windows.",
+            "HRV, Recovery and sleep detail wait for validated beat-to-beat windows.",
+            "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.",
             "Atria reconnects the strap when the radio mode changes.",
             ".onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }",
         ]:
