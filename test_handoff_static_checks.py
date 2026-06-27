@@ -1052,7 +1052,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "dailyRollups(",
             "detectedActivity(",
             "aggregateSleepCandidates(",
+            "aggregateSleepDiagnostics(",
             "aggregateWorkoutCandidates(",
+            "canonicalSessions(",
+            "replaySavedWorkoutReadiness(",
             "session.trimp(",
             "timeInZone(",
             "AthleteProfile.load()",
@@ -3009,7 +3012,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "dailyRollups(",
             "aggregateWorkoutCandidates(",
             "aggregateSleepCandidates(",
+            "aggregateSleepDiagnostics(",
             "canonicalSessions(",
+            "replaySavedWorkoutReadiness(",
         ]
 
         for path in [
