@@ -841,10 +841,12 @@ private struct AtriaCollectionControlsCardHost: View {
             VStack(spacing: 12) {
                 if developerModeEnabled {
                     AtriaCollectionToggleCard(
-                        title: "Standard HR radio",
-                        subtitle: "Advanced compatibility mode for heart-rate-only collection.",
-                        systemImage: "dot.radiowaves.left.and.right",
-                        tint: .blue,
+                        title: "Battery saver",
+                        subtitle: collectionLiveStore.state.standardHROnlyEnabled
+                            ? "Heart-rate only. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
+                            : "Full sensor mode. Beat-to-beat, HRV, Recovery and sleep research stay available.",
+                        systemImage: collectionLiveStore.state.standardHROnlyEnabled ? "battery.75percent" : "waveform.path.ecg",
+                        tint: collectionLiveStore.state.standardHROnlyEnabled ? .green : .purple,
                         isOn: Binding(
                             get: { collectionLiveStore.state.standardHROnlyEnabled },
                             set: { enabled in

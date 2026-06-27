@@ -3217,8 +3217,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "if developerModeEnabled {\n                            rrReferenceCard",
             "if developerModeEnabled {\n                            rrReferenceCard\n                            hrReferenceCard\n                            imuAuditCard",
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
-            "title: \"Standard HR radio\"",
-            "subtitle: \"Advanced compatibility mode for heart-rate-only collection.\"",
+            "title: \"Battery saver\"",
+            "Heart-rate only. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows.",
+            "Full sensor mode. Beat-to-beat, HRV, Recovery and sleep research stay available.",
             "private var researchSignalsCard: some View",
             "AtriaCollectionResearchSignalsCard(summary: store.imuAuditSummary,",
             "sleepHistory: store.sleepHistorySnapshot",
@@ -3246,6 +3247,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaCollectionIMUAuditCard(summary: store.imuAuditSummary)",
         ]:
             assert_contains(self, collection, needle)
+        assert_not_contains(self, collection, "title: \"Standard HR radio\"")
+        assert_not_contains(self, collection, "Advanced compatibility mode for heart-rate-only collection.")
 
         for needle in [
             "struct IMUAuditSummary: Equatable",
