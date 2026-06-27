@@ -1074,6 +1074,35 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, history_snapshot_source, forbidden)
 
+    def test_launch_trend_diagnostics_use_snapshot_builder(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        for needle in [
+            "func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments)",
+            "let sourceSessions = sessions",
+            "DispatchQueue.global(qos: .utility).async",
+            "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
+            "Self.logTrendSummaries(summaries: snapshots.history.trends,",
+            "private nonisolated static func logTrendSummaries(summaries: [TrendSummary],",
+            "private nonisolated static func trendAnomalyFlagsSnapshot(_ anomalies: [String]) -> String",
+            "private nonisolated static func formatIntSnapshot(_ value: Int?) -> String",
+            "private nonisolated static func formatDoubleSnapshot(_ value: Double?) -> String",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        logger = re.search(
+            r"func logTrendSummariesFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(logger)
+        for forbidden in [
+            "trendSummaries(rest:",
+            "dailyRollups(rest:",
+            "detectedActivities(rest:",
+        ]:
+            assert_not_contains(self, logger.group("body"), forbidden)
+
     def test_sleep_history_snapshot_is_cached_and_shown_in_vitals(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")

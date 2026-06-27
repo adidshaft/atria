@@ -7318,12 +7318,34 @@ final class SessionStore: ObservableObject {
 
     func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-log-trends") else { return }
+        let sourceSessions = sessions
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let confirmedSleeps = cachedConfirmedSleeps
+        let baselineSnapshot = baseline
         let rest = baseline.restingInt ?? 60
-        let summaries = trendSummaries(rest: rest, maxHR: profile.maxHR)
+        let maxHR = profile.maxHR
+        DispatchQueue.global(qos: .utility).async {
+            let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                      confirmedWorkouts: confirmedWorkouts,
+                                                      confirmedSleeps: confirmedSleeps,
+                                                      baseline: baselineSnapshot,
+                                                      rest: rest,
+                                                      maxHR: maxHR)
+            Self.logTrendSummaries(summaries: snapshots.history.trends,
+                                   sessionsCount: sourceSessions.count,
+                                   rest: rest,
+                                   maxHR: maxHR)
+        }
+    }
+
+    private nonisolated static func logTrendSummaries(summaries: [TrendSummary],
+                                                      sessionsCount: Int,
+                                                      rest: Int,
+                                                      maxHR: Int) {
         AtriaDebugLog("ATRIADBG trend_summary sessions=%d rest_hr=%d max_hr=%d windows=%d",
-              sessions.count, rest, profile.maxHR, summaries.count)
+              sessionsCount, rest, maxHR, summaries.count)
         for summary in summaries {
-            let anomalyFlags = trendAnomalyFlags(summary.anomalies)
+            let anomalyFlags = trendAnomalyFlagsSnapshot(summary.anomalies)
             let detail = summary.detail.replacingOccurrences(of: " ", with: "_")
             AtriaDebugLog("ATRIADBG trend_window days=%d sessions=%d coverage_days=%d required_coverage_days=%d required_coverage_percent=70 coverage_percent=%d confidence=%@ recovery=%@ hrv=%@ hrv_state=%@ rhr=%@ strain=%@ respiratory_rate=%@ anomalies=%d anomaly_flags=%@ anomaly_source=%@ anomaly_days=%d detail=%@ blockers=%@",
                   summary.days,
@@ -7332,12 +7354,12 @@ final class SessionStore: ObservableObject {
                   summary.requiredCoverageDays,
                   summary.coveragePercent,
                   summary.confidence,
-                  formatInt(summary.avgRecovery),
-                  formatInt(summary.avgHRV),
+                  formatIntSnapshot(summary.avgRecovery),
+                  formatIntSnapshot(summary.avgHRV),
                   summary.hrvState,
-                  formatInt(summary.avgRHR),
-                  formatDouble(summary.avgStrain),
-                  formatDouble(summary.avgRespiratoryRate),
+                  formatIntSnapshot(summary.avgRHR),
+                  formatDoubleSnapshot(summary.avgStrain),
+                  formatDoubleSnapshot(summary.avgRespiratoryRate),
                   summary.anomalies.count,
                   anomalyFlags,
                   summary.anomalySource,
@@ -9293,6 +9315,11 @@ final class SessionStore: ObservableObject {
         return anomalies.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: ",")
     }
 
+    private nonisolated static func trendAnomalyFlagsSnapshot(_ anomalies: [String]) -> String {
+        guard !anomalies.isEmpty else { return "none" }
+        return anomalies.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: ",")
+    }
+
     private func value(after flag: String, in arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: flag) else { return nil }
         let next = arguments.index(after: index)
@@ -9384,6 +9411,14 @@ final class SessionStore: ObservableObject {
     }
 
     private func formatDouble(_ value: Double?) -> String {
+        value.map { String(format: "%.1f", $0) } ?? "learning"
+    }
+
+    private nonisolated static func formatIntSnapshot(_ value: Int?) -> String {
+        value.map(String.init) ?? "learning"
+    }
+
+    private nonisolated static func formatDoubleSnapshot(_ value: Double?) -> String {
         value.map { String(format: "%.1f", $0) } ?? "learning"
     }
 
