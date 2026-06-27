@@ -3591,6 +3591,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "Sleep z %.1f · %@",
             "private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double?",
             "hrvReferenceValidated ? .validated : .personalBaseline",
+            "enum RespRateRsa",
+            "static func estimate(samples: [(t: Date, ms: Double)],",
+            "lookback: TimeInterval = 90",
+            "static func estimate(resampledRR: [Double], sampleRate: Double = 4.0) -> Double?",
+            "for breathsPerMinute in stride(from: 6.0, through: 30.0, by: 0.5)",
+            "bestPower / max(bandPower, bestPower) >= 0.18",
         ]:
             assert_contains(self, text, needle)
         assert_contains(self, analytics, "enum Recovery")
@@ -3609,6 +3615,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, sessions, "self.nights = clippedNights")
         assert_contains(self, sessions, "let respiratoryBaselineMean: Double?")
         assert_contains(self, sessions, "let respiratoryBaselineCount: Int")
+        assert_contains(self, sessions, "let respiratoryRate = AtriaAnalytics.RespRateRsa.estimate(samples: sorted, now: windowEnd)")
+        assert_contains(self, sessions, "respiratoryRate: respiratoryRate")
+        hrv_source = source(ROOT / "Atria" / "Atria" / "HRV.swift")
+        assert_contains(self, hrv_source, "AtriaAnalytics.RespRateRsa.estimate(samples: kept.map { (t: $0.t, ms: $0.ms) }, now: now)")
+        assert_not_contains(self, sessions, "respiratoryRate: nil)\n    }\n\n    private func replayReason")
         assert_not_contains(self, metrics, "let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)")
         assert_not_contains(self, metrics, "let restingPenalty = restingNow > 0 && restingBaseline > 0")
         assert_not_contains(self, analytics, "hrvStats.count >= 7")
@@ -5169,6 +5180,30 @@ class HandoffStaticChecks(unittest.TestCase):
                 total += dt_min * edwards_weight(reserve)
             return total
 
+        def resp_rate_rsa(resampled, sample_rate=4.0):
+            mean = sum(resampled) / len(resampled)
+            centered = [value - mean for value in resampled]
+            best_rate = 0
+            best_power = 0
+            band_power = 0
+            for step in range(12, 61):
+                bpm = step / 2
+                frequency = bpm / 60
+                real = 0
+                imaginary = 0
+                for index, value in enumerate(centered):
+                    angle = 2 * math.pi * frequency * index / sample_rate
+                    real += value * math.cos(angle)
+                    imaginary -= value * math.sin(angle)
+                power = real * real + imaginary * imaginary
+                band_power += power
+                if power > best_power:
+                    best_power = power
+                    best_rate = bpm
+            if best_power <= 0 or best_power / max(band_power, best_power) < 0.18:
+                return None
+            return best_rate
+
         self.assertEqual(acwr_signal(None, False), "learning")
         self.assertEqual(acwr_signal(1.55, True), "bad")
         self.assertEqual(acwr_signal(1.31, True), "watch")
@@ -5185,6 +5220,8 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertTrue(inferred_manual_sleep_is_nap(-60, 14, 15, current_selection=True))
         self.assertEqual([edwards_weight(x) for x in [0.49, 0.50, 0.61, 0.72, 0.83, 0.94]], [0, 1, 2, 3, 4, 5])
         self.assertEqual(edwards_load([(0, 100), (60, 130), (120, 150), (180, 170)], 60, 180), 9)
+        synthetic_rr = [800 + 45 * math.sin(2 * math.pi * (15 / 60) * index / 4) for index in range(4 * 90)]
+        self.assertEqual(resp_rate_rsa(synthetic_rr), 15)
 
 
 if __name__ == "__main__":
