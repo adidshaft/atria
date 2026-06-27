@@ -4056,6 +4056,7 @@ class HandoffStaticChecks(unittest.TestCase):
         targets = source(ROOT / "Atria" / "Atria" / "AtriaMetricTargets.swift")
         shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+        vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
 
         for needle in [
@@ -4096,7 +4097,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricZoneInfoSheet(zone: zone)",
             "Text(\"(i)\")",
         ]:
-            assert_contains(self, shared + overview, needle)
+            assert_contains(self, shared + overview + vitals, needle)
 
         for needle in [
             "@AppStorage(\"atria.target.recovery.greenLower\")",
@@ -4120,6 +4121,23 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.stepsZone(live.phoneStepsToday > 0 ? live.phoneStepsToday : nil,",
         ]:
             assert_contains(self, overview, needle)
+
+        for needle in [
+            "recoveryTarget: AtriaMetricTarget.recovery",
+            "hrvBaseline: store.baseline.hrvInt",
+            "hrvBaselineSamples: store.baseline.hrvSampleCount",
+            "restingBaseline: store.baseline.restingInt",
+            "restingBaselineSamples: store.baseline.restingSampleCount",
+            "zone: recoveryZone",
+            "zone: restingHeartRateZone",
+            "zone: sleepEfficiencyZone",
+            "zone: hrvZone",
+            "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
+            "Metrics.restingHeartRateZone(snapshot.latest?.restingHR,",
+            "Metrics.sleepEfficiencyZone(snapshot.latest?.sleepEfficiency)",
+            "Metrics.hrvZone(snapshot.latest?.hrv,",
+        ]:
+            assert_contains(self, vitals, needle)
 
         for needle in [
             "targetsSection",
