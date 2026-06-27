@@ -949,7 +949,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .font(.callout.weight(.semibold))
                 .frame(width: 20, height: 20)
         }
-        .atriaCardAction(prominent: false, tint: .secondary)
+        .atriaGlassIconAction(tint: .secondary, size: 38)
         .accessibilityLabel("Add Today widget")
         .accessibilityHint(hiddenMetrics.isEmpty
                            ? "All Today widgets are already visible."
@@ -1081,9 +1081,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                       ? "rectangle.compress.horizontal"
                       : "rectangle.expand.horizontal")
                     .font(.caption.weight(.bold))
-                    .frame(width: 17, height: 17)
             }
-            .atriaCardAction(prominent: false, tint: .secondary)
+            .atriaGlassIconAction(tint: .secondary, size: 34)
             .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
                                 ? "Make \(metric.label) compact"
                                 : "Make \(metric.label) wide")
@@ -1098,16 +1097,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 17, height: 17)
             }
-            .atriaCardAction(prominent: false, tint: .red)
+            .atriaGlassIconAction(tint: .red, size: 34)
             .accessibilityLabel("Remove \(metric.label)")
-        }
-        .padding(2)
-        .background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
@@ -1277,10 +1269,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             } label: {
                 Image(systemName: "moon.zzz.badge.plus")
                     .font(.caption.weight(.bold))
-                    .frame(width: 17, height: 17)
             }
-            .atriaCardAction(prominent: false, tint: .cyan)
-            .padding(8)
+            .atriaGlassIconAction(tint: .cyan, size: 34)
+            .padding(7)
             .accessibilityLabel("Add sleep manually")
         }
     }

@@ -82,6 +82,27 @@ struct AtriaCardActionButtonStyle: ButtonStyle {
     }
 }
 
+struct AtriaGlassIconButtonStyle: ButtonStyle {
+    var tint: Color = .blue
+    var size: CGFloat = 38
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(foreground)
+            .frame(width: size, height: size)
+            .glassEffect(.regular.tint(tint.opacity(colorScheme == .light ? 0.16 : 0.24)).interactive(), in: .circle)
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
+    }
+
+    private var foreground: Color {
+        tint == .secondary ? .secondary : tint
+    }
+}
+
 private struct AtriaCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
@@ -304,6 +325,10 @@ extension View {
 
     func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View {
         self.buttonStyle(AtriaCardActionButtonStyle(prominent: prominent, tint: tint))
+    }
+
+    func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View {
+        self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
     }
 }
 
