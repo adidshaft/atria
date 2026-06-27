@@ -34,6 +34,7 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -109,6 +110,7 @@ struct AtriaSettingsView: View {
         .onChange(of: recoveryGreenLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: recoveryYellowLower) { _, _ in normalizeRecoveryTargets() }
         .onChange(of: stepsGoal) { _, _ in normalizeStepsGoal() }
+        .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
     }
 
     private func normalizeRecoveryTargets() {
@@ -118,6 +120,10 @@ struct AtriaSettingsView: View {
 
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+    }
+
+    private func normalizeSleepGoal() {
+        sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
     }
 
     // MARK: Appearance
@@ -275,6 +281,20 @@ struct AtriaSettingsView: View {
                             .monospacedDigit()
                     }
                 }
+
+                Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
+                    LabeledContent("Sleep goal") {
+                        Text(String(format: "%.2g h", sleepGoalHours))
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    sleepGoalHours = 8.0
+                } label: {
+                    Label("Reset sleep goal", systemImage: "bed.double.fill")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")

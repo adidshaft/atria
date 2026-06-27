@@ -208,6 +208,33 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
+    static func sleepDurationZone(_ hours: Double?, goalHours: Double = 8.0) -> AtriaMetricZone? {
+        guard let hours, hours > 0 else { return nil }
+        let safeGoal = min(max(goalHours, 4.0), 12.0)
+        let ratio = hours / safeGoal
+        let level: AtriaMetricZoneLevel = ratio >= 1.0 ? .green : (ratio >= 0.85 ? .yellow : .red)
+        let remaining = max(0, safeGoal - hours)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Sleep duration met your goal. Keep bed and wake times consistent."
+        case .yellow:
+            recommendation = String(format: "A little under your sleep goal -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+        case .red:
+            recommendation = String(format: "Under your sleep need -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Sleep duration target",
+                               current: String(format: "%.1fh sleep vs %.1fh goal.", hours, safeGoal),
+                               targetSummary: String(format: "Green >= %.1fh, yellow %.1f-%.1fh, red below %.1fh.",
+                                                     safeGoal,
+                                                     safeGoal * 0.85,
+                                                     safeGoal - 0.1,
+                                                     safeGoal * 0.85),
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
     static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
         guard let steps, steps > 0 else { return nil }
         let safeGoal = max(goal, 1_000)
