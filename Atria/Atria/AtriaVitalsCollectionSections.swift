@@ -1206,6 +1206,8 @@ private struct AtriaHeartRateExplorer: View {
     let onDismiss: () -> Void
     @State private var selectedTime: Date?
     @State private var zoom: Double = 1
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var visiblePoints: [AtriaHomeModel.HeartRateChartPoint] {
         guard zoom > 1, points.count > 8 else { return points }
@@ -1256,7 +1258,8 @@ private struct AtriaHeartRateExplorer: View {
                 .foregroundStyle(.secondary)
             }
             .padding(20)
-            .background(AtriaBackdropLayer(isDark: false, reduceTransparency: false).ignoresSafeArea())
+            .background(AtriaBackdropLayer(isDark: colorScheme == .dark,
+                                           reduceTransparency: reduceTransparency).ignoresSafeArea())
             .navigationTitle("Heart rate")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
