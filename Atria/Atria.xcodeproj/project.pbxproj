@@ -9,6 +9,7 @@
 /* Begin PBXFileReference section */
 		1A0000000000000000000005 /* Atria.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Atria.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000015 /* AtriaWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AtriaWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A0000000000000000000021 /* AtriaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtriaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXBuildFile section */
@@ -22,6 +23,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 1A0000000000000000000014;
 			remoteInfo = AtriaWidget;
+		};
+		1A0000000000000000000022 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1A0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A0000000000000000000004;
+			remoteInfo = Atria;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -50,10 +58,22 @@
 			path = AtriaWidget;
 			sourceTree = "<group>";
 		};
+		1A0000000000000000000023 /* AtriaTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AtriaTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		1A0000000000000000000007 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000024 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -68,6 +88,7 @@
 			children = (
 				1A000000000000000000000F /* Atria */,
 				1A0000000000000000000019 /* AtriaWidget */,
+				1A0000000000000000000023 /* AtriaTests */,
 				1A0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -77,6 +98,7 @@
 			children = (
 				1A0000000000000000000005 /* Atria.app */,
 				1A0000000000000000000015 /* AtriaWidget.appex */,
+				1A0000000000000000000021 /* AtriaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -126,6 +148,27 @@
 			productReference = 1A0000000000000000000015 /* AtriaWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		1A0000000000000000000025 /* AtriaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A0000000000000000000026 /* Build configuration list for PBXNativeTarget "AtriaTests" */;
+			buildPhases = (
+				1A0000000000000000000027 /* Sources */,
+				1A0000000000000000000024 /* Frameworks */,
+				1A0000000000000000000028 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1A0000000000000000000029 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1A0000000000000000000023 /* AtriaTests */,
+			);
+			name = AtriaTests;
+			productName = AtriaTests;
+			productReference = 1A0000000000000000000021 /* AtriaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -141,6 +184,10 @@
 					};
 					1A0000000000000000000014 = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					1A0000000000000000000025 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 1A0000000000000000000004;
 					};
 				};
 			};
@@ -160,6 +207,7 @@
 			targets = (
 				1A0000000000000000000004 /* Atria */,
 				1A0000000000000000000014 /* AtriaWidget */,
+				1A0000000000000000000025 /* AtriaTests */,
 			);
 		};
 /* End PBXProject section */
@@ -173,6 +221,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1A000000000000000000001E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000028 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -196,6 +251,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1A0000000000000000000027 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -213,6 +275,11 @@
 			isa = PBXTargetDependency;
 			target = 1A0000000000000000000014 /* AtriaWidget */;
 			targetProxy = 1A0000000000000000000017 /* PBXContainerItemProxy */;
+		};
+		1A0000000000000000000029 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1A0000000000000000000004 /* Atria */;
+			targetProxy = 1A0000000000000000000022 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -386,6 +453,56 @@
 			};
 			name = Release;
 		};
+		1A000000000000000000002A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JP4HU7X6G7;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adidshaft.atria.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atria.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atria";
+			};
+			name = Debug;
+		};
+		1A000000000000000000002B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JP4HU7X6G7;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.adidshaft.atria.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atria.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atria";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -412,6 +529,15 @@
 			buildConfigurations = (
 				1A000000000000000000001F /* Debug */,
 				1A0000000000000000000020 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1A0000000000000000000026 /* Build configuration list for PBXNativeTarget "AtriaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A000000000000000000002A /* Debug */,
+				1A000000000000000000002B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
