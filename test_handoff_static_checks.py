@@ -363,6 +363,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
             "vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate",
             "let vo2MaxEstimate: VO2MaxEstimateSummary",
+            "&& lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence",
+            "&& lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail",
             "&& lhs.vo2MaxEstimate == rhs.vo2MaxEstimate",
             "detail: recoveryDetailText",
             "private var recoveryDetailText: String",
