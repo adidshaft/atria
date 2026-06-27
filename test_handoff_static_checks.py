@@ -3263,9 +3263,15 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, text, needle)
         assert_contains(self, analytics, "enum Recovery")
+        assert_contains(self, analytics, "static func restingOnly(restingNow: Int, baseline: Int) -> Int")
+        assert_contains(self, analytics, "static func estimate(hrvNow: Int, hrvBaseline: Int, restingNow: Int, restingBaseline: Int) -> Int")
         assert_contains(self, analytics, "static func estimate(hrvSnapshot: HRVSnapshot?,")
         assert_contains(self, metrics, "typealias RecoveryEstimate = AtriaAnalytics.Recovery.Estimate")
+        assert_contains(self, metrics, "AtriaAnalytics.Recovery.restingOnly(restingNow: restingNow, baseline: baseline)")
+        assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvNow: hrvNow,")
         assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,")
+        assert_not_contains(self, metrics, "let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)")
+        assert_not_contains(self, metrics, "let restingPenalty = restingNow > 0 && restingBaseline > 0")
 
         for needle in [
             "let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD",

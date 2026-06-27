@@ -39,21 +39,16 @@ enum Metrics {
 
     /// HR-only recovery: at/below baseline reads high; elevated resting reads low.
     static func recovery(restingNow: Int, baseline: Int) -> Int {
-        guard restingNow > 0, baseline > 0 else { return 0 }
-        let delta = Double(restingNow - baseline)          // + = elevated (worse)
-        return Int(Swift.min(Swift.max(75 - delta * 5, 1), 99).rounded())
+        AtriaAnalytics.Recovery.restingOnly(restingNow: restingNow, baseline: baseline)
     }
 
     /// HRV-driven recovery (the primary signal), blended with resting HR.
     /// HRV above your norm → high recovery; elevated resting HR penalizes it.
     static func recovery(hrvNow: Int, hrvBaseline: Int, restingNow: Int, restingBaseline: Int) -> Int {
-        guard hrvNow > 0, hrvBaseline > 0 else {
-            return recovery(restingNow: restingNow, baseline: restingBaseline)
-        }
-        let hrvScore = 66.0 * Double(hrvNow) / Double(hrvBaseline)   // ratio centered on green edge
-        let restingPenalty = restingNow > 0 && restingBaseline > 0
-            ? 3.0 * Double(restingNow - restingBaseline) : 0
-        return Int(Swift.min(Swift.max(hrvScore - restingPenalty, 1), 99).rounded())
+        AtriaAnalytics.Recovery.estimate(hrvNow: hrvNow,
+                                         hrvBaseline: hrvBaseline,
+                                         restingNow: restingNow,
+                                         restingBaseline: restingBaseline)
     }
 
     /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
