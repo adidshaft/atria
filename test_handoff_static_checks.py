@@ -4627,6 +4627,7 @@ class HandoffStaticChecks(unittest.TestCase):
         shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
 
         for needle in [
@@ -4919,6 +4920,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "restingHeartRate: homeStatsStore.state.restingHeartRate",
             "AtriaVitalsHRVCardHost(liveStore: liveStore,",
             "heroStore: heroStore,\n                               store: store)",
+            "var hrvSDNN: Double?",
+            "var hrvPNN50: Double?",
+            "var hrvSDNNText: String",
+            "var hrvPNN50Text: String",
+            "hrvSDNN: ble.hrvSnapshot?.sdnn",
+            "hrvPNN50: ble.hrvSnapshot?.pnn50",
             "@AppStorage(\"atria.target.hrv.greenRatio\") private var hrvGreenRatio: Double = 0.95",
             "@AppStorage(\"atria.target.hrv.yellowRatio\") private var hrvYellowRatio: Double = 0.85",
             "hrvBaseline: store.baseline.hrvInt",
@@ -4952,6 +4959,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "tint: restingHeartRateZone?.tint ?? .blue",
             "Metrics.hrvZone(Self.parseInt(hero.hrvValue),",
             "tint: hrvZone?.tint ?? .pink",
+            "AtriaMetricTile(label: \"SDNN\"",
+            "value: live.hrvSDNNText",
+            "unit: live.hrvSDNN == nil ? nil : \"ms\"",
+            "Secondary HRV metric from the same clean RR window.",
+            "AtriaMetricTile(label: \"pNN50\"",
+            "value: live.hrvPNN50Text",
+            "Share of adjacent beat intervals differing by more than 50 ms.",
             "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
             "Metrics.strainZone(strain: hero.strain,",
             "target: hero.guidance.target",
@@ -4985,7 +4999,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenDelta: skinTemperatureGreenDelta",
             "yellowDelta: skinTemperatureYellowDelta",
         ]:
-            assert_contains(self, vitals, needle)
+            assert_contains(self, vitals + home, needle)
 
         for path in [overview, vitals]:
             assert_not_contains(self, path, "let baselineValues = sleepHistory.nights.dropFirst().compactMap(\\.respiratoryRate)")
