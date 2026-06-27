@@ -202,6 +202,21 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, home, forbidden)
 
+        shared_ui = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
+        assert_contains(self, shared_ui, "case .noContact:\n            return \"No signal\"")
+        assert_not_contains(self, shared_ui, "return \"No contact\"")
+
+    def test_state_pull_detects_official_whoop_widget_name(self):
+        pull_script = source(ROOT / "pull_atria_state.sh")
+
+        for needle in [
+            "WhoopWidgetExtension",
+            "whoop_widget_pattern=",
+            "official_whoop_widget_process=1",
+            "official_whoop_coexistence_risk=1",
+        ]:
+            assert_contains(self, pull_script, needle)
+
     def test_heart_rate_timeline_has_axes_and_fullscreen_explorer(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
