@@ -345,7 +345,7 @@ enum AtriaMetricState: Equatable {
         case .validated:
             return "Validated"
         case .noContact:
-            return "No contact"
+            return "No signal"
         case .conflict:
             return "App conflict"
         case .local:

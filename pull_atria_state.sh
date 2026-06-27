@@ -92,14 +92,15 @@ printf 'bundle_id=%s\n' "$bundle_id" | tee -a "$summary"
 printf 'evidence_dir=%s\n' "$evidence_dir" | tee -a "$summary"
 
 if xcrun devicectl device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
-  if grep -E 'Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|/Whoop\.app/PlugIns/AtriaWidgetExtension\.appex/AtriaWidgetExtension' "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
+  whoop_widget_pattern='/Whoop\.app/PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension)'
+  if grep -E "Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
     printf 'process_status=running\n' | tee -a "$summary"
     if grep -Eq 'Atria|com\.adidshaft\.atria' "$evidence_dir/process-check.txt"; then
       printf 'process_name_status=atria\n' | tee -a "$summary"
     else
       printf 'process_name_status=not_atria\n' | tee -a "$summary"
     fi
-    whoop_process_count=$(grep -Ec '/Whoop\.app/(Whoop|PlugIns/AtriaWidgetExtension\.appex/AtriaWidgetExtension)' "$evidence_dir/process-check.txt" || true)
+    whoop_process_count=$(grep -Ec "/Whoop\.app/(Whoop|PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension))" "$evidence_dir/process-check.txt" || true)
     if [[ "$whoop_process_count" -gt 0 ]]; then
       printf 'official_whoop_process_status=running\n' | tee -a "$summary"
       printf 'official_whoop_process_count=%s\n' "$whoop_process_count" | tee -a "$summary"
@@ -108,7 +109,7 @@ if xcrun devicectl device info processes --device "$device_id" > "$evidence_dir/
       else
         printf 'official_whoop_main_process=0\n' | tee -a "$summary"
       fi
-      if grep -q '/Whoop\.app/PlugIns/AtriaWidgetExtension\.appex/AtriaWidgetExtension' "$evidence_dir/process-check.txt"; then
+      if grep -Eq "$whoop_widget_pattern" "$evidence_dir/process-check.txt"; then
         printf 'official_whoop_widget_process=1\n' | tee -a "$summary"
       else
         printf 'official_whoop_widget_process=0\n' | tee -a "$summary"

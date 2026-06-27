@@ -17,6 +17,8 @@ STRICT_MINIMUM_SECONDS = 3 * 60 * 60
 FRAGMENTED_MINIMUM_SECONDS = 150 * 60
 FRAGMENTED_MINIMUM_SPAN_SECONDS = 3 * 60 * 60
 SLEEP_CLUSTER_GAP_SECONDS = 2 * 60 * 60
+NAP_MINIMUM_SECONDS = 20 * 60
+NAP_MAXIMUM_SPAN_SECONDS = 3 * 60 * 60
 
 
 def load_sessions(path: Path) -> list[dict[str, Any]]:
@@ -117,6 +119,13 @@ def is_overnight(session: dict[str, Any], timezone: str) -> bool:
     start_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_start(session))).astimezone(zone).hour
     end_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_end(session))).astimezone(zone).hour
     return start_hour >= 20 or start_hour <= 5 or end_hour <= 11
+
+
+def is_daytime_nap_window(session: dict[str, Any], timezone: str) -> bool:
+    zone = timezone_for(timezone)
+    start_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_start(session))).astimezone(zone).hour
+    end_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_end(session))).astimezone(zone).hour
+    return start_hour >= 11 and end_hour <= 20
 
 
 def sleep_clusters(sessions: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -250,10 +259,18 @@ def eligible_sessions(sessions: list[dict[str, Any]], rest: int, max_hr: int, ti
         if session_duration(session) < MIN_SESSION_SECONDS:
             counts["too_short"] += 1
             continue
-        if not is_overnight(session, timezone):
+        overnight = is_overnight(session, timezone)
+        nap_like = (
+            not overnight
+            and is_daytime_nap_window(session, timezone)
+            and NAP_MINIMUM_SECONDS <= session_duration(session) <= NAP_MAXIMUM_SPAN_SECONDS
+            and avg_hr(session) <= rest + 12
+            and peak_hr(session) <= rest + 35
+        )
+        if not (overnight or nap_like):
             counts["not_overnight"] += 1
             continue
-        if avg_hr(session) > rest + 18 or peak_hr(session) > rest + 55:
+        if overnight and (avg_hr(session) > rest + 18 or peak_hr(session) > rest + 55):
             counts["hr_too_high"] += 1
             continue
         # Full workout replay is handled by tools/analyze_workout_store.py.
@@ -291,7 +308,16 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
                 and duration >= FRAGMENTED_MINIMUM_SECONDS
                 and max_gap <= SLEEP_CLUSTER_GAP_SECONDS
             )
-            if not (strict_ready or fragmented_ready):
+            zone = timezone_for(timezone)
+            cluster_start_hour = (APPLE_EPOCH + dt.timedelta(seconds=start)).astimezone(zone).hour
+            cluster_end_hour = (APPLE_EPOCH + dt.timedelta(seconds=end)).astimezone(zone).hour
+            nap_ready = (
+                cluster_start_hour >= 11
+                and cluster_end_hour <= 20
+                and span <= NAP_MAXIMUM_SPAN_SECONDS
+                and duration >= NAP_MINIMUM_SECONDS
+            )
+            if not (strict_ready or fragmented_ready or nap_ready):
                 continue
             values = [bpm for session in cluster for bpm in bpms(session)]
             motion = motion_status(start, end, archive)
@@ -309,7 +335,9 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
                 "sleep_rhr": percentile_nearest_rank(values, 0.05),
                 "strict_ready": strict_ready,
                 "fragmented_ready": fragmented_ready,
+                "nap_ready": nap_ready,
                 "fallback_source": "hr_only_fragmented_sleep" if len(cluster) > 1 else "hr_only_sleep",
+                "kind": "nap_candidate" if nap_ready else "overnight_sleep",
                 "motion": motion,
                 "ready": bool(motion.get("validated")),
                 "blocker": "none" if motion.get("validated") else candidate_blocker(motion),
@@ -341,7 +369,7 @@ def main() -> int:
         f"candidates={counts['candidates']} ready={ready_count} "
         f"rest_hr={args.rest} max_hr={args.max_hr} strict_min_s={STRICT_MINIMUM_SECONDS} "
         f"fragmented_min_s={FRAGMENTED_MINIMUM_SECONDS} fragmented_min_span_s={FRAGMENTED_MINIMUM_SPAN_SECONDS} "
-        f"cluster_gap_limit_s={SLEEP_CLUSTER_GAP_SECONDS}"
+        f"cluster_gap_limit_s={SLEEP_CLUSTER_GAP_SECONDS} nap_min_s={NAP_MINIMUM_SECONDS} nap_max_span_s={NAP_MAXIMUM_SPAN_SECONDS}"
     )
     print(
         "archive "
@@ -365,12 +393,13 @@ def main() -> int:
     else:
         print("best ready=0 blocker=sleep_learning fallback_source=none diagnostic_only=1")
 
-    print("day\tstart\tend\tduration_s\tspan_s\tmax_gap_s\tsessions\tsamples\tavg\tpeak\tsleep_rhr\tstrict_ready\tfragmented_ready\tready\tblocker\tfallback_source\tmotion_reason\tmotion_overlap_s\tmotion_nearest_separation_s\tmotion_validated\tlabels")
+    print("day\tkind\tstart\tend\tduration_s\tspan_s\tmax_gap_s\tsessions\tsamples\tavg\tpeak\tsleep_rhr\tstrict_ready\tfragmented_ready\tnap_ready\tready\tblocker\tfallback_source\tmotion_reason\tmotion_overlap_s\tmotion_nearest_separation_s\tmotion_validated\tlabels")
     for candidate in candidates[: args.limit]:
         motion = candidate["motion"]
         print(
             "\t".join([
                 candidate["day"],
+                candidate["kind"],
                 apple_time(candidate["start"], args.timezone),
                 apple_time(candidate["end"], args.timezone),
                 f"{candidate['duration']:.0f}",
@@ -383,6 +412,7 @@ def main() -> int:
                 str(candidate["sleep_rhr"]),
                 "1" if candidate["strict_ready"] else "0",
                 "1" if candidate["fragmented_ready"] else "0",
+                "1" if candidate["nap_ready"] else "0",
                 "1" if candidate["ready"] else "0",
                 candidate["blocker"],
                 candidate["fallback_source"],
