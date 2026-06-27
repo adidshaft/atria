@@ -1225,6 +1225,41 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_not_contains(self, sleep_card_source, forbidden)
 
+    def test_launch_activity_diagnostics_use_snapshot_builder(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        logger = re.search(
+            r"func logActivityDetectionsFromLaunchIfRequested\(arguments: \[String\] = ProcessInfo\.processInfo\.arguments\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(logger)
+        body = logger.group("body")
+        for needle in [
+            "let sourceSessions = sessions",
+            "let confirmedWorkouts = cachedConfirmedWorkouts",
+            "let confirmedSleeps = cachedConfirmedSleeps",
+            "let baselineSnapshot = baseline",
+            "DispatchQueue.global(qos: .utility).async",
+            "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
+            "Self.logActivityDetections(detections: snapshots.history.detections,",
+        ]:
+            assert_contains(self, body, needle)
+        for forbidden in [
+            "detectedActivities(rest:",
+            "aggregateWorkoutCandidates(",
+            "dailyRollups(",
+            "aggregateSleepCandidates(",
+        ]:
+            assert_not_contains(self, body, forbidden)
+
+        for needle in [
+            "private nonisolated static func logActivityDetections(detections: [ActivityDetection],",
+            "private nonisolated static func kindRankSnapshot(_ kind: ActivityDetection.Kind) -> Int",
+            "private nonisolated static func confidenceRankSnapshot(_ confidence: ActivityDetection.Confidence) -> Int",
+        ]:
+            assert_contains(self, sessions, needle)
+
     def test_sleep_validation_reuses_aggregate_candidates(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
