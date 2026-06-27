@@ -249,9 +249,33 @@ python3 tools/prepare_accessibility_performance_evidence.py
 ```
 
 This writes `docs/evidence/accessibility-performance/summary.draft.json`.
-Rename it to `summary.json` only after the iPhone 15 Pro accessibility pass and
-Instruments dashboard scroll trace have been measured and the false/zero fields
-have been replaced with real results.
+To fill measured values after a real iPhone 15 Pro pass, pass the measured fields
+explicitly:
+
+```sh
+python3 tools/prepare_accessibility_performance_evidence.py \
+  --force \
+  --dashboard-scroll-fps 60 \
+  --all-accessibility-checks-pass \
+  --instruments-trace docs/evidence/accessibility-performance/trace.trace \
+  --notes "Measured on iPhone 15 Pro Release build."
+```
+
+Only write the final `summary.json` when all fields are genuinely measured:
+
+```sh
+python3 tools/prepare_accessibility_performance_evidence.py \
+  --final \
+  --force \
+  --dashboard-scroll-fps 60 \
+  --all-accessibility-checks-pass \
+  --instruments-trace docs/evidence/accessibility-performance/trace.trace \
+  --notes "Measured on iPhone 15 Pro Release build."
+```
+
+The `--final` mode refuses to write `summary.json` while any accessibility check
+is false, dashboard scroll FPS is below 58, provenance is missing, or the trace
+artifact path does not exist.
 
 ## Final Summary Rule
 

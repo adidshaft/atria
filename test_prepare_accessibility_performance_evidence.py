@@ -88,6 +88,99 @@ class PrepareAccessibilityPerformanceEvidenceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(json.loads(out.read_text(encoding="utf-8")), {})
 
+    def test_measured_inputs_can_populate_a_non_final_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            trace = repo / "docs/evidence/accessibility-performance/trace.trace"
+            trace.parent.mkdir(parents=True)
+            trace.write_text("trace placeholder\n", encoding="utf-8")
+
+            manifest = prepare_accessibility_performance_evidence.apply_measured_inputs(
+                prepare_accessibility_performance_evidence.default_manifest(repo, "2026-06-22T12:00:00Z"),
+                repo,
+                dashboard_scroll_fps=59.5,
+                passed_checks=["light_mode", "dark_mode"],
+                instruments_trace=trace,
+                notes="Measured Release scroll and visual checks on cabled iPhone 15 Pro.",
+            )
+
+        self.assertEqual(manifest["dashboard_scroll_fps"], 59.5)
+        self.assertEqual(manifest["instruments_trace"], "docs/evidence/accessibility-performance/trace.trace")
+        self.assertTrue(manifest["accessibility_checks"]["light_mode"])
+        self.assertTrue(manifest["accessibility_checks"]["dark_mode"])
+        self.assertFalse(manifest["accessibility_checks"]["reduce_motion"])
+        self.assertIn("Measured Release", manifest["notes"])
+
+    def test_final_manifest_reports_blockers_until_all_measured_fields_are_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            manifest = prepare_accessibility_performance_evidence.default_manifest(repo, "2026-06-22T12:00:00Z")
+
+            blockers = prepare_accessibility_performance_evidence.manifest_blockers(repo, manifest)
+
+        self.assertIn("dashboard_scroll_fps", blockers)
+        self.assertIn("instruments_trace_file", blockers)
+        self.assertIn("accessibility_reduce_motion", blockers)
+
+    def test_cli_final_requires_real_trace_passing_checks_and_fps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Initial"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            out = repo / "summary.json"
+
+            failed = subprocess.run(
+                [
+                    "python3",
+                    str(Path(__file__).resolve().parent / "tools" / "prepare_accessibility_performance_evidence.py"),
+                    "--repo",
+                    str(repo),
+                    "--out",
+                    str(out),
+                    "--final",
+                    "--force",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(out.exists())
+
+            trace = repo / "trace.trace"
+            trace.write_text("trace placeholder\n", encoding="utf-8")
+            passed = subprocess.run(
+                [
+                    "python3",
+                    str(Path(__file__).resolve().parent / "tools" / "prepare_accessibility_performance_evidence.py"),
+                    "--repo",
+                    str(repo),
+                    "--out",
+                    str(out),
+                    "--final",
+                    "--force",
+                    "--all-accessibility-checks-pass",
+                    "--dashboard-scroll-fps",
+                    "60",
+                    "--instruments-trace",
+                    str(trace),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+            data = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(data["dashboard_scroll_fps"], 60.0)
+        self.assertTrue(all(data["accessibility_checks"].values()))
+        self.assertTrue(data["instruments_trace"].endswith("trace.trace"))
+
 
 if __name__ == "__main__":
     unittest.main()
