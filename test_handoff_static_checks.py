@@ -2313,7 +2313,7 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
         for needle in [
-            "AtriaOverviewMorningJournalHost(heroStore: heroStore,",
+            "AtriaOverviewMorningJournalHost(snapshotStore: snapshotStore,",
             "struct AtriaOverviewMorningJournalHost: View",
             "AtriaOverviewMorningJournalCard(snapshot: snapshotStore.state,",
             "sleepHistory: store.sleepHistorySnapshot",
@@ -2346,6 +2346,10 @@ class HandoffStaticChecks(unittest.TestCase):
         morning_start = overview.index("struct AtriaOverviewMorningJournalCard")
         morning_end = overview.index("struct AtriaInsightsCardHost")
         morning_source = overview[morning_start:morning_end]
+        morning_host_start = overview.index("struct AtriaOverviewMorningJournalHost")
+        morning_host_end = overview.index("struct AtriaOverviewMorningJournalCard")
+        morning_host_source = overview[morning_host_start:morning_host_end]
+        assert_not_contains(self, morning_host_source, "heroStore")
         for forbidden in [
             "dailyRollups(",
             "detectedActivity(",
