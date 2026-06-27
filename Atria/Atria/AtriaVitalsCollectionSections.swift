@@ -1763,7 +1763,7 @@ private struct AtriaSleepStageSummary: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Stages")
+                Text("Research stages")
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
@@ -1797,6 +1797,8 @@ private struct AtriaSleepStageSummary: View, Equatable {
         }
         .padding(10)
         .atriaInsetCard(tint: .cyan)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(night.evidenceLabel) research stages. Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
 
     static func symbol(for stage: SleepStageKind) -> String {
