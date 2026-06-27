@@ -494,6 +494,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
+                                     sensorSummary: store.imuAuditSummary,
                                      insights: store.behaviorInsights,
                                      taggedDays: store.behaviorJournalEntries.count,
                                      subtitle: subtitle,
@@ -517,7 +518,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, trend, insights
+    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -529,6 +530,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "Steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
+        case .bodyTemp: return "Body temp"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
         }
@@ -543,6 +545,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
         case .vo2max: return "lungs.fill"
+        case .bodyTemp: return "thermometer.variable"
         case .trend: return "chart.line.uptrend.xyaxis"
         case .insights: return "sparkles"
         }
@@ -567,7 +570,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -621,6 +624,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let vo2MaxEstimate: VO2MaxEstimateSummary
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
+    let sensorSummary: IMUAuditSummary
     let insights: [AtriaInsight]
     let taggedDays: Int
     let subtitle: String
@@ -646,6 +650,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
+            && lhs.sensorSummary == rhs.sensorSummary
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
@@ -835,6 +840,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .accessibilityLabel(vo2MaxEstimate.value == nil
                                     ? "VO2max building from resting baseline and measured HR max"
                                     : "VO2max estimate \(vo2MaxEstimate.valueText), \(vo2MaxEstimate.confidence)")
+        case .bodyTemp:
+            AtriaGlanceMetricCard(title: "Body temp",
+                                  value: sensorSummary.skinTempCandidateFrames > 0 ? "\(sensorSummary.skinTempCandidateFrames)" : "--",
+                                  detail: sensorSummary.skinTempCandidateFrames > 0 ? "research frames" : "Sleep research",
+                                  systemImage: metric.systemImage,
+                                  tint: sensorSummary.skinTempCandidateFrames > 0 ? .teal : .orange)
+                .accessibilityLabel(sensorSummary.skinTempCandidateFrames > 0
+                                    ? "Body temperature research has \(sensorSummary.skinTempCandidateFrames) candidate frames, not a temperature reading"
+                                    : "Body temperature research is building and does not show an absolute temperature")
         case .trend:
             trendCard
         case .insights:
