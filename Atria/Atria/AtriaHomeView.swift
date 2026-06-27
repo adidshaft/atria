@@ -2889,7 +2889,7 @@ final class AtriaHomeModel {
     }
 
     private static func baselineMaturityText(sampleCount: Int) -> String {
-        sampleCount >= 7 ? "Ready" : "\(max(0, sampleCount))/7"
+        sampleCount >= PersonalBaseline.trustedMinimumSamples ? "Ready" : "\(max(0, sampleCount))/\(PersonalBaseline.trustedMinimumSamples)"
     }
 
     private static func sessionHeartStats(_ samples: [HRSample]) -> (average: Int?, peak: Int?) {

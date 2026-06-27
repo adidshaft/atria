@@ -10119,7 +10119,7 @@ struct HistoryView: View {
             HStack(spacing: 12) {
                 HistoryQuickStat(label: "Sessions", value: "\(snapshot.sessions.count)")
                 HistoryQuickStat(label: "Detected", value: "\(snapshot.detections.count)")
-                HistoryQuickStat(label: "Baseline", value: "\(store.baseline.hrvSampleCount)/7")
+                HistoryQuickStat(label: "Baseline", value: "\(store.baseline.hrvSampleCount)/\(PersonalBaseline.trustedMinimumSamples)")
             }
         }
         .padding(18)

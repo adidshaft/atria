@@ -331,7 +331,7 @@ private struct AtriaHeroMetricRow: View, Equatable {
         }
             return [
                 .init(title: "Sessions", value: "\(hero.sessionsCount)", detail: "on device", tint: .cyan),
-                .init(title: "Baseline", value: "\(hero.baselineSamples)/7", detail: "samples", tint: .green),
+                .init(title: "Baseline", value: "\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)", detail: "samples", tint: .green),
                 .init(title: "Backup", value: hero.backupValue, detail: compactBackupDetail, tint: .orange)
             ]
     }
