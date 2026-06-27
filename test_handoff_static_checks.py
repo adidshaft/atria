@@ -2323,6 +2323,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "let monotonySignal: String",
             "var acwrSignalText: String",
             "var monotonySignalText: String",
+            "var acwrDetailText: String",
+            "var monotonyDetailText: String",
             "var signalSummaryText: String",
             "private var overviewTrendPointsRevision = 0",
             "private var trainingLoadSummaryRevision = 0",
@@ -2436,20 +2438,29 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "let loadReadinessText: String")
         assert_contains(self, home, "let loadACWRSignalText: String")
         assert_contains(self, home, "let loadMonotonySignalText: String")
+        assert_contains(self, home, "let loadACWRDetailText: String")
+        assert_contains(self, home, "let loadMonotonyDetailText: String")
         assert_contains(self, home, "let loadSignalSummaryText: String")
         assert_contains(self, home, "loadReadinessText: load.readinessText")
         assert_contains(self, home, "loadACWRSignalText: load.acwrSignalText")
         assert_contains(self, home, "loadMonotonySignalText: load.monotonySignalText")
+        assert_contains(self, home, "loadACWRDetailText: load.acwrDetailText")
+        assert_contains(self, home, "loadMonotonyDetailText: load.monotonyDetailText")
         assert_contains(self, home, "loadSignalSummaryText: load.signalSummaryText")
         assert_not_contains(self, home, "store.trainingLoadSummary(rest:")
         for needle in [
             "readiness: hero.loadReadinessText",
             "acwrSignal: hero.loadACWRSignalText",
             "monotonySignal: hero.loadMonotonySignalText",
+            "acwrDetail: hero.loadACWRDetailText",
+            "monotonyDetail: hero.loadMonotonyDetailText",
             "signalSummary: hero.loadSignalSummaryText",
             "private struct AtriaTrainingSignalChip: View, Equatable",
             "AtriaTrainingSignalChip(title: \"ACWR\", value: ratio, signal: acwrSignal)",
             "AtriaTrainingSignalChip(title: \"Monotony\", value: monotonySignal, signal: monotonySignal)",
+            "Label(acwrDetail, systemImage: \"gauge.with.dots.needle.50percent\")",
+            "Label(monotonyDetail, systemImage: \"waveform.path\")",
+            ".accessibilityLabel(\"Readiness \\(readiness). \\(signalSummary). \\(acwrDetail) \\(monotonyDetail) \\(narrative)\")",
             "Text(\"Target \\(target)\")",
         ]:
             assert_contains(self, vitals, needle)

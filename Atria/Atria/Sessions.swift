@@ -1573,6 +1573,42 @@ struct TrainingLoadSummary: Equatable {
         monotonySignal.capitalized
     }
 
+    var acwrDetailText: String {
+        switch acwrSignal {
+        case "learning":
+            return "Needs 14 local strain days."
+        case "bad":
+            if let ratio, ratio < 0.60 {
+                return "Recent load is far below base; rebuild gradually."
+            }
+            return "Acute load is spiking vs your 28-day base."
+        case "watch":
+            if let ratio, ratio < 0.80 {
+                return "Recent load is below base; add load gradually."
+            }
+            return "Acute load is ahead of your 28-day base."
+        case "good":
+            return "Acute load is aligned with your 28-day base."
+        default:
+            return "Load ratio is learning from local history."
+        }
+    }
+
+    var monotonyDetailText: String {
+        switch monotonySignal {
+        case "learning":
+            return "Needs 3 recent strain days."
+        case "bad":
+            return "Recent days are too repetitive; vary hard and easy days."
+        case "watch":
+            return "Recent load is repetitive; add more day-to-day variation."
+        case "good":
+            return "Recent load has healthy variation."
+        default:
+            return "Monotony is learning from local strain history."
+        }
+    }
+
     var signalSummaryText: String {
         guard confidence != "learning" else { return "Learning" }
         return "ACWR \(ratioText) \(acwrSignal), monotony \(monotonyText) \(monotonySignal)"
