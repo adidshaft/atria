@@ -748,8 +748,15 @@ final class HealthKitExporter {
                 vo2MaxPlanned = true
             }
         }
-        for workout in confirmedWorkouts where ledger[Self.confirmedWorkoutLedgerKey(workout.id)]?.workoutExported != true {
-            workouts += 1
+        for workout in confirmedWorkouts {
+            let snapshot = ledger[Self.confirmedWorkoutLedgerKey(workout.id)]
+            if snapshot?.workoutExported != true {
+                workouts += 1
+            }
+            if snapshot?.activeEnergyExported != true,
+               (workout.activeEnergyKilocalories ?? 0) > 0 {
+                activeEnergySamples += 1
+            }
         }
         for sleep in confirmedSleeps where ledger[Self.confirmedSleepLedgerKey(sleep.id)]?.workoutExported != true {
             sleeps += 1
@@ -981,6 +988,11 @@ final class HealthKitExporter {
                 let key = Self.confirmedWorkoutLedgerKey(workout.id)
                 guard ledger[key]?.workoutExported != true else { return nil }
                 return confirmedWorkoutExportPlan(for: workout)
+            })
+            samples.append(contentsOf: confirmedWorkouts.compactMap { workout in
+                let key = Self.confirmedWorkoutLedgerKey(workout.id)
+                guard ledger[key]?.activeEnergyExported != true else { return nil }
+                return confirmedWorkoutActiveEnergySample(for: workout)
             })
             samples.append(contentsOf: confirmedSleeps.flatMap { sleep in
                 let key = Self.confirmedSleepLedgerKey(sleep.id)
@@ -1989,7 +2001,7 @@ final class HealthKitExporter {
 
     private func confirmedWorkoutExportPlan(for workout: UserConfirmedWorkout) -> WorkoutExportPlan? {
         guard workout.end > workout.start else { return nil }
-        let metadata: [String: Any] = [
+        var metadata: [String: Any] = [
             HKMetadataKeyWasUserEntered: false,
             "atria_workout_id": workout.id,
             "atria_workout_source": "user_confirmed",
@@ -2001,10 +2013,41 @@ final class HealthKitExporter {
             "atria_workout_peak_hr": workout.peakHR,
             "atria_auto_gate_e_unchanged": true
         ]
+        if let strain = workout.strain {
+            metadata["atria_workout_strain"] = strain
+        }
+        if let activeEnergy = workout.activeEnergyKilocalories {
+            metadata["atria_workout_active_energy_kcal"] = activeEnergy
+            metadata["atria_workout_active_energy_confidence"] = workout.activeEnergyConfidence ?? "estimate"
+        }
+        if let zoneSeconds = workout.zoneSeconds {
+            for (zone, seconds) in zoneSeconds {
+                metadata["atria_workout_zone_\(zone)_seconds"] = seconds
+            }
+        }
         return WorkoutExportPlan(activityType: .traditionalStrengthTraining,
                                  start: workout.start,
                                  end: workout.end,
                                  metadata: metadata)
+    }
+
+    private func confirmedWorkoutActiveEnergySample(for workout: UserConfirmedWorkout) -> HKQuantitySample? {
+        guard workout.end > workout.start,
+              let kilocalories = workout.activeEnergyKilocalories,
+              kilocalories > 0 else { return nil }
+        let metadata: [String: Any] = [
+            HKMetadataKeyWasUserEntered: false,
+            "atria_workout_id": workout.id,
+            "atria_workout_source": "user_confirmed",
+            "atria_metric_confidence": workout.activeEnergyConfidence ?? "estimate",
+            "atria_metric_source": "keytel_hr_energy_estimate",
+            "atria_auto_gate_e_unchanged": true
+        ]
+        return HKQuantitySample(type: activeEnergyType,
+                                quantity: HKQuantity(unit: .kilocalorie(), doubleValue: kilocalories),
+                                start: workout.start,
+                                end: workout.end,
+                                metadata: metadata)
     }
 
     private func confirmedSleepSamples(for sleep: UserConfirmedSleep) -> [HKCategorySample] {

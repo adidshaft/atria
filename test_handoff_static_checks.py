@@ -1250,6 +1250,44 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, home, ".alert(item: $workoutDetectionPrompt)")
 
+    def test_confirmed_workouts_persist_rich_metrics_and_active_energy(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
+
+        for needle in [
+            "var strain: Double? = nil",
+            "var activeEnergyKilocalories: Double? = nil",
+            "var activeEnergyConfidence: String? = nil",
+            "var zoneSeconds: [String: TimeInterval]? = nil",
+            "let enriched = confirmedWorkoutMetrics(start: bestStart,",
+            "strain: enriched.strain",
+            "activeEnergyKilocalories: enriched.activeEnergyKilocalories",
+            "activeEnergyConfidence: enriched.activeEnergyConfidence",
+            "zoneSeconds: enriched.zoneSeconds",
+            "private func confirmedWorkoutMetrics(start: Date,",
+            "Metrics.activeCalories(samples, rest: rest, profile: profile)",
+            "Metrics.strain(fromTRIMP: trimp)",
+            "zoneStorageKey(for: zone)",
+            "active_energy_kcal=%.0f",
+            "zone_rest_s=%.0f",
+        ]:
+            assert_contains(self, sessions, needle)
+
+        for needle in [
+            "snapshot?.activeEnergyExported != true",
+            "(workout.activeEnergyKilocalories ?? 0) > 0",
+            "samples.append(contentsOf: confirmedWorkouts.compactMap { workout in",
+            "return confirmedWorkoutActiveEnergySample(for: workout)",
+            "metadata[\"atria_workout_strain\"] = strain",
+            "metadata[\"atria_workout_active_energy_kcal\"] = activeEnergy",
+            "metadata[\"atria_workout_active_energy_confidence\"] = workout.activeEnergyConfidence ?? \"estimate\"",
+            "metadata[\"atria_workout_zone_\\(zone)_seconds\"] = seconds",
+            "private func confirmedWorkoutActiveEnergySample(for workout: UserConfirmedWorkout) -> HKQuantitySample?",
+            "HKQuantity(unit: .kilocalorie(), doubleValue: kilocalories)",
+            "\"atria_metric_source\": \"keytel_hr_energy_estimate\"",
+        ]:
+            assert_contains(self, healthkit, needle)
+
     def test_session_detail_downsamples_once_for_render_perf(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         insights = source(ROOT / "Atria" / "Atria" / "Insights.swift")
