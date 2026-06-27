@@ -2383,7 +2383,7 @@ final class AtriaHomeModel {
         guard let snapshot = ble.hrvSnapshot else {
             return StressState(value: "Learning",
                                detail: "Beat-to-beat window",
-                               narrative: "Stress appears after clean beat-to-beat data is ready.")
+                               narrative: "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.")
         }
         guard snapshot.isReady else {
             return StressState(value: "Learning",
@@ -2644,7 +2644,7 @@ final class AtriaHomeModel {
         if store.latestReferenceValidatedHRV != nil {
             hrvNarrative = "Checked HRV is ready."
         } else if rrPackage.ready {
-            hrvNarrative = "Clean beat-to-beat data is ready as personal-baseline HRV."
+            hrvNarrative = "HRV-grade beat-to-beat data is ready as personal-baseline HRV."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
             hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."
         } else {
@@ -2852,8 +2852,8 @@ final class AtriaHomeModel {
 }
 
 private struct AtriaToolbarIcon: View, Equatable {
-    private static let visualSize: CGFloat = 44
-    private static let hitSize: CGFloat = 44
+    private static let visualSize: CGFloat = AtriaHeaderControlMetrics.height
+    private static let hitSize: CGFloat = AtriaHeaderControlMetrics.height
 
     let symbol: String
     @Environment(\.colorScheme) private var colorScheme
@@ -2928,11 +2928,18 @@ private struct AtriaHomeTopChrome: View {
                 }
                 .accessibilityLabel("Settings")
             }
-            .frame(height: 44, alignment: .center)
+            .frame(height: AtriaHeaderControlMetrics.height, alignment: .center)
             .fixedSize()
         }
-        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .center)
+        .frame(maxWidth: .infinity,
+               minHeight: AtriaHeaderControlMetrics.height,
+               maxHeight: AtriaHeaderControlMetrics.height,
+               alignment: .center)
     }
+}
+
+private enum AtriaHeaderControlMetrics {
+    static let height: CGFloat = 44
 }
 
 /// The top-left connection chip. A dedicated subview so it OBSERVES both stores —
@@ -2958,7 +2965,9 @@ private struct AtriaTopStatusChip: View {
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
         .padding(.horizontal, 22)
-        .frame(minWidth: 132, minHeight: 44, maxHeight: 44)
+        .frame(minWidth: 132,
+               minHeight: AtriaHeaderControlMetrics.height,
+               maxHeight: AtriaHeaderControlMetrics.height)
         .background {
             Capsule()
                 .fill(tint.opacity(colorScheme == .light ? 0.34 : 0.24))
