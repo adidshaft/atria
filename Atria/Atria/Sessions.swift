@@ -9510,6 +9510,22 @@ struct SleepHistorySnapshot: Equatable {
         "Average across \(evidenceCountText)"
     }
 
+    var emptyEvidenceLabel: String {
+        "Recent records"
+    }
+
+    var emptyEvidenceValue: String {
+        if confirmedCount > 0 { return "\(confirmedCount)" }
+        if candidateCount > 0 { return "\(candidateCount)" }
+        return "Learning"
+    }
+
+    var emptyEvidenceFootnote: String {
+        if confirmedCount > 0 { return "Confirmed sleep or nap saved locally." }
+        if candidateCount > 0 { return "Sleep or nap evidence saved; confirm it when ready." }
+        return "Wear the strap overnight or during a nap. Atria shows duration and RHR once saved evidence exists."
+    }
+
     private static func efficiency(duration: TimeInterval, span: TimeInterval?) -> Double? {
         guard let span, span > 0, duration > 0 else { return nil }
         return min(max(duration / span, 0), 1)
