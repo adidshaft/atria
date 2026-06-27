@@ -495,6 +495,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      sensorSummary: store.imuAuditSummary,
+                                     sleepHistory: store.sleepHistorySnapshot,
                                      insights: store.behaviorInsights,
                                      taggedDays: store.behaviorJournalEntries.count,
                                      subtitle: subtitle,
@@ -518,7 +519,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, steps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, hrv, sleep, rhr, respiratoryRate, steps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -527,6 +528,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
         case .rhr: return "Resting HR"
+        case .respiratoryRate: return "Resp rate"
         case .steps: return "Steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
@@ -543,6 +545,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
         case .rhr: return "heart.fill"
+        case .respiratoryRate: return "lungs"
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
         case .vo2max: return "lungs.fill"
@@ -572,7 +575,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .steps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -627,6 +630,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let sensorSummary: IMUAuditSummary
+    let sleepHistory: SleepHistorySnapshot
     let insights: [AtriaInsight]
     let taggedDays: Int
     let subtitle: String
@@ -653,6 +657,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.sensorSummary == rhs.sensorSummary
+            && lhs.sleepHistory == rhs.sleepHistory
             && lhs.insights == rhs.insights
             && lhs.taggedDays == rhs.taggedDays
             && lhs.visibleMetrics == rhs.visibleMetrics
@@ -819,6 +824,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: "Baseline",
                                   systemImage: metric.systemImage,
                                   tint: .red)
+        case .respiratoryRate:
+            AtriaGlanceMetricCard(title: "Resp rate",
+                                  value: sleepHistory.latest?.respiratoryRateText ?? "--",
+                                  detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep research" : "Sleep-only",
+                                  systemImage: metric.systemImage,
+                                  tint: sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal)
+                .accessibilityLabel(sleepHistory.latest?.respiratoryRate == nil
+                                    ? "Respiratory rate is building from sleep-only evidence"
+                                    : "Respiratory rate sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute")
         case .steps:
             AtriaGlanceMetricCard(title: "Steps",
                                   value: live.phoneStepsText,
