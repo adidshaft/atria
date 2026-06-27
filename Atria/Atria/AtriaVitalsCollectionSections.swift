@@ -1213,7 +1213,12 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                 AtriaHeartRateAxisChart(points: points,
                                         yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
                                         selectedTime: .constant(nil))
+                    .padding(.top, 2)
+                    .padding(.trailing, 2)
+                    .frame(maxWidth: .infinity)
                     .frame(height: 170)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipped()
 
                 HStack {
                     Label("Time", systemImage: "clock")
@@ -1407,6 +1412,12 @@ private struct AtriaHeartRateAxisChart: View, Equatable {
                     }
                 }
             }
+        }
+        .chartPlotStyle { plotArea in
+            plotArea
+                .padding(.vertical, 4)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipped()
         }
         .chartXSelection(value: $selectedTime)
         .chartOverlay { proxy in
@@ -1664,7 +1675,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     .atriaInsetCard(tint: .cyan)
                 }
 
-                if let latest = snapshot.latest, !latest.stageSegments.isEmpty {
+                if let latest = snapshot.latest, !latest.displayStageSegments.isEmpty {
                     AtriaSleepStageSummary(night: latest)
                 }
 
@@ -1721,7 +1732,7 @@ private struct AtriaManualSleepSheet: View {
                 }
 
                 Section {
-                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into editable research stages: Awake, Light, SWS, and Deep.")
+                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, SWS, and Deep.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1773,7 +1784,7 @@ private struct AtriaSleepStageSummary: View, Equatable {
 
             GeometryReader { proxy in
                 HStack(spacing: 2) {
-                    ForEach(night.stageSegments) { segment in
+                    ForEach(night.displayStageSegments) { segment in
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
                             .fill(color(for: segment.stage).gradient)
                             .frame(width: max(4, proxy.size.width * segment.duration / max(night.duration, 1)))
@@ -1839,7 +1850,7 @@ private struct AtriaSleepNightRow: View, Equatable {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
-                if !night.stageSegments.isEmpty {
+                if !night.displayStageSegments.isEmpty {
                     Text("Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.cyan)
