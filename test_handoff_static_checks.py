@@ -3452,6 +3452,32 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, widget, "// Recovery + Strain are the headline pair.")
 
+    def test_single_metric_widgets_support_home_screen_small_layouts(self):
+        widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+
+        for needle in [
+            "// MARK: - Single-metric widgets (Home Screen + Lock Screen)",
+            "case .systemSmall:\n                systemSmallMetric",
+            "private var systemSmallMetric: some View",
+            "var tint: Color",
+            "var unit: String",
+            "Text(metric.unit.uppercased())",
+            "Text(metricFooterText)",
+            "private var metricFooterText: String",
+            ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metricFooterText)\")",
+            ".description(\"Today's steps on your Home Screen or Lock Screen.\")",
+            ".description(\"Today's strain on your Home Screen or Lock Screen.\")",
+            ".description(\"Latest HRV on your Home Screen or Lock Screen.\")",
+            ".description(\"Latest heart rate on your Home Screen or Lock Screen.\")",
+            ".supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])",
+        ]:
+            assert_contains(self, widget, needle)
+
+        self.assertGreaterEqual(
+            widget.count(".supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])"),
+            4,
+        )
+
     def test_live_activity_updates_are_throttled_off_the_sample_hot_path(self):
         coordinator = source(ROOT / "Atria" / "Atria" / "AtriaLiveActivityCoordinator.swift")
 
