@@ -1531,12 +1531,12 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
             }
 
             LazyVGrid(columns: Self.metricColumns, spacing: 10) {
-                AtriaMetricTile(label: "Sleep",
+                AtriaMetricTile(label: latestNight?.evidenceLabel ?? "Sleep",
                                 value: latestNight?.durationText ?? metricDisplayValue(snapshot.sleepValue),
                                 state: latestNight?.confirmed == true ? .validated : (sleepHistory.candidateCount > 0 ? .research : .learning),
                                 tint: .cyan,
                                 footnote: sleepStatusText)
-                AtriaMetricTile(label: "Sleep eff",
+                AtriaMetricTile(label: latestNight.map { "\($0.evidenceLabel) eff" } ?? "Sleep eff",
                                 value: latestNight?.sleepEfficiencyText ?? "--",
                                 state: latestNight?.sleepEfficiency == nil ? .learning : .research,
                                 tint: .cyan,
