@@ -553,6 +553,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      onOpenVitals: onOpenVitals,
                                      onOpenCollection: onOpenCollection,
                                      onOpenInsights: onOpenInsights,
+                                     onAddManualSleep: addManualSleep,
                                      onStartWorkout: onStartWorkout)
             .equatable()
             .sensoryFeedback(.selection, trigger: orderCSV)
@@ -591,6 +592,14 @@ struct AtriaOverviewReadinessSectionHost: View {
         let current = metric.glanceGridSize(sizeOverridesCSV: sizeCSV)
         let next: AtriaGlanceGridSize = current.isWide ? .compact : .wide
         sizeCSV = AtriaTodayMetric.sizeStorageValue(updating: metric, to: next, in: sizeCSV)
+    }
+
+    private func addManualSleep(start: Date, end: Date, isNap: Bool) {
+        _ = store.addManualSleep(start: start,
+                                 end: end,
+                                 isNap: isNap,
+                                 rest: store.baseline.restingInt ?? 60,
+                                 source: "manual_today_glance")
     }
 
 }
@@ -801,8 +810,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onOpenInsights: () -> Void
+    let onAddManualSleep: (Date, Date, Bool) -> Void
     let onStartWorkout: () -> Void
     @State private var isEditingGlance = false
+    @State private var showManualSleepSheet = false
 
     // Compare ONLY the values this card actually displays. The full `live` state
     // ticks on every battery/sample update; without this the glance (2 rings + 5
@@ -904,6 +915,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
         .padding(16)
         .atriaCard(emphasis: .strong)
+        .sheet(isPresented: $showManualSleepSheet) {
+            AtriaManualSleepSheet { start, end, isNap in
+                onAddManualSleep(start, end, isNap)
+                showManualSleepSheet = false
+            }
+        }
     }
 
     private var addWidgetMenu: some View {
@@ -1246,13 +1263,26 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepHistoryCard: some View {
-        return Button(action: onOpenVitals) {
-            AtriaSleepHistoryGlanceCard(snapshot: sleepHistory)
+        ZStack(alignment: .topTrailing) {
+            Button(action: onOpenVitals) {
+                AtriaSleepHistoryGlanceCard(snapshot: sleepHistory)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(sleepHistory.nights.isEmpty
+                                ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
+                                : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
+
+            Button {
+                showManualSleepSheet = true
+            } label: {
+                Image(systemName: "moon.zzz.badge.plus")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 17, height: 17)
+            }
+            .atriaCardAction(prominent: false, tint: .cyan)
+            .padding(8)
+            .accessibilityLabel("Add sleep manually")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sleepHistory.nights.isEmpty
-                            ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
-                            : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
     }
 
     private var trendCard: some View {
