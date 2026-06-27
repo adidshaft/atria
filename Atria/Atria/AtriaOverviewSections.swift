@@ -577,10 +577,12 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      strainYellowBand: strainYellowBand,
                                      hrvBaseline: store.baseline.hrvInt,
                                      hrvBaselineSamples: store.baseline.hrvSampleCount,
+                                     hrvBaselineTrusted: store.baseline.hasTrustedHRVBaseline(),
                                      hrvGreenRatio: hrvGreenRatio,
                                      hrvYellowRatio: hrvYellowRatio,
                                      restingBaseline: store.baseline.restingInt,
                                      restingBaselineSamples: store.baseline.restingSampleCount,
+                                     restingBaselineTrusted: store.baseline.hasTrustedRestingBaseline(),
                                      restingGreenDelta: restingGreenDelta,
                                      restingYellowDelta: restingYellowDelta,
                                      respiratoryGreenDelta: respiratoryGreenDelta,
@@ -875,10 +877,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let strainYellowBand: Double
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
+    let hrvBaselineTrusted: Bool
     let hrvGreenRatio: Double
     let hrvYellowRatio: Double
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let restingBaselineTrusted: Bool
     let restingGreenDelta: Int
     let restingYellowDelta: Int
     let respiratoryGreenDelta: Double
@@ -949,10 +953,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.strainYellowBand == rhs.strainYellowBand
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
             && lhs.hrvGreenRatio == rhs.hrvGreenRatio
             && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.restingBaselineTrusted == rhs.restingBaselineTrusted
             && lhs.restingGreenDelta == rhs.restingGreenDelta
             && lhs.restingYellowDelta == rhs.restingYellowDelta
             && lhs.respiratoryGreenDelta == rhs.respiratoryGreenDelta
@@ -1551,6 +1557,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         Metrics.hrvZone(parseInt(hero.hrvValue),
                         baseline: hrvBaseline,
                         baselineSamples: hrvBaselineSamples,
+                        baselineTrusted: hrvBaselineTrusted,
                         greenRatio: hrvGreenRatio,
                         yellowRatio: hrvYellowRatio)
     }
@@ -1559,6 +1566,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         Metrics.restingHeartRateZone(hero.restingHeartRate,
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples,
+                                     baselineTrusted: restingBaselineTrusted,
                                      greenDelta: restingGreenDelta,
                                      yellowDelta: restingYellowDelta)
     }
