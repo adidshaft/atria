@@ -1504,6 +1504,13 @@ struct TrainingLoadSummary: Equatable {
     let targetBand: ClosedRange<Double>?
     let detail: String
 
+    static let learning = TrainingLoadSummary(acuteLoad: 0,
+                                              chronicLoad: 0,
+                                              ratio: nil,
+                                              confidence: "learning",
+                                              targetBand: nil,
+                                              detail: "Atria needs more local strain history for load ratio.")
+
     var ratioText: String {
         ratio.map { String(format: "%.2f", $0) } ?? "Learning"
     }
@@ -2416,6 +2423,9 @@ final class SessionStore: ObservableObject {
     /// Overview trends are prepared outside SwiftUI render paths; the chart reads
     /// this O(1) array instead of filtering/sorting sessions or computing TRIMP.
     @Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []
+    /// Training-load guidance is cached from daily strain only. Hero refreshes
+    /// read this snapshot and never run daily rollups or activity detection.
+    @Published private(set) var trainingLoadSummarySnapshot = TrainingLoadSummary.learning
     /// Historical archive status is read by Data as an O(1) fail-closed snapshot;
     /// disk diagnostics refresh on startup/Data appearance, never in SwiftUI body.
     @Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty
@@ -2442,6 +2452,7 @@ final class SessionStore: ObservableObject {
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
+    private var trainingLoadSummaryRevision = 0
     private var historicalArchiveStatusObserver: NSObjectProtocol?
     private var pendingHistoricalArchiveStatusRefresh: Task<Void, Never>?
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
@@ -2534,6 +2545,24 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    private func refreshTrainingLoadSummaryCache(deferred: Bool = true) {
+        trainingLoadSummaryRevision &+= 1
+        let revision = trainingLoadSummaryRevision
+        let source = sessions
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        let delay: TimeInterval = deferred ? 0.12 : 0
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+            let summary = Self.makeTrainingLoadSummary(sessions: source,
+                                                       rest: rest,
+                                                       maxHR: maxHR)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, revision == self.trainingLoadSummaryRevision else { return }
+                self.trainingLoadSummarySnapshot = summary
+            }
+        }
+    }
+
     func refreshHistoricalArchiveStatus(reason: String = "manual") {
         DispatchQueue.global(qos: .utility).async {
             let diagnostics = HistoricalArchive.diagnostics()
@@ -2578,6 +2607,68 @@ final class SessionStore: ObservableObject {
                             strain: Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)),
                             hrv: session.hrv)
         }
+    }
+
+    private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession],
+                                                            rest: Int,
+                                                            maxHR: Int,
+                                                            calendar: Calendar = .current) -> TrainingLoadSummary {
+        guard maxHR > rest else { return .learning }
+        var trimpByDay: [Date: Double] = [:]
+        for session in sessions where session.points.count >= 2 {
+            let day = calendar.startOfDay(for: session.start)
+            trimpByDay[day, default: 0] += session.trimp(rest: rest, max: maxHR)
+        }
+        let dailyStrains = trimpByDay
+            .sorted { $0.key > $1.key }
+            .map { Metrics.strain(fromTRIMP: $0.value) }
+        guard !dailyStrains.isEmpty else { return .learning }
+
+        let acuteRollups = Array(dailyStrains.prefix(7))
+        let chronicRollups = Array(dailyStrains.prefix(28))
+        let acute = averageDoubleSnapshot(acuteRollups) ?? 0
+        let chronic = averageDoubleSnapshot(chronicRollups) ?? 0
+        let ratio = chronic > 0 ? acute / chronic : nil
+        let enoughAcute = acuteRollups.count >= 3
+        let enoughChronic = chronicRollups.count >= 14
+        let confidence: String
+        if enoughChronic {
+            confidence = "local"
+        } else if enoughAcute {
+            confidence = "partial"
+        } else {
+            confidence = "learning"
+        }
+        let targetBand: ClosedRange<Double>? = {
+            guard enoughAcute else { return nil }
+            if let ratio {
+                if ratio > 1.30 {
+                    return max(0, acute - 4)...max(0, acute - 1)
+                }
+                if ratio < 0.80 {
+                    return acute...(min(21, acute + 3))
+                }
+            }
+            return max(0, acute - 1.5)...min(21, acute + 1.5)
+        }()
+        let detail: String
+        if let ratio {
+            if ratio > 1.30 {
+                detail = "Acute load is running ahead of your 28-day base."
+            } else if ratio < 0.80 {
+                detail = "Recent strain is below your longer baseline."
+            } else {
+                detail = "Recent strain is aligned with your longer baseline."
+            }
+        } else {
+            detail = TrainingLoadSummary.learning.detail
+        }
+        return TrainingLoadSummary(acuteLoad: acute,
+                                   chronicLoad: chronic,
+                                   ratio: ratio,
+                                   confidence: confidence,
+                                   targetBand: targetBand,
+                                   detail: detail)
     }
 
     private nonisolated static func makeHistorySnapshots(sessions: [SavedSession],
@@ -2966,6 +3057,7 @@ final class SessionStore: ObservableObject {
         refreshHistoricalArchiveStatus(reason: "session_store_init")
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
     }
 
     deinit {
@@ -3585,6 +3677,7 @@ final class SessionStore: ObservableObject {
         recomputeBehaviorInsights()
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
             AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
@@ -3626,6 +3719,7 @@ final class SessionStore: ObservableObject {
         refreshHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         AtriaDebugLog("ATRIADBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
@@ -3666,6 +3760,7 @@ final class SessionStore: ObservableObject {
         }
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         AtriaDebugLog("ATRIADBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
@@ -3708,6 +3803,7 @@ final class SessionStore: ObservableObject {
         recomputeBehaviorInsights()
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
     }
@@ -3727,6 +3823,7 @@ final class SessionStore: ObservableObject {
         invalidateHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
@@ -3741,6 +3838,7 @@ final class SessionStore: ObservableObject {
         invalidateHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         AtriaDebugLog("ATRIADBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
@@ -7438,52 +7536,7 @@ final class SessionStore: ObservableObject {
     }
 
     func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {
-        let rollups = dailyRollups(rest: rest, maxHR: maxHR)
-        let acuteRollups = Array(rollups.prefix(7))
-        let chronicRollups = Array(rollups.prefix(28))
-        let acute = averageDouble(acuteRollups.map(\.strain)) ?? 0
-        let chronic = averageDouble(chronicRollups.map(\.strain)) ?? 0
-        let ratio = chronic > 0 ? acute / chronic : nil
-        let enoughAcute = acuteRollups.count >= 3
-        let enoughChronic = chronicRollups.count >= 14
-        let confidence: String
-        if enoughChronic {
-            confidence = "local"
-        } else if enoughAcute {
-            confidence = "partial"
-        } else {
-            confidence = "learning"
-        }
-        let targetBand: ClosedRange<Double>? = {
-            guard enoughAcute else { return nil }
-            if let ratio {
-                if ratio > 1.30 {
-                    return max(0, acute - 4)...max(0, acute - 1)
-                }
-                if ratio < 0.80 {
-                    return acute...(min(21, acute + 3))
-                }
-            }
-            return max(0, acute - 1.5)...min(21, acute + 1.5)
-        }()
-        let detail: String
-        if let ratio {
-            if ratio > 1.30 {
-                detail = "Acute load is running ahead of your 28-day base."
-            } else if ratio < 0.80 {
-                detail = "Recent strain is below your longer baseline."
-            } else {
-                detail = "Recent strain is aligned with your longer baseline."
-            }
-        } else {
-            detail = "Atria needs more local strain history for load ratio."
-        }
-        return TrainingLoadSummary(acuteLoad: acute,
-                                   chronicLoad: chronic,
-                                   ratio: ratio,
-                                   confidence: confidence,
-                                   targetBand: targetBand,
-                                   detail: detail)
+        trainingLoadSummarySnapshot
     }
 
     func vo2MaxEstimateSummary(rest: Int, maxHR: Int) -> VO2MaxEstimateSummary {
@@ -9805,6 +9858,7 @@ final class SessionStore: ObservableObject {
         cachedHomeDashboardDiagnostics = nil
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
         publishDashboardRevision()
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
