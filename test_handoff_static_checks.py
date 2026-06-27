@@ -648,6 +648,11 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "static let didUpdateNotification = Notification.Name(\"AtriaHistoricalArchiveDidUpdate\")",
+            "static let relativePath = \"Documents/atria-historical/historical-archive.jsonl\"",
+            "appendingPathComponent(\"atria-historical\", isDirectory: true)",
+            "appendingPathComponent(\"whoop-historical\", isDirectory: true)",
+            "if FileManager.default.fileExists(atPath: fileURL.path)",
+            "return legacyFileURL",
             "NotificationCenter.default.post(name: didUpdateNotification, object: nil)",
         ]:
             assert_contains(self, archive, needle)
