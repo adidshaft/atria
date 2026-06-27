@@ -1446,7 +1446,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
 
     private var emptyEvidenceFootnote: String {
         if snapshot.confirmedCount > 0 { return "Confirmed sleep saved locally." }
-        if snapshot.candidateCount > 0 { return "Sleep candidate saved; confirm when ready." }
+        if snapshot.candidateCount > 0 { return "Sleep saved; confirm it when ready." }
         return "Wear the strap overnight. Atria shows duration and RHR once saved evidence exists."
     }
 
@@ -1454,7 +1454,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         guard let latest = snapshot.latest else { return "No saved sleep yet." }
         return latest.confirmed
             ? "\(latest.confidenceText) · confirmed"
-            : "\(latest.confidenceText) · candidate, confirm when ready"
+            : "\(latest.confidenceText) · needs confirmation"
     }
 
     var body: some View {
@@ -1498,19 +1498,19 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: snapshot.latest?.sleepEfficiencyText ?? "--",
                                     state: snapshot.latest?.sleepEfficiency == nil ? .learning : .research,
                                     tint: .cyan,
-                                    footnote: "Duration vs sleep span")
+                                    footnote: "Duration-based estimate")
                     AtriaMetricTile(label: "Sleep HRV",
                                     value: snapshot.latest?.hrvText ?? "--",
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
                                     tint: .purple,
-                                    footnote: "RR-derived sleep")
+                                    footnote: "Sleep RR research")
                     AtriaMetricTile(label: "Sleep resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
                                     tint: .teal,
-                                    footnote: "RR-derived research")
+                                    footnote: "Sleep RR research")
                 }
 
                 if chartNights.count > 1 {
