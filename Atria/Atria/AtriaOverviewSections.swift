@@ -520,14 +520,14 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
     var systemImage: String {
         switch self {
-        case .recovery: return "heart.fill"
-        case .strain: return "figure.run"
-        case .hrv: return "waveform.path.ecg.rectangle"
-        case .sleep: return "bed.double.fill"
+        case .recovery: return "gauge.with.dots.needle.67percent"
+        case .strain: return "figure.run.circle.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .sleep: return "moon.zzz.fill"
         case .rhr: return "heart.text.square.fill"
-        case .steps: return "figure.walk"
-        case .calories: return "flame.fill"
-        case .trend: return "chart.xyaxis.line"
+        case .steps: return "shoeprints.fill"
+        case .calories: return "flame.circle.fill"
+        case .trend: return "chart.line.uptrend.xyaxis"
         case .insights: return "sparkles"
         }
     }
@@ -645,40 +645,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .padding(12)
                     .atriaInsetCard(tint: .secondary)
             } else {
-                Grid(horizontalSpacing: Self.glanceGridSpacing, verticalSpacing: Self.glanceGridSpacing) {
+                VStack(spacing: Self.glanceGridSpacing) {
                     ForEach(glanceRows, id: \.glanceRowID) { row in
-                        GridRow {
-                            ForEach(row) { metric in
-                                glanceCard(metric)
-                                    .frame(maxWidth: .infinity,
-                                           minHeight: Self.glanceRowHeight,
-                                           maxHeight: Self.glanceRowHeight,
-                                           alignment: .topLeading)
-                                    .gridCellColumns(metric.glanceColumnSpan)
-                                    .draggable(metric.rawValue)
-                                    .dropDestination(for: String.self) { items, _ in
-                                        guard let raw = items.first,
-                                              let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
-                                        onMoveMetric(dragged, metric)
-                                        return true
-                                    }
-                                    .accessibilityAction(named: Text("Move \(metric.label) up")) {
-                                        onShiftMetric(metric, -1)
-                                    }
-                                    .accessibilityAction(named: Text("Move \(metric.label) down")) {
-                                        onShiftMetric(metric, 1)
-                                    }
-                            }
-
-                            if row.count == 1, row.first?.isWideGlanceCard == false {
-                                AtriaGlanceMetricCard.placeholder
-                                    .gridCellColumns(AtriaGlanceGridSize.compact.columns)
-                                    .frame(maxWidth: .infinity,
-                                           minHeight: AtriaGlanceMetricCard.cardHeight,
-                                           maxHeight: AtriaGlanceMetricCard.cardHeight)
-                                    .accessibilityHidden(true)
-                            }
+                        HStack(spacing: Self.glanceGridSpacing) {
+                            glanceRowContent(row)
                         }
+                        .frame(maxWidth: .infinity,
+                               minHeight: Self.glanceRowHeight,
+                               maxHeight: Self.glanceRowHeight,
+                               alignment: .topLeading)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -731,6 +706,39 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             span += metric.glanceColumnSpan
         }
         return span <= Self.glanceGridColumnCount
+    }
+
+    @ViewBuilder
+    private func glanceRowContent(_ row: [AtriaTodayMetric]) -> some View {
+        ForEach(row) { metric in
+            glanceCard(metric)
+                .frame(maxWidth: .infinity,
+                       minHeight: Self.glanceRowHeight,
+                       maxHeight: Self.glanceRowHeight,
+                       alignment: .topLeading)
+                .layoutPriority(metric.isWideGlanceCard ? 2 : 1)
+                .draggable(metric.rawValue)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let raw = items.first,
+                          let dragged = AtriaTodayMetric(rawValue: raw) else { return false }
+                    onMoveMetric(dragged, metric)
+                    return true
+                }
+                .accessibilityAction(named: Text("Move \(metric.label) up")) {
+                    onShiftMetric(metric, -1)
+                }
+                .accessibilityAction(named: Text("Move \(metric.label) down")) {
+                    onShiftMetric(metric, 1)
+                }
+        }
+
+        if row.count == 1, row.first?.isWideGlanceCard == false {
+            AtriaGlanceMetricCard.placeholder
+                .frame(maxWidth: .infinity,
+                       minHeight: Self.glanceRowHeight,
+                       maxHeight: Self.glanceRowHeight)
+                .accessibilityHidden(true)
+        }
     }
 
     @ViewBuilder
@@ -835,7 +843,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
 private struct AtriaGlanceMetricCard: View, Equatable {
     static let cardHeight: CGFloat = 154
-    private static let headerHeight: CGFloat = 42
+    private static let headerHeight: CGFloat = 44
     private static let valueHeight: CGFloat = 38
     private static let footerHeight: CGFloat = 34
 
@@ -945,10 +953,10 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 }
 
 private struct AtriaGlanceMetricMarker: View, Equatable {
-    private static let size: CGFloat = 42
-    private static let innerSize: CGFloat = 28
+    private static let size: CGFloat = 44
+    private static let innerSize: CGFloat = 30
     private static let iconSize: CGFloat = 15
-    private static let ringLineWidth: CGFloat = 4
+    private static let ringLineWidth: CGFloat = 3.5
 
     let systemImage: String
     let tint: Color
@@ -961,19 +969,19 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
     var body: some View {
         ZStack {
             Circle()
-                .fill(tint.opacity(0.11))
+                .fill(tint.opacity(0.12))
 
             Circle()
-                .stroke(Color.primary.opacity(0.08), lineWidth: Self.ringLineWidth)
+                .stroke(Color.primary.opacity(0.09), lineWidth: Self.ringLineWidth)
 
             markerRing
 
             Circle()
-                .fill(Color(.systemBackground).opacity(0.74))
+                .fill(Color(.systemBackground).opacity(0.78))
                 .frame(width: Self.innerSize, height: Self.innerSize)
                 .overlay {
                     Circle()
-                        .stroke(tint.opacity(0.22), lineWidth: 1)
+                        .stroke(tint.opacity(0.26), lineWidth: 1)
                 }
 
             Image(systemName: systemImage)
