@@ -1087,6 +1087,7 @@ class HandoffStaticChecks(unittest.TestCase):
         data = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
         widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+        pull_state = source(ROOT / "pull_atria_state.sh")
 
         for needle in [
             "enum BatteryChargeStatus: String, Equatable",
@@ -1207,6 +1208,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "return state.batteryChargeText.isEmpty ? \"\\(state.batteryLevel)%\" : \"\\(state.batteryLevel)% · \\(state.batteryChargeText)\"",
         ]:
             assert_contains(self, widget, needle)
+
+        for needle in [
+            "def emit_battery_preferences():",
+            "battery_namespace=",
+            "battery_level=",
+            "battery_charge_status=",
+            "battery_charge_age_s=",
+            "battery_is_charging=",
+            "battery_drop_recent=",
+        ]:
+            assert_contains(self, pull_state, needle)
 
     def test_handoff_21_historical_backfill_status_is_visible_and_fail_closed(self):
         archive = source(ROOT / "Atria" / "Atria" / "HistoricalArchive.swift")
