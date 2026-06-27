@@ -1543,6 +1543,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: latestNight?.sleepEfficiencyText ?? \"--\"",
             "state: latestNight?.sleepEfficiency == nil ? .learning : .research",
             "AtriaMetricTile(label: \"HRV\"",
+            "state: hrvState",
             "footnote: hero.hrvDetail",
             "parts.append(\"Eff \\(latestNight.sleepEfficiencyText)\")",
             "parts.append(\"HRV \\(latestNight.hrvText)\")",
@@ -2527,6 +2528,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, overview + vitals, "state: hero.recoveryEstimate.percent == nil ? .learning : .validated")
         assert_not_contains(self, vitals, "hero.hrvDetail.localizedCaseInsensitiveContains(\"validated\") ? .validated : .learning")
+        assert_not_contains(self, overview, "hero.hrvDetail.localizedCaseInsensitiveContains(\"validated\") ? .validated : .learning")
 
         assert_contains(self, intents, "Read the latest local recovery, strain, and HRV snapshot.")
         assert_contains(self, intents, "snapshot.hrvRMSSD.map")

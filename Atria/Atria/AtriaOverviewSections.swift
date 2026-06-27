@@ -1521,6 +1521,13 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         }
     }
 
+    private var hrvState: AtriaMetricState {
+        let detail = hero.hrvDetail.lowercased()
+        if detail.contains("validated") { return .validated }
+        if detail.contains("personal baseline") || detail.contains("% kept") { return .personalBaseline }
+        return .learning
+    }
+
     private var shouldShowConfirmSleep: Bool {
         guard let latestNight else { return false }
         return !latestNight.confirmed && sleepHistory.candidateCount > 0
@@ -1575,7 +1582,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                                 footnote: hero.recoveryEstimate.confidence.rawValue)
                 AtriaMetricTile(label: "HRV",
                                 value: metricDisplayValue(hero.hrvValue),
-                                state: hero.hrvDetail.localizedCaseInsensitiveContains("validated") ? .validated : .learning,
+                                state: hrvState,
                                 tint: .pink,
                                 footnote: hero.hrvDetail)
             }
