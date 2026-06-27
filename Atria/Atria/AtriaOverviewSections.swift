@@ -540,6 +540,7 @@ struct AtriaOverviewReadinessSectionHost: View {
         AtriaOverviewReadinessSection(hero: heroStore.state,
                                      live: liveStore.state,
                                      vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+                                     biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
                                      snapshot: snapshotStore.state,
                                      trendValues: store.restingTrend14,   // Phase-0 cache (no per-render sort)
                                      sensorSummary: store.imuAuditSummary,
@@ -616,7 +617,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -635,6 +636,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strapSteps: return "Strap steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
+        case .bioAge: return "Body age"
         case .bloodOxygen: return "Blood oxygen"
         case .bodyTemp: return "Body temp"
         case .trend: return "Resting trend"
@@ -658,6 +660,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strapSteps: return "figure.walk.motion"
         case .calories: return "flame.fill"
         case .vo2max: return "lungs.fill"
+        case .bioAge: return "figure.stand.line.dotted.figure.stand"
         case .bloodOxygen: return "drop.degreesign"
         case .bodyTemp: return "thermometer.variable"
         case .trend: return "chart.line.uptrend.xyaxis"
@@ -701,7 +704,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -802,6 +805,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let live: AtriaHomeModel.CoreLiveState
     let vo2MaxEstimate: VO2MaxEstimateSummary
+    let biologicalAgeSummary: BiologicalAgeSummary
     let snapshot: AtriaHomeModel.Snapshot
     let trendValues: [Int]
     let sensorSummary: IMUAuditSummary
@@ -851,6 +855,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.live.phoneMotionDetailText == rhs.live.phoneMotionDetailText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
             && lhs.live.liveActiveCalories == rhs.live.liveActiveCalories
+            && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
             && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
             && lhs.sensorSummary == rhs.sensorSummary
             && lhs.hapticSettings == rhs.hapticSettings
@@ -1219,6 +1224,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .accessibilityLabel(vo2MaxEstimate.value == nil
                                     ? "VO2max building from resting baseline and measured HR max"
                                     : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail)")
+        case .bioAge:
+            AtriaGlanceMetricCard(title: "Body age",
+                                  value: biologicalAgeSummary.valueText,
+                                  detail: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building baseline",
+                                  systemImage: metric.systemImage,
+                                  tint: biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange)
+                .accessibilityLabel(biologicalAgeSummary.isReady
+                                    ? "Biological age estimate \(biologicalAgeSummary.valueText), \(biologicalAgeSummary.detailText). \(biologicalAgeSummary.footnote)"
+                                    : "Building your body-age baseline. \(biologicalAgeSummary.blockerText). \(biologicalAgeSummary.footnote)")
         case .bloodOxygen:
             AtriaGlanceMetricCard(title: "Blood oxygen",
                                   value: sensorSummary.spo2CandidateFrames > 0 ? "Research" : "--",
