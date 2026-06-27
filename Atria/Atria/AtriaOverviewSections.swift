@@ -519,7 +519,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, hrv, sleep, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, hrv, sleep, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -527,6 +527,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "Strain"
         case .hrv: return "HRV"
         case .sleep: return "Sleep"
+        case .sleepEfficiency: return "Sleep eff"
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
         case .steps: return "Steps"
@@ -545,6 +546,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "figure.run"
         case .hrv: return "waveform.path.ecg"
         case .sleep: return "bed.double.fill"
+        case .sleepEfficiency: return "percent"
         case .rhr: return "heart.fill"
         case .respiratoryRate: return "lungs"
         case .steps: return "shoeprints.fill"
@@ -577,7 +579,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     static let orderStorageKey = "atria.overview.glanceOrderCSV"
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .hrv, .sleep, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -820,6 +822,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: metricIsPending(snapshot.sleepValue) ? "Learning" : "Last sleep",
                                   systemImage: metric.systemImage,
                                   tint: .cyan)
+        case .sleepEfficiency:
+            AtriaGlanceMetricCard(title: "Sleep eff",
+                                  value: sleepHistory.latest?.sleepEfficiencyText ?? "--",
+                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based",
+                                  systemImage: metric.systemImage,
+                                  tint: sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan)
+                .accessibilityLabel(sleepHistory.latest?.sleepEfficiency == nil
+                                    ? "Sleep efficiency is building from saved sleep duration"
+                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "--")")
         case .rhr:
             AtriaGlanceMetricCard(title: "RHR",
                                   value: metricDisplayValue(hero.restingHeartRateText),
