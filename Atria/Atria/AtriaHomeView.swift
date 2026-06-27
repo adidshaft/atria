@@ -877,14 +877,14 @@ struct AtriaHomeView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else {
-                rrImportStatus = "No RR file selected"
+                rrImportStatus = "No beat-to-beat file selected"
                 return
             }
             let passed = store.importRRReferenceCSVForUI(from: url)
-            rrImportStatus = passed ? "RR reference validated" : "RR reference still pending"
+            rrImportStatus = passed ? "Beat-to-beat reference validated" : "Beat-to-beat reference still pending"
             model.forceRefresh()
         case .failure:
-            rrImportStatus = "RR import failed"
+            rrImportStatus = "Beat-to-beat import failed"
         }
     }
 
@@ -2260,8 +2260,8 @@ final class AtriaHomeModel {
     private static func stressState(ble: AtriaBLEManager, baseline: PersonalBaseline) -> StressState {
         guard let snapshot = ble.hrvSnapshot else {
             return StressState(value: "Learning",
-                               detail: "RR window",
-                               narrative: "Stress appears after a clean live RR window is ready.")
+                               detail: "Beat-to-beat window",
+                               narrative: "Stress appears after clean beat-to-beat data is ready.")
         }
         guard snapshot.isReady else {
             return StressState(value: "Learning",
@@ -2318,13 +2318,13 @@ final class AtriaHomeModel {
 
         let narrative: String
         if store.latestReferenceValidatedHRV != nil {
-            narrative = "Reference-checked HRV is ready."
+            narrative = "Checked HRV is ready."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            narrative = "The live RR window is ready as personal-baseline HRV."
+            narrative = "Beat-to-beat data is ready as personal-baseline HRV."
         } else if store.latestLocalRMSSD != nil {
             narrative = "Saved local RMSSD is ready as personal-baseline HRV."
         } else {
-            narrative = "Atria keeps the live RR window light while the connection settles."
+            narrative = "Atria keeps beat-to-beat capture light while the connection settles."
         }
 
         let packageText: String
@@ -2416,8 +2416,8 @@ final class AtriaHomeModel {
                             hrvDetail: fallbackHrv.detail,
                             hrvNarrative: fallbackHrv.narrative,
                             stressValue: "Learning",
-                            stressDetail: "RR window",
-                            stressNarrative: "Stress appears after the strap reconnects and RR is ready.",
+                            stressDetail: "Beat-to-beat window",
+                            stressNarrative: "Stress appears after the strap reconnects and beat-to-beat data is ready.",
                             rrPackageText: fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,
@@ -2520,11 +2520,11 @@ final class AtriaHomeModel {
 
         let hrvNarrative: String
         if store.latestReferenceValidatedHRV != nil {
-            hrvNarrative = "Reference-checked HRV is ready."
+            hrvNarrative = "Checked HRV is ready."
         } else if rrPackage.ready {
-            hrvNarrative = "A clean RR window is ready as personal-baseline HRV."
+            hrvNarrative = "Clean beat-to-beat data is ready as personal-baseline HRV."
         } else if let snapshot = ble.hrvSnapshot, snapshot.isReady {
-            hrvNarrative = "The live RR window is ready as personal-baseline HRV."
+            hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."
         } else {
             hrvNarrative = ble.hrvQuality
         }
@@ -2584,7 +2584,7 @@ final class AtriaHomeModel {
         } else if rrPackage.ready {
             rrPackageText = "Ready"
         } else if rrPackage.rrSamples > 0 {
-            rrPackageText = "\(rrPackage.rrSamples) RR"
+            rrPackageText = "\(rrPackage.rrSamples) beats"
         } else {
             rrPackageText = "Learning"
         }
@@ -2595,7 +2595,7 @@ final class AtriaHomeModel {
         if ble.status == .connected {
             headline = "Live connection is active."
         } else if rrPackage.ready {
-            headline = "Saved RR is ready while the strap reconnects."
+            headline = "Saved beat-to-beat data is ready while the strap reconnects."
         } else {
             headline = "A lighter dashboard that gets to your signal faster."
         }

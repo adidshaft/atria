@@ -2234,7 +2234,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Archive needs repair." }
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
-            return "\(rows) saved locally; external RR reference gates HRV, Recovery and Sleep metrics."
+            return "\(rows) saved locally; external beat-to-beat reference gates HRV, Recovery and Sleep metrics."
         }
 
         var metricReady: Bool {
