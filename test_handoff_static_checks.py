@@ -166,7 +166,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .disconnected: return .blue",
             "HStack(spacing: 5)",
             "private struct AtriaToolbarIcon: View, Equatable",
-            "private static let visualSize: CGFloat = 32",
+            "private static let visualSize: CGFloat = 44",
             "private static let hitSize: CGFloat = 44",
             "AtriaToolbarIcon(symbol: \"figure.run\")",
             "AtriaToolbarIcon(symbol: \"questionmark.circle\")",
@@ -279,7 +279,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, "let hasPulseSignal: Bool")
         assert_contains(self, hero, "let needsContactCoach: Bool")
         assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Connected, no pulse"')
-        assert_contains(self, hero, "Strap is connected; tighten fit or wet the sensor for a stable reading.")
+        assert_contains(self, hero, "Strap is connected; adjust fit so Atria can read pulse.")
         assert_contains(self, hero, "Waiting for the next live heart-rate sample.")
         assert_contains(self, hero, "needsContactCoach: pulseStore.state.needsContactCoach")
         assert_contains(self, home, "struct HeroPulseState: Equatable")
@@ -591,10 +591,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "live.bluetoothPermissionDenied",
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "case .connected where pulse.needsContactCoach:",
-            "pulse.hasPulseSignal ? \"Fit check needed\" : \"Connected, no pulse\"",
+            "return AtriaConnectionDiagnosis(title: \"Connected, no pulse\"",
             "case .connected where live.needsRRContactCoach:",
-            "Beat-to-beat signal weak",
-            "Tighten the strap fit or wet the sensor for HRV and Recovery.",
+            "Beat-to-beat settling",
+            "Heart rate is live. Keep wearing normally while HRV settles.",
+            "Beat-to-beat waiting",
+            "Atria needs pulse before it can build HRV and Recovery.",
             "case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:",
             "WHOOP may interrupt",
             "Close or uninstall WHOOP if readings fragment.",
@@ -610,7 +612,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Forget the strap in Bluetooth, then reconnect.",
             "Turn on Bluetooth in Settings.",
             "Allow Bluetooth for Atria in Settings.",
-            "Tighten the strap fit or wet the sensor.",
+            "Adjust the strap fit so Atria can read pulse.",
             "Bring your strap closer and keep it on your wrist.",
             "Charge your strap before a workout or overnight wear.",
             "Close or uninstall WHOOP if it keeps reclaiming the strap.",
