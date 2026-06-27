@@ -598,6 +598,18 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, home, needle)
 
+        diagnosis = re.search(
+            r"static func derive\(live: AtriaHomeModel\.CoreLiveState,\n                       pulse: AtriaHomeModel\.PulseLiveState,\n                       officialAppInstalled: Bool\) -> AtriaConnectionDiagnosis\? \{(?P<body>.*?)\n    \}",
+            home,
+            re.S,
+        )
+        self.assertIsNotNone(diagnosis)
+        diagnosis_body = diagnosis.group("body")
+        powered_off_index = diagnosis_body.find("case .poweredOff:")
+        low_battery_index = diagnosis_body.find("case _ where live.batteryLevel >= 0")
+        self.assertGreaterEqual(powered_off_index, 0)
+        self.assertGreater(low_battery_index, powered_off_index)
+
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         for needle in [
             "@Published private(set) var bluetoothPermissionDenied = false",
