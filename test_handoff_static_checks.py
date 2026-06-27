@@ -214,6 +214,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "whoop_widget_pattern=",
             "official_whoop_widget_process=1",
             "official_whoop_coexistence_risk=1",
+            "copy_first_from_container",
+            "Documents/atria-historical/historical-archive.jsonl",
+            "Documents/whoop-historical/historical-archive.jsonl",
+            "offline_sync_namespace=",
+            "pref(prefs, 'offlineSync.lastStatus'",
+            "link_namespace=",
         ]:
             assert_contains(self, pull_script, needle)
 
