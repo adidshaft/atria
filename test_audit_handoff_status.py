@@ -113,7 +113,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "devicectl device settings appearance",
             "prepare_accessibility_performance_evidence.py",
             "--all-accessibility-checks-pass",
-            "dashboard_scroll_fps left at 0",
+            "--dashboard-scroll-fps",
+            "Final mode requires --dashboard-scroll-fps from a real measured scroll pass.",
         ]:
             self.assertIn(required, script)
 
@@ -122,8 +123,6 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "device process launch",
             "device process terminate",
             "live_device_debug.sh",
-            "--dashboard-scroll-fps",
-            "--final",
         ]:
             self.assertNotIn(forbidden, script)
 

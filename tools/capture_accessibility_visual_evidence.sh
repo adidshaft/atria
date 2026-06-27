@@ -4,14 +4,18 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  tools/capture_accessibility_visual_evidence.sh --device DEVICE_ID [--app-commit COMMIT] [--pid PID] [--time-limit 10s]
+  tools/capture_accessibility_visual_evidence.sh --device DEVICE_ID [--app-commit COMMIT] [--pid PID] [--time-limit 10s] [--dashboard-scroll-fps FPS] [--final]
 
 Captures non-final accessibility/performance evidence from a cabled physical iPhone:
   - Time Profiler trace attached to the already-running Atria process.
   - Screenshots under light mode, dark baseline, Increase Contrast, Reduce Motion,
     and Reduce Transparency.
   - Refreshed docs/evidence/accessibility-performance/summary.draft.json with
-    accessibility checks marked true and dashboard_scroll_fps left at 0.
+    accessibility checks marked true.
+
+Pass --dashboard-scroll-fps only after a real measured dashboard scroll pass.
+Pass --final with --dashboard-scroll-fps to write summary.json. Final mode refuses
+to run without a measured scroll FPS value.
 
 The script restores the original appearance toggles it changes. It does not install,
 launch, or stop Atria.
@@ -22,6 +26,8 @@ device_id=""
 app_commit=""
 pid=""
 time_limit="10s"
+dashboard_scroll_fps=""
+final=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +47,14 @@ while [[ $# -gt 0 ]]; do
       time_limit=${2:?--time-limit requires a value}
       shift 2
       ;;
+    --dashboard-scroll-fps)
+      dashboard_scroll_fps=${2:?--dashboard-scroll-fps requires a value}
+      shift 2
+      ;;
+    --final)
+      final=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -56,6 +70,10 @@ done
 if [[ -z "$device_id" ]]; then
   printf 'Missing --device.\n' >&2
   usage >&2
+  exit 64
+fi
+if [[ "$final" -eq 1 && -z "$dashboard_scroll_fps" ]]; then
+  printf 'Final mode requires --dashboard-scroll-fps from a real measured scroll pass.\n' >&2
   exit 64
 fi
 
@@ -139,10 +157,20 @@ prepare_args=(
 if [[ -n "$app_commit" ]]; then
   prepare_args+=(--app-commit "$app_commit")
 fi
+if [[ -n "$dashboard_scroll_fps" ]]; then
+  prepare_args+=(--dashboard-scroll-fps "$dashboard_scroll_fps")
+fi
+if [[ "$final" -eq 1 ]]; then
+  prepare_args+=(--final)
+fi
 "${prepare_args[@]}"
 
-printf 'ATRIA_ACCESSIBILITY_VISUAL_EVIDENCE screenshot_dir=%s trace=%s log=%s draft=%s\n' \
+summary_name="summary.draft.json"
+if [[ "$final" -eq 1 ]]; then
+  summary_name="summary.json"
+fi
+printf 'ATRIA_ACCESSIBILITY_VISUAL_EVIDENCE screenshot_dir=%s trace=%s log=%s summary=%s\n' \
   "$screenshot_dir" \
   "$trace_path" \
   "$log_path" \
-  "$evidence_root/summary.draft.json"
+  "$evidence_root/$summary_name"
