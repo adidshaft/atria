@@ -460,6 +460,7 @@ struct AtriaOverviewLeadingSection: View {
                                                  snapshotStore: snapshotStore,
                                                  store: store,
                                                  subtitle: "",
+                                                 onOpenCollection: onOpenCollection,
                                                  onStartWorkout: onStartWorkout)
 
                 // Simple one-line "what to do today" guidance. No AI coach, no
@@ -492,6 +493,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     @ObservedObject var store: SessionStore
     let subtitle: String
+    var onOpenCollection: () -> Void = {}
     var onStartWorkout: () -> Void = {}
 
     @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
@@ -513,6 +515,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                     hiddenCSV: hiddenCSV),
                                      onMoveMetric: moveMetric,
                                      onShiftMetric: shiftMetric,
+                                     onOpenCollection: onOpenCollection,
                                      onStartWorkout: onStartWorkout)
             .equatable()
             .sensoryFeedback(.selection, trigger: orderCSV)
@@ -659,6 +662,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let visibleMetrics: [AtriaTodayMetric]
     let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
     let onShiftMetric: (AtriaTodayMetric, Int) -> Void
+    let onOpenCollection: () -> Void
     let onStartWorkout: () -> Void
 
     // Compare ONLY the values this card actually displays. The full `live` state
@@ -950,12 +954,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private func backfillCard(_ metric: AtriaTodayMetric) -> some View {
-        AtriaGlanceMetricCard(title: "Backfill",
-                              value: historicalArchiveStatus.valueText,
-                              detail: historicalArchiveStatus.detailText,
-                              systemImage: metric.systemImage,
-                              tint: backfillTint)
-            .accessibilityLabel("Backfill \(historicalArchiveStatus.valueText). \(historicalArchiveStatus.userFootnoteText)")
+        Button(action: onOpenCollection) {
+            AtriaGlanceMetricCard(title: "Backfill",
+                                  value: historicalArchiveStatus.valueText,
+                                  detail: historicalArchiveStatus.detailText,
+                                  systemImage: metric.systemImage,
+                                  tint: backfillTint)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open Data. Backfill \(historicalArchiveStatus.valueText). \(historicalArchiveStatus.userFootnoteText)")
     }
 
     private var backfillTint: Color {
