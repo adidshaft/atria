@@ -2054,6 +2054,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_overview_trend_chart_points_are_cached_off_render_path(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
+        metrics = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
         trend_chart = source(ROOT / "Atria" / "Atria" / "AtriaTrendChart.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
@@ -2077,7 +2078,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
             "private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession]",
             "AtriaAnalytics.TrainingLoad.summary(sessions: sessions,",
-            "Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR))",
             "trainingLoadSummarySnapshot",
             "func trainingLoadSummary(rest: Int, maxHR: Int) -> TrainingLoadSummary {\n        trainingLoadSummarySnapshot\n    }",
         ]:
@@ -2085,9 +2085,11 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "enum AtriaAnalytics",
+            "enum Strain",
             "enum TrainingLoad",
             "static func summary(sessions: [SavedSession],",
             "static func summary(dailyStrains: [Double]) -> TrainingLoadSummary",
+            ".map { Strain.score(fromTRIMP: $0.value) }",
             "let monotony = trainingMonotony(acuteRollups)",
             "static func trainingMonotony(_ dailyStrains: [Double]) -> Double?",
             "static func acwrReadinessSignal(ratio: Double?, enoughChronic: Bool) -> String",
@@ -2099,6 +2101,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"balanced\"",
         ]:
             assert_contains(self, analytics, needle)
+
+        for needle in [
+            "typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary",
+            "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)",
+            "AtriaAnalytics.Strain.activeCalories(samples, rest: rest, profile: profile)",
+            "AtriaAnalytics.Strain.zoneSummary(series, rest: rest, max: max)",
+            "AtriaAnalytics.Strain.score(fromTRIMP: trimp)",
+        ]:
+            assert_contains(self, metrics, needle)
 
         for needle in [
             "AtriaTrendChartCard(points: store.overviewTrendPoints,",
