@@ -1051,17 +1051,26 @@ class HandoffStaticChecks(unittest.TestCase):
             "var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus",
             "var batteryChargeText: String",
             "var batteryChargeCompactText: String",
+            "var batteryStatusSummaryText: String",
             "var batteryDetailText: String",
             "Charge state not reported",
+            "return \"\\(batteryText) · \\(batteryChargeCompactText)\"",
             "ble.$batteryChargeStatus.removeDuplicates()",
             "batteryChargeStatus: ble.batteryChargeStatus",
             "Text(isInline ? liveStore.state.batteryChargeCompactText : liveStore.state.batteryChargeText)",
             "accessibilityLabel(\"Strap battery \\(liveStore.state.batteryText), \\(liveStore.state.batteryChargeText).\")",
+            "value: coreLiveStore.state.batteryStatusSummaryText",
+            "detail: coreLiveStore.state.batteryDetailText",
         ]:
             assert_contains(self, home, needle)
 
         for needle in [
-            "detail: live.batteryDetailText",
+            "value: live.batteryStatusSummaryText",
+            "AtriaInlineQuickStat(label: \"Charge\"",
+            "value: live.batteryChargeText",
+            "detail: live.batteryChargeStatus == .levelOnly",
+            "? \"Waiting for charger signal\"",
+            ": \"Current strap status\"",
             "footnote: coreLiveStore.state.batteryDetailText",
             "tint: coreLiveStore.state.batteryChargeStatus == .charging ? .green : .blue",
         ]:

@@ -1393,8 +1393,8 @@ private struct AtriaStandByOverlay: View {
                                        detail: coreLiveStore.state.liveActiveCalories == nil ? "Profile needed" : "Active estimate",
                                        tint: .pink)
                     AtriaStandByMetric(title: "Battery",
-                                       value: coreLiveStore.state.batteryText,
-                                       detail: coreLiveStore.state.rrContinuityText,
+                                       value: coreLiveStore.state.batteryStatusSummaryText,
+                                       detail: coreLiveStore.state.batteryDetailText,
                                        tint: .cyan)
                 }
                 .frame(width: 230)
@@ -1495,6 +1495,10 @@ final class AtriaHomeModel {
             case .notCharging: return "Not chg"
             case .full: return "Full"
             }
+        }
+        var batteryStatusSummaryText: String {
+            guard batteryLevel >= 0 else { return "Waiting" }
+            return "\(batteryText) · \(batteryChargeCompactText)"
         }
         var batteryDetailText: String {
             guard batteryLevel >= 0 else { return "Waiting for strap battery" }
