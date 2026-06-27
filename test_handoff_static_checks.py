@@ -2836,6 +2836,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_background_task_plumbing_is_present(self):
         app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         plist = source(ROOT / "Atria" / "Info.plist")
 
         for needle in [
@@ -2849,6 +2850,27 @@ class HandoffStaticChecks(unittest.TestCase):
             "store.performBackgroundMaintenance(reason: reason)",
         ]:
             assert_contains(self, app, needle)
+
+        maintenance = re.search(
+            r"func performBackgroundMaintenance\(reason: String\) \{(?P<body>.*?)\n    \}",
+            sessions,
+            re.S,
+        )
+        self.assertIsNotNone(maintenance)
+        maintenance_body = maintenance.group("body")
+        for needle in [
+            "flushScheduledPersistence(reason:",
+            "writeAutomaticSessionBackup(reason: reason)",
+            "HealthKitExporter.diagnostics(for: sessions,",
+            "ATRIADBG bg_maintenance status=ok",
+        ]:
+            assert_contains(self, maintenance_body, needle)
+        for forbidden in [
+            "dailyRollups(",
+            "trendSummaries(",
+            "detectedActivities(",
+        ]:
+            assert_not_contains(self, maintenance_body, forbidden)
 
         for needle in [
             "BGTaskSchedulerPermittedIdentifiers",
