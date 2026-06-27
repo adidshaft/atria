@@ -420,6 +420,10 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     let streamCoveragePercent: Int
     let observedDuration: TimeInterval
     let reason: String
+    var strain: Double? = nil
+    var activeEnergyKilocalories: Double? = nil
+    var activeEnergyConfidence: String? = nil
+    var zoneSeconds: [String: TimeInterval]? = nil
 
     var duration: TimeInterval { end.timeIntervalSince(start) }
 }
@@ -5445,6 +5449,10 @@ final class SessionStore: ObservableObject {
         }
         let confidence = summary.readySessions > 0 ? "auto_ready_user_confirmed" :
             (summary.nearMiss ? "user_confirmed_near_miss" : "user_confirmed_candidate")
+        let enriched = confirmedWorkoutMetrics(start: bestStart,
+                                               end: bestEnd,
+                                               rest: rest,
+                                               maxHR: maxHR)
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
                                              start: bestStart,
@@ -5461,10 +5469,14 @@ final class SessionStore: ObservableObject {
                                              thresholdHR: summary.bestThresholdHR,
                                              streamCoveragePercent: summary.bestStreamCoveragePercent,
                                              observedDuration: summary.bestObservedDuration,
-                                             reason: summary.bestReason)
+                                             reason: summary.bestReason,
+                                             strain: enriched.strain,
+                                             activeEnergyKilocalories: enriched.activeEnergyKilocalories,
+                                             activeEnergyConfidence: enriched.activeEnergyConfidence,
+                                             zoneSeconds: enriched.zoneSeconds)
         existing.append(confirmed)
         saveConfirmedWorkouts(existing)
-        AtriaDebugLog("ATRIADBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
+        AtriaDebugLog("ATRIADBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ strain=%.2f active_energy_kcal=%.0f active_energy_confidence=%@ zone_rest_s=%.0f zone_warmup_s=%.0f zone_fat_burn_s=%.0f zone_aerobic_s=%.0f zone_anaerobic_s=%.0f zone_max_s=%.0f auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
               confirmed.id,
               source,
               confirmed.source,
@@ -5481,8 +5493,69 @@ final class SessionStore: ObservableObject {
               confirmed.p99HR,
               confirmed.thresholdHR,
               confirmed.streamCoveragePercent,
-              confirmed.confidence)
+              confirmed.confidence,
+              confirmed.strain ?? 0,
+              confirmed.activeEnergyKilocalories ?? 0,
+              confirmed.activeEnergyConfidence ?? "none",
+              confirmed.zoneSeconds?["rest"] ?? 0,
+              confirmed.zoneSeconds?["warmup"] ?? 0,
+              confirmed.zoneSeconds?["fatBurn"] ?? 0,
+              confirmed.zoneSeconds?["aerobic"] ?? 0,
+              confirmed.zoneSeconds?["anaerobic"] ?? 0,
+              confirmed.zoneSeconds?["max"] ?? 0)
         return confirmed
+    }
+
+    private func confirmedWorkoutMetrics(start: Date,
+                                         end: Date,
+                                         rest: Int,
+                                         maxHR: Int) -> (strain: Double?,
+                                                        activeEnergyKilocalories: Double?,
+                                                        activeEnergyConfidence: String?,
+                                                        zoneSeconds: [String: TimeInterval]?) {
+        let overlapping = canonicalSessions().filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return (nil, nil, nil, nil) }
+
+        var samples: [HRSample] = []
+        for session in overlapping {
+            samples.append(contentsOf: session.points.map { point in
+                HRSample(t: session.start.addingTimeInterval(max(0, point.t)),
+                         bpm: point.bpm)
+            }.filter { sample in
+                sample.t >= start && sample.t <= end
+            })
+        }
+        samples.sort { $0.t < $1.t }
+        guard samples.count > 1 else { return (nil, nil, nil, nil) }
+
+        let trimp = Metrics.trimp(samples.map { (t: $0.t.timeIntervalSince(start), bpm: $0.bpm) },
+                                  rest: rest,
+                                  max: maxHR)
+        var zoneSeconds: [String: TimeInterval] = [:]
+        for index in 1..<samples.count {
+            let dt = samples[index].t.timeIntervalSince(samples[index - 1].t)
+            guard dt > 0, dt < 5 * 60 else { continue }
+            let zone = HRZone.zone(for: samples[index].bpm, maxHR: maxHR)
+            zoneSeconds[zoneStorageKey(for: zone), default: 0] += dt
+        }
+        let activeEnergy = Metrics.activeCalories(samples, rest: rest, profile: profile)
+        return (Metrics.strain(fromTRIMP: trimp),
+                activeEnergy,
+                activeEnergy == nil ? (profile.hasEnergyProfile ? nil : "needs_profile") : "estimate",
+                zoneSeconds.isEmpty ? nil : zoneSeconds)
+    }
+
+    private func zoneStorageKey(for zone: HRZone) -> String {
+        switch zone {
+        case .rest: return "rest"
+        case .warmup: return "warmup"
+        case .fatBurn: return "fatBurn"
+        case .aerobic: return "aerobic"
+        case .anaerobic: return "anaerobic"
+        case .max: return "max"
+        }
     }
 
     private static func readConfirmedWorkouts() -> [UserConfirmedWorkout] {
