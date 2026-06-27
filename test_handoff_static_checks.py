@@ -63,7 +63,119 @@ def assert_not_contains(testcase, haystack, needle):
     testcase.assertFalse(needle in haystack, f"forbidden source token present: {needle}")
 
 
+def today_metric_defaults():
+    overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
+    hidden_match = re.search(
+        r"let metrics: \[AtriaTodayMetric\] = \[(?P<body>[^\]]+)\]",
+        overview,
+    )
+    order_match = re.search(
+        r"static var defaultGlanceOrder: \[AtriaTodayMetric\] \{\n        \[(?P<body>[^\]]+)\]",
+        overview,
+    )
+    if not hidden_match or not order_match:
+        raise AssertionError("Could not parse AtriaTodayMetric defaults")
+
+    def parse_cases(body):
+        return re.findall(r"\.([A-Za-z0-9_]+)", body)
+
+    return parse_cases(hidden_match.group("body")), parse_cases(order_match.group("body"))
+
+
+TODAY_NO_HIDDEN_SENTINEL = "__atria_all_today_cards_visible__"
+
+
+def today_hidden_from_csv(csv):
+    default_hidden, _ = today_metric_defaults()
+    trimmed = csv.strip()
+    if not trimmed:
+        return set(default_hidden)
+    if trimmed == TODAY_NO_HIDDEN_SENTINEL:
+        return set()
+    return {part for part in trimmed.split(",") if part}
+
+
+def today_hidden_storage_value(hidden):
+    return TODAY_NO_HIDDEN_SENTINEL if not hidden else ",".join(sorted(hidden))
+
+
+def today_ordered(csv):
+    _, default_order = today_metric_defaults()
+    decoded = [part for part in csv.split(",") if part in default_order]
+    result = []
+    seen = set()
+    for metric in decoded + default_order:
+        if metric in default_order and metric not in seen:
+            result.append(metric)
+            seen.add(metric)
+    return result
+
+
+def today_visible_ordered(order_csv, hidden_csv):
+    hidden = today_hidden_from_csv(hidden_csv)
+    return [metric for metric in today_ordered(order_csv) if metric not in hidden]
+
+
+def today_hidden_ordered(order_csv, hidden_csv):
+    hidden = today_hidden_from_csv(hidden_csv)
+    return [metric for metric in today_ordered(order_csv) if metric in hidden]
+
+
+def today_moving_before(dragged, target, csv):
+    ordered = today_ordered(csv)
+    if dragged == target:
+        return ",".join(ordered)
+    order = [metric for metric in ordered if metric != dragged]
+    try:
+        index = order.index(target)
+    except ValueError:
+        index = len(order)
+    order.insert(index, dragged)
+    return ",".join(order)
+
+
+def today_moving_direction(metric, direction, csv):
+    order = today_ordered(csv)
+    if metric not in order:
+        return ",".join(order)
+    index = order.index(metric)
+    next_index = max(0, min(len(order) - 1, index + direction))
+    if next_index != index:
+        order[index], order[next_index] = order[next_index], order[index]
+    return ",".join(order)
+
+
 class HandoffStaticChecks(unittest.TestCase):
+    def test_today_metric_persistence_model_handles_restore_reorder_and_bad_storage(self):
+        default_hidden, default_order = today_metric_defaults()
+        self.assertEqual(default_hidden, ["respiratoryRate", "strapSteps", "bloodOxygen", "bodyTemp"])
+        self.assertEqual(default_order[0:4], ["recovery", "strain", "workout", "backfill"])
+        self.assertEqual(default_order[-2:], ["trend", "insights"])
+        self.assertEqual(len(default_order), len(set(default_order)))
+
+        self.assertEqual(today_hidden_from_csv(""), set(default_hidden))
+        self.assertEqual(today_hidden_from_csv(TODAY_NO_HIDDEN_SENTINEL), set())
+        self.assertEqual(today_hidden_storage_value(set()), TODAY_NO_HIDDEN_SENTINEL)
+        self.assertEqual(today_hidden_storage_value({"steps", "hrv"}), "hrv,steps")
+
+        malformed = "steps,steps,notAMetric,hrv,recovery"
+        ordered = today_ordered(malformed)
+        self.assertEqual(ordered[0:3], ["steps", "hrv", "recovery"])
+        self.assertEqual(len(ordered), len(default_order))
+        self.assertEqual(set(ordered), set(default_order))
+
+        hidden_csv = "hrv,steps,bodyTemp"
+        self.assertNotIn("hrv", today_visible_ordered(malformed, hidden_csv))
+        self.assertEqual(today_hidden_ordered(malformed, hidden_csv), ["steps", "hrv", "bodyTemp"])
+
+        moved_hidden = today_moving_before("bodyTemp", "recovery", ",".join(default_order))
+        self.assertEqual(today_hidden_ordered(moved_hidden, ""), ["bodyTemp", "respiratoryRate", "strapSteps", "bloodOxygen"])
+        self.assertEqual(today_visible_ordered(moved_hidden, TODAY_NO_HIDDEN_SENTINEL)[0], "bodyTemp")
+
+        self.assertEqual(today_ordered(today_moving_direction("recovery", -1, ",".join(default_order)))[0], "recovery")
+        self.assertEqual(today_ordered(today_moving_direction("strain", -1, ",".join(default_order)))[0:2], ["strain", "recovery"])
+        self.assertEqual(today_ordered(today_moving_direction("insights", 1, ",".join(default_order)))[-1], "insights")
+
     def test_ios_26_ui_has_no_legacy_availability_or_material_fallbacks(self):
         text = all_swift_source()
 
