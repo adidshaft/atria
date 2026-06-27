@@ -1661,6 +1661,7 @@ class HandoffStaticChecks(unittest.TestCase):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         manual_sheet = source(ROOT / "Atria" / "Atria" / "AtriaManualSleepSheet.swift")
+        sleep_research = source(ROOT / "Atria" / "Atria" / "AtriaSleepWakeResearch.swift")
 
         for needle in [
             "struct SleepHistorySnapshot: Equatable",
@@ -1756,18 +1757,31 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .none: return \"Stages not ready\"",
             "case .manualEstimate: return \"Manual estimate\"",
             "case .sensorResearch: return \"Research stages\"",
+            "struct HeartSample: Equatable",
+            "static func stageSegments(samples: [HeartSample],",
+            "let epoch: TimeInterval = 30",
+            "private static func stage(avgHR: Double,",
+            "private static func merge(_ staged:",
             "struct SleepStageSegment: Codable, Identifiable, Equatable",
             "func addManualSleep(start: Date,",
             "source: String = \"manual_ui\") -> UserConfirmedSleep?",
             "let sleepSource = isNap ? \"manual_nap\" : \"manual_sleep\"",
             "confidence: \"manual_user_entered\"",
             "stageSegments: Self.defaultManualSleepStages(start: start,",
+            "let stageSegments = sleepStageResearchSegments(start: best.start,",
+            "stageSegments: stageSegments.isEmpty ? nil : stageSegments",
+            "stage_research_segments=%d",
+            "private func sleepStageResearchSegments(start: Date,",
+            "AtriaSleepWakeResearch.HeartSample(t: t, bpm: point.bpm)",
+            "AtriaSleepWakeResearch.stageSegments(samples: samples,",
             "let displayStageSegments: [SleepStageSegment]",
             "let stageEvidence: SleepStageEvidence",
             "let stageDurationsByStage: [SleepStageKind: TimeInterval]",
             "Self.stageEvidence(source: source,",
             "self.displayStageSegments = evidence == .none ? [] : stageSegments",
             "private static func stageEvidence(source: String,",
+            "if source == \"validated_sleep_stages\"",
+            "return .sensorResearch",
             "stageDurationsByStage[stage] ?? 0",
             "private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval]",
             "private struct AtriaSleepHistoryCard: View, Equatable",
@@ -1838,7 +1852,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "HRV \\(night.hrvText)",
             "Resp \\(night.respiratoryRateText)",
         ]:
-            assert_contains(self, sessions + vitals + manual_sheet, needle)
+            assert_contains(self, sessions + vitals + manual_sheet + sleep_research, needle)
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
@@ -3035,6 +3049,18 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
         for needle in ["referenceValidatedRMSSD", "rmssdExported"]:
             assert_not_contains(self, text, needle)
+
+    def test_healthkit_sleep_stage_export_requires_validated_stage_source(self):
+        text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
+
+        for needle in [
+            "\"atria_sleep_stage_evidence\": sleep.source == \"validated_sleep_stages\" ? \"validated\" : \"non_validated\"",
+            "guard sleep.source == \"validated_sleep_stages\"",
+            "value: HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue",
+            "stageMetadata[\"atria_sleep_stage\"] = segment.stage.rawValue",
+            "value: healthKitSleepValue(for: segment.stage)",
+        ]:
+            assert_contains(self, text, needle)
 
     def test_healthkit_rhr_and_respiratory_rate_export_use_correct_types(self):
         text = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
