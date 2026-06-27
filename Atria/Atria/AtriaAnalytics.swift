@@ -1,6 +1,94 @@
 import Foundation
 
 enum AtriaAnalytics {
+    enum Recovery {
+        struct Estimate: Equatable {
+            enum Confidence: String {
+                case learning
+                case unverified
+                case personalBaseline = "personal baseline"
+                case validated
+            }
+
+            let percent: Int?
+            let confidence: Confidence
+            let usesHRV: Bool
+            let detail: String
+        }
+
+        /// Recovery v2: lnRMSSD z-score against a personal rolling baseline, blended
+        /// with resting-HR z-score and saved sleep evidence. Recovery displays after
+        /// local data sufficiency; external reference validation upgrades the
+        /// confidence tier and HealthKit writes, but does not block in-app display.
+        static func estimate(hrvSnapshot: HRVSnapshot?,
+                             fallbackRMSSD: Int?,
+                             restingNow: Int?,
+                             baseline: PersonalBaseline,
+                             hrvReferenceValidated: Bool = false,
+                             sleepEfficiency: Double? = nil,
+                             sleepDurationHours: Double? = nil) -> Estimate {
+            guard let restingNow else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: false, detail: "learning: need resting HR")
+            }
+
+            guard let restingStats = baseline.restingStats else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: false, detail: "learning: need baseline")
+            }
+
+            let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
+            let rmssdNow = hrvSnapshot?.isReady == true
+                ? hrvSnapshot?.rmssd
+                : fallbackRMSSD.map(Double.init)
+            guard let rmssdNow, rmssdNow > 0 else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: false,
+                                detail: "learning: need a clean HRV window")
+            }
+
+            guard let hrvStats = baseline.lnRMSSDStats, hrvStats.count >= 7 else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: false,
+                                detail: "learning HRV baseline \(baseline.hrvSampleCount)/7")
+            }
+
+            let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
+            guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
+                                              durationHours: sleepDurationHours) else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: true,
+                                detail: "learning: need saved sleep")
+            }
+
+            let blendedZ = 0.60 * hrvZ - 0.25 * restingZ + 0.15 * sleepZ
+            let percent = Int(min(max(50 + blendedZ * 16, 1), 99).rounded())
+            let confidence: Estimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
+            return Estimate(percent: percent, confidence: confidence,
+                            usesHRV: true,
+                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f", hrvZ, restingZ, sleepZ))
+        }
+
+        private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
+            guard sd > 0.1 else { return 0 }
+            return (value - mean) / sd
+        }
+
+        private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {
+            var components: [Double] = []
+            if let efficiency {
+                components.append((min(max(efficiency, 0), 1) - 0.85) / 0.10)
+            }
+            if let durationHours, durationHours > 0 {
+                let capped = min(max(durationHours, 0), 9)
+                components.append((capped - 7.0) / 1.5)
+            }
+            guard !components.isEmpty else { return nil }
+            let average = components.reduce(0, +) / Double(components.count)
+            return min(max(average, -2), 2)
+        }
+    }
+
     enum VO2Max {
         static func summary(rest: Int,
                             maxHR: Int,

@@ -3227,7 +3227,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, sessions + overview + vitals, "disease risk")
 
     def test_validate_later_recovery_displays_personal_baseline_before_validation(self):
-        text = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
+        metrics = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
+        text = metrics + analytics
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         widget = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
@@ -3249,6 +3251,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "hrvReferenceValidated ? .validated : .personalBaseline",
         ]:
             assert_contains(self, text, needle)
+        assert_contains(self, analytics, "enum Recovery")
+        assert_contains(self, analytics, "static func estimate(hrvSnapshot: HRVSnapshot?,")
+        assert_contains(self, metrics, "typealias RecoveryEstimate = AtriaAnalytics.Recovery.Estimate")
+        assert_contains(self, metrics, "AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,")
 
         for needle in [
             "let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD",
