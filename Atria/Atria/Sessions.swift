@@ -10522,6 +10522,8 @@ struct SleepHistorySnapshot: Equatable {
     let sleepConsistencyText: String
     let sleepConsistencyFootnote: String
     let sleepConsistencyPercent: Int?
+    let recentSleepAverageDurationHours: Double?
+    let recentSleepRecordCount: Int
 
     static let empty = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
 
@@ -10544,6 +10546,9 @@ struct SleepHistorySnapshot: Equatable {
         self.sleepConsistencyPercent = consistency.percent
         self.sleepConsistencyText = consistency.text
         self.sleepConsistencyFootnote = consistency.footnote
+        let debtBasis = Self.makeRecentSleepDebtBasis(nights)
+        self.recentSleepAverageDurationHours = debtBasis.averageHours
+        self.recentSleepRecordCount = debtBasis.recordCount
     }
 
     init(rollups: [DailyRollup], confirmedSleeps: [UserConfirmedSleep], calendar: Calendar = .current) {
@@ -10607,6 +10612,9 @@ struct SleepHistorySnapshot: Equatable {
         self.sleepConsistencyPercent = consistency.percent
         self.sleepConsistencyText = consistency.text
         self.sleepConsistencyFootnote = consistency.footnote
+        let debtBasis = Self.makeRecentSleepDebtBasis(clippedNights)
+        self.recentSleepAverageDurationHours = debtBasis.averageHours
+        self.recentSleepRecordCount = debtBasis.recordCount
     }
 
     private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
@@ -10699,6 +10707,13 @@ struct SleepHistorySnapshot: Equatable {
         return min(max(score, 0), 100)
     }
 
+    private static func makeRecentSleepDebtBasis(_ nights: [Night]) -> (averageHours: Double?, recordCount: Int) {
+        let records = recentSleepNights(nights).prefix(7)
+        guard !records.isEmpty else { return (nil, 0) }
+        let average = records.reduce(0) { $0 + $1.durationHours } / Double(records.count)
+        return (average, records.count)
+    }
+
     private static func sleepMidpointTimeOfDaySeconds(_ night: Night) -> TimeInterval? {
         guard let start = night.start, let end = night.end, end > start else { return nil }
         let midpoint = start.addingTimeInterval(end.timeIntervalSince(start) / 2)
@@ -10739,13 +10754,9 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     private func sleepDebtHours(goalHours: Double) -> Double? {
-        let records = Self.recentSleepNights(nights).prefix(7)
-        guard !records.isEmpty else { return nil }
+        guard let averageHours = recentSleepAverageDurationHours, recentSleepRecordCount > 0 else { return nil }
         let safeGoal = min(max(goalHours, 4), 12)
-        let totalDebt = records.reduce(0) { total, night in
-            total + max(0, safeGoal - night.durationHours)
-        }
-        return totalDebt / Double(records.count)
+        return max(0, safeGoal - averageHours)
     }
 
     var emptyEvidenceLabel: String {
