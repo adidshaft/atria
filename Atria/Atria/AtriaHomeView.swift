@@ -3091,6 +3091,11 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Atria needs pulse before it can build HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .orange)
+        case .connected where live.needsRRQualityCoach && pulse.hasPulseSignal:
+            return AtriaConnectionDiagnosis(title: "HRV settling",
+                                            action: "Heart rate is live. Keep wearing normally while HRV settles.",
+                                            systemImage: "waveform.path.ecg",
+                                            tint: .green)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",
