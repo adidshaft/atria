@@ -1,6 +1,77 @@
 import Foundation
 
 enum AtriaAnalytics {
+    enum BiologicalAge {
+        // Reference curves are compact local approximations of commonly published
+        // ACSM/Cooper VO2max percentile tables, resting-HR norms, age-related RMSSD
+        // decline, adult sleep guidance, activity norms, and BMI bands. They are
+        // monotonic and intentionally conservative; no network or medical inference.
+        static func summary(chronologicalAge: Int, factors: [BioAgeFactor]) -> BiologicalAgeSummary {
+            let weighted = factors.reduce(0) { $0 + Double($1.ageEquivalent) * $1.weight }
+            let totalWeight = factors.reduce(0) { $0 + $1.weight }
+            let unclamped = Int((weighted / max(totalWeight, 0.01)).rounded())
+            let biologicalAge = min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)
+            return BiologicalAgeSummary(biologicalAge: biologicalAge,
+                                        chronologicalAge: chronologicalAge,
+                                        ageDelta: biologicalAge - chronologicalAge,
+                                        factors: factors,
+                                        blockers: [],
+                                        footnote: BiologicalAgeSummary.footnoteText)
+        }
+
+        static func factor(id: String,
+                           label: String,
+                           ageEquivalent: Int,
+                           chronologicalAge: Int,
+                           weight: Double,
+                           detail: String) -> BioAgeFactor {
+            let delta = ageEquivalent - chronologicalAge
+            return BioAgeFactor(id: id,
+                                label: label,
+                                ageEquivalent: ageEquivalent,
+                                deltaVsChronological: delta,
+                                direction: delta == 0 ? .neutral : (delta < 0 ? .younger : .older),
+                                weight: weight,
+                                detail: detail)
+        }
+
+        static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int {
+            let baseAt20 = sex == .female ? 44.0 : 52.0
+            let yearlyDrop = sex == .female ? 0.30 : 0.35
+            return min(max(Int((20 + (baseAt20 - vo2) / yearlyDrop).rounded()), 18), 90)
+        }
+
+        static func rhrAgeEquivalent(_ restingHR: Int) -> Int {
+            min(max(Int((30 + Double(restingHR - 60) * 0.8).rounded()), 18), 90)
+        }
+
+        static func hrvAgeEquivalent(_ rmssd: Int) -> Int {
+            let safe = max(8, Double(rmssd))
+            return min(max(Int((20 - log(safe / 70.0) / 0.018).rounded()), 18), 90)
+        }
+
+        static func sleepAgeEquivalent(durationHours: Double,
+                                       efficiency: Double,
+                                       chronologicalAge: Int) -> Int {
+            let durationPenalty = abs(durationHours - 7.5) * 2.0
+            let efficiencyPenalty = max(0, 0.85 - efficiency) * 35
+            let bonus = durationPenalty < 1.0 && efficiency >= 0.88 ? -4.0 : 0
+            return min(max(Int((Double(chronologicalAge) + durationPenalty + efficiencyPenalty + bonus).rounded()), 18), 90)
+        }
+
+        static func activityAgeEquivalent(_ chronicLoad: Double,
+                                          chronologicalAge: Int) -> Int {
+            let delta = min(max((chronicLoad - 25) / 3.0, -8), 8)
+            return min(max(Int((Double(chronologicalAge) - delta).rounded()), 18), 90)
+        }
+
+        static func bmiAgeEquivalent(_ bmi: Double,
+                                     chronologicalAge: Int) -> Int {
+            let penalty = bmi < 18.5 ? (18.5 - bmi) * 1.2 : max(0, bmi - 24.9) * 0.8
+            return min(max(Int((Double(chronologicalAge) + penalty).rounded()), 18), 90)
+        }
+    }
+
     enum TrainingLoad {
         static func summary(sessions: [SavedSession],
                             rest: Int,
