@@ -36,6 +36,7 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
@@ -133,6 +134,7 @@ struct AtriaSettingsView: View {
             strainGreenBand,
             strainYellowBand,
             Double(stepsGoal),
+            Double(caloriesGoal),
             sleepGoalHours,
             sleepEfficiencyGreenLower,
             sleepEfficiencyYellowLower,
@@ -157,6 +159,7 @@ struct AtriaSettingsView: View {
         normalizeRecoveryTargets()
         normalizeStrainTargets()
         normalizeStepsGoal()
+        normalizeCaloriesGoal()
         normalizeSleepGoal()
         normalizeSleepEfficiencyTargets()
         normalizeHRVTargets()
@@ -174,6 +177,10 @@ struct AtriaSettingsView: View {
 
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+    }
+
+    private func normalizeCaloriesGoal() {
+        caloriesGoal = min(max(caloriesGoal, 100), 3_000)
     }
 
     private func normalizeStrainTargets() {
@@ -399,6 +406,23 @@ struct AtriaSettingsView: View {
                             .monospacedDigit()
                     }
                 }
+
+                Stepper(value: $caloriesGoal, in: 100...3_000, step: 50) {
+                    LabeledContent("Calories goal") {
+                        Text("\(caloriesGoal) kcal")
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    stepsGoal = 8_000
+                    caloriesGoal = 500
+                } label: {
+                    Label("Reset activity targets", systemImage: "figure.walk.motion")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+
+                Divider()
 
                 Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
                     LabeledContent("Sleep goal") {
