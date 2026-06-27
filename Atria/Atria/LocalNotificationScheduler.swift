@@ -253,6 +253,22 @@ enum LocalNotificationScheduler {
     }
 
     private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision] {
+        let bluetoothDecision: NotificationDecision
+        if ble.status == .poweredOff {
+            bluetoothDecision = NotificationDecision(
+                kind: "bluetooth_off",
+                identifier: Identifier.bluetoothOff,
+                title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off",
+                body: ble.bluetoothPermissionDenied
+                    ? "Allow Bluetooth for Atria in Settings."
+                    : "Turn on Bluetooth in Settings so Atria can read your strap.",
+                reason: ble.bluetoothPermissionDenied ? "bluetooth_permission_denied" : "bluetooth_powered_off",
+                shouldSchedule: true,
+                delay: 9
+            )
+            return [bluetoothDecision]
+        }
+
         let battery = batterySnapshot(liveLevel: ble.batteryLevel)
         AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d",
               battery.level,
@@ -286,30 +302,15 @@ enum LocalNotificationScheduler {
             )
         }
 
-        let bluetoothDecision: NotificationDecision
-        if ble.status == .poweredOff {
-            bluetoothDecision = NotificationDecision(
-                kind: "bluetooth_off",
-                identifier: Identifier.bluetoothOff,
-                title: ble.bluetoothPermissionDenied ? "Bluetooth permission needed" : "Bluetooth is off",
-                body: ble.bluetoothPermissionDenied
-                    ? "Allow Bluetooth for Atria in Settings."
-                    : "Turn on Bluetooth in Settings so Atria can read your strap.",
-                reason: ble.bluetoothPermissionDenied ? "bluetooth_permission_denied" : "bluetooth_powered_off",
-                shouldSchedule: true,
-                delay: 11
-            )
-        } else {
-            bluetoothDecision = NotificationDecision(
-                kind: "bluetooth_off",
-                identifier: Identifier.bluetoothOff,
-                title: "",
-                body: "",
-                reason: "status_\(ble.status.rawValue.replacingOccurrences(of: " ", with: "_"))",
-                shouldSchedule: false,
-                delay: 0
-            )
-        }
+        bluetoothDecision = NotificationDecision(
+            kind: "bluetooth_off",
+            identifier: Identifier.bluetoothOff,
+            title: "",
+            body: "",
+            reason: "status_\(ble.status.rawValue.replacingOccurrences(of: " ", with: "_"))",
+            shouldSchedule: false,
+            delay: 0
+        )
 
         return [batteryDecision, bluetoothDecision]
     }
