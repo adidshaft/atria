@@ -279,6 +279,28 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
+    static func activeCaloriesZone(_ calories: Double?, goal: Int = 500) -> AtriaMetricZone? {
+        guard let calories, calories > 0 else { return nil }
+        let roundedCalories = Int(calories.rounded())
+        let safeGoal = min(max(goal, 100), 3_000)
+        let level: AtriaMetricZoneLevel = roundedCalories >= safeGoal ? .green : (roundedCalories >= safeGoal / 2 ? .yellow : .red)
+        let recommendation: String
+        switch level {
+        case .green:
+            recommendation = "Estimated active calories are at or above your daily goal."
+        case .yellow:
+            recommendation = "Below your active-calorie goal -- a short walk or easy session can close the gap."
+        case .red:
+            recommendation = "Well below your active-calorie goal. Add easy movement only if it fits your recovery."
+        }
+        return AtriaMetricZone(level: level,
+                               title: "Calories target",
+                               current: "\(roundedCalories) kcal vs \(safeGoal) kcal goal.",
+                               targetSummary: "Green >= \(safeGoal) kcal, yellow \(safeGoal / 2)-\(safeGoal - 1) kcal, red below \(safeGoal / 2) kcal.",
+                               recommendation: recommendation,
+                               disclaimer: "Estimated from heart rate/profile. \(AtriaMetricZone.nonMedicalDisclaimer)")
+    }
+
     static func vo2TrendZone(_ summary: VO2MaxEstimateSummary,
                              greenDelta: Double = 0.2,
                              redDelta: Double = -0.2) -> AtriaMetricZone? {

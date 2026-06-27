@@ -540,6 +540,7 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
@@ -591,6 +592,7 @@ struct AtriaOverviewReadinessSectionHost: View {
                                      vo2GreenDelta: vo2GreenDelta,
                                      vo2RedDelta: vo2RedDelta,
                                      stepsGoal: stepsGoal,
+                                     caloriesGoal: caloriesGoal,
                                      sleepGoalHours: sleepGoalHours,
                                      sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                      sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
@@ -817,7 +819,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .vo2max, .bioAge, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bioAge, .bodyTemp:
             return true
         default:
             return false
@@ -888,6 +890,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let vo2GreenDelta: Double
     let vo2RedDelta: Double
     let stepsGoal: Int
+    let caloriesGoal: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
@@ -961,6 +964,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.vo2GreenDelta == rhs.vo2GreenDelta
             && lhs.vo2RedDelta == rhs.vo2RedDelta
             && lhs.stepsGoal == rhs.stepsGoal
+            && lhs.caloriesGoal == rhs.caloriesGoal
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
@@ -1338,7 +1342,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: live.liveActiveCaloriesText,
                                   detail: live.liveActiveCalories == nil ? "Needs profile" : "Estimate",
                                   systemImage: metric.systemImage,
-                                  tint: .orange)
+                                  tint: activeCaloriesZone?.tint ?? .orange,
+                                  zone: activeCaloriesZone)
                 .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
         case .vo2max:
             AtriaGlanceMetricCard(title: "VO2max",
@@ -1553,6 +1558,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                           goal: stepsGoal)
     }
 
+    private var activeCaloriesZone: AtriaMetricZone? {
+        Metrics.activeCaloriesZone(live.liveActiveCalories,
+                                   goal: caloriesGoal)
+    }
+
     private var vo2TrendZone: AtriaMetricZone? {
         Metrics.vo2TrendZone(vo2MaxEstimate,
                              greenDelta: vo2GreenDelta,
@@ -1737,6 +1747,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
@@ -1805,6 +1816,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
             strainGreenBand,
             strainYellowBand,
             Double(stepsGoal),
+            Double(caloriesGoal),
             sleepGoalHours,
             sleepEfficiencyGreenLower,
             sleepEfficiencyYellowLower,
@@ -1829,6 +1841,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
         normalizeRecoveryTargets()
         normalizeStrainTargets()
         normalizeStepsGoal()
+        normalizeCaloriesGoal()
         normalizeSleepGoal()
         normalizeSleepEfficiencyTargets()
         normalizeHRVTargets()
@@ -2048,6 +2061,21 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
             }
+        case .calories:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $caloriesGoal, in: 100...3_000, step: 50) {
+                    LabeledContent("Active calories goal") {
+                        Text("\(caloriesGoal) kcal")
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    caloriesGoal = 500
+                } label: {
+                    Label("Reset calories goal", systemImage: "flame.fill")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+            }
         case .sleepEfficiency:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $sleepEfficiencyGreenLower, in: 60...99, step: 1) {
@@ -2089,6 +2117,10 @@ private struct AtriaGlanceTargetEditorSheet: View {
 
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+    }
+
+    private func normalizeCaloriesGoal() {
+        caloriesGoal = min(max(caloriesGoal, 100), 3_000)
     }
 
     private func normalizeSleepGoal() {
@@ -2135,7 +2167,7 @@ private extension AtriaTodayMetric {
     var targetEditorTint: Color {
         switch self {
         case .recovery, .steps: return .green
-        case .strain: return .orange
+        case .strain, .calories: return .orange
         case .hrv: return .pink
         case .rhr: return .red
         case .bioAge: return .purple
@@ -2168,6 +2200,8 @@ private extension AtriaTodayMetric {
             return "Adjust the VO2max trend gain or decline needed for target colors."
         case .steps:
             return "Adjust the daily step goal used by the steps card."
+        case .calories:
+            return "Adjust the estimated active-calorie goal used by the calories card."
         case .sleepEfficiency:
             return "Adjust the sleep-efficiency green/yellow target bands."
         default:
