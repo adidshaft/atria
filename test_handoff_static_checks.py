@@ -1019,6 +1019,8 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         data = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
+        widget_snapshot = source(ROOT / "Atria" / "Atria" / "WidgetSnapshot.swift")
+        widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
 
         for needle in [
             "enum BatteryChargeStatus: String, Equatable",
@@ -1079,6 +1081,29 @@ class HandoffStaticChecks(unittest.TestCase):
             "tint: coreLiveStore.state.batteryChargeStatus == .charging ? .green : .blue",
         ]:
             assert_contains(self, overview + data, needle)
+
+        for needle in [
+            "let batteryLevel: Int?",
+            "let batteryChargeStatus: String?",
+            "let batteryChargeText: String?",
+            "batteryLevel: ble.batteryLevel >= 0 ? ble.batteryLevel : nil",
+            "batteryChargeStatus: ble.batteryChargeStatus.rawValue",
+            "batteryChargeText: ble.batteryChargeStatus.label",
+            "battery=%@ charge=%@",
+            "formatInt(snapshot.batteryLevel)",
+        ]:
+            assert_contains(self, widget_snapshot, needle)
+
+        for needle in [
+            "let batteryLevel: Int?",
+            "let batteryChargeStatus: String?",
+            "let batteryChargeText: String?",
+            "if let battery = batteryHeaderText",
+            "Label(battery, systemImage: batterySymbol)",
+            "if snapshot.batteryChargeStatus == \"charging\" { return \"battery.100percent.bolt\" }",
+            "case \"charging\", \"full\": return .green",
+        ]:
+            assert_contains(self, widget, needle)
 
     def test_handoff_21_historical_backfill_status_is_visible_and_fail_closed(self):
         archive = source(ROOT / "Atria" / "Atria" / "HistoricalArchive.swift")
