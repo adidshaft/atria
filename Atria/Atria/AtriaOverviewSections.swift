@@ -819,7 +819,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bioAge, .bodyTemp:
+        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bioAge, .bodyTemp:
             return true
         default:
             return false
@@ -1900,7 +1900,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
             }
-        case .sleep:
+        case .sleep, .sleepHistory:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
                     LabeledContent("Sleep goal") {
@@ -2174,7 +2174,7 @@ private extension AtriaTodayMetric {
         case .bioAge: return .purple
         case .vo2max: return .blue
         case .respiratoryRate, .bodyTemp: return .teal
-        case .sleep, .sleepEfficiency: return .cyan
+        case .sleep, .sleepHistory, .sleepEfficiency: return .cyan
         default: return .blue
         }
     }
@@ -2187,6 +2187,8 @@ private extension AtriaTodayMetric {
             return "Adjust how tightly Strain should track today's recovery-scaled target."
         case .sleep:
             return "Adjust the sleep duration goal used by sleep target zones."
+        case .sleepHistory:
+            return "Adjust the sleep goal used by sleep history, debt, and consistency."
         case .hrv:
             return "Adjust how close HRV should stay to your personal baseline."
         case .rhr:
