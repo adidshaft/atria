@@ -627,7 +627,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
                                 tint: .teal,
-                                footnote: "Sleep RR research; reference gated.")
+                                footnote: "Sleep beat-to-beat research; reference gated.")
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
@@ -1505,13 +1505,13 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
                                     tint: .purple,
-                                    footnote: "Sleep RR research")
+                                    footnote: "Sleep beat-to-beat research")
                     AtriaMetricTile(label: "Sleep resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
                                     tint: .teal,
-                                    footnote: "Sleep RR research")
+                                    footnote: "Sleep beat-to-beat research")
                 }
 
                 if chartNights.count > 1 {
