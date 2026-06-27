@@ -1467,7 +1467,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func confirmedWorkoutMetrics(start: Date,",
             "Metrics.activeCalories(samples, rest: rest, profile: profile)",
             "Metrics.strain(fromTRIMP: trimp)",
-            "zoneStorageKey(for: zone)",
+            "AtriaAnalytics.Strain.maxHeartRateZoneSeconds(samples.map",
+            "zoneSummary.isEmpty ? nil : zoneSummary.storage",
             "active_energy_kcal=%.0f",
             "zone_rest_s=%.0f",
         ]:
@@ -2313,6 +2314,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .male, .unspecified: return 1.92",
             "static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double",
             "static func edwardsWeight(forHRReserve reserve: Double) -> Int",
+            "struct MaxHeartRateZoneSeconds: Equatable",
+            "static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],",
+            "static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int) -> Int",
             "case 0.90...: return 5",
             "case 0.80..<0.90: return 4",
             "case 0.70..<0.80: return 3",
@@ -2340,6 +2344,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)",
             "AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.activeCalories(samples, rest: rest, profile: profile)",
+            "typealias MaxHeartRateZoneSeconds = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds",
+            "AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, maxGap: maxGap)",
             "AtriaAnalytics.Strain.zoneSummary(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.score(fromTRIMP: trimp)",
             "AtriaAnalytics.Strain.score(fromEdwardsLoad: load)",
@@ -5180,6 +5186,33 @@ class HandoffStaticChecks(unittest.TestCase):
                 total += dt_min * edwards_weight(reserve)
             return total
 
+        def max_hr_zone_raw_value(bpm, max_hr):
+            fraction = bpm / max_hr
+            if fraction >= 0.90:
+                return 5
+            if fraction >= 0.80:
+                return 4
+            if fraction >= 0.70:
+                return 3
+            if fraction >= 0.60:
+                return 2
+            if fraction >= 0.50:
+                return 1
+            return 0
+
+        def max_hr_zone_seconds(series, max_hr, max_gap=5 * 60):
+            buckets = [0, 0, 0, 0, 0, 0]
+            dropped = 0
+            for previous, current in zip(series, series[1:]):
+                dt = current[0] - previous[0]
+                if dt <= 0:
+                    continue
+                if dt >= max_gap:
+                    dropped += dt
+                    continue
+                buckets[max_hr_zone_raw_value(current[1], max_hr)] += dt
+            return buckets, dropped
+
         def resp_rate_rsa(resampled, sample_rate=4.0):
             mean = sum(resampled) / len(resampled)
             centered = [value - mean for value in resampled]
@@ -5220,6 +5253,9 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertTrue(inferred_manual_sleep_is_nap(-60, 14, 15, current_selection=True))
         self.assertEqual([edwards_weight(x) for x in [0.49, 0.50, 0.61, 0.72, 0.83, 0.94]], [0, 1, 2, 3, 4, 5])
         self.assertEqual(edwards_load([(0, 100), (60, 130), (120, 150), (180, 170)], 60, 180), 9)
+        self.assertEqual([max_hr_zone_raw_value(bpm, 200) for bpm in [80, 100, 120, 140, 160, 180]], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(max_hr_zone_seconds([(0, 90), (60, 110), (120, 130), (180, 150), (240, 170), (300, 190), (900, 190)], 200),
+                         ([0, 60, 60, 60, 60, 60], 600))
         synthetic_rr = [800 + 45 * math.sin(2 * math.pi * (15 / 60) * index / 4) for index in range(4 * 90)]
         self.assertEqual(resp_rate_rsa(synthetic_rr), 15)
 

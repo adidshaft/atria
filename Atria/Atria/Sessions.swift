@@ -210,12 +210,15 @@ struct SavedSession: Codable, Identifiable {
 
     /// Seconds spent in each HR zone, given a max-HR setting.
     func timeInZone(maxHR: Int) -> [HRZone: Double] {
-        guard points.count > 1 else { return [:] }
+        let summary = AtriaAnalytics.Strain.maxHeartRateZoneSeconds(points.map { (t: $0.t, bpm: $0.bpm) },
+                                                                    maxHR: maxHR)
+        guard !summary.isEmpty else { return [:] }
         var out: [HRZone: Double] = [:]
-        for i in 1..<points.count {
-            let dt = points[i].t - points[i-1].t
-            let z = HRZone.zone(for: points[i].bpm, maxHR: maxHR)
-            out[z, default: 0] += max(0, dt)
+        for zone in HRZone.allCases {
+            let seconds = summary.seconds(forZoneRawValue: zone.rawValue)
+            if seconds > 0 {
+                out[zone] = seconds
+            }
         }
         return out
     }
@@ -5721,29 +5724,14 @@ final class SessionStore: ObservableObject {
         let trimp = Metrics.trimp(samples.map { (t: $0.t.timeIntervalSince(start), bpm: $0.bpm) },
                                   rest: rest,
                                   max: maxHR)
-        var zoneSeconds: [String: TimeInterval] = [:]
-        for index in 1..<samples.count {
-            let dt = samples[index].t.timeIntervalSince(samples[index - 1].t)
-            guard dt > 0, dt < 5 * 60 else { continue }
-            let zone = HRZone.zone(for: samples[index].bpm, maxHR: maxHR)
-            zoneSeconds[zoneStorageKey(for: zone), default: 0] += dt
-        }
+        let zoneSummary = AtriaAnalytics.Strain.maxHeartRateZoneSeconds(samples.map {
+            (t: $0.t.timeIntervalSince(start), bpm: $0.bpm)
+        }, maxHR: maxHR)
         let activeEnergy = Metrics.activeCalories(samples, rest: rest, profile: profile)
         return (Metrics.strain(fromTRIMP: trimp),
                 activeEnergy,
                 activeEnergy == nil ? (profile.hasEnergyProfile ? nil : "needs_profile") : "estimate",
-                zoneSeconds.isEmpty ? nil : zoneSeconds)
-    }
-
-    private func zoneStorageKey(for zone: HRZone) -> String {
-        switch zone {
-        case .rest: return "rest"
-        case .warmup: return "warmup"
-        case .fatBurn: return "fatBurn"
-        case .aerobic: return "aerobic"
-        case .anaerobic: return "anaerobic"
-        case .max: return "max"
-        }
+                zoneSummary.isEmpty ? nil : zoneSummary.storage)
     }
 
     private static func readConfirmedWorkouts() -> [UserConfirmedWorkout] {

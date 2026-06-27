@@ -431,6 +431,51 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
+        struct MaxHeartRateZoneSeconds: Equatable {
+            let rest: TimeInterval
+            let warmup: TimeInterval
+            let fatBurn: TimeInterval
+            let aerobic: TimeInterval
+            let anaerobic: TimeInterval
+            let max: TimeInterval
+            let droppedGapSeconds: TimeInterval
+
+            static let empty = MaxHeartRateZoneSeconds(rest: 0,
+                                                       warmup: 0,
+                                                       fatBurn: 0,
+                                                       aerobic: 0,
+                                                       anaerobic: 0,
+                                                       max: 0,
+                                                       droppedGapSeconds: 0)
+
+            var isEmpty: Bool {
+                rest + warmup + fatBurn + aerobic + anaerobic + max <= 0
+            }
+
+            var storage: [String: TimeInterval] {
+                var out: [String: TimeInterval] = [:]
+                if rest > 0 { out["rest"] = rest }
+                if warmup > 0 { out["warmup"] = warmup }
+                if fatBurn > 0 { out["fatBurn"] = fatBurn }
+                if aerobic > 0 { out["aerobic"] = aerobic }
+                if anaerobic > 0 { out["anaerobic"] = anaerobic }
+                if max > 0 { out["max"] = max }
+                return out
+            }
+
+            func seconds(forZoneRawValue rawValue: Int) -> TimeInterval {
+                switch rawValue {
+                case 0: return rest
+                case 1: return warmup
+                case 2: return fatBurn
+                case 3: return aerobic
+                case 4: return anaerobic
+                case 5: return max
+                default: return 0
+                }
+            }
+        }
+
         struct ZoneSummary: Equatable {
             let secondsZ0: TimeInterval
             let secondsZ1: TimeInterval
@@ -510,6 +555,60 @@ enum AtriaAnalytics {
                 total += dtMin * hrr * 0.64 * exp(safeCoefficient * hrr)
             }
             return total
+        }
+
+        /// Standard max-HR zone seconds for day/workout rollups.
+        /// Buckets mirror HRZone: rest <50%, warmup 50-60%, fat burn 60-70%,
+        /// aerobic 70-80%, anaerobic 80-90%, max >=90% of configured max HR.
+        static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
+                                            maxHR: Int,
+                                            maxGap: TimeInterval = 5 * 60) -> MaxHeartRateZoneSeconds {
+            guard series.count > 1, maxHR > 0 else { return .empty }
+            var rest = 0.0
+            var warmup = 0.0
+            var fatBurn = 0.0
+            var aerobic = 0.0
+            var anaerobic = 0.0
+            var max = 0.0
+            var dropped = 0.0
+
+            for index in 1..<series.count {
+                let dt = series[index].t - series[index - 1].t
+                guard dt > 0 else { continue }
+                if dt >= maxGap {
+                    dropped += dt
+                    continue
+                }
+                switch maxHeartRateZoneRawValue(for: series[index].bpm, maxHR: maxHR) {
+                case 0: rest += dt
+                case 1: warmup += dt
+                case 2: fatBurn += dt
+                case 3: aerobic += dt
+                case 4: anaerobic += dt
+                default: max += dt
+                }
+            }
+
+            return MaxHeartRateZoneSeconds(rest: rest,
+                                           warmup: warmup,
+                                           fatBurn: fatBurn,
+                                           aerobic: aerobic,
+                                           anaerobic: anaerobic,
+                                           max: max,
+                                           droppedGapSeconds: dropped)
+        }
+
+        static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int) -> Int {
+            guard bpm > 0, maxHR > 0 else { return 0 }
+            let fraction = Double(bpm) / Double(maxHR)
+            switch fraction {
+            case 0.90...: return 5
+            case 0.80..<0.90: return 4
+            case 0.70..<0.80: return 3
+            case 0.60..<0.70: return 2
+            case 0.50..<0.60: return 1
+            default: return 0
+            }
         }
 
         static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double {
