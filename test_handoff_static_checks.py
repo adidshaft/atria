@@ -3079,6 +3079,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_vo2max_fails_closed_until_confident(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        analytics = source(ROOT / "Atria" / "Atria" / "AtriaAnalytics.swift")
         healthkit = source(ROOT / "Atria" / "Atria" / "HealthKitExporter.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
 
@@ -3086,25 +3087,34 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertIsNotNone(match)
         body = match.group("body")
         for needle in [
+            "AtriaAnalytics.VO2Max.summary(rest: rest,",
+            "maxHR: maxHR,",
+            "restingSamples: baseline.restingSampleCount,",
+            "maxHRMeasured: profile.maxHRSource == .measured,",
+            "restingTrend: restingTrend14)",
+        ]:
+            assert_contains(self, body, needle)
+        assert_contains(self, sessions, "let trendDelta: Double?")
+        for needle in [
+            "enum VO2Max",
             "guard rest > 0, maxHR > rest else",
             "guard restingSamples >= 7 else",
-            "guard profile.maxHRSource == .measured else",
+            "guard maxHRMeasured else",
             "VO2MaxEstimateSummary(value: nil",
             "let rawEstimate = 15.3 * Double(maxHR) / Double(rest)",
             "let confidence = \"rough estimate\"",
-            "let trend = vo2MaxTrendText(currentEstimate: boundedEstimate, maxHR: maxHR)",
+            "let trend = trendText(currentEstimate: boundedEstimate,",
             "trendText: trend.text",
             "trendDetail: trend.detail",
             "trendDelta: trend.delta",
+            "static func trendText(currentEstimate: Double,",
+            "let rests = restingTrend.filter { $0 > 0 }",
+            "guard rests.count >= 2, let oldestRest = rests.first else",
+            "let previousEstimate = boundedEstimate(rest: oldestRest, maxHR: maxHR)",
+            "return (String(format: \"%+.1f\", delta), \"vs \\(rests.count)-point RHR trend.\", delta)",
         ]:
-            assert_contains(self, body, needle)
-        self.assertGreater(body.find("let rawEstimate = 15.3"), body.find("guard profile.maxHRSource == .measured else"))
-        assert_contains(self, sessions, "let trendDelta: Double?")
-        assert_contains(self, sessions, "private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String, delta: Double?)")
-        assert_contains(self, sessions, "let rests = restingTrend14.filter { $0 > 0 }")
-        assert_contains(self, sessions, "guard rests.count >= 2, let oldestRest = rests.first else")
-        assert_contains(self, sessions, "let previousEstimate = min(max(15.3 * Double(maxHR) / Double(oldestRest), 20), 80)")
-        assert_contains(self, sessions, "return (String(format: \"%+.1f\", delta), \"vs \\(rests.count)-point RHR trend.\", delta)")
+            assert_contains(self, analytics, needle)
+        self.assertGreater(analytics.find("let rawEstimate = 15.3"), analytics.find("guard maxHRMeasured else"))
 
         for needle in [
             "profile.maxHRSource == .measured",

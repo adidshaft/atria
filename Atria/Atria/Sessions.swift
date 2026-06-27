@@ -7581,47 +7581,11 @@ final class SessionStore: ObservableObject {
     }
 
     func vo2MaxEstimateSummary(rest: Int, maxHR: Int) -> VO2MaxEstimateSummary {
-        let restingSamples = baseline.restingSampleCount
-        guard rest > 0, maxHR > rest else {
-            return VO2MaxEstimateSummary(value: nil,
-                                         confidence: "learning",
-                                         detail: "Need RHR",
-                                         narrative: "Atria needs resting HR and HRmax before estimating VO2max.",
-                                         trendText: "Learning",
-                                         trendDetail: "Needs resting baseline.",
-                                         trendDelta: nil)
-        }
-        guard restingSamples >= 7 else {
-            return VO2MaxEstimateSummary(value: nil,
-                                         confidence: "learning",
-                                         detail: "\(restingSamples)/7 RHR",
-                                         narrative: "Atria needs 7 resting nights before estimating VO2max.",
-                                         trendText: "Learning",
-                                         trendDetail: "\(restingSamples)/7 RHR nights.",
-                                         trendDelta: nil)
-        }
-        guard profile.maxHRSource == .measured else {
-            return VO2MaxEstimateSummary(value: nil,
-                                         confidence: "learning",
-                                         detail: "Need HRmax",
-                                         narrative: "Atria needs a measured HRmax before estimating VO2max.",
-                                         trendText: "Learning",
-                                         trendDetail: "Needs measured HRmax.",
-                                         trendDelta: nil)
-        }
-
-        let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
-        let boundedEstimate = min(max(rawEstimate, 20), 80)
-        let confidence = "rough estimate"
-        let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
-        let trend = vo2MaxTrendText(currentEstimate: boundedEstimate, maxHR: maxHR)
-        return VO2MaxEstimateSummary(value: boundedEstimate,
-                                     confidence: confidence,
-                                     detail: detail,
-                                     narrative: "Rough estimate from measured max HR and resting baseline.",
-                                     trendText: trend.text,
-                                     trendDetail: trend.detail,
-                                     trendDelta: trend.delta)
+        AtriaAnalytics.VO2Max.summary(rest: rest,
+                                      maxHR: maxHR,
+                                      restingSamples: baseline.restingSampleCount,
+                                      maxHRMeasured: profile.maxHRSource == .measured,
+                                      restingTrend: restingTrend14)
     }
 
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
@@ -7704,19 +7668,6 @@ final class SessionStore: ObservableObject {
         ]
         return AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,
                                                     factors: factors)
-    }
-
-    private func vo2MaxTrendText(currentEstimate: Double, maxHR: Int) -> (text: String, detail: String, delta: Double?) {
-        let rests = restingTrend14.filter { $0 > 0 }
-        guard rests.count >= 2, let oldestRest = rests.first else {
-            return ("Learning", "Needs 2 cached RHR points.", nil)
-        }
-        let previousEstimate = min(max(15.3 * Double(maxHR) / Double(oldestRest), 20), 80)
-        let delta = currentEstimate - previousEstimate
-        if abs(delta) < 0.2 {
-            return ("Stable", "vs \(rests.count)-point RHR trend.", delta)
-        }
-        return (String(format: "%+.1f", delta), "vs \(rests.count)-point RHR trend.", delta)
     }
 
     func trendSummaryFast(rest: Int,
