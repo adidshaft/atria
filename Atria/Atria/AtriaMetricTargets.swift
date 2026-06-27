@@ -142,10 +142,16 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
-    static func hrvZone(_ rmssd: Int?, baseline: Int?, baselineSamples: Int) -> AtriaMetricZone? {
+    static func hrvZone(_ rmssd: Int?,
+                        baseline: Int?,
+                        baselineSamples: Int,
+                        greenRatio: Double = 0.95,
+                        yellowRatio: Double = 0.85) -> AtriaMetricZone? {
         guard baselineSamples >= 7, let rmssd, let baseline, baseline > 0 else { return nil }
         let ratio = Double(rmssd) / Double(baseline)
-        let level: AtriaMetricZoneLevel = ratio >= 0.95 ? .green : (ratio >= 0.85 ? .yellow : .red)
+        let safeYellow = min(max(yellowRatio, 0.50), 0.98)
+        let safeGreen = min(max(greenRatio, safeYellow + 0.01), 1.20)
+        let level: AtriaMetricZoneLevel = ratio >= safeGreen ? .green : (ratio >= safeYellow ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -156,7 +162,9 @@ extension Metrics {
             recommendation = "HRV is well below your norm. Keep today easy and focus on sleep, hydration, and recovery."
         }
         let current = "\(rmssd) ms vs \(baseline) ms baseline."
-        let target = "Green >= \(Int((Double(baseline) * 0.95).rounded())) ms, yellow \(Int((Double(baseline) * 0.85).rounded()))-\(Int((Double(baseline) * 0.95).rounded()) - 1) ms, red below."
+        let greenValue = Int((Double(baseline) * safeGreen).rounded())
+        let yellowValue = Int((Double(baseline) * safeYellow).rounded())
+        let target = "Green >= \(greenValue) ms, yellow \(yellowValue)-\(greenValue - 1) ms, red below."
         return AtriaMetricZone(level: level,
                                title: "HRV target",
                                current: current,
@@ -165,10 +173,16 @@ extension Metrics {
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
-    static func restingHeartRateZone(_ bpm: Int?, baseline: Int?, baselineSamples: Int) -> AtriaMetricZone? {
+    static func restingHeartRateZone(_ bpm: Int?,
+                                     baseline: Int?,
+                                     baselineSamples: Int,
+                                     greenDelta: Int = 3,
+                                     yellowDelta: Int = 7) -> AtriaMetricZone? {
         guard baselineSamples >= 7, let bpm, let baseline, baseline > 0 else { return nil }
         let delta = bpm - baseline
-        let level: AtriaMetricZoneLevel = delta <= 3 ? .green : (delta <= 7 ? .yellow : .red)
+        let safeGreenDelta = min(max(greenDelta, 0), 12)
+        let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 1), 20)
+        let level: AtriaMetricZoneLevel = delta <= safeGreenDelta ? .green : (delta <= safeYellowDelta ? .yellow : .red)
         let recommendation: String
         switch level {
         case .green:
@@ -178,7 +192,7 @@ extension Metrics {
         case .red:
             recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
         }
-        let target = "Green <= \(baseline + 3) bpm, yellow \(baseline + 4)-\(baseline + 7) bpm, red above."
+        let target = "Green <= \(baseline + safeGreenDelta) bpm, yellow \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
         return AtriaMetricZone(level: level,
                                title: "Resting HR target",
                                current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",

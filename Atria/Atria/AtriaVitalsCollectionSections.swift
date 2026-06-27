@@ -341,6 +341,10 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
+    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
 
     var body: some View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
@@ -349,8 +353,12 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                                                            yellowLower: recoveryYellowLower),
                                 hrvBaseline: store.baseline.hrvInt,
                                 hrvBaselineSamples: store.baseline.hrvSampleCount,
+                                hrvGreenRatio: hrvGreenRatio,
+                                hrvYellowRatio: hrvYellowRatio,
                                 restingBaseline: store.baseline.restingInt,
                                 restingBaselineSamples: store.baseline.restingSampleCount,
+                                restingGreenDelta: restingGreenDelta,
+                                restingYellowDelta: restingYellowDelta,
                                 sleepGoalHours: sleepGoalHours,
                                 sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                 sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
@@ -1664,8 +1672,12 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let recoveryTarget: AtriaMetricTarget
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
+    let hrvGreenRatio: Double
+    let hrvYellowRatio: Double
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let restingGreenDelta: Int
+    let restingYellowDelta: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
@@ -1677,8 +1689,12 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             && lhs.recoveryTarget == rhs.recoveryTarget
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.hrvGreenRatio == rhs.hrvGreenRatio
+            && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.restingGreenDelta == rhs.restingGreenDelta
+            && lhs.restingYellowDelta == rhs.restingYellowDelta
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
@@ -1705,8 +1721,12 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             AtriaSleepHistoryCard(snapshot: sleepHistory,
                                   hrvBaseline: hrvBaseline,
                                   hrvBaselineSamples: hrvBaselineSamples,
+                                  hrvGreenRatio: hrvGreenRatio,
+                                  hrvYellowRatio: hrvYellowRatio,
                                   restingBaseline: restingBaseline,
                                   restingBaselineSamples: restingBaselineSamples,
+                                  restingGreenDelta: restingGreenDelta,
+                                  restingYellowDelta: restingYellowDelta,
                                   sleepGoalHours: sleepGoalHours,
                                   sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                   sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
@@ -1760,8 +1780,12 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
+    let hrvGreenRatio: Double
+    let hrvYellowRatio: Double
     let restingBaseline: Int?
     let restingBaselineSamples: Int
+    let restingGreenDelta: Int
+    let restingYellowDelta: Int
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
@@ -1772,8 +1796,12 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         lhs.snapshot == rhs.snapshot
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
+            && lhs.hrvGreenRatio == rhs.hrvGreenRatio
+            && lhs.hrvYellowRatio == rhs.hrvYellowRatio
             && lhs.restingBaseline == rhs.restingBaseline
             && lhs.restingBaselineSamples == rhs.restingBaselineSamples
+            && lhs.restingGreenDelta == rhs.restingGreenDelta
+            && lhs.restingYellowDelta == rhs.restingYellowDelta
             && lhs.sleepGoalHours == rhs.sleepGoalHours
             && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
@@ -1799,7 +1827,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     private var restingHeartRateZone: AtriaMetricZone? {
         Metrics.restingHeartRateZone(snapshot.latest?.restingHR,
                                      baseline: restingBaseline,
-                                     baselineSamples: restingBaselineSamples)
+                                     baselineSamples: restingBaselineSamples,
+                                     greenDelta: restingGreenDelta,
+                                     yellowDelta: restingYellowDelta)
     }
 
     private var sleepDurationZone: AtriaMetricZone? {
@@ -1815,7 +1845,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     private var hrvZone: AtriaMetricZone? {
         Metrics.hrvZone(snapshot.latest?.hrv,
                         baseline: hrvBaseline,
-                        baselineSamples: hrvBaselineSamples)
+                        baselineSamples: hrvBaselineSamples,
+                        greenRatio: hrvGreenRatio,
+                        yellowRatio: hrvYellowRatio)
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {

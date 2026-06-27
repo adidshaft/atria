@@ -37,6 +37,10 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
     @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
+    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
 
     /// Privacy/support destinations are shown as text only. Atria's core stays
     /// local-first with no in-app network/browser clients, so contact details are
@@ -115,6 +119,10 @@ struct AtriaSettingsView: View {
         .onChange(of: sleepGoalHours) { _, _ in normalizeSleepGoal() }
         .onChange(of: sleepEfficiencyGreenLower) { _, _ in normalizeSleepEfficiencyTargets() }
         .onChange(of: sleepEfficiencyYellowLower) { _, _ in normalizeSleepEfficiencyTargets() }
+        .onChange(of: hrvGreenRatio) { _, _ in normalizeHRVTargets() }
+        .onChange(of: hrvYellowRatio) { _, _ in normalizeHRVTargets() }
+        .onChange(of: restingGreenDelta) { _, _ in normalizeRestingTargets() }
+        .onChange(of: restingYellowDelta) { _, _ in normalizeRestingTargets() }
     }
 
     private func normalizeRecoveryTargets() {
@@ -133,6 +141,16 @@ struct AtriaSettingsView: View {
     private func normalizeSleepEfficiencyTargets() {
         sleepEfficiencyYellowLower = min(max(sleepEfficiencyYellowLower, 50), 95)
         sleepEfficiencyGreenLower = min(max(sleepEfficiencyGreenLower, sleepEfficiencyYellowLower + 1), 99)
+    }
+
+    private func normalizeHRVTargets() {
+        hrvYellowRatio = min(max(hrvYellowRatio, 0.50), 0.98)
+        hrvGreenRatio = min(max(hrvGreenRatio, hrvYellowRatio + 0.01), 1.20)
+    }
+
+    private func normalizeRestingTargets() {
+        restingGreenDelta = min(max(restingGreenDelta, 0), 12)
+        restingYellowDelta = min(max(restingYellowDelta, restingGreenDelta + 1), 20)
     }
 
     // MARK: Appearance
@@ -320,6 +338,46 @@ struct AtriaSettingsView: View {
                     Label("Reset sleep targets", systemImage: "bed.double.fill")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+
+                Divider()
+
+                Stepper(value: $hrvGreenRatio, in: 0.70...1.10, step: 0.01) {
+                    LabeledContent("HRV green") {
+                        Text("\(Int((hrvGreenRatio * 100).rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $hrvYellowRatio, in: 0.50...0.98, step: 0.01) {
+                    LabeledContent("HRV yellow") {
+                        Text("\(Int((hrvYellowRatio * 100).rounded()))%")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $restingGreenDelta, in: 0...12, step: 1) {
+                    LabeledContent("RHR green") {
+                        Text("+\(restingGreenDelta) bpm")
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $restingYellowDelta, in: 1...20, step: 1) {
+                    LabeledContent("RHR yellow") {
+                        Text("+\(restingYellowDelta) bpm")
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    hrvGreenRatio = 0.95
+                    hrvYellowRatio = 0.85
+                    restingGreenDelta = 3
+                    restingYellowDelta = 7
+                } label: {
+                    Label("Reset baseline targets", systemImage: "heart.text.square.fill")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")
