@@ -2038,7 +2038,7 @@ private struct AtriaSleepStageSummary: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Research stages")
+                Text(night.stageEvidence.label)
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
@@ -2086,7 +2086,7 @@ private struct AtriaSleepStageSummary: View, Equatable {
         .padding(10)
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(night.evidenceLabel) research stages. Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
+        .accessibilityLabel("\(night.evidenceLabel) \(night.stageEvidence.label). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
 
     static func symbol(for stage: SleepStageKind) -> String {
@@ -2128,7 +2128,7 @@ private struct AtriaSleepNightRow: View, Equatable {
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
                 if !night.displayStageSegments.isEmpty {
-                    Text("Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
+                    Text("\(night.stageEvidence.label) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.cyan)
                         .lineLimit(1)

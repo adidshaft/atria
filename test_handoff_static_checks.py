@@ -1749,6 +1749,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "case light",
             "case sws",
             "case deep",
+            "enum SleepStageEvidence: String, Codable, Equatable",
+            "case manualEstimate",
+            "case sensorResearch",
+            "case validated",
+            "case .none: return \"Stages not ready\"",
+            "case .manualEstimate: return \"Manual estimate\"",
+            "case .sensorResearch: return \"Research stages\"",
             "struct SleepStageSegment: Codable, Identifiable, Equatable",
             "func addManualSleep(start: Date,",
             "source: String = \"manual_ui\") -> UserConfirmedSleep?",
@@ -1756,12 +1763,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "confidence: \"manual_user_entered\"",
             "stageSegments: Self.defaultManualSleepStages(start: start,",
             "let displayStageSegments: [SleepStageSegment]",
+            "let stageEvidence: SleepStageEvidence",
             "let stageDurationsByStage: [SleepStageKind: TimeInterval]",
-            "let resolvedSegments = stageSegments.isEmpty",
-            "? Self.estimatedStageSegments(day: day, duration: duration, isNap: napEvidence)",
-            "self.displayStageSegments = resolvedSegments",
-            "self.stageDurationsByStage = Self.stageDurations(from: resolvedSegments)",
-            "private static func estimatedStageSegments(day: Date,",
+            "Self.stageEvidence(source: source,",
+            "self.displayStageSegments = evidence == .none ? [] : stageSegments",
+            "private static func stageEvidence(source: String,",
             "stageDurationsByStage[stage] ?? 0",
             "private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval]",
             "private struct AtriaSleepHistoryCard: View, Equatable",
@@ -1792,13 +1798,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaSleepStageSummary(night: latest)",
             "!latest.displayStageSegments.isEmpty",
             "private struct AtriaSleepStageSummary: View, Equatable",
-            "Text(\"Research stages\")",
+            "Text(night.stageEvidence.label)",
             "ForEach(night.displayStageSegments)",
             "Awake \\(night.stageText(.awake))",
             "Light \\(night.stageText(.light))",
             "SWS \\(night.stageText(.sws))",
             "Deep \\(night.stageText(.deep))",
-            ".accessibilityLabel(\"\\(night.evidenceLabel) research stages. Awake \\(night.stageText(.awake)), Light \\(night.stageText(.light)), SWS \\(night.stageText(.sws)), Deep \\(night.stageText(.deep)).\")",
+            ".accessibilityLabel(\"\\(night.evidenceLabel) \\(night.stageEvidence.label). Awake \\(night.stageText(.awake)), Light \\(night.stageText(.light)), SWS \\(night.stageText(.sws)), Deep \\(night.stageText(.deep)).\")",
             "Chart(chartNights)",
             "Wear the strap overnight or during a nap.",
             "Sleep or nap evidence saved; confirm it when ready.",
@@ -1843,11 +1849,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "showManualSleepSheet = false",
             "Image(systemName: \"moon.zzz.badge.plus\")",
             ".accessibilityLabel(\"Add sleep manually\")",
+            "Text(latest?.stageEvidence.label ?? \"Stages not ready\")",
+            "guard !latest.displayStageSegments.isEmpty else",
+            "return \"Sleep history \\(valueText). \\(latest.evidenceLabel). \\(latest.stageEvidence.label).\"",
         ]:
             assert_contains(self, overview, needle)
 
         assert_contains(self, vitals, "case pulse, hrv, recoveryStrain, profile")
         assert_not_contains(self, vitals, "case pulse, hrv, recoveryStrain, sleep")
+        assert_not_contains(self, sessions, "estimatedStageSegments")
+        assert_not_contains(self, sessions, "let resolvedSegments = stageSegments.isEmpty")
         assert_not_contains(self, sessions, "guard session.duration >= 20 * 60, !session.points.isEmpty else { return false }")
 
         sleep_card_start = vitals.index("private struct AtriaSleepHistoryCard")
