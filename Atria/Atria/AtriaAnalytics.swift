@@ -768,9 +768,40 @@ enum AtriaAnalytics {
         }
 
         static func vo2AgeEquivalent(_ vo2: Double, sex: AthleteProfile.BiologicalSex) -> Int {
-            let baseAt20 = sex == .female ? 44.0 : 52.0
-            let yearlyDrop = sex == .female ? 0.30 : 0.35
-            return min(max(Int((20 + (baseAt20 - vo2) / yearlyDrop).rounded()), 18), 90)
+            let reference = sex == .female ? femaleVO2AgeReference : maleVO2AgeReference
+            return interpolatedAgeEquivalent(for: vo2, reference: reference)
+        }
+
+        // Compact local VO2max age-equivalent reference tables adapted from
+        // ACSM/Cooper-style population fitness norms. Values are approximate
+        // median ml/kg/min anchors by decade; interpolation keeps the estimate
+        // monotonic while avoiding a fake precision curve.
+        private static let maleVO2AgeReference: [(age: Int, vo2: Double)] = [
+            (20, 52.0), (30, 48.5), (40, 45.0), (50, 41.5),
+            (60, 38.0), (70, 34.5), (80, 31.0), (90, 27.5)
+        ]
+
+        private static let femaleVO2AgeReference: [(age: Int, vo2: Double)] = [
+            (20, 44.0), (30, 41.0), (40, 38.0), (50, 35.0),
+            (60, 32.0), (70, 29.0), (80, 26.0), (90, 23.0)
+        ]
+
+        private static func interpolatedAgeEquivalent(for value: Double,
+                                                      reference: [(age: Int, vo2: Double)]) -> Int {
+            guard let youngest = reference.first,
+                  let oldest = reference.last else { return 90 }
+            if value >= youngest.vo2 { return 18 }
+            if value <= oldest.vo2 { return 90 }
+
+            for index in 1..<reference.count {
+                let previous = reference[index - 1]
+                let next = reference[index]
+                guard value <= previous.vo2, value >= next.vo2 else { continue }
+                let fraction = (previous.vo2 - value) / max(previous.vo2 - next.vo2, 0.01)
+                let age = Double(previous.age) + fraction * Double(next.age - previous.age)
+                return min(max(Int(age.rounded()), 18), 90)
+            }
+            return 90
         }
 
         static func rhrAgeEquivalent(_ restingHR: Int) -> Int {
