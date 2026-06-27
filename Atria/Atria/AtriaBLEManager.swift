@@ -192,7 +192,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         var label: String {
             switch self {
-            case .levelOnly: return "Level only"
+            case .levelOnly: return "Charger unknown"
             case .charging: return "Charging"
             case .notCharging: return "Not charging"
             case .full: return "Full"

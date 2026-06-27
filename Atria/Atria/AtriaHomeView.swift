@@ -1490,7 +1490,7 @@ final class AtriaHomeModel {
         var batteryChargeText: String { batteryLevel >= 0 ? batteryChargeStatus.label : "Waiting" }
         var batteryChargeCompactText: String {
             switch batteryChargeStatus {
-            case .levelOnly: return "Level"
+            case .levelOnly: return "State pending"
             case .charging: return "Charging"
             case .notCharging: return "Not chg"
             case .full: return "Full"
@@ -1502,7 +1502,7 @@ final class AtriaHomeModel {
         }
         var batteryDetailText: String {
             guard batteryLevel >= 0 else { return "Waiting for strap battery" }
-            return batteryChargeStatus == .levelOnly ? "Charge state not reported" : batteryChargeText
+            return batteryChargeStatus == .levelOnly ? "Battery level is live; waiting for charger-state signal" : batteryChargeText
         }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
         var needsRRQualityCoach: Bool { rrContinuityState == "poor_contact" }

@@ -3096,7 +3096,7 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
                 AtriaInlineQuickStat(label: "Charge",
                                      value: live.batteryChargeText,
                                      detail: live.batteryChargeStatus == .levelOnly
-                                        ? "Waiting for charger signal"
+                                        ? "Battery level is live; charger state pending"
                                         : "Current strap status")
                 AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)")
                 AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
