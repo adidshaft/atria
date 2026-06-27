@@ -2260,7 +2260,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Repair" }
             if rows <= 0 { return "Empty" }
             if metricReady { return "Ready" }
-            return "Archived"
+            return "Gated"
         }
 
         var detailText: String {
@@ -2268,7 +2268,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            return "\(rows) saved · not metric-ready"
+            return "\(rows) saved locally"
         }
 
         var userFootnoteText: String {
@@ -2277,6 +2277,13 @@ final class SessionStore: ObservableObject {
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
             return "Backfill archived locally; HRV, Recovery and Sleep stay gated until historical RR is validated."
+        }
+
+        var metricGateText: String {
+            if metricReady { return "Metric-ready" }
+            if hasArchiveRows { return "Metric gated" }
+            if !parseOK { return "Repair needed" }
+            return "Waiting"
         }
 
         var metricReady: Bool {
@@ -2455,14 +2462,17 @@ final class SessionStore: ObservableObject {
             let status = HistoricalArchiveStatus(diagnostics: diagnostics)
             DispatchQueue.main.async { [weak self] in
                 self?.historicalArchiveStatus = status
-                AtriaDebugLog("ATRIADBG historical_archive_status reason=%@ exists=%d parse_ok=%d rows=%d metric_usable=%d current_usable=%d status=%@ detail=%@",
+                AtriaDebugLog("ATRIADBG historical_archive_status reason=%@ exists=%d parse_ok=%d rows=%d metric_usable=%d current_usable=%d metric_ready=%d fail_closed=%d status=%@ gate=%@ detail=%@",
                               reason,
                               diagnostics.exists ? 1 : 0,
                               diagnostics.parseOK ? 1 : 0,
                               diagnostics.rows,
                               diagnostics.metricUsableRows,
                               diagnostics.currentSessionUsableRows,
+                              status.metricReady ? 1 : 0,
+                              status.hasArchiveRows && !status.metricReady ? 1 : 0,
                               status.valueText,
+                              status.metricGateText,
                               status.detailText)
             }
         }
