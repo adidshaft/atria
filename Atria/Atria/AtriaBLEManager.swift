@@ -278,6 +278,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private struct HistoricalArchivePersistenceResult {
         let succeeded: Bool
         let archivedUndecodable: Bool
+        let currentSessionUsable: Bool
         let reason: String?
         let persistedPath: String
         let errorDescription: String?
@@ -7808,11 +7809,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       historicalArchiveWriteFailures,
                       result.persistedPath)
             } else if historicalArchiveRows == 1 || historicalArchiveRows.isMultiple(of: 500) {
-                AtriaDebugLog("ATRIADBG historicalArchive status=ok rows=%d rows_since_ack=%d failures=%d layout=%@ metric_usable=0 current_session_usable=0 path=%@",
+                AtriaDebugLog("ATRIADBG historicalArchive status=ok rows=%d rows_since_ack=%d failures=%d layout=%@ metric_usable=0 current_session_usable=%d path=%@",
                       historicalArchiveRows,
                       historicalArchiveRowsSinceAck,
                       historicalArchiveWriteFailures,
                       HistoricalArchive.layoutVersion,
+                      result.currentSessionUsable ? 1 : 0,
                       result.persistedPath)
             }
             return
@@ -7946,19 +7948,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 url = try HistoricalArchive.append(record)
                 archivedUndecodable = false
                 reason = nil
+                let currentSessionUsable = record.currentSessionUsable
+                return HistoricalArchivePersistenceResult(succeeded: true,
+                                                          archivedUndecodable: archivedUndecodable,
+                                                          currentSessionUsable: currentSessionUsable,
+                                                          reason: reason,
+                                                          persistedPath: Self.documentsRelativePath(for: url),
+                                                          errorDescription: nil)
             case .undecodable(let payload, let persistReason):
                 url = try HistoricalArchive.appendUndecodable(payload: payload, reason: persistReason)
                 archivedUndecodable = true
                 reason = persistReason
+                return HistoricalArchivePersistenceResult(succeeded: true,
+                                                          archivedUndecodable: archivedUndecodable,
+                                                          currentSessionUsable: false,
+                                                          reason: reason,
+                                                          persistedPath: Self.documentsRelativePath(for: url),
+                                                          errorDescription: nil)
             }
-            return HistoricalArchivePersistenceResult(succeeded: true,
-                                                      archivedUndecodable: archivedUndecodable,
-                                                      reason: reason,
-                                                      persistedPath: Self.documentsRelativePath(for: url),
-                                                      errorDescription: nil)
         } catch {
             return HistoricalArchivePersistenceResult(succeeded: false,
                                                       archivedUndecodable: false,
+                                                      currentSessionUsable: false,
                                                       reason: nil,
                                                       persistedPath: HistoricalArchive.relativePath,
                                                       errorDescription: String(describing: error).replacingOccurrences(of: " ", with: "_"))

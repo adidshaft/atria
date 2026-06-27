@@ -2516,6 +2516,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
+            if currentSessionUsableRows > 0 { return "\(currentSessionUsableRows)/\(rows) repair rows" }
             return "\(rows) saved · metric gated"
         }
 
@@ -2524,6 +2525,9 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Archive needs repair." }
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
+            if currentSessionUsableRows > 0 {
+                return "Backfill can repair session continuity; HRV, Recovery and Sleep stay gated until historical RR is validated."
+            }
             return "Backfill archived locally; HRV, Recovery and Sleep stay gated until historical RR is validated."
         }
 
@@ -5005,7 +5009,7 @@ final class SessionStore: ObservableObject {
         } else {
             localBlocked.append("H:historical_download")
         }
-        if historicalArchive.currentSessionUsableRows == 0 {
+        if historicalArchive.metricUsableRows == 0 {
             diagnosticOnly.append("H:historical_metrics_fail_closed")
         }
 
