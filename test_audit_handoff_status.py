@@ -64,6 +64,28 @@ def write_passing_accessibility_performance(path: Path) -> None:
     }), encoding="utf-8")
 
 
+def write_ready_device_pull(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join([
+        "process_status=running",
+        "official_whoop_coexistence_risk=0",
+        "active_journal_final_status=ok",
+        "active_journal_continuity_status=active",
+        "active_journal_rr_status=rr_present",
+        "active_journal_rr_gate_b_local_ready=1",
+        "active_journal_rr_raw_beats=502",
+        "active_journal_rr_corrected_beats=502",
+        "active_journal_rr_kept_percent=100",
+        "active_journal_rr_max_gap_s=2.0",
+        "active_journal_rr_gate_b_local_blocker=none_reference_still_required",
+        "battery_level=75",
+        "battery_charge_status=notCharging",
+        "battery_is_charging=0",
+        "battery_usable=1",
+        "",
+    ]), encoding="utf-8")
+
+
 def current_test_commit(path: Path) -> str:
     for parent in [path.parent, *path.parents]:
         git_dir = parent / ".git"
@@ -291,6 +313,37 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("`session_span`: observed_s=2731.1, required_min_s=28800, ok=False", markdown)
         self.assertIn("`session_coverage`: observed_percent=50, required_min_percent=85, ok=False", markdown)
         self.assertIn("`missing_accessibility_performance_summary`", markdown)
+
+    def test_markdown_summary_includes_latest_device_pull(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            summary.parent.mkdir(parents=True)
+            summary.write_text(json.dumps({
+                "acceptance_status": "fail",
+                "acceptance_blockers": ["session_span"],
+                "thermal_states": ["nominal"],
+                "battery_delta": 0,
+                "latest_recent_session_span_s": 3600.0,
+                "latest_recent_session_coverage_percent": 70.0,
+            }), encoding="utf-8")
+            pull = repo / "tmp/diag/current/pull-summary.txt"
+            write_ready_device_pull(pull)
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+            markdown = audit_handoff_status.markdown_summary(report)
+
+        latest_pull = report["latest_device_pull"]
+        self.assertEqual(latest_pull["status"], "ok")
+        self.assertEqual(latest_pull["active_journal_rr_gate_b_local_ready"], "1")
+        self.assertIn("- Latest device pull: `ok`", markdown)
+        self.assertIn("## Latest Device Pull", markdown)
+        self.assertIn("- Official WHOOP coexistence risk: `0`", markdown)
+        self.assertIn("- Local RR ready: `1`", markdown)
+        self.assertIn("raw `502`, corrected `502`, kept `100%`, max gap `2.0s`", markdown)
+        self.assertIn("- Strap battery: `75%`, charge `notCharging`, charging `0`, usable `1`", markdown)
 
     def test_accessibility_performance_evidence_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -36,6 +36,7 @@ ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
     "dark_mode",
 ]
 DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-performance/summary.json")
+DEFAULT_DEVICE_PULL_ROOT = Path("tmp/diag")
 
 MIN_SCROLL_FPS = 58.0
 MIN_OVERNIGHT_PLANNED_DURATION_S = 10 * 60 * 60
@@ -232,6 +233,72 @@ def accessibility_performance_summary(repo: Path, explicit: Path | None = None) 
     return candidate if candidate.exists() else None
 
 
+def latest_device_pull_summary(repo: Path, explicit: Path | None = None) -> Path | None:
+    if explicit is not None:
+        candidate = explicit if explicit.is_absolute() else repo / explicit
+        return candidate if candidate.exists() else None
+    root = repo / DEFAULT_DEVICE_PULL_ROOT
+    summaries = sorted(root.glob("*/pull-summary.txt"), key=lambda path: path.stat().st_mtime)
+    return summaries[-1] if summaries else None
+
+
+def parse_key_value_summary(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or " " in key:
+            continue
+        values[key] = value.strip()
+    return values
+
+
+def evaluate_latest_device_pull(repo: Path, explicit: Path | None = None) -> dict[str, object]:
+    candidate = latest_device_pull_summary(repo, explicit)
+    if candidate is None:
+        return {
+            "status": "missing",
+            "summary": str(repo / DEFAULT_DEVICE_PULL_ROOT / "*/pull-summary.txt") if explicit is None else str(explicit),
+        }
+
+    values = parse_key_value_summary(candidate)
+    process_running = values.get("process_status") == "running"
+    journal_ok = values.get("active_journal_final_status") == "ok"
+    continuity = values.get("active_journal_continuity_status", "missing")
+    official_whoop_risk = values.get("official_whoop_coexistence_risk", "missing")
+    battery_usable = values.get("battery_usable", "missing")
+
+    healthy = (
+        process_running
+        and journal_ok
+        and continuity == "active"
+        and official_whoop_risk == "0"
+        and battery_usable in {"1", "missing"}
+    )
+
+    return {
+        "status": "ok" if healthy else "attention",
+        "summary": str(candidate),
+        "process_status": values.get("process_status", "missing"),
+        "official_whoop_coexistence_risk": official_whoop_risk,
+        "active_journal_final_status": values.get("active_journal_final_status", "missing"),
+        "active_journal_continuity_status": continuity,
+        "active_journal_rr_status": values.get("active_journal_rr_status", "missing"),
+        "active_journal_rr_gate_b_local_ready": values.get("active_journal_rr_gate_b_local_ready", "missing"),
+        "active_journal_rr_raw_beats": values.get("active_journal_rr_raw_beats", "missing"),
+        "active_journal_rr_corrected_beats": values.get("active_journal_rr_corrected_beats", "missing"),
+        "active_journal_rr_kept_percent": values.get("active_journal_rr_kept_percent", "missing"),
+        "active_journal_rr_max_gap_s": values.get("active_journal_rr_max_gap_s", "missing"),
+        "active_journal_rr_gate_b_local_blocker": values.get("active_journal_rr_gate_b_local_blocker", "missing"),
+        "battery_level": values.get("battery_level", "missing"),
+        "battery_charge_status": values.get("battery_charge_status", "missing"),
+        "battery_is_charging": values.get("battery_is_charging", "missing"),
+        "battery_usable": battery_usable,
+    }
+
+
 def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None) -> dict[str, object]:
     candidate = accessibility_performance_summary(repo, explicit)
     if candidate is None:
@@ -311,6 +378,7 @@ def evaluate(
     *,
     skip_external_reference: bool = False,
     accessibility_performance_path: Path | None = None,
+    device_pull_path: Path | None = None,
 ) -> dict[str, object]:
     missing_local = [str(path) for path in LOCAL_CHECK_FILES if not (repo / path).exists()]
     missing_source = [str(path) for path in REQUIRED_SOURCE_FILES if not (repo / path).exists()]
@@ -325,6 +393,7 @@ def evaluate(
         blockers.append("physical_long_wear_acceptance")
     blockers.extend(str(item) for item in physical.get("audit_blockers", []))
     accessibility_performance = evaluate_accessibility_performance(repo, accessibility_performance_path)
+    latest_device_pull = evaluate_latest_device_pull(repo, device_pull_path)
     if accessibility_performance["status"] != "pass":
         blockers.append("accessibility_performance_proof")
     blockers.extend(str(item) for item in accessibility_performance.get("blockers", []))
@@ -337,6 +406,7 @@ def evaluate(
         "missing_local_files": missing_local,
         "missing_source_files": missing_source,
         "physical_long_wear": physical,
+        "latest_device_pull": latest_device_pull,
         "accessibility_performance": accessibility_performance,
         "external_reference_status": "skipped" if skip_external_reference else "required",
         "blockers": sorted(set(blockers)),
@@ -353,8 +423,9 @@ def format_diagnostic_value(value: object) -> str:
 
 def markdown_summary(report: dict[str, object]) -> str:
     physical = report["physical_long_wear"]
+    latest_device_pull = report["latest_device_pull"]
     accessibility = report["accessibility_performance"]
-    if not isinstance(physical, dict) or not isinstance(accessibility, dict):
+    if not isinstance(physical, dict) or not isinstance(latest_device_pull, dict) or not isinstance(accessibility, dict):
         raise ValueError("audit report did not contain expected sections")
 
     blockers = report.get("blockers", [])
@@ -367,6 +438,7 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Status: `{report['status']}`",
         f"- Local checks: `{report['local_status']}`",
         f"- Physical long-wear: `{physical['status']}` (`{physical['acceptance_status']}`)",
+        f"- Latest device pull: `{latest_device_pull['status']}`",
         f"- Accessibility/performance: `{accessibility['status']}`",
         f"- External reference: `{report['external_reference_status']}`",
         "",
@@ -415,6 +487,20 @@ def markdown_summary(report: dict[str, object]) -> str:
 
     lines.extend([
         "",
+        "## Latest Device Pull",
+        f"- Summary: `{latest_device_pull['summary']}`",
+        f"- Process: `{latest_device_pull.get('process_status', 'missing')}`",
+        f"- Official WHOOP coexistence risk: `{latest_device_pull.get('official_whoop_coexistence_risk', 'missing')}`",
+        f"- Active journal: `{latest_device_pull.get('active_journal_final_status', 'missing')}` / `{latest_device_pull.get('active_journal_continuity_status', 'missing')}`",
+        f"- Active RR: `{latest_device_pull.get('active_journal_rr_status', 'missing')}`",
+        f"- Local RR ready: `{latest_device_pull.get('active_journal_rr_gate_b_local_ready', 'missing')}`",
+        f"- RR beats: raw `{latest_device_pull.get('active_journal_rr_raw_beats', 'missing')}`, corrected `{latest_device_pull.get('active_journal_rr_corrected_beats', 'missing')}`, kept `{latest_device_pull.get('active_journal_rr_kept_percent', 'missing')}%`, max gap `{latest_device_pull.get('active_journal_rr_max_gap_s', 'missing')}s`",
+        f"- RR blocker: `{latest_device_pull.get('active_journal_rr_gate_b_local_blocker', 'missing')}`",
+        f"- Strap battery: `{latest_device_pull.get('battery_level', 'missing')}%`, charge `{latest_device_pull.get('battery_charge_status', 'missing')}`, charging `{latest_device_pull.get('battery_is_charging', 'missing')}`, usable `{latest_device_pull.get('battery_usable', 'missing')}`",
+    ])
+
+    lines.extend([
+        "",
         "## Accessibility / Performance",
         f"- Summary: `{accessibility['summary']}`",
         f"- Device: `{accessibility.get('device', 'missing')}`",
@@ -448,6 +534,12 @@ def main() -> int:
         action="store_true",
         help="Treat external reference validation as deliberately deferred/gated for this audit.",
     )
+    parser.add_argument(
+        "--pull-summary",
+        type=Path,
+        default=None,
+        help="Specific non-disruptive device pull summary to show as current physical state.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Print a Markdown handoff status summary.")
     args = parser.parse_args()
@@ -457,6 +549,7 @@ def main() -> int:
         args.summary,
         skip_external_reference=args.skip_external_reference,
         accessibility_performance_path=args.accessibility_performance,
+        device_pull_path=args.pull_summary,
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
