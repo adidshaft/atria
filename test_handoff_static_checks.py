@@ -1143,9 +1143,12 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_launch_trend_diagnostics_use_snapshot_builder(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
 
         for needle in [
             "func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments)",
+            'arguments.contains("--atria-log-trends")',
+            'arguments.contains("--atria-log-trend-summaries")',
             "let sourceSessions = sessions",
             "DispatchQueue.global(qos: .utility).async",
             "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
@@ -1163,12 +1166,21 @@ class HandoffStaticChecks(unittest.TestCase):
             re.S,
         )
         self.assertIsNotNone(logger)
+        body = logger.group("body")
+        for needle in [
+            'arguments.contains("--atria-log-trends")',
+            'arguments.contains("--atria-log-trend-summaries")',
+        ]:
+            assert_contains(self, body, needle)
         for forbidden in [
             "trendSummaries(rest:",
             "dailyRollups(rest:",
             "detectedActivities(rest:",
         ]:
-            assert_not_contains(self, logger.group("body"), forbidden)
+            assert_not_contains(self, body, forbidden)
+
+        assert_contains(self, app, 'arguments.contains("--atria-log-trend-summaries")')
+        assert_contains(self, app, "store.logTrendSummariesFromLaunchIfRequested(arguments: arguments)")
 
     def test_sleep_history_snapshot_is_cached_and_shown_in_vitals(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
