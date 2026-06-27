@@ -1218,7 +1218,8 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     .frame(maxWidth: .infinity)
                     .frame(height: 170)
                     .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipped()
 
                 HStack {
                     Label("Time", systemImage: "clock")
@@ -1231,6 +1232,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
             .padding(12)
             .atriaInsetCard(tint: .red)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+            .clipped()
             .compositingGroup()
         }
         .buttonStyle(.plain)
