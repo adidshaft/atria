@@ -1290,6 +1290,10 @@ private struct AtriaStandByOverlay: View {
                                        value: String(format: "%.1f", heroStore.state.strain),
                                        detail: heroStore.state.strainConfidence,
                                        tint: .orange)
+                    AtriaStandByMetric(title: "Calories",
+                                       value: coreLiveStore.state.liveActiveCaloriesText,
+                                       detail: coreLiveStore.state.liveActiveCalories == nil ? "Profile needed" : "Active estimate",
+                                       tint: .pink)
                     AtriaStandByMetric(title: "Battery",
                                        value: coreLiveStore.state.batteryText,
                                        detail: coreLiveStore.state.rrContinuityText,
