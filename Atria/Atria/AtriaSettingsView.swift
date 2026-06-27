@@ -48,6 +48,7 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
     @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
     @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AppStorage("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
     @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
     @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
     @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
@@ -145,6 +146,7 @@ struct AtriaSettingsView: View {
             respiratoryYellowDelta,
             skinTemperatureGreenDelta,
             skinTemperatureYellowDelta,
+            Double(bloodOxygenCandidateGoal),
             Double(biologicalAgeGreenOlderDelta),
             Double(biologicalAgeYellowOlderDelta),
             vo2GreenDelta,
@@ -165,6 +167,7 @@ struct AtriaSettingsView: View {
         normalizeRestingTargets()
         normalizeRespiratoryTargets()
         normalizeSkinTemperatureTargets()
+        normalizeBloodOxygenTargets()
         normalizeBiologicalAgeTargets()
         normalizeVO2Targets()
     }
@@ -214,6 +217,10 @@ struct AtriaSettingsView: View {
     private func normalizeSkinTemperatureTargets() {
         skinTemperatureGreenDelta = min(max(skinTemperatureGreenDelta, 0.2), 2.0)
         skinTemperatureYellowDelta = min(max(skinTemperatureYellowDelta, skinTemperatureGreenDelta + 0.1), 4.0)
+    }
+
+    private func normalizeBloodOxygenTargets() {
+        bloodOxygenCandidateGoal = min(max(bloodOxygenCandidateGoal, 2), 120)
     }
 
     private func normalizeBiologicalAgeTargets() {
@@ -523,11 +530,19 @@ struct AtriaSettingsView: View {
                     }
                 }
 
+                Stepper(value: $bloodOxygenCandidateGoal, in: 2...120, step: 1) {
+                    LabeledContent("Oxygen evidence green") {
+                        Text("\(bloodOxygenCandidateGoal) frames")
+                            .monospacedDigit()
+                    }
+                }
+
                 Button {
                     respiratoryGreenDelta = 1.5
                     respiratoryYellowDelta = 3.0
                     skinTemperatureGreenDelta = 0.5
                     skinTemperatureYellowDelta = 1.0
+                    bloodOxygenCandidateGoal = 8
                 } label: {
                     Label("Reset research targets", systemImage: "waveform.path.ecg")
                 }

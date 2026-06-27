@@ -297,6 +297,12 @@ extension Metrics {
                                                             greenDelta: greenDelta,
                                                             yellowDelta: yellowDelta)
     }
+
+    static func bloodOxygenResearchZone(candidateFrames: Int,
+                                        goalFrames: Int = 8) -> AtriaMetricZone? {
+        AtriaAnalytics.TargetZones.bloodOxygenResearch(candidateFrames: candidateFrames,
+                                                       goalFrames: goalFrames)
+    }
 }
 
 struct AtriaMetricZoneInfoSheet: View {
