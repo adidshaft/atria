@@ -2032,6 +2032,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               confidence: hero.loadConfidence,
                               readiness: hero.loadReadinessText,
                               acwrSignal: hero.loadACWRSignalText,
+                              monotony: hero.loadMonotonyText,
                               monotonySignal: hero.loadMonotonySignalText,
                               acwrDetail: hero.loadACWRDetailText,
                               monotonyDetail: hero.loadMonotonyDetailText,
@@ -2539,6 +2540,7 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     let confidence: String
     let readiness: String
     let acwrSignal: String
+    let monotony: String
     let monotonySignal: String
     let acwrDetail: String
     let monotonyDetail: String
@@ -2572,7 +2574,7 @@ private struct AtriaTrainingLoadTile: View, Equatable {
 
             HStack(spacing: 6) {
                 AtriaTrainingSignalChip(title: "ACWR", value: ratio, signal: acwrSignal)
-                AtriaTrainingSignalChip(title: "Monotony", value: monotonySignal, signal: monotonySignal)
+                AtriaTrainingSignalChip(title: "Monotony", value: monotony, signal: monotonySignal)
             }
 
             VStack(alignment: .leading, spacing: 3) {
