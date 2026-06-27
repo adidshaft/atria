@@ -1462,15 +1462,15 @@ private struct AtriaSleepHistoryCard: View, Equatable {
 
     private var emptyEvidenceFootnote: String {
         if snapshot.confirmedCount > 0 { return "Confirmed sleep saved locally." }
-        if snapshot.candidateCount > 0 { return "Sleep saved; confirm it when ready." }
-        return "Wear the strap overnight. Atria shows duration and RHR once saved evidence exists."
+        if snapshot.candidateCount > 0 { return "Sleep or nap evidence saved; confirm it when ready." }
+        return "Wear the strap overnight or during a nap. Atria shows duration and RHR once saved evidence exists."
     }
 
     private var latestEvidenceFootnote: String {
         guard let latest = snapshot.latest else { return "No saved sleep yet." }
         return latest.confirmed
-            ? "\(latest.confidenceText) · confirmed"
-            : "\(latest.confidenceText) · needs confirmation"
+            ? "\(latest.confidenceText) · \(latest.confirmationText)"
+            : "\(latest.confidenceText) · \(latest.confirmationText.lowercased())"
     }
 
     var body: some View {
@@ -1495,7 +1495,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                 footnote: emptyEvidenceFootnote)
             } else {
                 LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
-                    AtriaMetricTile(label: "Latest",
+                    AtriaMetricTile(label: snapshot.latest?.evidenceLabel ?? "Latest",
                                     value: snapshot.latest?.durationText ?? "--",
                                     state: snapshot.latest?.confirmed == true ? .validated : .research,
                                     tint: .cyan,
@@ -1575,7 +1575,7 @@ private struct AtriaSleepNightRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: night.confirmed ? "checkmark.seal.fill" : "bed.double.fill")
+            Image(systemName: night.confirmed ? "checkmark.seal.fill" : (night.isNapEvidence ? "moon.zzz.fill" : "bed.double.fill"))
                 .font(.caption.weight(.bold))
                 .foregroundStyle(night.confirmed ? .green : .teal)
                 .frame(width: 24, height: 24)
@@ -1584,7 +1584,7 @@ private struct AtriaSleepNightRow: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 Text(night.day, format: .dateTime.weekday(.abbreviated).month().day())
                     .font(.caption.weight(.semibold))
-                Text("\(night.durationText) · Eff \(night.sleepEfficiencyText) · RHR \(night.restingHRText) · HRV \(night.hrvText) · Resp \(night.respiratoryRateText) · \(night.confidenceText)")
+                Text("\(night.confirmationText) · \(night.durationText) · Eff \(night.sleepEfficiencyText) · RHR \(night.restingHRText) · HRV \(night.hrvText) · Resp \(night.respiratoryRateText) · \(night.confidenceText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

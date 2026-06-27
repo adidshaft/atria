@@ -9395,6 +9395,21 @@ struct SleepHistorySnapshot: Equatable {
         var confidenceText: String {
             confirmed ? "confirmed" : confidence.replacingOccurrences(of: "_", with: " ")
         }
+
+        var isNapEvidence: Bool {
+            source == "nap_candidate" || (!confirmed && duration <= AggregateSleepCandidate.napMaximumSpan)
+        }
+
+        var evidenceLabel: String {
+            isNapEvidence ? "Nap" : "Sleep"
+        }
+
+        var confirmationText: String {
+            if confirmed {
+                return isNapEvidence ? "Confirmed nap" : "Confirmed sleep"
+            }
+            return isNapEvidence ? "Nap candidate" : "Sleep candidate"
+        }
     }
 
     let nights: [Night]
