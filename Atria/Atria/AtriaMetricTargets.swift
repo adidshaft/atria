@@ -131,6 +131,14 @@ struct AtriaMetricZone: Equatable {
     var warningSystemImage: String? { level.warningSystemImage }
     var showsWarning: Bool { warningSystemImage != nil }
 
+    var sourceLabel: String {
+        let head = targetSummary
+            .components(separatedBy: "·")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return head.isEmpty ? "Target zone" : head
+    }
+
     static let nonMedicalDisclaimer = "General wellness guidance only, not medical advice."
 }
 
@@ -334,6 +342,22 @@ struct AtriaMetricZoneInfoSheet: View {
                         .foregroundStyle(.secondary)
                     Text(zone.targetSummary)
                         .font(.body.weight(.semibold))
+                }
+                .padding(14)
+                .atriaInsetCard(tint: zone.tint)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "checklist.checked")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(zone.tint)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Source")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(zone.sourceLabel)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    Spacer(minLength: 0)
                 }
                 .padding(14)
                 .atriaInsetCard(tint: zone.tint)
