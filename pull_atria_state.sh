@@ -569,6 +569,101 @@ def rr_segments(rr, relative_times=False, max_gap=3.0):
         segments.append(current)
     return segments
 
+def format_duration(seconds):
+    seconds = max(0, float(seconds or 0))
+    minutes = int(round(seconds / 60))
+    hours = minutes // 60
+    remainder = minutes % 60
+    return f"{hours}h{remainder:02d}m" if hours else f"{remainder}m"
+
+def read_confirmed_sleeps_from_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return []
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"confirmed_sleep_preferences_error={type(exc).__name__}:{exc}")
+        return []
+    raw = pref(prefs, "confirmedSleeps.v1")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not isinstance(raw, (bytes, bytearray)):
+        print(f"confirmed_sleep_preferences_error=unexpected_type:{type(raw).__name__}")
+        return []
+    try:
+        decoded = json.loads(bytes(raw).decode("utf-8"))
+    except Exception as exc:
+        print(f"confirmed_sleep_decode_error={type(exc).__name__}:{exc}")
+        return []
+    return decoded if isinstance(decoded, list) else []
+
+def stage_breakdown(segments):
+    totals = {"awake": 0.0, "light": 0.0, "rem": 0.0, "sws": 0.0, "deep": 0.0}
+    for segment in segments or []:
+        stage = str(segment.get("stage", "")).lower()
+        if stage not in totals:
+            continue
+        start = app_time(segment.get("start"))
+        end = app_time(segment.get("end"))
+        if start is None or end is None:
+            continue
+        totals[stage] += max(0.0, (end - start).total_seconds())
+    return totals
+
+def confirmed_sleep_is_nap(record):
+    source = str(record.get("source", ""))
+    duration = float(record.get("duration") or 0)
+    if source in ("manual_nap", "nap_candidate", "hr_only_nap"):
+        return True
+    if source in ("manual_sleep", "aggregate_sleep", "sleep_window", "validated_sleep_window", "overnight_sleep", "sleep_candidate", "single_session_sleep_candidate", "incomplete_fragmented_sleep"):
+        return False
+    return duration <= 3 * 60 * 60
+
+def emit_confirmed_sleep_summary():
+    sleeps = read_confirmed_sleeps_from_preferences()
+    print(f"confirmed_sleep_records={len(sleeps)}")
+    if not sleeps:
+        print("confirmed_sleep_status=missing")
+        return
+    sleeps.sort(key=lambda row: float(row.get("start", 0) or 0), reverse=True)
+    nap_count = sum(1 for row in sleeps if confirmed_sleep_is_nap(row))
+    stage_ready_count = sum(1 for row in sleeps if row.get("stageSegments"))
+    print("confirmed_sleep_status=ok")
+    print(f"confirmed_sleep_naps={nap_count}")
+    print(f"confirmed_sleep_overnights={len(sleeps) - nap_count}")
+    print(f"confirmed_sleep_stage_records={stage_ready_count}")
+    latest_sleep = sleeps[0]
+    start = app_time(latest_sleep.get("start"))
+    end = app_time(latest_sleep.get("end"))
+    segments = latest_sleep.get("stageSegments") or []
+    totals = stage_breakdown(segments)
+    stage_total = sum(totals.values())
+    print(f"latest_confirmed_sleep_kind={'nap' if confirmed_sleep_is_nap(latest_sleep) else 'sleep'}")
+    print(f"latest_confirmed_sleep_source={latest_sleep.get('source', 'missing')}")
+    print(f"latest_confirmed_sleep_confidence={latest_sleep.get('confidence', 'missing')}")
+    print(f"latest_confirmed_sleep_start={start.astimezone(ist).isoformat() if start else 'none'}")
+    print(f"latest_confirmed_sleep_end={end.astimezone(ist).isoformat() if end else 'none'}")
+    print(f"latest_confirmed_sleep_duration_s={int(float(latest_sleep.get('duration') or 0))}")
+    print(f"latest_confirmed_sleep_span_s={int(float(latest_sleep.get('span') or 0))}")
+    print(f"latest_confirmed_sleep_duration_text={format_duration(float(latest_sleep.get('duration') or 0))}")
+    print(f"latest_confirmed_sleep_samples={int(latest_sleep.get('samples') or 0)}")
+    print(f"latest_confirmed_sleep_sessions={int(latest_sleep.get('sessions') or 0)}")
+    print(f"latest_confirmed_sleep_motion_source={latest_sleep.get('motionSource', 'missing')}")
+    print(f"latest_confirmed_sleep_motion_validated={bool_int(latest_sleep.get('motionValidated'))}")
+    print(f"latest_confirmed_sleep_stage_segments={len(segments)}")
+    print(f"latest_confirmed_sleep_stage_total_s={int(stage_total)}")
+    print(f"latest_confirmed_sleep_stage_awake_s={int(totals['awake'])}")
+    print(f"latest_confirmed_sleep_stage_light_s={int(totals['light'])}")
+    print(f"latest_confirmed_sleep_stage_rem_s={int(totals['rem'])}")
+    print(f"latest_confirmed_sleep_stage_sws_s={int(totals['sws'])}")
+    print(f"latest_confirmed_sleep_stage_deep_s={int(totals['deep'])}")
+
+emit_confirmed_sleep_summary()
+
 sessions_path = evidence / "sessions.json"
 if sessions_path.exists():
     try:
@@ -590,6 +685,67 @@ if sessions_path.exists():
         print(f"sessions_count={len(sessions)}")
         print(f"phone_motion_sessions={len(phone_sessions)}")
         print(f"phone_motion_nonzero_sessions={len(phone_nonzero_sessions)}")
+        sleep_reasons = {}
+        sleep_like_windows = []
+        nap_like_windows = []
+        for session in sessions:
+            reason = session.get("sleepWakeResearchReason")
+            if reason:
+                sleep_reasons[str(reason)] = sleep_reasons.get(str(reason), 0) + 1
+            start_value = session.get("start", 0)
+            end_value = session.get("end", start_value)
+            try:
+                duration = max(0.0, float(end_value) - float(start_value))
+            except Exception:
+                duration = 0.0
+            points = session.get("points") or []
+            bpms = [int(point.get("bpm", 0)) for point in points if point.get("bpm") is not None and int(point.get("bpm", 0)) > 0]
+            average_bpm = sum(bpms) / len(bpms) if bpms else 0
+            candidate = {
+                "label": session.get("label", ""),
+                "start": start_value,
+                "end": end_value,
+                "duration": duration,
+                "points": len(points),
+                "rr": len(session.get("rrPoints") or []),
+                "average_bpm": average_bpm,
+                "reason": reason or "missing",
+            }
+            if duration >= 3 * 60 * 60 and 0 < average_bpm <= 78:
+                sleep_like_windows.append(candidate)
+            elif 20 * 60 <= duration <= 3 * 60 * 60 and 0 < average_bpm <= 82:
+                nap_like_windows.append(candidate)
+        sleep_like_windows.sort(key=lambda row: (row["duration"], row["points"]), reverse=True)
+        nap_like_windows.sort(key=lambda row: (row["duration"], row["points"]), reverse=True)
+        print(f"sleep_research_reason_counts={','.join(f'{key}:{sleep_reasons[key]}' for key in sorted(sleep_reasons)) if sleep_reasons else 'none'}")
+        print(f"sleep_like_raw_windows={len(sleep_like_windows)}")
+        print(f"nap_like_raw_windows={len(nap_like_windows)}")
+        best_sleep_like = sleep_like_windows[0] if sleep_like_windows else None
+        best_nap_like = nap_like_windows[0] if nap_like_windows else None
+        if best_sleep_like:
+            start_sleep_like = app_time(best_sleep_like["start"]).astimezone(ist)
+            end_sleep_like = app_time(best_sleep_like["end"]).astimezone(ist)
+            print(f"best_sleep_like_raw_start={start_sleep_like.isoformat()}")
+            print(f"best_sleep_like_raw_end={end_sleep_like.isoformat()}")
+            print(f"best_sleep_like_raw_duration_s={int(best_sleep_like['duration'])}")
+            print(f"best_sleep_like_raw_avg_hr={int(round(best_sleep_like['average_bpm']))}")
+            print(f"best_sleep_like_raw_samples={best_sleep_like['points']}")
+            print(f"best_sleep_like_raw_rr_values={best_sleep_like['rr']}")
+            print(f"best_sleep_like_raw_reason={best_sleep_like['reason']}")
+        else:
+            print("best_sleep_like_raw_status=missing")
+        if best_nap_like:
+            start_nap_like = app_time(best_nap_like["start"]).astimezone(ist)
+            end_nap_like = app_time(best_nap_like["end"]).astimezone(ist)
+            print(f"best_nap_like_raw_start={start_nap_like.isoformat()}")
+            print(f"best_nap_like_raw_end={end_nap_like.isoformat()}")
+            print(f"best_nap_like_raw_duration_s={int(best_nap_like['duration'])}")
+            print(f"best_nap_like_raw_avg_hr={int(round(best_nap_like['average_bpm']))}")
+            print(f"best_nap_like_raw_samples={best_nap_like['points']}")
+            print(f"best_nap_like_raw_rr_values={best_nap_like['rr']}")
+            print(f"best_nap_like_raw_reason={best_nap_like['reason']}")
+        else:
+            print("best_nap_like_raw_status=missing")
         best_rr = None
         best_rr_segment = None
         for session in sessions:

@@ -4779,6 +4779,33 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreaterEqual(parse_args, 0)
         self.assertGreater(validate_device, parse_args)
 
+    def test_non_disruptive_pull_reports_sleep_readiness(self):
+        script = source(ROOT / "pull_atria_state.sh")
+
+        for needle in [
+            "def read_confirmed_sleeps_from_preferences():",
+            "pref(prefs, \"confirmedSleeps.v1\")",
+            "def emit_confirmed_sleep_summary():",
+            "confirmed_sleep_records=",
+            "confirmed_sleep_naps=",
+            "confirmed_sleep_overnights=",
+            "confirmed_sleep_stage_records=",
+            "latest_confirmed_sleep_kind=",
+            "latest_confirmed_sleep_duration_s=",
+            "latest_confirmed_sleep_span_s=",
+            "latest_confirmed_sleep_stage_total_s=",
+            "latest_confirmed_sleep_stage_awake_s=",
+            "latest_confirmed_sleep_stage_light_s=",
+            "latest_confirmed_sleep_stage_rem_s=",
+            "latest_confirmed_sleep_stage_sws_s=",
+            "latest_confirmed_sleep_stage_deep_s=",
+            "sleep_research_reason_counts=",
+            "sleep_like_raw_windows=",
+            "nap_like_raw_windows=",
+            "best_nap_like_raw_duration_s=",
+        ]:
+            assert_contains(self, script, needle)
+
     def test_unsavable_active_journals_are_cleared_during_recovery(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
