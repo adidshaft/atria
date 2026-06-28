@@ -1523,10 +1523,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based",
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan),
-                                  zone: sleepEfficiencyZone)
-                .accessibilityLabel(sleepHistory.latest?.sleepEfficiency == nil
-                                    ? "Sleep efficiency is building from saved sleep duration"
-                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "--")")
+                                  zone: sleepEfficiencyZone,
+                                  accessibilityDetail: sleepHistory.latest?.sleepEfficiency == nil
+                                    ? "Sleep efficiency is building from saved sleep duration."
+                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "--").")
         case .rhr:
             AtriaGlanceMetricCard(title: "RHR",
                                   value: metricDisplayValue(hero.restingHeartRateText),
@@ -1540,54 +1540,54 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep research" : "Research",
                                   systemImage: metric.systemImage,
                                   tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal),
-                                  zone: respiratoryRateZone)
-                .accessibilityLabel(sleepHistory.latest?.respiratoryRate == nil
-                                    ? "Respiratory rate is building from sleep-only evidence"
-                                    : "Respiratory rate research sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute")
+                                  zone: respiratoryRateZone,
+                                  accessibilityDetail: sleepHistory.latest?.respiratoryRate == nil
+                                    ? "Respiratory rate is building from sleep-only evidence."
+                                    : "Respiratory rate research sleep-only estimate \(sleepHistory.latest?.respiratoryRateText ?? "--") breaths per minute.")
         case .steps:
             AtriaGlanceMetricCard(title: "Steps",
                                   value: live.phoneStepsText,
                                   detail: live.phoneMotionDetailText,
                                   systemImage: metric.systemImage,
                                   tint: stepsZone?.tint ?? .green,
-                                  zone: stepsZone)
-                .accessibilityLabel("Steps counted by iPhone motion \(live.phoneStepsText), \(live.phoneMotionDetailText)")
+                                  zone: stepsZone,
+                                  accessibilityDetail: "Steps counted by iPhone motion \(live.phoneStepsText), \(live.phoneMotionDetailText).")
         case .strapSteps:
             AtriaGlanceMetricCard(title: "Strap steps",
                                   value: sensorSummary.strapStepText,
                                   detail: sensorSummary.strapStepCount > 0 ? sensorSummary.agreementText : "Research",
                                   systemImage: metric.systemImage,
                                   tint: strapStepsZone?.tint ?? (sensorSummary.strapStepCount > 0 ? .green : .orange),
-                                  zone: strapStepsZone)
-                .accessibilityLabel(sensorSummary.strapStepCount > 0
-                                    ? "Strap step research \(sensorSummary.strapStepText), agreement \(sensorSummary.agreementText), goal \(stepsGoal) steps"
-                                    : "Strap step research is waiting for validated motion evidence")
+                                  zone: strapStepsZone,
+                                  accessibilityDetail: sensorSummary.strapStepCount > 0
+                                    ? "Strap step research \(sensorSummary.strapStepText), agreement \(sensorSummary.agreementText), goal \(stepsGoal) steps."
+                                    : "Strap step research is waiting for validated motion evidence.")
         case .calories:
             AtriaGlanceMetricCard(title: "Calories",
                                   value: live.liveActiveCaloriesText,
                                   detail: live.liveActiveCalories == nil ? "Needs profile" : "Estimate",
                                   systemImage: metric.systemImage,
                                   tint: activeCaloriesZone?.tint ?? .orange,
-                                  zone: activeCaloriesZone)
-                .accessibilityLabel("Active calories estimate \(live.liveActiveCaloriesText)")
+                                  zone: activeCaloriesZone,
+                                  accessibilityDetail: "Active calories estimate \(live.liveActiveCaloriesText).")
         case .vo2max:
             AtriaGlanceMetricCard(title: "VO2max",
                                   value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
                                   detail: vo2MaxEstimate.value == nil ? "Building" : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
                                   tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
-                                  zone: vo2TrendZone)
-                .accessibilityLabel(vo2MaxEstimate.value == nil
-                                    ? "VO2max building from resting baseline and measured HR max"
-                                    : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail)")
+                                  zone: vo2TrendZone,
+                                  accessibilityDetail: vo2MaxEstimate.value == nil
+                                    ? "VO2max building from resting baseline and measured HR max."
+                                    : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail).")
         case .bioAge:
             AtriaGlanceMetricCard(title: "Body age",
                                   value: biologicalAgeSummary.valueText,
                                   detail: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building baseline",
                                   systemImage: metric.systemImage,
                                   tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange),
-                                  zone: biologicalAgeZone)
-                .accessibilityLabel(biologicalAgeSummary.isReady
+                                  zone: biologicalAgeZone,
+                                  accessibilityDetail: biologicalAgeSummary.isReady
                                     ? "Biological age estimate \(biologicalAgeSummary.valueText), \(biologicalAgeSummary.detailText). \(biologicalAgeSummary.footnote)"
                                     : "Building your body-age baseline. \(biologicalAgeSummary.blockerText). \(biologicalAgeSummary.footnote)")
         case .bloodOxygen:
@@ -1596,20 +1596,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: sensorSummary.spo2CandidateFrames > 0 ? "\(sensorSummary.spo2CandidateFrames) candidate frames" : "Sleep research",
                                   systemImage: metric.systemImage,
                                   tint: bloodOxygenResearchZone?.tint ?? (sensorSummary.spo2CandidateFrames > 0 ? .blue : .orange),
-                                  zone: bloodOxygenResearchZone)
-                .accessibilityLabel(sensorSummary.spo2CandidateFrames > 0
-                                    ? "Blood oxygen research has \(sensorSummary.spo2CandidateFrames) candidate frames, not an SpO2 reading"
-                                    : "Blood oxygen research is building and does not show an SpO2 percentage")
+                                  zone: bloodOxygenResearchZone,
+                                  accessibilityDetail: sensorSummary.spo2CandidateFrames > 0
+                                    ? "Blood oxygen research has \(sensorSummary.spo2CandidateFrames) candidate frames, not an SpO2 reading."
+                                    : "Blood oxygen research is building and does not show an SpO2 percentage.")
         case .bodyTemp:
             AtriaGlanceMetricCard(title: "Body temp",
                                   value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : "--",
                                   detail: sensorSummary.skinTemperatureDeviation.detailText,
                                   systemImage: metric.systemImage,
                                   tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange),
-                                  zone: skinTemperatureDeviationZone)
-                .accessibilityLabel(sensorSummary.skinTemperatureDeviation.isReady
-                                    ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)"
-                                    : "Body temperature research is building a sleep baseline and does not show an absolute temperature")
+                                  zone: skinTemperatureDeviationZone,
+                                  accessibilityDetail: sensorSummary.skinTemperatureDeviation.isReady
+                                    ? "Body temperature research relative deviation \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)."
+                                    : "Body temperature research is building a sleep baseline and does not show an absolute temperature.")
         case .trend:
             trendCard
         case .insights:
@@ -2112,6 +2112,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     var ringFraction: Double? = nil
     var sparklineValues: [Int]? = nil
     var zone: AtriaMetricZone? = nil
+    var accessibilityDetail: String? = nil
     @State private var showingZoneInfo = false
 
     static func == (lhs: AtriaGlanceMetricCard, rhs: AtriaGlanceMetricCard) -> Bool {
@@ -2123,6 +2124,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             && lhs.ringFraction == rhs.ringFraction
             && lhs.sparklineValues == rhs.sparklineValues
             && lhs.zone == rhs.zone
+            && lhs.accessibilityDetail == rhs.accessibilityDetail
     }
 
     static var placeholder: some View {
@@ -2146,6 +2148,10 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 
     private var accessibilityText: String {
         var parts = ["\(title) \(displayValue)", detail]
+        if let accessibilityDetail,
+           !accessibilityDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(accessibilityDetail)
+        }
         if let zone, zone.showsWarning {
             parts.append(zone.level.label)
             parts.append(zone.targetSummary)
