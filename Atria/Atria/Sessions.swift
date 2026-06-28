@@ -2526,7 +2526,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            if currentSessionUsableRows > 0 { return "Metrics gated" }
+            if currentSessionUsableRows > 0 { return "Continuity repair" }
             return "Saved · metrics gated"
         }
 
@@ -2543,6 +2543,7 @@ final class SessionStore: ObservableObject {
 
         var metricGateText: String {
             if metricReady { return "Metric-ready" }
+            if currentSessionUsableRows > 0 { return "Continuity only" }
             if hasArchiveRows { return "Metrics gated" }
             if !parseOK { return "Repair needed" }
             return "Waiting"

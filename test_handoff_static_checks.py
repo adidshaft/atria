@@ -447,6 +447,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "historical_archive_metric_usable_rows=",
             "historical_archive_current_session_usable_rows=",
             "historical_archive_metric_ready=",
+            "historical_archive_metric_gate=",
+            "historical_archive_user_action=",
             "archive_persisted_fail_closed_rows",
         ]:
             assert_contains(self, pull_script, needle)
@@ -1469,7 +1471,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "DispatchQueue.global(qos: .utility).async",
             "HistoricalArchive.diagnostics()",
             "return \"Saved\"",
-            "return \"Metrics gated\"",
+            "return \"Continuity repair\"",
             "return \"Saved · metrics gated\"",
             "var userFootnoteText: String",
             "\\(currentSessionUsableRows)/\\(rows) backfill rows saved for continuity repair. HRV, Recovery and Sleep stay gated until historical RR is validated.",
@@ -1477,6 +1479,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"\\(metricUsableRows)/\\(rows) rows metric-ready.\"",
             "var metricGateText: String",
             "if metricReady { return \"Metric-ready\" }",
+            "if currentSessionUsableRows > 0 { return \"Continuity only\" }",
             "if hasArchiveRows { return \"Metrics gated\" }",
             "metric_ready=%d fail_closed=%d status=%@ gate=%@ detail=%@",
             "status.hasArchiveRows && !status.metricReady ? 1 : 0",
