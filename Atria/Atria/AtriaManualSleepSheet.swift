@@ -73,7 +73,7 @@ struct AtriaManualSleepSheet: View {
                     typeCard
                     timeCard
                     durationCard
-                    stagesCard
+                    stageEvidenceCard
                     footnoteCard
                 }
                 .padding(20)
@@ -166,25 +166,24 @@ struct AtriaManualSleepSheet: View {
         .manualSleepCard(tint: canSave ? .green : .orange)
     }
 
-    private var stagesCard: some View {
+    private var stageEvidenceCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaManualSleepCardHeader(title: "Stages",
-                                       detail: isNap ? "Estimated nap preview." : "Estimated sleep preview.",
-                                       systemImage: "waveform.path.ecg",
+                                       detail: "Manual entries save the window only.",
+                                       systemImage: "checklist.unchecked",
                                        tint: .purple)
 
-            ForEach(SleepStageKind.allCases) { stage in
-                HStack(spacing: 10) {
-                    Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
-                        .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
-                        .font(.subheadline.weight(.semibold))
-                    Spacer(minLength: 8)
-                    Text(stagePreviewText(stage))
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline.monospacedDigit())
-                }
-                .accessibilityLabel("\(stage.label) \(stagePreviewText(stage))")
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "waveform.path.ecg")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                Text("Awake, Light, REM, SWS, and Deep stay blank until Atria has sensor-derived stage evidence. This manual \(isNap ? "nap" : "sleep") will not fabricate stage bars.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("No manual stage estimate. Sleep stages stay blank until sensor-derived stage evidence exists.")
         }
         .manualSleepCard(tint: .purple)
     }
@@ -193,7 +192,7 @@ struct AtriaManualSleepSheet: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle.fill")
                 .foregroundStyle(.secondary)
-            Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Stage bars are an editable estimate from the manual window, not sensor-validated sleep staging.")
+            Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Manual entries improve duration, nap, and sleep-history continuity; sleep stages require sensor evidence.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -206,21 +205,6 @@ struct AtriaManualSleepSheet: View {
         isNap = inferredIsNap
     }
 
-    private func stagePreviewText(_ stage: SleepStageKind) -> String {
-        let fraction: Double
-        switch (isNap, stage) {
-        case (_, .awake): fraction = isNap ? 0.06 : 0.08
-        case (true, .light): fraction = 0.68
-        case (false, .light): fraction = 0.47
-        case (true, .rem): fraction = 0.08
-        case (false, .rem): fraction = 0.17
-        case (true, .sws): fraction = 0.12
-        case (false, .sws): fraction = 0.16
-        case (true, .deep): fraction = 0.06
-        case (false, .deep): fraction = 0.12
-        }
-        return SleepHistorySnapshot.formatDuration(duration * fraction)
-    }
 }
 
 private struct AtriaManualSleepCardHeader: View {
