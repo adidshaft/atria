@@ -1506,6 +1506,15 @@ final class AtriaHomeModel {
             case .full: return "Full"
             }
         }
+        var batteryHeaderChargeText: String {
+            guard batteryLevel >= 0 else { return "--" }
+            switch batteryChargeStatus {
+            case .levelOnly: return "--"
+            case .charging: return "Chg"
+            case .notCharging: return "No chg"
+            case .full: return "Full"
+            }
+        }
         var batteryStatusSummaryText: String {
             guard batteryLevel >= 0 else { return "Waiting" }
             return "\(batteryText) · \(batteryChargeCompactText)"
@@ -3138,6 +3147,7 @@ private struct AtriaHomeTopChrome: View {
 
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 44
+    static let batteryWidth: CGFloat = 68
     static let statusMinWidth: CGFloat = 152
     static let iconSpacing: CGFloat = 6
 }
@@ -3154,14 +3164,22 @@ private struct AtriaHeaderBatteryIndicator: View {
     }
 
     var body: some View {
-        Image(systemName: liveStore.state.batterySymbol)
-            .font(.footnote.weight(.semibold))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(tint)
-            .frame(width: AtriaHeaderControlMetrics.height,
-                   height: AtriaHeaderControlMetrics.height)
-            .atriaChromeCapsule(tint: tint)
-            .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
+        HStack(spacing: 4) {
+            Image(systemName: liveStore.state.batterySymbol)
+                .font(.footnote.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .imageScale(.small)
+
+            Text(liveStore.state.batteryHeaderChargeText)
+                .font(.caption2.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+        }
+        .foregroundStyle(tint)
+        .frame(width: AtriaHeaderControlMetrics.batteryWidth,
+               height: AtriaHeaderControlMetrics.height)
+        .atriaChromeCapsule(tint: tint)
+        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
     }
 }
 
