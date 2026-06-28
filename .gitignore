@@ -35,6 +35,7 @@ GOAL.md
 
 # Local physical-device diagnostics and generated screenshots.
 tmp/
+artifacts/atria-state-*/
 
 # Local design experiments; curated public assets live in assets/.
 design/
