@@ -1162,25 +1162,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWidgetManager) {
-            AtriaGlanceWidgetManagerSheet(visibleMetrics: visibleMetrics,
-                                          hiddenMetrics: hiddenMetrics,
+            AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics,
                                           onEditWidgets: {
                                               withAnimation(.snappy(duration: 0.2)) {
                                                   isEditingGlance = true
                                               }
                                           },
-                                          onHideMetric: { metric in
-                                              withAnimation(.snappy(duration: 0.2)) {
-                                                  onHideMetric(metric)
-                                                  if visibleMetrics.count <= 1 {
-                                                      isEditingGlance = false
-                                                  }
-                                              }
-                                          },
                                           onShowMetric: { metric in
                                               withAnimation(.snappy(duration: 0.2)) {
                                                   onShowMetric(metric)
-                                                  isEditingGlance = false
                                               }
                                           })
                 .presentationDetents([.medium, .large])
@@ -1213,8 +1203,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .frame(width: 20, height: 20)
             }
             .atriaGlassIconAction(tint: .secondary, size: 38)
-            .accessibilityLabel("Manage Today widgets")
-            .accessibilityHint("Opens added and hidden Today widgets so you can remove or add cards.")
+            .accessibilityLabel("Add Today widget")
+            .accessibilityHint("Opens hidden Today widgets you can add. Long press a card to remove or resize it.")
         }
     }
 
@@ -1969,31 +1959,14 @@ private struct AtriaConditionalStringDraggable: ViewModifier {
 private struct AtriaGlanceWidgetManagerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    let visibleMetrics: [AtriaTodayMetric]
     let hiddenMetrics: [AtriaTodayMetric]
     let onEditWidgets: () -> Void
-    let onHideMetric: (AtriaTodayMetric) -> Void
     let onShowMetric: (AtriaTodayMetric) -> Void
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !visibleMetrics.isEmpty {
-                        managerSection(title: "Added widgets",
-                                       subtitle: "Remove cards you do not want in Today at a glance.") {
-                            ForEach(visibleMetrics) { metric in
-                                managerRow(metric: metric,
-                                           actionTitle: "Remove",
-                                           actionImage: "xmark.circle.fill",
-                                           tint: .red,
-                                           role: .destructive) {
-                                    onHideMetric(metric)
-                                }
-                            }
-                        }
-                    }
-
                     managerSection(title: "Add widget",
                                    subtitle: hiddenMetrics.isEmpty ? "All glance widgets are already visible." : "Bring hidden cards back to Today at a glance.") {
                         if hiddenMetrics.isEmpty {
@@ -2025,11 +1998,11 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(AtriaCardActionButtonStyle(tint: .secondary))
-                    .accessibilityHint("Shows remove and resize controls directly on Today widgets.")
+                    .accessibilityHint("Shows the remove, resize, and target controls directly on Today widgets.")
                 }
                 .padding(16)
             }
-            .navigationTitle("Today widgets")
+            .navigationTitle("Add widget")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
