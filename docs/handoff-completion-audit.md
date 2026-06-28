@@ -21,6 +21,78 @@ validation that is intentionally skipped for now:
   for this single-strap pass and remains gated/unvalidated by design. Personal
   baseline is the terminal end-user HRV/recovery state for this handoff.
 
+## Handoff 21 Current State (2026-06-28)
+
+Status: **mostly implemented, not final-complete**
+
+`docs/21-codex-customization-and-metrics-handoff.md` is now substantially covered
+by local source and physical-device evidence, but it is not marked complete
+because historical RR promotion remains intentionally fail-closed without
+external/reference validation, and a final measured accessibility/performance pass
+has not been captured.
+
+Evidence present:
+
+- Overview glance customization is implemented with persisted order,
+  show/hide membership, long-press edit mode, drag/drop reordering, per-card
+  remove controls, per-card compact/wide sizing, and a plus-sheet for adding
+  hidden widgets back.
+- Vitals section ordering is implemented separately from Overview, with coarse
+  section-level reordering only.
+- Top-left status and top-right actions use uniform header sizing without the
+  previous nested pill wrapper. The top status chip derives "Live" from real
+  pulse evidence instead of BLE connection alone.
+- Contact/status copy no longer tells users to clean the strap while heart rate
+  is live. Poor beat-to-beat quality with live HR is surfaced as HRV settling.
+- Connection diagnostics cover Bluetooth off, Bluetooth permission, low strap
+  battery, range/pending reconnect, fit/no-pulse, stale pairing suspicion, and
+  official WHOOP coexistence risk.
+- Official WHOOP coexistence is detected when technically available and is
+  surfaced as guidance, not silent degradation. Atria cannot kill another iOS app
+  from the sandbox; user-facing copy explains the close/uninstall/forget-pairing
+  path.
+- Range-loss backfill stays local-first and fail-closed for metrics. Current
+  pulls show the archive is persisted for continuity repair while HRV, Recovery,
+  and Sleep remain gated until historical RR is validated.
+- The missed-data banner remains visible while reconnecting/searching and now
+  says saved data is protected/backfill is ready instead of implying data loss.
+- Sleep history supports confirmed sleep and nap records, auto nap/sleep
+  distinction, manual sleep/nap entry, sleep debt/consistency, heat strip,
+  stage-building states, and AWAKE/LIGHT/REM/SWS/DEEP labels without fabricating
+  unavailable stages.
+- Heart-rate timeline includes axes, clipping, tap-to-inspect, full-screen
+  explorer, and zoom.
+- Biological age is present as an estimate with baseline gating, a younger/older
+  delta, factor breakdown, and non-medical labeling.
+- Metric target zones are implemented with editable targets from the card and
+  Settings, reset-to-recommended actions, and non-medical guidance.
+- The handoff-21 static guard suite is green at 84 checks and pins the major
+  implementation contracts above.
+
+Most recent physical-device evidence from non-disruptive pulls:
+
+- Atria process running on Aman's iPhone.
+- Official WHOOP process/widget not listed.
+- Saved sessions present.
+- Historical archive present with `historical_archive_rows=46245`,
+  `historical_archive_current_session_usable_rows=45306`,
+  and `historical_archive_metric_ready=0`.
+- Metric promotion blocker remains
+  `historical_archive_metric_promotion_blocker=continuity_repair_only`.
+- Confirmed sleep records exist: `confirmed_sleep_records=2`, including one nap
+  and one overnight record, with zero validated stage records.
+- Post-install active journal recovered to fresh/active with RR present.
+
+Remaining handoff-21 blockers:
+
+- Historical archive RR layout must be externally/reference validated before
+  backfilled history can feed HRV, Recovery, or Sleep metrics.
+- Final physical accessibility/performance evidence is still pending: light/dark,
+  Reduce Transparency, Increase Contrast, Reduce Motion, and measured scroll
+  performance.
+- A final requirement-by-requirement audit should be run after those checks before
+  calling the goal complete.
+
 ## Local Implementation Evidence
 
 ### Pillar 1: SwiftUI / Liquid Glass UI
