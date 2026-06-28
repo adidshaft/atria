@@ -849,6 +849,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let offlineSyncLiveAcceptedHRProtectionWindow: TimeInterval = 45
     private let rangeLossBackfillRetryInterval: TimeInterval = 10 * 60
     private var rangeLossBackfillTask: Task<Void, Never>?
+    private var offlineHistoricalSyncStartRows = 0
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
@@ -1720,6 +1721,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func startOfflineHistoricalSync(reason: String, force: Bool) {
         flushActiveSessionJournal(reason: "offline_sync_preflight_\(reason)")
+        offlineHistoricalSyncStartRows = historicalArchiveRows
         offlineHistoricalSyncInProgress = true
         historyOnlyProbeEnabled = true
         historyOnlyProbeMode = true
@@ -1748,6 +1750,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let peripheral {
             guard force || !shouldProtectLiveStreamForOfflineSync(now: Date()) else {
                 offlineHistoricalSyncInProgress = false
+                offlineHistoricalSyncStartRows = historicalArchiveRows
                 historyOnlyProbeEnabled = false
                 historyOnlyProbeMode = false
                 historyOnlyProbeArmed = false
@@ -1786,6 +1789,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func finishOfflineHistoricalSync(reason: String) {
         let rows = historicalArchiveRows
+        let newRows = max(0, rows - offlineHistoricalSyncStartRows)
         historyOnlyProbeEnabled = false
         historyOnlyProbeMode = false
         historyOnlyProbeArmed = false
@@ -1794,16 +1798,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historySkipDataRangeRequest = false
         probeCommandMode = .withoutResponse
         offlineHistoricalSyncInProgress = false
+        offlineHistoricalSyncStartRows = rows
         UserDefaults.standard.set(rows > 0 ? "archived" : "no_rows", forKey: OfflineSyncDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d failures=%d action=return_standard_hr metrics_fail_closed=1",
+        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d new_rows=%d failures=%d action=return_standard_hr metrics_fail_closed=1",
               rows > 0 ? "archived" : "no_rows",
               reason,
               rows,
+              newRows,
               historicalArchiveWriteFailures)
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
-            if rows > 0 {
+            if newRows > 0 {
                 defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
                 defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
                 assignIfChanged(\.rangeLossBackfillPending, false)
