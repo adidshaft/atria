@@ -3985,6 +3985,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "14 fresh RHR baseline nights",
             "baseline.hasTrustedHRVBaseline()",
             "14 fresh HRV baseline nights",
+            "let hrvReady = baseline.hrvSampleCount >= PersonalBaseline.trustedMinimumSamples",
+            "hrv_required=%d",
+            "PersonalBaseline.trustedMinimumSamples,\n              hrvReady ? 1 : 0",
+            "latestReferenceValidatedHRV != nil && baseline.hrvSampleCount >= PersonalBaseline.trustedMinimumSamples",
+            "validated_hrv_baseline_\\(baseline.hrvSampleCount)_of_\\(PersonalBaseline.trustedMinimumSamples)",
+            "let hrvBaselineReady = baseline.hrvSampleCount >= PersonalBaseline.trustedMinimumSamples",
+            "validated_hrv_baseline=\\(baseline.hrvSampleCount)/\\(PersonalBaseline.trustedMinimumSamples)",
+            "hrv_baseline_samples=\\(baseline.hrvSampleCount)/\\(PersonalBaseline.trustedMinimumSamples)",
+            "validated_hrv_baseline_\\(hrvBaselineSamples)_of_\\(PersonalBaseline.trustedMinimumSamples)",
+            "personal_baseline_hrv_\\(hrvBaselineSamples)_of_\\(PersonalBaseline.trustedMinimumSamples)",
+            "hrvBaselineSamples < PersonalBaseline.trustedMinimumSamples",
             "let sleepNights = sleepHistorySnapshot.nights\n            .filter { !$0.isNapEvidence }\n            .prefix(14)",
             "if sleepNights.count < 3",
             "3 sleep night records",
@@ -4010,6 +4021,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, sessions, "activity load baseline")
         assert_not_contains(self, sessions, "guard let restingHR = baseline.restingInt, baseline.restingSampleCount >= 7 else")
         assert_not_contains(self, sessions, "guard let hrv = baseline.hrvInt, baseline.hrvSampleCount >= 7 else")
+        assert_not_contains(self, sessions, "baseline.hrvSampleCount >= 7")
+        assert_not_contains(self, sessions, "hrvBaselineSamples < 7")
+        assert_not_contains(self, sessions, "hrv_required=7")
+        assert_not_contains(self, sessions, "_of_7")
 
         for needle in [
             "enum BiologicalAge",
