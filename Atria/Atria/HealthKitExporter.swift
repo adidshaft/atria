@@ -742,7 +742,7 @@ final class HealthKitExporter {
             }
             if !vo2MaxPlanned,
                profile.maxHRSource == .measured,
-               restingBaselineSamples >= 7,
+               restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples,
                snapshot?.vo2MaxExported != true {
                 vo2MaxSamples += 1
                 vo2MaxPlanned = true
@@ -904,7 +904,7 @@ final class HealthKitExporter {
                     && (activeEnergyKilocalories(for: session, rest: rest, profile: $0) ?? 0) > 0
                 } ?? false,
                 vo2MaxExported: profile.map {
-                    $0.maxHRSource == .measured && restingBaselineSamples >= 7 && rest > 0 && maxHR > rest
+                    $0.maxHRSource == .measured && restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples && rest > 0 && maxHR > rest
                 } ?? false,
                 workoutExported: readiness.ready,
                 end: session.end.timeIntervalSince1970
@@ -1944,7 +1944,7 @@ final class HealthKitExporter {
         if snapshot?.vo2MaxExported != true,
            let profile,
            profile.maxHRSource == .measured,
-           restingBaselineSamples >= 7,
+           restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples,
            rest > 0,
            maxHR > rest {
             let estimate = min(max(15.3 * Double(maxHR) / Double(rest), 20), 80)
