@@ -6005,6 +6005,80 @@ final class SessionStore: ObservableObject {
         confirmBestSleepCandidate(rest: rest, source: source)
     }
 
+    private func autoConfirmStrongSleepCandidates(reason: String, limit: Int = 2) {
+        let rest = baseline.restingInt ?? 60
+        let candidates = aggregateSleepCandidates(rest: rest, calendar: .current)
+            .filter(Self.isStrongAutoConfirmableSleepCandidate)
+        guard !candidates.isEmpty else {
+            AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=no_strong_candidate source=%@ candidates=0",
+                          reason)
+            return
+        }
+
+        var existing = cachedConfirmedSleeps
+        var saved = 0
+        for candidate in candidates.prefix(limit) {
+            let sleepSource = candidate.kind == "nap_candidate" ? "auto_nap" : "auto_sleep"
+            let id = confirmedSleepID(start: candidate.start, end: candidate.end, source: sleepSource)
+            if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
+                continue
+            }
+
+            let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                                start: candidate.start,
+                                                                end: candidate.end,
+                                                                restingHR: candidate.restingHR,
+                                                                isNap: candidate.kind == "nap_candidate",
+                                                                motionValidated: candidate.motionEvidenceValidated)
+            existing.append(UserConfirmedSleep(id: id,
+                                               createdAt: Date(),
+                                               start: candidate.start,
+                                               end: candidate.end,
+                                               source: sleepSource,
+                                               confidence: "auto_motion_validated",
+                                               sessions: candidate.sessions,
+                                               samples: candidate.samples,
+                                               avgHR: candidate.avgHR,
+                                               peakHR: candidate.peakHR,
+                                               restingHR: candidate.restingHR,
+                                               duration: candidate.duration,
+                                               span: candidate.span,
+                                               reason: "\(reason); \(candidate.reason)",
+                                               motionSource: candidate.motionEvidenceSource,
+                                               motionValidated: true,
+                                               stageSegments: stageSegments.isEmpty ? nil : stageSegments))
+            saved += 1
+        }
+
+        guard saved > 0 else {
+            AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=already_saved_or_overlapping source=%@ candidates=%d",
+                          reason,
+                          candidates.count)
+            return
+        }
+        saveConfirmedSleeps(existing)
+        AtriaDebugLog("ATRIADBG sleep_auto_confirm status=saved source=%@ saved=%d candidates=%d policy=motion_validated_only",
+                      reason,
+                      saved,
+                      candidates.count)
+    }
+
+    private nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+        guard candidate.motionEvidenceValidated, candidate.confidence != .low else { return false }
+        if candidate.kind == "nap_candidate" {
+            return candidate.duration >= AggregateSleepCandidate.napMinimumDuration
+                && candidate.span <= AggregateSleepCandidate.napMaximumSpan
+        }
+        return candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
+            || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+                && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan
+                && candidate.maxGap <= 2 * 60 * 60)
+    }
+
+    private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
+        sleep.start < candidate.end && sleep.end > candidate.start
+    }
+
     func addManualSleep(start: Date,
                         end: Date,
                         isNap: Bool,
@@ -10430,6 +10504,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
         publishDashboardRevision()
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
@@ -10907,12 +10982,14 @@ struct SleepHistorySnapshot: Equatable {
 
         fileprivate static let explicitNapSources: Set<String> = [
             "manual_nap",
+            "auto_nap",
             "nap_candidate",
             "hr_only_nap"
         ]
 
         fileprivate static let explicitSleepSources: Set<String> = [
             "manual_sleep",
+            "auto_sleep",
             "aggregate_sleep",
             "sleep_window",
             "validated_sleep_window",
