@@ -636,11 +636,14 @@ struct AtriaHomeView: View {
 
     private func endWorkoutSession(startedAt: Date) {
         let label = "Live workout"
+        let endedAt = Date()
         let checkpointed = ble.checkpointCurrentSession(label: label, reason: "live_workout_end")
         let rest = store.baseline.restingInt ?? model.heroStore.state.restingHeartRate
-        let confirmed = store.confirmBestWorkoutCandidateForUI(rest: rest,
-                                                               maxHR: store.profile.maxHR,
-                                                               source: "live_workout_end")
+        let confirmed = store.confirmWorkoutWindowForUI(start: startedAt,
+                                                        end: endedAt,
+                                                        rest: rest,
+                                                        maxHR: store.profile.maxHR,
+                                                        source: "live_workout_end")
         workoutSession = nil
 
         if let confirmed {

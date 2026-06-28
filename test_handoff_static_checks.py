@@ -1458,6 +1458,7 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
         live_workout = source(ROOT / "Atria" / "Atria" / "AtriaLiveWorkoutView.swift")
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
 
         for needle in [
             "private struct AtriaWorkoutEndNotice: Identifiable, Equatable",
@@ -1465,8 +1466,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "onStop: { endWorkoutSession(startedAt: session.start) }",
             ".alert(item: $workoutEndNotice)",
             "private func endWorkoutSession(startedAt: Date)",
+            "let endedAt = Date()",
             "ble.checkpointCurrentSession(label: label, reason: \"live_workout_end\")",
-            "store.confirmBestWorkoutCandidateForUI(rest: rest,",
+            "store.confirmWorkoutWindowForUI(start: startedAt,",
+            "end: endedAt,",
             "source: \"live_workout_end\"",
             "store.exportToHealthKit()",
             "Workout evidence saved",
@@ -1486,6 +1489,24 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_contains(self, live_workout, "Label(\"End workout\", systemImage: \"stop.fill\")")
         assert_not_contains(self, home, "onStop: { workoutSession = nil }")
+        assert_not_contains(self, home, "confirmBestWorkoutCandidateForUI(rest: rest,")
+
+        for needle in [
+            "func confirmWorkoutWindowForUI(start: Date,",
+            "private func confirmWorkoutWindow(start requestedStart: Date,",
+            "canonicalSessions(includeActiveJournal: true).filter",
+            "absoluteTime >= requestedStart",
+            "SavedSession(id: UUID(),",
+            "label: \"Live workout\"",
+            "let readiness = window.workoutReadiness(rest: rest, maxHR: maxHR)",
+            "readiness.observedDuration >= 10 * 60",
+            "readiness.ready || readiness.nearMiss || readiness.strengthCandidate || readiness.streamCoveragePercent >= 20",
+            "let workoutSource = \"live_workout_window\"",
+            "let id = confirmedWorkoutID(start: requestedStart, end: requestedEnd, source: workoutSource)",
+            "zoneSeconds: enriched.zoneSeconds",
+            "healthkit_source=user_confirmed",
+        ]:
+            assert_contains(self, sessions, needle)
 
     def test_live_workout_auto_detect_prompt_is_inline_and_conservative(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
@@ -5686,6 +5707,16 @@ class HandoffStaticChecks(unittest.TestCase):
         early_contact_gate = "guard stableSeconds >= 10"
         self.assertNotIn(early_contact_gate, body[:archive_index],
                          "standard 2A37 RR must be archived before HRV contact gating")
+
+    def test_confirmed_sleep_stage_compatibility_for_older_records(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        assert_contains(self, sessions, "Self.estimatedConfirmedSleepStages(start: sleep.start,")
+        assert_contains(self, sessions, 'source: sleep.source)')
+        assert_contains(self, sessions, '"aggregate_sleep"')
+        assert_contains(self, sessions, '"sleep_window"')
+        assert_contains(self, sessions, "private static func estimatedConfirmedSleepStages")
+        assert_contains(self, sessions, "(.awake, 0.08), (.light, 0.47), (.rem, 0.17), (.sws, 0.16), (.deep, 0.12)")
+        assert_contains(self, sessions, "(.awake, 0.06), (.light, 0.68), (.rem, 0.08), (.sws, 0.12), (.deep, 0.06)")
 
 
 if __name__ == "__main__":
