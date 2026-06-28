@@ -469,6 +469,7 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         audit_blockers.append("missing_long_wear_monitor_finished_at")
     elif not is_utc_timestamp(monitor_finished_at):
         audit_blockers.append("invalid_long_wear_monitor_finished_at")
+    sample_trends = summary_sample_trends(selected_summary, data)
 
     return {
         "status": "pass" if acceptance_status == "pass" and not audit_blockers else "fail",
@@ -481,10 +482,7 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "battery_delta": data.get("battery_delta", "missing"),
         "latest_recent_session_span_s": data.get("latest_recent_session_span_s", 0),
         "latest_recent_session_coverage_percent": data.get("latest_recent_session_coverage_percent", 0),
-        "active_duration_nondecreasing": data.get("active_duration_nondecreasing", "missing"),
-        "active_hr_nondecreasing": data.get("active_hr_nondecreasing", "missing"),
-        "active_rr_nondecreasing": data.get("active_rr_nondecreasing", "missing"),
-        "battery_drop_from_first_percent": data.get("battery_drop_from_first_percent", data.get("battery_delta", "missing")),
+        **sample_trends,
         "preset": data.get("preset", criteria.get("preset", "missing")),
         "planned_samples": data.get("planned_samples", "missing"),
         "planned_duration_s": data.get("planned_duration_s", "missing"),
@@ -494,6 +492,24 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "monitor_started_at": monitor_started_at or "missing",
         "monitor_finished_at": monitor_finished_at or "missing",
     }
+
+
+def summary_sample_trends(summary_path: Path, data: dict[str, object]) -> dict[str, object]:
+    trends = {
+        "active_duration_nondecreasing": data.get("active_duration_nondecreasing", "missing"),
+        "active_hr_nondecreasing": data.get("active_hr_nondecreasing", "missing"),
+        "active_rr_nondecreasing": data.get("active_rr_nondecreasing", "missing"),
+        "battery_drop_from_first_percent": data.get("battery_drop_from_first_percent", "missing"),
+    }
+    if all(value != "missing" for value in trends.values()):
+        return trends
+    samples_path = summary_path.parent / "samples.jsonl"
+    if not samples_path.exists():
+        if trends["battery_drop_from_first_percent"] == "missing":
+            trends["battery_drop_from_first_percent"] = data.get("battery_delta", "missing")
+        return trends
+    computed = running_sample_trends(load_jsonl_items(samples_path))
+    return {key: computed.get(key, value) if value == "missing" else value for key, value in trends.items()}
 
 
 def synthesized_long_wear_diagnostics(data: dict[str, object], criteria: dict[str, object]) -> dict[str, object]:
