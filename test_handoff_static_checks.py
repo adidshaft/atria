@@ -1819,12 +1819,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "let sleepStart: Date?",
             "let sleepEnd: Date?",
             "let sleepSource: String?",
+            "let sleepStageSegments: [SleepStageSegment]",
             "private nonisolated static func sleepSpan(duration: TimeInterval,",
             "return max(duration, end.timeIntervalSince(start))",
-            "let sleepSpan = Self.sleepSpan(duration: sleepDuration,",
-            "sleepSpan: sleepSpan",
+            "let aggregateSleeps = Dictionary(uniqueKeysWithValues: Self.aggregateSleepCandidates(in: sessions,",
+            "let sleepStageSegments = aggregateSleep.map { candidate in",
+            "Self.sleepStageResearchSegments(from: daySessions,",
             "let singleSessionSleepSpan = Self.sleepSpan(duration: singleSessionSleepDuration,",
             "sleepSpan: aggregateSleep?.span ?? singleSessionSleepSpan",
+            "sleepStageSegments: sleepStageSegments",
+            "stageSegments: rollup.sleepStageSegments",
             "let sleepEfficiency: Double?",
             "var sleepEfficiencyText: String",
             "var isNapEvidence: Bool",
@@ -1875,8 +1879,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "end: sleep.end",
             "let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\\.start).min()",
             "let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\\.end).max()",
-            "let sleepStart = sleepDetections.map(\\.start).min()",
-            "let sleepEnd = sleepDetections.map(\\.end).max()",
             "sleepStart: sleepStart",
             "sleepEnd: sleepEnd",
             "start: rollup.sleepStart",
@@ -1955,10 +1957,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "let sleepSource = isNap ? \"manual_nap\" : \"manual_sleep\"",
             "confidence: \"manual_user_entered\"",
             "stageSegments: Self.defaultManualSleepStages(start: start,",
-            "let stageSegments = sleepStageResearchSegments(start: best.start,",
+            "let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),",
             "stageSegments: stageSegments.isEmpty ? nil : stageSegments",
             "stage_research_segments=%d",
-            "private func sleepStageResearchSegments(start: Date,",
+            "private nonisolated static func sleepStageResearchSegments(from sessions: [SavedSession],",
             "AtriaSleepWakeResearch.HeartSample(t: t, bpm: point.bpm)",
             "AtriaSleepWakeResearch.stageSegments(samples: samples,",
             "let displayStageSegments: [SleepStageSegment]",
@@ -5664,6 +5666,26 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(day_calories([(0, 60), (600, 150)], 60, "male", 35, 75), 0)
         synthetic_rr = [800 + 45 * math.sin(2 * math.pi * (15 / 60) * index / 4) for index in range(4 * 90)]
         self.assertEqual(resp_rate_rsa(synthetic_rr), 15)
+
+    def test_standard_rr_batches_archive_before_hrv_contact_gate(self):
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        match = re.search(r"private func addRRBatch\(.*?\n    \}", ble, re.S)
+        self.assertIsNotNone(match, "addRRBatch helper missing")
+        body = match.group(0)
+
+        for needle in [
+            "let hasStableContact = stableSeconds >= 10",
+            "let shouldOpenGate = hasStableContact && !hrvGateWasOpen",
+            "rrArchive.append(contentsOf: appendPayload.intervals)",
+            "if hrvGateWasOpen && !shouldOpenGate",
+            "if hasStableContact && !shouldOpenGate",
+        ]:
+            assert_contains(self, body, needle)
+
+        archive_index = body.index("rrArchive.append(contentsOf: appendPayload.intervals)")
+        early_contact_gate = "guard stableSeconds >= 10"
+        self.assertNotIn(early_contact_gate, body[:archive_index],
+                         "standard 2A37 RR must be archived before HRV contact gating")
 
 
 if __name__ == "__main__":

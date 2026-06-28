@@ -409,6 +409,7 @@ struct DailyRollup {
     let sleepStart: Date?
     let sleepEnd: Date?
     let sleepSource: String?
+    let sleepStageSegments: [SleepStageSegment]
     let strain: Double
     let avgHRV: Int?
     let restingHR: Int?
@@ -2865,15 +2866,29 @@ final class SessionStore: ObservableObject {
         let confirmedWorkoutsByDay = Dictionary(grouping: confirmedWorkouts) { workout in
             calendar.startOfDay(for: workout.start)
         }
+        let aggregateSleeps = Dictionary(uniqueKeysWithValues: Self.aggregateSleepCandidates(in: sessions,
+                                                                                              rest: rest,
+                                                                                              maxHR: maxHR,
+                                                                                              calendar: calendar).map { ($0.day, $0) })
         return grouped.map { day, daySessions in
             let dayDetections = detectionsByDay[day] ?? []
             let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
-            let sleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
-            let sleepStart = sleepDetections.map(\.start).min()
-            let sleepEnd = sleepDetections.map(\.end).max()
-            let sleepSpan = Self.sleepSpan(duration: sleepDuration,
-                                           start: sleepStart,
-                                           end: sleepEnd)
+            let aggregateSleep = aggregateSleeps[day]
+            let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
+            let singleSessionSleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
+            let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\.start).min()
+            let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\.end).max()
+            let singleSessionSleepSpan = Self.sleepSpan(duration: singleSessionSleepDuration,
+                                                        start: sleepDetections.map(\.start).min(),
+                                                        end: sleepDetections.map(\.end).max())
+            let sleepStageSegments = aggregateSleep.map { candidate in
+                Self.sleepStageResearchSegments(from: daySessions,
+                                                start: candidate.start,
+                                                end: candidate.end,
+                                                restingHR: candidate.restingHR,
+                                                isNap: candidate.kind == "nap_candidate",
+                                                motionValidated: candidate.motionEvidenceValidated)
+            } ?? []
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -2893,17 +2908,18 @@ final class SessionStore: ObservableObject {
                                workouts: dayDetections.filter { $0.kind == .workout }.count,
                                confirmedWorkouts: confirmedWorkoutsByDay[day]?.count ?? 0,
                                restCandidates: dayDetections.filter { $0.kind == .restCandidate }.count,
-                               sleepReady: 0,
-                               sleepCandidates: sleepDetections.count,
+                               sleepReady: aggregateSleepReady,
+                               sleepCandidates: max(sleepDetections.count, aggregateSleep == nil ? 0 : 1),
                                duration: duration,
-                               sleepDuration: sleepDuration > 0 ? sleepDuration : nil,
-                               sleepSpan: sleepSpan,
+                               sleepDuration: aggregateSleep?.duration ?? (singleSessionSleepDuration > 0 ? singleSessionSleepDuration : nil),
+                               sleepSpan: aggregateSleep?.span ?? singleSessionSleepSpan,
                                sleepStart: sleepStart,
                                sleepEnd: sleepEnd,
-                               sleepSource: sleepDuration > 0 ? "single_session_sleep_candidate" : nil,
+                               sleepSource: aggregateSleep?.kind ?? (singleSessionSleepDuration > 0 ? "single_session_sleep_candidate" : nil),
+                               sleepStageSegments: sleepStageSegments,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageIntSnapshot(hrvs),
-                               restingHR: sleepRHRs.min() ?? fallbackRHRs.min(),
+                               restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min(),
                                avgRespiratoryRate: averageDoubleSnapshot(respiratoryRates))
         }
         .sorted { $0.day > $1.day }
@@ -4848,7 +4864,7 @@ final class SessionStore: ObservableObject {
                                    rrPoints: nil,
                                    hrvReferenceValidated: false,
                                    motionHintCount: overlapping.reduce(0) { $0 + $1.motionHintCountValue },
-                                   motionHintKinds: motionHintKindsSummary(for: overlapping),
+                                   motionHintKinds: Self.motionHintKindsSummary(for: overlapping),
                                    motionEvidenceSource: overlapping.contains { $0.motionHintCountValue > 0 } ? "diagnostic_observe_only" : "unavailable",
                                    motionEvidenceValidated: false,
                                    motionShortCount: nil,
@@ -5949,11 +5965,12 @@ final class SessionStore: ObservableObject {
             return already
         }
         let confidence = best.motionEvidenceValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only"
-        let stageSegments = sleepStageResearchSegments(start: best.start,
-                                                       end: best.end,
-                                                       restingHR: best.restingHR,
-                                                       isNap: best.kind == "nap_candidate",
-                                                       motionValidated: best.motionEvidenceValidated)
+        let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                            start: best.start,
+                                                            end: best.end,
+                                                            restingHR: best.restingHR,
+                                                            isNap: best.kind == "nap_candidate",
+                                                            motionValidated: best.motionEvidenceValidated)
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: best.start,
@@ -5995,12 +6012,13 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
-    private func sleepStageResearchSegments(start: Date,
-                                            end: Date,
-                                            restingHR: Int,
-                                            isNap: Bool,
-                                            motionValidated: Bool) -> [SleepStageSegment] {
-        let samples = canonicalSessions().flatMap { session -> [AtriaSleepWakeResearch.HeartSample] in
+    private nonisolated static func sleepStageResearchSegments(from sessions: [SavedSession],
+                                                               start: Date,
+                                                               end: Date,
+                                                               restingHR: Int,
+                                                               isNap: Bool,
+                                                               motionValidated: Bool) -> [SleepStageSegment] {
+        let samples = sessions.flatMap { session -> [AtriaSleepWakeResearch.HeartSample] in
             guard session.end >= start,
                   session.start <= end,
                   !session.points.isEmpty else { return [] }
@@ -6900,6 +6918,14 @@ final class SessionStore: ObservableObject {
             let singleSessionSleepSpan = Self.sleepSpan(duration: singleSessionSleepDuration,
                                                         start: sleepDetections.map(\.start).min(),
                                                         end: sleepDetections.map(\.end).max())
+            let sleepStageSegments = aggregateSleep.map { candidate in
+                Self.sleepStageResearchSegments(from: daySessions,
+                                                start: candidate.start,
+                                                end: candidate.end,
+                                                restingHR: candidate.restingHR,
+                                                isNap: candidate.kind == "nap_candidate",
+                                                motionValidated: candidate.motionEvidenceValidated)
+            } ?? []
             let duration = daySessions.reduce(0) { $0 + $1.duration }
             let strainTRIMP = daySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
@@ -6927,6 +6953,7 @@ final class SessionStore: ObservableObject {
                                sleepStart: sleepStart,
                                sleepEnd: sleepEnd,
                                sleepSource: aggregateSleep?.kind,
+                               sleepStageSegments: sleepStageSegments,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
                                restingHR: aggregateSleep?.restingHR ?? sleepRHRs.min() ?? fallbackRHRs.min(),
@@ -7104,7 +7131,7 @@ final class SessionStore: ObservableObject {
                                      rrPoints: nil,
                                      hrvReferenceValidated: false,
                                      motionHintCount: ordered.reduce(0) { $0 + $1.motionHintCountValue },
-                                     motionHintKinds: motionHintKindsSummary(for: ordered),
+                                     motionHintKinds: Self.motionHintKindsSummary(for: ordered),
                                      motionEvidenceSource: ordered.contains { $0.motionHintCountValue > 0 } ? "diagnostic_observe_only" : "unavailable",
                                      motionEvidenceValidated: false,
                                      motionShortCount: nil,
@@ -7249,13 +7276,13 @@ final class SessionStore: ObservableObject {
     }
 
     func aggregateSleepCandidates(rest: Int, calendar: Calendar = .current) -> [AggregateSleepCandidate] {
-        aggregateSleepCandidates(in: canonicalSessions(), rest: rest, maxHR: profile.maxHR, calendar: calendar)
+        Self.aggregateSleepCandidates(in: canonicalSessions(), rest: rest, maxHR: profile.maxHR, calendar: calendar)
     }
 
-    private func aggregateSleepCandidates(in sourceSessions: [SavedSession],
-                                          rest: Int,
-                                          maxHR: Int,
-                                          calendar: Calendar = .current) -> [AggregateSleepCandidate] {
+    private nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
+                                                             rest: Int,
+                                                             maxHR: Int,
+                                                             calendar: Calendar = .current) -> [AggregateSleepCandidate] {
         let eligible = sourceSessions.filter { session in
             guard session.duration >= AggregateSleepCandidate.minimumFragmentDuration,
                   !session.points.isEmpty else { return false }
@@ -7273,11 +7300,11 @@ final class SessionStore: ObservableObject {
             return ((overnight && lowHR) || napLike) && notWorkout
         }
         let grouped = Dictionary(grouping: eligible) { session in
-            aggregateSleepDay(for: session, calendar: calendar)
+            Self.aggregateSleepDay(for: session, calendar: calendar)
         }
         let candidates: [AggregateSleepCandidate] = grouped.flatMap { day, daySessions in
             let ordered = daySessions.sorted { $0.start < $1.start }
-            let clusters = sleepClusters(from: ordered, maxGap: 2 * 60 * 60)
+            let clusters = Self.sleepClusters(from: ordered, maxGap: 2 * 60 * 60)
             return clusters.compactMap { cluster -> AggregateSleepCandidate? in
                 let totalDuration = cluster.reduce(0) { $0 + $1.duration }
                 let gaps = zip(cluster, cluster.dropFirst()).map { previous, next in
@@ -7302,15 +7329,15 @@ final class SessionStore: ObservableObject {
                 guard strictDurationReady || fragmentedFallbackReady || napCandidateReady else { return nil }
                 let avg = allHR.reduce(0, +) / allHR.count
                 let peak = allHR.max() ?? 0
-                let resting = percentileHR(0.05, values: allHR)
+                let resting = Self.percentileHR(0.05, values: allHR)
                 let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
-                let motionHintKinds = motionHintKindsSummary(for: cluster)
+                let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
                 let historicalMotion = HistoricalArchive.motionWindowDiagnostics(start: start, end: end)
                 let motionSource = historicalMotion.lowMotionReady
                     ? "historical_gravity"
                     : (motionHintCount > 0 ? "diagnostic_observe_only" : "unavailable")
                 let motionValidated = historicalMotion.lowMotionReady || cluster.contains { $0.motionEvidenceValidatedValue }
-                let motionStats = motionShortSummary(for: cluster)
+                let motionStats = Self.motionShortSummary(for: cluster)
                 let motionClause = motionHintCount > 0
                     ? "diagnostic motion observed unvalidated"
                     : "motion not decoded"
@@ -7375,10 +7402,10 @@ final class SessionStore: ObservableObject {
                                  windowDays: Int = 45,
                                  limitSessions: Int = 48) -> SleepEvidenceStatus {
         let recent = recentCanonicalSessions(windowDays: windowDays, limitSessions: limitSessions)
-        let candidates = aggregateSleepCandidates(in: recent,
-                                                  rest: rest,
-                                                  maxHR: profile.maxHR,
-                                                  calendar: calendar)
+        let candidates = Self.aggregateSleepCandidates(in: recent,
+                                                       rest: rest,
+                                                       maxHR: profile.maxHR,
+                                                       calendar: calendar)
         let ready = candidates.filter { candidate in
             candidate.motionEvidenceValidated && candidate.confidence != .low
         }
@@ -7582,10 +7609,10 @@ final class SessionStore: ObservableObject {
                 && !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
         }
         let grouped = Dictionary(grouping: fragments) { session in
-            aggregateSleepDay(for: session, calendar: calendar)
+            Self.aggregateSleepDay(for: session, calendar: calendar)
         }
         let clusters = grouped.values.flatMap { daySessions in
-            sleepClusters(from: daySessions.sorted { $0.start < $1.start }, maxGap: 2 * 60 * 60)
+            Self.sleepClusters(from: daySessions.sorted { $0.start < $1.start }, maxGap: 2 * 60 * 60)
         }
         return clusters.compactMap { cluster -> IncompleteSleepFallback? in
             guard let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
@@ -7648,14 +7675,14 @@ final class SessionStore: ObservableObject {
         return (evaluated, eligible, tooShort, notOvernight, hrTooHigh, workoutLike, candidates)
     }
 
-    private func motionHintKindsSummary(for sessions: [SavedSession]) -> String {
+    private nonisolated static func motionHintKindsSummary(for sessions: [SavedSession]) -> String {
         let kinds = sessions
             .map(\.motionHintKindsValue)
             .filter { $0 != "none" }
         return kinds.isEmpty ? "none" : kinds.joined(separator: "+")
     }
 
-    private func motionShortSummary(for sessions: [SavedSession]) -> (count: Int, mean: Double?, min: Double?, max: Double?, overOne: Int) {
+    private nonisolated static func motionShortSummary(for sessions: [SavedSession]) -> (count: Int, mean: Double?, min: Double?, max: Double?, overOne: Int) {
         let count = sessions.reduce(0) { $0 + $1.motionShortCountValue }
         guard count > 0 else { return (0, nil, nil, nil, 0) }
         let weightedSum = sessions.reduce(0.0) { total, session in
@@ -8163,7 +8190,7 @@ final class SessionStore: ObservableObject {
         let motionHintTotal = sessions.reduce(0) { $0 + $1.motionHintCountValue }
         let motionHintSessions = sessions.filter { $0.motionHintCountValue > 0 }.count
         let motionSource = motionHintTotal > 0 ? "diagnostic_observe_only" : "unavailable"
-        let motionShortStats = motionShortSummary(for: sessions)
+        let motionShortStats = Self.motionShortSummary(for: sessions)
         AtriaDebugLog("ATRIADBG broken_sleep_summary candidates=%d eligible_sessions=%d evaluated_sessions=%d rejected_too_short=%d rejected_not_overnight=%d rejected_hr_too_high=%d rejected_workout_like=%d min_total_s=10800 fragmented_min_total_s=9000 fragmented_min_span_s=10800 max_gap_s=7200 confidence=low motion_source=%@ motion_hint_sessions=%d motion_hints=%d motion_validated=0 motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_policy=window_overlap_required",
               aggregateDiagnostics.candidates,
               aggregateDiagnostics.eligible,
@@ -10045,7 +10072,7 @@ final class SessionStore: ObservableObject {
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private func aggregateSleepDay(for session: SavedSession, calendar: Calendar) -> Date {
+    private nonisolated static func aggregateSleepDay(for session: SavedSession, calendar: Calendar) -> Date {
         let endHour = calendar.component(.hour, from: session.end)
         if endHour <= 11 {
             return calendar.startOfDay(for: session.end)
@@ -10053,7 +10080,7 @@ final class SessionStore: ObservableObject {
         return calendar.startOfDay(for: session.start)
     }
 
-    private func sleepClusters(from sessions: [SavedSession], maxGap: TimeInterval) -> [[SavedSession]] {
+    private nonisolated static func sleepClusters(from sessions: [SavedSession], maxGap: TimeInterval) -> [[SavedSession]] {
         var clusters: [[SavedSession]] = []
         for session in sessions.sorted(by: { $0.start < $1.start }) {
             guard var current = clusters.popLast() else {
@@ -10091,7 +10118,7 @@ final class SessionStore: ObservableObject {
         return clusters
     }
 
-    private func percentileHR(_ percentile: Double, values: [Int]) -> Int {
+    private nonisolated static func percentileHR(_ percentile: Double, values: [Int]) -> Int {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
         let clamped = min(max(percentile, 0), 1)
@@ -10728,7 +10755,7 @@ struct SleepHistorySnapshot: Equatable {
                                      confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
                                      source: rollup.sleepReady > 0 ? "validated_sleep_window" : (rollup.sleepSource ?? "sleep_candidate"),
                                      confirmed: false,
-                                     stageSegments: [])
+                                     stageSegments: rollup.sleepStageSegments)
         }
 
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
