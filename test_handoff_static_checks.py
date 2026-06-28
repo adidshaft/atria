@@ -731,7 +731,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var sleepGlanceDetailText: String",
             "if latest.confirmed",
             "return latest.isNapEvidence ? \"Last nap\" : \"Last\"",
-            "return latest.isNapEvidence ? \"Review nap\" : \"Review\"",
+            "return \"Review\"",
             "return \"Review\"",
             "private var sleepGlanceTint: Color",
             "sleepHistory.candidateCount > 0 ? .cyan : .orange",

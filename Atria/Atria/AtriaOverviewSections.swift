@@ -1631,7 +1631,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             if latest.confirmed {
                 return latest.isNapEvidence ? "Last nap" : "Last"
             }
-            return latest.isNapEvidence ? "Review nap" : "Review"
+            return "Review"
         }
         if sleepHistory.candidateCount > 0 { return "Review" }
         if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue == "Maybe" ? "Review" : "Last" }
