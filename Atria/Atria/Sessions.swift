@@ -7154,7 +7154,7 @@ final class SessionStore: ObservableObject {
                                sleepSpan: aggregateSleep?.span ?? singleSessionSleepSpan,
                                sleepStart: sleepStart,
                                sleepEnd: sleepEnd,
-                               sleepSource: aggregateSleep?.kind,
+                               sleepSource: aggregateSleep?.kind ?? (singleSessionSleepDuration > 0 ? "single_session_sleep_candidate" : nil),
                                sleepStageSegments: sleepStageSegments,
                                strain: Metrics.strain(fromTRIMP: strainTRIMP),
                                avgHRV: averageInt(hrvs),
