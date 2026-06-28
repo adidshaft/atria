@@ -469,7 +469,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Waiting for pulse"')
         assert_contains(self, hero, "Strap is connected; adjust fit so Atria can read pulse.")
         assert_contains(self, hero, "Waiting for the next live heart-rate sample.")
-        assert_contains(self, hero, "needsContactCoach: pulseStore.state.needsContactCoach")
+        assert_contains(self, hero, "let hasPulseSignal = pulseStore.state.hasPulseSignal || liveStore.state.hasRecentHeartRateSample")
+        assert_contains(self, hero, "needsContactCoach: pulseStore.state.needsContactCoach && !liveStore.state.hasRecentHeartRateSample")
         assert_contains(self, home, "struct HeroPulseState: Equatable")
         assert_contains(self, home, "var hasPulseSignal: Bool { heartRate > 0 || hasContact }")
         assert_contains(self, home, "return HeroPulseState(heartRate: reconciledHeartRate,")
@@ -975,6 +976,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "var pendingKnownReconnectReason: String",
             "func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval?",
             "var needsRRQualityCoach: Bool { rrContinuityState == \"poor_contact\" }",
+            "let hasLivePulseSignal = pulse.hasPulseSignal || live.hasRecentHeartRateSample",
+            "let needsContactCoach = pulse.needsContactCoach && !live.hasRecentHeartRateSample",
             "ble.$bluetoothPermissionDenied.removeDuplicates()",
             "ble.$batteryRecentlyDropping.removeDuplicates()",
             "ble.$officialAppCoexistenceRisk.removeDuplicates()",
@@ -989,12 +992,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "lastScanMatchAt: ble.lastScanMatchAt",
             "pendingKnownReconnectStartedAt: ble.pendingKnownReconnectStartedAt",
             "pendingKnownReconnectReason: ble.pendingKnownReconnectReason",
-            "case .connected where pulse.needsContactCoach:",
+            "case .connected where needsContactCoach:",
             "return AtriaConnectionDiagnosis(title: \"Fit check needed\"",
-            "case .connected where live.needsRRQualityCoach && !pulse.hasPulseSignal:",
+            "case .connected where live.needsRRQualityCoach && !hasLivePulseSignal:",
             "Beat-to-beat waiting",
             "Atria needs pulse before it can build HRV and Recovery.",
-            "case .connected where live.needsRRQualityCoach && pulse.hasPulseSignal:",
+            "case .connected where live.needsRRQualityCoach && hasLivePulseSignal:",
             "HRV settling",
             "Heart rate is live. Keep wearing normally while HRV settles.",
             "case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:",
@@ -1043,8 +1046,8 @@ class HandoffStaticChecks(unittest.TestCase):
         diagnosis_body = diagnosis.group("body")
         powered_off_index = diagnosis_body.find("case .poweredOff:")
         low_battery_index = diagnosis_body.find("case _ where live.batteryLevel >= 0")
-        contact_index = diagnosis_body.find("case .connected where pulse.needsContactCoach:")
-        hrv_settling_index = diagnosis_body.find("case .connected where live.needsRRQualityCoach && pulse.hasPulseSignal:")
+        contact_index = diagnosis_body.find("case .connected where needsContactCoach:")
+        hrv_settling_index = diagnosis_body.find("case .connected where live.needsRRQualityCoach && hasLivePulseSignal:")
         self.assertGreaterEqual(powered_off_index, 0)
         self.assertGreaterEqual(contact_index, 0)
         self.assertGreaterEqual(hrv_settling_index, 0)
