@@ -576,7 +576,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "glanceCardCell(metric,\n                                   width: glanceCardWidth(for: metric,\n                                                          containerWidth: proxy.size.width,\n                                                          sizeOverrides: sizeOverrides),\n                                   sizeOverrides: sizeOverrides)",
             "private struct AtriaGlanceMetricCard: View, Equatable",
             "static let cardHeight: CGFloat = 152",
-            "private static let headerHeight: CGFloat = 42",
+            "private static let headerHeight: CGFloat = 44",
             "private static let valueHeight: CGFloat = 38",
             "private struct AtriaGlanceMetricMarker: View, Equatable",
             "private static let size: CGFloat = 38",
@@ -5165,6 +5165,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
             "Image(systemName: \"info.circle\")",
+            ".frame(minWidth: 44, minHeight: 44)",
+            ".frame(width: 44, height: 44)",
             "if let zone, zone.showsWarning",
             "parts.append(zone.level.label)",
             "parts.append(zone.targetSummary)",
@@ -5172,6 +5174,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityHint(\"Opens target guidance and general wellness recommendations.\")",
         ]:
             assert_contains(self, shared + overview + vitals, needle)
+        assert_not_contains(self, shared + overview, ".frame(minWidth: 36, minHeight: 28)")
+        assert_not_contains(self, overview, ".frame(width: 38, height: 32)")
         for needle in [
             "private var accessibilityText: String",
             "var parts = [\"\\(title) \\(displayValue)\", detail]",
