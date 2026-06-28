@@ -1416,7 +1416,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: hero.loadConfidence == "learning" ? "Learning" : hero.loadSignalSummaryText,
                                   systemImage: metric.systemImage,
                                   tint: loadReadinessTint,
-                                  ringFraction: loadReadinessFraction)
+                                  ringFraction: loadReadinessFraction,
+                                  zone: loadReadinessZone)
                 .accessibilityLabel("Training load readiness \(hero.loadReadinessText). \(hero.loadSignalSummaryText). \(hero.loadNarrative)")
         case .workout:
             workoutCard(metric)
@@ -1697,6 +1698,44 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         default:
             return nil
         }
+    }
+
+    private var loadReadinessZone: AtriaMetricZone? {
+        let readiness = hero.loadReadinessText.lowercased()
+        guard readiness != "learning" else { return nil }
+
+        let level: AtriaMetricZoneLevel
+        switch readiness {
+        case "primed", "balanced":
+            level = .green
+        case "strained":
+            level = .yellow
+        case "rundown":
+            level = .red
+        default:
+            return nil
+        }
+
+        let recommendation: String
+        switch readiness {
+        case "primed":
+            recommendation = "Recent load is below your base. Add training gradually if recovery and schedule support it."
+        case "balanced":
+            recommendation = "Training load is aligned with your longer baseline. Keep alternating hard and easy days."
+        case "strained":
+            recommendation = "ACWR or monotony is elevated. Favor recovery, vary intensity, or keep the next session lighter."
+        case "rundown":
+            recommendation = "Training load is spiking or too repetitive. Keep the next session easy and rebuild gradually."
+        default:
+            recommendation = hero.loadNarrative
+        }
+
+        return AtriaMetricZone(level: level,
+                               title: "Training load readiness",
+                               current: hero.loadNarrative,
+                               targetSummary: "ACWR \(hero.loadRatioText) \(hero.loadACWRSignalText); monotony \(hero.loadMonotonyText) \(hero.loadMonotonySignalText). \(hero.loadACWRDetailText) \(hero.loadMonotonyDetailText)",
+                               recommendation: recommendation,
+                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
     }
 
     private var hrvZone: AtriaMetricZone? {
