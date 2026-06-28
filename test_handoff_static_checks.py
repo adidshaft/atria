@@ -5549,6 +5549,8 @@ class HandoffStaticChecks(unittest.TestCase):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
         app = source(ROOT / "Atria" / "Atria" / "AtriaApp.swift")
         debug_logging = source(ROOT / "Atria" / "Atria" / "AtriaDebugLogging.swift")
+        tests_scheme = source(ROOT / "Atria" / "Atria.xcodeproj" / "xcshareddata" / "xcschemes" / "AtriaTests.xcscheme")
+        analytics_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaAnalyticsTests.swift")
 
         for needle in [
             "enum BiologicalAge",
@@ -5627,6 +5629,27 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, app, needle)
         assert_contains(self, debug_logging, "--atria-analytics-calibration-audit")
+
+        for needle in [
+            "AtriaTests.xctest",
+            "BlueprintName = \"AtriaTests\"",
+            "<TestAction",
+            "<TestableReference",
+            "BuildableName = \"Atria.app\"",
+        ]:
+            assert_contains(self, tests_scheme, needle)
+
+        for needle in [
+            "final class AtriaAnalyticsTests: XCTestCase",
+            "func testCalibrationExamplesRemainInRange()",
+            "func testBiologicalAgeIsLocalEstimateAndClamped()",
+            "func testHRVAnalyzerRequiresContinuousCleanRRWindow()",
+            "func testTrainingLoadFlagsUnsafeSpikesAndBalancedLoad()",
+            "func testTargetZonesUseHandoffThresholdsAndStayBaselineGated()",
+            "AtriaAnalytics.CalibrationExamples.numericChecks",
+            "AtriaAnalytics.CalibrationExamples.labelChecks",
+        ]:
+            assert_contains(self, analytics_tests, needle)
 
         def interpolated_age(value, reference, higher_is_younger):
             if higher_is_younger:
