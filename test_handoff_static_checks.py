@@ -913,13 +913,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var addWidgetMenu: some View",
             "showWidgetManager = true",
             ".sheet(isPresented: $showWidgetManager)",
-            "AtriaGlanceWidgetManagerSheet(visibleMetrics: visibleMetrics",
+            "AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics",
             "private struct AtriaGlanceWidgetManagerSheet: View",
-            "managerSection(title: \"Added widgets\"",
             "managerSection(title: \"Add widget\"",
-            "actionTitle: \"Remove\"",
-            "actionImage: \"xmark.circle.fill\"",
-            "role: .destructive",
             "Label(\"Edit on cards\", systemImage: \"square.grid.2x2\")",
             "Image(systemName: \"plus\")",
             "glanceRemoveControl(for: metric)",
@@ -958,7 +954,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".buttonStyle(AtriaCardActionButtonStyle(tint: tint))",
             ".accessibilityHint(\"Opens the target zone controls for this Today widget.\")",
             ".accessibilityHint(\"Removes this card from Today at a glance. Use the plus button to add it back.\")",
-            ".accessibilityLabel(\"Manage Today widgets\")",
+            ".accessibilityLabel(\"Add Today widget\")",
+            "\"Opens hidden Today widgets you can add. Long press a card to remove or resize it.\"",
             "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
             "onOpenVitals: onOpenVitals",
             "onAddManualSleep: {",
@@ -972,7 +969,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .rem: return \"REM\"",
             "case .sws: return \"SWS\"",
             "case .deep: return \"DEEP\"",
-            "\"Opens added and hidden Today widgets so you can remove or add cards.\"",
             ".contextMenu {",
             "Label(\"Remove widget\", systemImage: \"xmark\")",
             "Button(role: .destructive)",
@@ -982,6 +978,15 @@ class HandoffStaticChecks(unittest.TestCase):
             ".sensoryFeedback(.selection, trigger: sizeCSV)",
         ]:
             assert_contains(self, overview, needle)
+        for forbidden in [
+            "AtriaGlanceWidgetManagerSheet(visibleMetrics: visibleMetrics",
+            "managerSection(title: \"Added widgets\"",
+            "actionTitle: \"Remove\"",
+            "actionImage: \"xmark.circle.fill\"",
+            "\"Opens added and hidden Today widgets so you can remove or add cards.\"",
+            ".accessibilityLabel(\"Manage Today widgets\")",
+        ]:
+            assert_not_contains(self, overview, forbidden)
 
         assert_contains(self, home, "profileMetricsStore: model.profileMetricsStore")
         assert_contains(self, home, "onStartWorkout: {\n                                        workoutSession = AtriaWorkoutSession(start: Date())\n                                    }")
