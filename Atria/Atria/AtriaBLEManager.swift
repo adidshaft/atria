@@ -8069,18 +8069,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !intervalsMS.isEmpty else { return }
 
         let stableSeconds = stableContactSeconds(now: frameTime)
-        guard stableSeconds >= 10 else {
-            resetHRVWindow(reason: String(format: "contact %.0fs/10s", stableSeconds))
-            return
-        }
-
-        let shouldOpenGate = !hrvGateWasOpen
+        let hasStableContact = stableSeconds >= 10
+        let shouldOpenGate = hasStableContact && !hrvGateWasOpen
         if shouldOpenGate {
             resetRRBuffer()
             hrvGateWasOpen = true
             assignIfChanged(\.hrvQuality, "collecting beat-to-beat samples")
             logRow(kind: "hrv_quality", source: "app", opcode: "", len: "",
                    value: "clean_rr_window_started")
+        } else if !hasStableContact {
+            resetHRVWindow(reason: String(format: "contact %.0fs/10s", stableSeconds))
         }
 
         let beats = Self.beatTimesEnding(at: frameTime, intervalsMS: intervalsMS)
@@ -8095,7 +8093,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if shouldMaintainSessionPointCaches, !appendPayload.rrPoints.isEmpty {
                 rrPointsCache.append(contentsOf: appendPayload.rrPoints)
             }
-            if !shouldOpenGate {
+            if hrvGateWasOpen && !shouldOpenGate {
                 rrBuffer.append(contentsOf: appendPayload.intervals)
             }
         }
@@ -8117,7 +8115,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let rrGap = previousPacketBeatTime.map { max(0, frameTime.timeIntervalSince($0)) } ?? 0
         refreshRRPresenceOnRealInterval(at: frameTime, source: source, rrGap: rrGap)
 
-        if !shouldOpenGate {
+        if hasStableContact && !shouldOpenGate {
             requestDeferredHRVSnapshotRefreshIfNeeded(now: frameTime)
         }
     }
