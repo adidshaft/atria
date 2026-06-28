@@ -91,6 +91,39 @@ class MonitorLongWearTests(unittest.TestCase):
         self.assertEqual(final["latest_recent_session_span_s"], 30000.0)
         self.assertEqual(final["battery_delta"], -4)
         self.assertEqual(final["thermal_states"], ["fair", "nominal"])
+        self.assertEqual(final["active_duration_series_s"], [60.0, 120.0])
+        self.assertEqual(final["active_hr_series"], [60.0, 120.0])
+        self.assertEqual(final["active_rr_series"], [55.0, 110.0])
+        self.assertEqual(final["battery_series"], [80.0, 76.0])
+        self.assertTrue(final["active_duration_nondecreasing"])
+        self.assertTrue(final["active_hr_nondecreasing"])
+        self.assertTrue(final["active_rr_nondecreasing"])
+        self.assertEqual(final["battery_drop_from_first_percent"], -4.0)
+
+    def test_trend_summary_flags_stalled_active_collection(self):
+        trends = monitor_long_wear.trend_summary([
+            {
+                "active_journal": {
+                    "duration_s": 120.0,
+                    "delta_samples": 120,
+                    "delta_rr": 110,
+                    "battery": 80,
+                },
+            },
+            {
+                "active_journal": {
+                    "duration_s": 120.0,
+                    "delta_samples": 100,
+                    "delta_rr": 108,
+                    "battery": 79,
+                },
+            },
+        ])
+
+        self.assertTrue(trends["active_duration_nondecreasing"])
+        self.assertFalse(trends["active_hr_nondecreasing"])
+        self.assertFalse(trends["active_rr_nondecreasing"])
+        self.assertEqual(trends["battery_drop_from_first_percent"], -1.0)
 
     def test_acceptance_passes_with_overnight_quality_evidence(self):
         final = {
