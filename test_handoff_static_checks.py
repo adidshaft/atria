@@ -835,6 +835,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaGlanceTargetEditorSheet(metric: metric)",
             "case .sleep, .sleepHistory:",
             "Adjust the sleep goal used by sleep history, debt, and consistency.",
+            "Label(\"No target controls\", systemImage: \"info.circle\")",
+            "This Today card is an action or trend shortcut, so it uses its source state instead of a personal target zone.",
+            "Action and trend shortcuts do not use personal target zones.",
             "Image(systemName: \"xmark.circle.fill\")",
             ".symbolRenderingMode(.palette)",
             ".foregroundStyle(.white, Color.red)",
@@ -885,6 +888,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.74), in: Capsule(style: .continuous))")
         assert_not_contains(self, overview, "Image(systemName: \"slider.horizontal.3\")")
         assert_not_contains(self, overview, "Label(\"Reset widgets\", systemImage: \"arrow.counterclockwise\")")
+        assert_not_contains(self, overview, "This widget does not have an editable target yet.")
+        assert_not_contains(self, overview, "Target editing is not available for this widget yet.")
         assert_not_contains(self, overview, "figure.run.circle.fill")
         assert_not_contains(self, overview, "heart.text.square.fill")
         assert_not_contains(self, overview, "flame.circle.fill")
