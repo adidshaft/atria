@@ -2596,7 +2596,7 @@ final class AtriaHomeModel {
         } else {
             index = 3
         }
-        let badge = stats.count >= 7 ? "personal baseline" : "unverified"
+        let badge = stats.count >= PersonalBaseline.trustedMinimumSamples ? "personal baseline" : "unverified"
         return StressState(value: "\(index)/3",
                            detail: badge,
                            narrative: String(format: "Live lnRMSSD is %.1f SD from your baseline.", z))

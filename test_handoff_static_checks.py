@@ -4071,6 +4071,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "profileMetricsStore: model.profileMetricsStore",
         ]:
             assert_contains(self, home + overview, needle)
+        assert_contains(self, home, "stats.count >= PersonalBaseline.trustedMinimumSamples ? \"personal baseline\" : \"unverified\"")
+        assert_not_contains(self, home, "stats.count >= 7 ? \"personal baseline\" : \"unverified\"")
         for needle in [
             r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
             r"\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
