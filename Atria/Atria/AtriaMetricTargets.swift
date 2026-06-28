@@ -307,6 +307,7 @@ extension Metrics {
 
 struct AtriaMetricZoneInfoSheet: View {
     let zone: AtriaMetricZone
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -358,6 +359,14 @@ struct AtriaMetricZoneInfoSheet: View {
             .padding(20)
             .navigationTitle("Metric info")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .font(.body.weight(.semibold))
+                }
+            }
         }
     }
 }
