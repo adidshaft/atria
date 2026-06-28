@@ -4076,8 +4076,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "profileMetricsStore: model.profileMetricsStore",
         ]:
             assert_contains(self, home + overview, needle)
-        assert_contains(self, home, "stats.count >= PersonalBaseline.trustedMinimumSamples ? \"personal baseline\" : \"unverified\"")
+        assert_contains(self, home, "let hasTrustedBaseline = stats.count >= PersonalBaseline.trustedMinimumSamples")
+        assert_contains(self, home, "let badge = hasTrustedBaseline ? \"personal baseline\" : \"unverified\"")
+        assert_contains(self, home, "let comparisonLabel = hasTrustedBaseline ? \"your baseline\" : \"an early unverified HRV average\"")
+        assert_contains(self, home, "String(format: \"Live lnRMSSD is %.1f SD from %@.\", z, comparisonLabel)")
         assert_not_contains(self, home, "stats.count >= 7 ? \"personal baseline\" : \"unverified\"")
+        assert_not_contains(self, home, "String(format: \"Live lnRMSSD is %.1f SD from your baseline.\", z)")
         for needle in [
             r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
             r"\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
