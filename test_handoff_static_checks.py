@@ -4001,6 +4001,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "var glanceValueText: String",
             "var glanceDetailText: String",
             "if heartRateZones { return \"Zones on\" }",
+            "private static let heartRateZoneHapticCooldown: TimeInterval = 30",
+            "private var lastZoneHapticAt: Date?",
+            "now.timeIntervalSince(lastZoneHapticAt) < Self.heartRateZoneHapticCooldown",
+            "status=cooled_down",
+            "lastZoneHapticAt = now",
         ]:
             assert_contains(self, haptics, needle)
 

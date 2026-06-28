@@ -42,6 +42,8 @@ struct AtriaHapticAlertSettings: Codable, Equatable {
 
 @MainActor
 final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
+    private static let heartRateZoneHapticCooldown: TimeInterval = 30
+
     struct Snapshot {
         let status: AtriaBLEManager.Status
         let isRecording: Bool
@@ -58,6 +60,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private var settings = AtriaHapticAlertSettings()
     private var activeCollection = false
     private var lastZone: HRZone?
+    private var lastZoneHapticAt: Date?
     private var lastBatteryLow = false
     private var recoveryWasReady = false
     private var strainWasAtTarget = false
@@ -100,6 +103,18 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         let zone = HRZone.zone(for: heartRate, maxHR: maxHR)
         defer { lastZone = zone }
         guard let lastZone, lastZone != zone else { return }
+        let now = Date()
+        if let lastZoneHapticAt,
+           now.timeIntervalSince(lastZoneHapticAt) < Self.heartRateZoneHapticCooldown {
+            AtriaDebugLog("ATRIADBG haptic_alert kind=hr_zone status=cooled_down from=%@ to=%@ bpm=%d max_hr=%d cooldown_s=%.0f phone_side=1 strap_write=0",
+                  lastZone.name,
+                  zone.name,
+                  heartRate,
+                  maxHR,
+                  Self.heartRateZoneHapticCooldown)
+            return
+        }
+        lastZoneHapticAt = now
         UIImpactFeedbackGenerator(style: zone.rawValue > lastZone.rawValue ? .medium : .light).impactOccurred()
         AtriaDebugLog("ATRIADBG haptic_alert kind=hr_zone from=%@ to=%@ bpm=%d max_hr=%d phone_side=1 strap_write=0",
               lastZone.name,
