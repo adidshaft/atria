@@ -41,6 +41,7 @@ ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
     "dark_mode",
 ]
 DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-performance/summary.json")
+DEFAULT_ACCESSIBILITY_PERFORMANCE_DRAFT = Path("docs/evidence/accessibility-performance/summary.draft.json")
 DEFAULT_DEVICE_PULL_ROOT = Path("tmp/diag")
 
 MIN_SCROLL_FPS = 58.0
@@ -573,6 +574,39 @@ def accessibility_performance_summary(repo: Path, explicit: Path | None = None) 
     return candidate if candidate.exists() else None
 
 
+def accessibility_performance_draft(repo: Path) -> Path | None:
+    candidate = repo / DEFAULT_ACCESSIBILITY_PERFORMANCE_DRAFT
+    return candidate if candidate.exists() else None
+
+
+def summarize_accessibility_draft(repo: Path) -> dict[str, object]:
+    candidate = accessibility_performance_draft(repo)
+    if candidate is None:
+        return {"status": "missing", "summary": str(repo / DEFAULT_ACCESSIBILITY_PERFORMANCE_DRAFT)}
+    data = load_json(candidate)
+    trace_value = str(data.get("instruments_trace", "")).strip()
+    resolved_trace = Path(trace_value) if trace_value else None
+    if resolved_trace is not None and not resolved_trace.is_absolute():
+        resolved_trace = repo / resolved_trace
+    checks = data.get("accessibility_checks", {})
+    if not isinstance(checks, dict):
+        checks = {}
+    return {
+        "status": "present",
+        "summary": str(candidate),
+        "device": str(data.get("device", "")).strip() or "missing",
+        "dashboard_scroll_fps": data.get("dashboard_scroll_fps", "missing"),
+        "instruments_trace": trace_value or "missing",
+        "instruments_trace_exists": resolved_trace.exists() if resolved_trace else False,
+        "measured_at": str(data.get("measured_at", "")).strip() or "missing",
+        "app_commit": str(data.get("app_commit", "")).strip() or "missing",
+        "accessibility_checks": {
+            check: checks.get(check) is True
+            for check in ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS
+        },
+    }
+
+
 def trace_toc_sidecar(path: Path) -> Path:
     return path.with_name(path.name + ".toc.xml")
 
@@ -706,6 +740,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
         return {
             "status": "missing",
             "summary": str(repo / DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY) if explicit is None else str(explicit),
+            "draft": summarize_accessibility_draft(repo) if explicit is None else {"status": "not_considered"},
             "blockers": ["missing_accessibility_performance_summary"],
         }
 
@@ -765,6 +800,7 @@ def evaluate_accessibility_performance(repo: Path, explicit: Path | None = None)
     return {
         "status": "pass" if not blockers else "fail",
         "summary": str(candidate),
+        "draft": summarize_accessibility_draft(repo) if explicit is None else {"status": "not_considered"},
         "blockers": blockers,
         "device": device or "missing",
         "dashboard_scroll_fps": scroll_fps if isinstance(scroll_fps, (int, float)) else "missing",
@@ -980,6 +1016,24 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- App commit: `{accessibility.get('app_commit', 'missing')}`",
         f"- App build: `{accessibility.get('app_build', 'missing')}`",
     ])
+    draft = accessibility.get("draft", {})
+    if isinstance(draft, dict) and draft.get("status") == "present":
+        checks = draft.get("accessibility_checks", {})
+        if not isinstance(checks, dict):
+            checks = {}
+        passed_checks = sorted(check for check, passed in checks.items() if passed)
+        lines.extend([
+            "",
+            "### Accessibility Draft Evidence",
+            f"- Draft summary: `{draft.get('summary', 'missing')}`",
+            f"- Draft device: `{draft.get('device', 'missing')}`",
+            f"- Draft dashboard scroll fps: `{draft.get('dashboard_scroll_fps', 'missing')}`",
+            f"- Draft trace: `{draft.get('instruments_trace', 'missing')}`",
+            f"- Draft trace exists: `{draft.get('instruments_trace_exists', False)}`",
+            f"- Draft measured at: `{draft.get('measured_at', 'missing')}`",
+            f"- Draft app commit: `{draft.get('app_commit', 'missing')}`",
+            f"- Draft passed checks: `{', '.join(passed_checks) if passed_checks else 'none'}`",
+        ])
     trace_metadata = accessibility.get("instruments_trace_metadata", {})
     if isinstance(trace_metadata, dict) and trace_metadata:
         lines.append(
