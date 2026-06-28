@@ -5697,7 +5697,8 @@ final class SessionStore: ObservableObject {
                              end: end,
                              rest: rest,
                              maxHR: maxHR,
-                             source: source)
+                             source: source,
+                             allowManualSave: true)
     }
 
     func confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -5815,7 +5816,8 @@ final class SessionStore: ObservableObject {
                                       end requestedEnd: Date,
                                       rest: Int,
                                       maxHR: Int,
-                                      source: String) -> UserConfirmedWorkout? {
+                                      source: String,
+                                      allowManualSave: Bool = false) -> UserConfirmedWorkout? {
         guard requestedEnd > requestedStart else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
                   source,
@@ -5856,8 +5858,13 @@ final class SessionStore: ObservableObject {
                                   points: points,
                                   hrv: nil)
         let readiness = window.workoutReadiness(rest: rest, maxHR: maxHR)
-        let confirmable = readiness.observedDuration >= 10 * 60
+        let manualConfirmable = allowManualSave
+            && points.count >= 4
+            && readiness.observedDuration >= 60
+            && readiness.streamCoveragePercent >= 5
+        let confirmable = (readiness.observedDuration >= 10 * 60
             && (readiness.ready || readiness.nearMiss || readiness.strengthCandidate || readiness.streamCoveragePercent >= 20)
+        ) || manualConfirmable
         guard confirmable else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_candidate_too_weak source=%@ observed_s=%.0f stream_coverage_percent=%d ready=%d near_miss=%d strength_candidate=%d primary_blocker=%@ metric_promotions=0",
                   source,
@@ -5885,7 +5892,8 @@ final class SessionStore: ObservableObject {
         }
 
         let confidence = readiness.ready ? "live_window_user_confirmed" :
-            (readiness.nearMiss ? "live_window_near_miss" : "live_window_candidate")
+            (readiness.nearMiss ? "live_window_near_miss" :
+                (manualConfirmable ? "live_window_manual_confirmed" : "live_window_candidate"))
         let enriched = confirmedWorkoutMetrics(start: requestedStart,
                                                end: requestedEnd,
                                                rest: rest,
