@@ -1628,7 +1628,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var sleepGlanceDetailText: String {
         if let latest = sleepHistory.latest {
-            return latest.isNapEvidence ? "Last nap" : "Last"
+            if latest.confirmed {
+                return latest.isNapEvidence ? "Last nap" : "Last"
+            }
+            return latest.confirmationText
         }
         if sleepHistory.candidateCount > 0 { return "Review" }
         if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue == "Maybe" ? "Review" : "Last" }
