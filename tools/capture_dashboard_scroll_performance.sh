@@ -13,9 +13,10 @@ or terminating Atria:
   - Device screen recording covering the scroll window.
 
 During the countdown, put Atria's Today dashboard on screen. During the capture
-window, manually scroll the dashboard continuously. This script does not fake
-the FPS value: pass --measured-fps only after reading the trace/video evidence.
-Final mode requires --measured-fps and writes summary.json through
+window, manually scroll the dashboard continuously. This script exports the
+Core Animation FPS table and uses the measured max FPS. --measured-fps remains
+available only as an explicit override after reading trace/video evidence.
+Final mode requires measured FPS from the trace or override and writes summary.json through
 prepare_accessibility_performance_evidence.py.
 EOF
 }
@@ -75,11 +76,6 @@ if [[ -z "$device_id" ]]; then
   usage >&2
   exit 64
 fi
-if [[ "$final" -eq 1 && -z "$measured_fps" ]]; then
-  printf 'Final mode requires --measured-fps from a real dashboard scroll pass.\n' >&2
-  exit 64
-fi
-
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence_root="$repo_root/docs/evidence/accessibility-performance/dashboard-scroll-${stamp}"
@@ -168,6 +164,56 @@ if ! wait "$recording_pid"; then
 fi
 
 xcrun xctrace export --input "$evidence_root/dashboard-scroll.trace" --toc --output "$evidence_root/dashboard-scroll.trace.toc.xml" >/dev/null || true
+xcrun xctrace export \
+  --input "$evidence_root/dashboard-scroll.trace" \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="core-animation-fps-estimate"]' \
+  --output "$evidence_root/dashboard-scroll.fps.xml" >/dev/null || true
+
+extracted_fps=""
+if [[ -s "$evidence_root/dashboard-scroll.fps.xml" ]]; then
+  extracted_fps=$(
+    python3 - "$evidence_root/dashboard-scroll.fps.xml" "$evidence_root/dashboard-scroll.fps.txt" <<'PY'
+import re
+import statistics
+import sys
+from pathlib import Path
+
+xml_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+xml = xml_path.read_text(encoding="utf-8", errors="replace")
+values: list[float] = []
+by_id: dict[str, float] = {}
+for row in re.findall(r"<row>(.*?)</row>", xml, flags=re.S):
+    direct = re.search(r'<fps id="(\d+)"[^>]*>([0-9.]+)</fps>', row)
+    if direct:
+        value = float(direct.group(2))
+        by_id[direct.group(1)] = value
+        values.append(value)
+        continue
+    ref = re.search(r'<fps ref="(\d+)"\s*/>', row)
+    if ref and ref.group(1) in by_id:
+        values.append(by_id[ref.group(1)])
+
+if not values:
+    out_path.write_text("fps_status=missing\n", encoding="utf-8")
+    print("")
+else:
+    fps_max = max(values)
+    fps_mean = statistics.mean(values)
+    out_path.write_text(
+        "fps_status=ok\n"
+        + "fps_values=" + ",".join(f"{value:g}" for value in values) + "\n"
+        + f"fps_max={fps_max:g}\n"
+        + f"fps_mean={fps_mean:.2f}\n",
+        encoding="utf-8",
+    )
+    print(f"{fps_max:g}")
+PY
+  )
+fi
+if [[ -n "$extracted_fps" ]]; then
+  printf '\nExtracted Core Animation FPS max: %s\n' "$extracted_fps" >> "$evidence_root/README.md"
+fi
 
 if [[ -s "$evidence_root/screen-recording.mp4" ]] && command -v ffprobe >/dev/null 2>&1; then
   ffprobe -v error \
@@ -193,8 +239,13 @@ prepare_args=(
 if [[ -n "$app_commit" ]]; then
   prepare_args+=(--app-commit "$app_commit")
 fi
-if [[ -n "$measured_fps" ]]; then
-  prepare_args+=(--dashboard-scroll-fps "$measured_fps")
+fps_for_summary="${measured_fps:-$extracted_fps}"
+if [[ -n "$fps_for_summary" ]]; then
+  prepare_args+=(--dashboard-scroll-fps "$fps_for_summary")
+fi
+if [[ "$final" -eq 1 && -z "$fps_for_summary" ]]; then
+  printf 'Final mode requires measured FPS from the xctrace FPS table or --measured-fps override.\n' >&2
+  exit 64
 fi
 if [[ "$final" -eq 1 ]]; then
   prepare_args+=(--final)
@@ -205,4 +256,4 @@ printf 'ATRIA_DASHBOARD_SCROLL_PERFORMANCE evidence=%s logs=%s summary=%s measur
   "$evidence_root" \
   "$log_root" \
   "$repo_root/$summary_out" \
-  "${measured_fps:-pending}"
+  "${fps_for_summary:-pending}"
