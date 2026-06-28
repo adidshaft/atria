@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--measured-fps FPS] [--final]
+  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--xctrace-stop-grace 45] [--measured-fps FPS] [--final]
 
 Captures physical-device dashboard scroll evidence without installing, launching,
 or terminating Atria:
@@ -28,6 +28,7 @@ duration="12"
 countdown="5"
 measured_fps=""
 final=0
+xctrace_stop_grace="45"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +59,10 @@ while [[ $# -gt 0 ]]; do
     --final)
       final=1
       shift
+      ;;
+    --xctrace-stop-grace)
+      xctrace_stop_grace=${2:?--xctrace-stop-grace requires a value}
+      shift 2
       ;;
     -h|--help)
       usage
@@ -107,6 +112,33 @@ if [[ "$duration_int" -le 0 || "$countdown_int" -lt 0 ]]; then
   printf 'Duration must be positive and countdown must be non-negative.\n' >&2
   exit 64
 fi
+xctrace_stop_grace_int=$(printf '%.0f' "$xctrace_stop_grace")
+if [[ "$xctrace_stop_grace_int" -lt 5 ]]; then
+  printf 'xctrace stop grace must be at least 5 seconds.\n' >&2
+  exit 64
+fi
+
+wait_with_timeout() {
+  local pid_to_wait=$1
+  local timeout_s=$2
+  local label=$3
+  local elapsed=0
+  while kill -0 "$pid_to_wait" >/dev/null 2>&1; do
+    if [[ "$elapsed" -ge "$timeout_s" ]]; then
+      printf '%s did not finish after %ss; terminating pid %s.\n' "$label" "$timeout_s" "$pid_to_wait"
+      kill "$pid_to_wait" >/dev/null 2>&1 || true
+      sleep 2
+      if kill -0 "$pid_to_wait" >/dev/null 2>&1; then
+        kill -9 "$pid_to_wait" >/dev/null 2>&1 || true
+      fi
+      wait "$pid_to_wait" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid_to_wait"
+}
 
 cat > "$evidence_root/README.md" <<EOF
 # Dashboard Scroll Performance Capture
@@ -115,6 +147,7 @@ cat > "$evidence_root/README.md" <<EOF
 - Device: ${device_id}
 - Atria PID: ${pid}
 - Duration seconds: ${duration_int}
+- xctrace stop grace seconds: ${xctrace_stop_grace_int}
 - App commit: ${app_commit:-pending}
 - Interaction: manual continuous Today dashboard scroll during capture window
 
@@ -149,7 +182,7 @@ xcrun devicectl device capture screen-record \
   --codec h264 >"$log_root/screen-recording.log" 2>&1 &
 recording_pid=$!
 
-if ! wait "$xctrace_pid"; then
+if ! wait_with_timeout "$xctrace_pid" "$((duration_int + xctrace_stop_grace_int))" "xctrace"; then
   if [[ -e "$evidence_root/dashboard-scroll.trace" ]]; then
     printf 'xctrace reported run issues but saved the trace; continuing. See %s\n' "$log_root/xctrace.log"
     printf '\nxctrace reported run issues while stopping, but dashboard-scroll.trace was saved.\n' >> "$evidence_root/README.md"
