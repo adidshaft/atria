@@ -1019,6 +1019,28 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .padding(12)
                 .atriaInsetCard(tint: .secondary)
             } else {
+                if isEditingGlance {
+                    HStack(spacing: 8) {
+                        Label("Editing widgets", systemImage: "square.grid.2x2")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+
+                        Spacer(minLength: 8)
+
+                        Button {
+                            withAnimation(.snappy(duration: 0.2)) {
+                                isEditingGlance = false
+                            }
+                        } label: {
+                            Text("Done")
+                                .font(.caption.weight(.bold))
+                        }
+                        .buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))
+                    }
+                    .padding(.horizontal, 2)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
                     VStack(spacing: Self.glanceGridSpacing) {
                         ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
@@ -1336,12 +1358,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
         } label: {
-            Image(systemName: "xmark.circle.fill")
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, Color.red)
-                .font(.title3.weight(.bold))
+            Image(systemName: "xmark")
+                .font(.callout.weight(.black))
         }
-        .atriaGlassIconAction(tint: .red, size: 48)
+        .atriaGlassIconAction(tint: .red, size: 44)
         .contentShape(Circle())
         .accessibilityLabel("Remove \(metric.label) widget")
         .accessibilityHint("Removes this card from Today at a glance. Use the plus button to add it back.")
@@ -1861,9 +1881,9 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                 Label(actionTitle, systemImage: actionImage)
                     .font(.caption.weight(.bold))
                     .labelStyle(.titleAndIcon)
+                    .frame(minWidth: 96)
             }
-            .buttonStyle(.bordered)
-            .tint(tint)
+            .buttonStyle(AtriaCardActionButtonStyle(tint: tint))
         }
         .padding(12)
         .atriaInsetCard(tint: tint)

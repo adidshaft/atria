@@ -642,6 +642,7 @@ private struct AtriaConnectionGuideSheet: View {
     let context: AtriaConnectionGuideContext
     let continueSetup: () -> Void
     let retry: () -> Void
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -833,6 +834,14 @@ private struct AtriaConnectionGuideSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .background(AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency).ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .font(.body.weight(.semibold))
+                }
+            }
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 10) {
                     if horizontalSizeClass == .compact {
