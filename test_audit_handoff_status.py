@@ -975,6 +975,30 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
 
+    def test_owner_deferred_long_wear_and_scroll_proof_can_complete_current_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                skip_external_reference=True,
+                defer_physical_long_wear=True,
+                defer_accessibility_performance=True,
+            )
+            markdown = audit_handoff_status.markdown_summary(report)
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["physical_long_wear"]["status"], "missing")
+        self.assertEqual(report["accessibility_performance"]["status"], "missing")
+        self.assertEqual(report["deferred_gates"], [
+            "accessibility_performance_proof",
+            "physical_long_wear_acceptance",
+        ])
+        self.assertEqual(report["blockers"], [])
+        self.assertIn("- Deferred gates: `accessibility_performance_proof, physical_long_wear_acceptance`", markdown)
+
     def test_accessibility_performance_accepts_dashboard_scroll_swiftui_trace(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

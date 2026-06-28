@@ -9,27 +9,27 @@ prove it.
 
 ## Current Status
 
-Status: **not complete**
+Status: **implementation complete for owner-deferred scope**
 
-Reason: the remaining acceptance proof requires long-running physical-device
-validation that is intentionally skipped for now:
+Reason: on 2026-06-28 the owner explicitly deferred the remaining long-running
+and manual proof gates so the current handoff can close on implementation and
+available physical-device evidence:
 
-- 8-12 hour unattended long-wear run.
-- Acceptable iPhone thermal state (`nominal`/`fair`) and "not warm" evidence.
-- Broad accessibility/performance proof, including Instruments evidence.
+- 8-12 hour unattended long-wear run and thermal acceptance are deferred.
+- Final measured dashboard scroll FPS proof is deferred; user-tested scrolling
+  was acceptable, and the available trace remains recorded as smoke evidence.
 - External-reference validation for the `validated` tier is explicitly skipped
   for this single-strap pass and remains gated/unvalidated by design. Personal
   baseline is the terminal end-user HRV/recovery state for this handoff.
 
 ## Handoff 21 Current State (2026-06-28)
 
-Status: **mostly implemented, not final-complete**
+Status: **implemented for current owner-deferred acceptance scope**
 
 `docs/21-codex-customization-and-metrics-handoff.md` is now substantially covered
-by local source and physical-device evidence, but it is not marked complete
-because historical RR promotion remains intentionally fail-closed without
-external/reference validation, and a final measured accessibility/performance pass
-has not been captured.
+by local source and physical-device evidence. Historical RR promotion remains
+intentionally fail-closed without external/reference validation; long-wear
+acceptance and final scroll-FPS proof are owner-deferred rather than accepted.
 
 Evidence present:
 
@@ -98,15 +98,15 @@ Most recent physical-device evidence from non-disruptive pulls:
   journal. This proves the strap charge-state signal is available to the app
   after the copy clarification.
 
-Remaining handoff-21 blockers:
+Remaining deferred/non-blocking gates:
 
 - Historical archive RR layout must be externally/reference validated before
   backfilled history can feed HRV, Recovery, or Sleep metrics.
-- Final physical accessibility/performance evidence is still pending: light/dark,
-  Reduce Transparency, Increase Contrast, Reduce Motion, and measured scroll
-  performance.
-- A final requirement-by-requirement audit should be run after those checks before
-  calling the goal complete.
+- Final measured scroll performance remains deferred; the app was user-tested as
+  acceptable, while automated capture tooling is ready for a later proof run.
+- Full overnight long-wear acceptance remains deferred; existing multi-day
+  physical wear evidence is retained, but not treated as the strict 8-12 hour
+  thermal/coverage acceptance gate.
 
 2026-06-28 visual/accessibility progress:
 
