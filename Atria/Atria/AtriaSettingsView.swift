@@ -400,25 +400,10 @@ struct AtriaSettingsView: View {
 
                 Divider()
 
-                HStack(spacing: 12) {
-                    Image(systemName: "gauge.with.dots.needle.67percent")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.green)
-                        .frame(width: 38, height: 38)
-                        .background(AtriaIconTileBackground(cornerRadius: 12, tint: .green))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Recovery")
-                            .font(.headline.weight(.semibold))
-                        Text(target.summaryText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.78)
-                    }
-
-                    Spacer(minLength: 0)
-                }
+                targetGroupHeader(title: "Recovery",
+                                  subtitle: target.summaryText,
+                                  systemImage: "gauge.with.dots.needle.67percent",
+                                  tint: .green)
 
                 Stepper(value: $recoveryGreenLower, in: 40...95, step: 1) {
                     LabeledContent("Green starts") {
@@ -444,6 +429,11 @@ struct AtriaSettingsView: View {
 
                 Divider()
 
+                targetGroupHeader(title: "Strain",
+                                  subtitle: "Recovery-scaled target band for day load.",
+                                  systemImage: "figure.run",
+                                  tint: .orange)
+
                 Stepper(value: $strainGreenBand, in: 0.5...5.0, step: 0.5) {
                     LabeledContent("Strain green band") {
                         Text(String(format: "+/-%.1f", strainGreenBand))
@@ -467,6 +457,11 @@ struct AtriaSettingsView: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
 
                 Divider()
+
+                targetGroupHeader(title: "Training load",
+                                  subtitle: "ACWR and monotony bands for readiness guidance.",
+                                  systemImage: "chart.bar.xaxis",
+                                  tint: .orange)
 
                 Stepper(value: $loadACWRWatchLow, in: 0.50...1.00, step: 0.05) {
                     LabeledContent("ACWR low watch") {
@@ -529,6 +524,11 @@ struct AtriaSettingsView: View {
 
                 Divider()
 
+                targetGroupHeader(title: "Activity",
+                                  subtitle: "Daily steps and estimated active calories goals.",
+                                  systemImage: "figure.walk.motion",
+                                  tint: .green)
+
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
                     LabeledContent("Steps goal") {
                         Text("\(stepsGoal)")
@@ -552,6 +552,11 @@ struct AtriaSettingsView: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
 
                 Divider()
+
+                targetGroupHeader(title: "Sleep",
+                                  subtitle: "Duration goal and efficiency bands for sleep history.",
+                                  systemImage: "bed.double.fill",
+                                  tint: .cyan)
 
                 Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
                     LabeledContent("Sleep goal") {
@@ -584,6 +589,11 @@ struct AtriaSettingsView: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
 
                 Divider()
+
+                targetGroupHeader(title: "Personal baselines",
+                                  subtitle: "HRV and resting-HR ranges wait for trusted baseline data.",
+                                  systemImage: "heart.text.square.fill",
+                                  tint: .pink)
 
                 Stepper(value: $hrvGreenRatio, in: 0.70...1.10, step: 0.01) {
                     LabeledContent("HRV green") {
@@ -624,6 +634,11 @@ struct AtriaSettingsView: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
 
                 Divider()
+
+                targetGroupHeader(title: "Research vitals",
+                                  subtitle: "Sleep-only respiratory, relative skin-temp, and oxygen evidence bands.",
+                                  systemImage: "waveform.path.ecg",
+                                  tint: .teal)
 
                 Stepper(value: $respiratoryGreenDelta, in: 0.5...4.0, step: 0.5) {
                     LabeledContent("Resp green band") {
@@ -673,6 +688,11 @@ struct AtriaSettingsView: View {
 
                 Divider()
 
+                targetGroupHeader(title: "Body age",
+                                  subtitle: "Younger/older delta bands for the local estimate.",
+                                  systemImage: "figure.stand",
+                                  tint: .purple)
+
                 Stepper(value: $biologicalAgeGreenOlderDelta, in: -10...10, step: 1) {
                     LabeledContent("Body age green") {
                         Text("\(biologicalAgeGreenOlderDelta > 0 ? "+" : "")\(biologicalAgeGreenOlderDelta)y")
@@ -696,6 +716,11 @@ struct AtriaSettingsView: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
 
                 Divider()
+
+                targetGroupHeader(title: "VO2max",
+                                  subtitle: "Trend gain or decline needed for target colors.",
+                                  systemImage: "lungs.fill",
+                                  tint: .blue)
 
                 Stepper(value: $vo2GreenDelta, in: 0.0...2.0, step: 0.1) {
                     LabeledContent("VO2 green gain") {
@@ -735,6 +760,34 @@ struct AtriaSettingsView: View {
         } footer: {
             Text("Recovery uses recommended 67/34 zones by default. Guidance is general wellness information, not medical advice.")
         }
+    }
+
+    private func targetGroupHeader(title: String,
+                                   subtitle: String,
+                                   systemImage: String,
+                                   tint: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 38, height: 38)
+                .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var alertsSection: some View {

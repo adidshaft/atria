@@ -961,6 +961,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)",
             "AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)",
             "Choose, reorder, and reset the cards shown at a glance.",
+            "private func targetGroupHeader(title: String,",
+            "targetGroupHeader(title: \"Recovery\"",
+            "targetGroupHeader(title: \"Strain\"",
+            "targetGroupHeader(title: \"Training load\"",
+            "targetGroupHeader(title: \"Activity\"",
+            "targetGroupHeader(title: \"Sleep\"",
+            "targetGroupHeader(title: \"Personal baselines\"",
+            "targetGroupHeader(title: \"Research vitals\"",
+            "targetGroupHeader(title: \"Body age\"",
+            "targetGroupHeader(title: \"VO2max\"",
         ]:
             assert_contains(self, settings, needle)
         assert_not_contains(self, settings, "private func canHideTodayMetric(_ metric: AtriaTodayMetric,")
