@@ -3179,8 +3179,7 @@ private struct AtriaHomeTopChrome: View {
 
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 44
-    static let batteryWidth: CGFloat = 108
-    static let statusMinWidth: CGFloat = 132
+    static let statusMinWidth: CGFloat = 96
     static let iconSpacing: CGFloat = 4
 }
 
@@ -3196,80 +3195,25 @@ private struct AtriaHeaderBatteryIndicator: View {
         }
     }
 
-    private var phonePowerText: String {
-        switch phoneBatteryState {
-        case .charging: return "Charging"
-        case .full: return "Full"
-        case .unplugged: return "On battery"
-        case .unknown: return "Unknown"
-        @unknown default: return "Unknown"
-        }
-    }
-
-    private var phonePowerAccessibilityText: String {
-        switch phoneBatteryState {
-        case .charging: return "iPhone charging"
-        case .full: return "iPhone full"
-        case .unplugged: return "iPhone on battery"
-        case .unknown: return "iPhone power unknown"
-        @unknown default: return "iPhone power unknown"
-        }
-    }
-
-    private var phonePowerSymbol: String {
-        switch phoneBatteryState {
-        case .charging, .full: return "iphone.gen3.radiowaves.left.and.right"
-        case .unplugged: return "iphone.gen3"
-        case .unknown: return "questionmark.circle"
-        @unknown default: return "questionmark.circle"
-        }
-    }
-
-    private var phonePowerTint: Color {
-        switch phoneBatteryState {
-        case .charging, .full: return .green
-        case .unplugged: return .secondary
-        case .unknown: return .secondary
-        @unknown default: return .secondary
-        }
-    }
-
     var body: some View {
-        HStack(spacing: 6) {
+        // Compact: just the strap battery glyph + % (the bolt in the glyph already
+        // shows charging). Phone power lives in the iOS status bar — showing it here
+        // made the header overflow off the screen edge.
+        HStack(spacing: 4) {
             Image(systemName: liveStore.state.batterySymbol)
                 .font(.footnote.weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
                 .imageScale(.small)
-
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 3) {
-                    Text(liveStore.state.batteryText)
-                    if liveStore.state.batteryHeaderChargeText != "--" {
-                        Text("·")
-                        Text(liveStore.state.batteryHeaderChargeText)
-                    }
-                }
+            Text(liveStore.state.batteryText)
                 .font(.caption2.weight(.bold))
                 .lineLimit(1)
-                .minimumScaleFactor(0.58)
-
-                HStack(spacing: 3) {
-                    Image(systemName: phonePowerSymbol)
-                        .imageScale(.small)
-                    Text(phonePowerText)
-                }
-                .font(.system(size: 8.5, weight: .semibold))
-                .foregroundStyle(phonePowerTint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.54)
-            }
+                .minimumScaleFactor(0.7)
         }
         .foregroundStyle(tint)
-        .frame(width: AtriaHeaderControlMetrics.batteryWidth,
-               height: AtriaHeaderControlMetrics.height)
+        .frame(height: AtriaHeaderControlMetrics.height)
+        .padding(.horizontal, 9)
         .atriaChromeCapsule(tint: tint)
         .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryAccessibilityChargeText).")
-        .accessibilityHint("iPhone power: \(phonePowerAccessibilityText).")
     }
 }
 
@@ -3308,7 +3252,7 @@ private struct AtriaTopStatusChip: View {
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 12)
         .frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
