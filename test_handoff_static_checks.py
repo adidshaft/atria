@@ -1232,7 +1232,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .levelOnly: return \"State pending\"",
             "case .notCharging: return \"Not charging\"",
             "case .charging: return \"Charge\"",
-            "case .notCharging: return \"No plug\"",
+            "case .notCharging: return \"Strap\"",
             "Battery level is live; waiting for charger-state signal",
             "return \"\\(batteryText) · \\(batteryChargeCompactText)\"",
             "if batteryShowsPowered { return \"battery.100percent.bolt\" }",

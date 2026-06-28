@@ -1511,7 +1511,7 @@ final class AtriaHomeModel {
             switch batteryChargeStatus {
             case .levelOnly: return "--"
             case .charging: return "Charge"
-            case .notCharging: return "No plug"
+            case .notCharging: return "Strap"
             case .full: return "Full"
             }
         }
