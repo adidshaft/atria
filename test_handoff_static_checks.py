@@ -5044,6 +5044,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "exclamationmark.triangle.fill",
             "General wellness guidance only, not medical advice.",
             "struct AtriaMetricZoneInfoSheet: View",
+            "@Environment(\\.dismiss) private var dismiss",
+            ".navigationTitle(\"Metric info\")",
+            "ToolbarItem(placement: .topBarTrailing)",
+            "Button(\"Done\")",
+            "dismiss()",
         ]:
             assert_contains(self, targets, needle)
 
