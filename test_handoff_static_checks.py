@@ -3993,6 +3993,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let biologicalAgeSummary: BiologicalAgeSummary",
             "AtriaMetricTile(label: \"Body age\"",
+            "AtriaMetricTile(label: \"Delta\"",
+            "targetMetric: .bioAge",
             "AtriaMetricTile(label: \"Aging pace\"",
             "biologicalAgeSummary.agingPaceText",
             "biologicalAgeSummary.agingPaceDetail",

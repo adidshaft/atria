@@ -992,14 +992,16 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
                                 state: summary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? (summary.isReady ? .purple : .orange),
                                 footnote: summary.isReady ? summary.detailText : "Building baseline",
-                                zone: biologicalAgeZone)
+                                zone: biologicalAgeZone,
+                                targetMetric: .bioAge)
                 AtriaMetricTile(label: "Delta",
                                 value: summary.ageDelta.map { "\($0 > 0 ? "+" : "")\($0)" } ?? "--",
                                 unit: summary.ageDelta == nil ? nil : "yr",
                                 state: summary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? deltaTint,
                                 footnote: summary.isReady ? summary.detailText : "Needs baseline",
-                                zone: biologicalAgeZone)
+                                zone: biologicalAgeZone,
+                                targetMetric: .bioAge)
                 AtriaMetricTile(label: "Pace",
                                 value: summary.agingPaceText,
                                 state: summary.isReady ? .estimate : .learning,
