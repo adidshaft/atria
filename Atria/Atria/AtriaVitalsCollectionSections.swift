@@ -13,10 +13,33 @@ struct AtriaVitalsTabContent: View {
     let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
     @AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = ""
+    @State private var isEditingVitalsLayout = false
 
     var body: some View {
         let sections = AtriaVitalsSection.ordered(from: sectionOrderCSV)
         VStack(spacing: 18) {
+            if isEditingVitalsLayout {
+                HStack(spacing: 8) {
+                    Label("Editing Vitals", systemImage: "rectangle.3.group")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            isEditingVitalsLayout = false
+                        }
+                    } label: {
+                        Text("Done")
+                            .font(.caption.weight(.bold))
+                    }
+                    .buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))
+                }
+                .padding(.horizontal, 2)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             Group {
                 if horizontalSizeClass == .regular {
                     HStack(alignment: .top, spacing: 18) {
@@ -66,8 +89,23 @@ struct AtriaVitalsTabContent: View {
             case .profile: profileCard
             }
         }
-        .draggable(section.dragPayload)
+        .overlay(alignment: .topTrailing) {
+            if isEditingVitalsLayout {
+                vitalsSectionEditControls(for: section)
+                    .padding(10)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.card, style: .continuous))
+        .onLongPressGesture(minimumDuration: 0.45) {
+            withAnimation(.snappy(duration: 0.2)) {
+                isEditingVitalsLayout = true
+            }
+        }
+        .modifier(AtriaConditionalVitalsStringDraggable(isEnabled: isEditingVitalsLayout,
+                                                        payload: section.dragPayload))
         .dropDestination(for: String.self) { items, _ in
+            guard isEditingVitalsLayout else { return false }
             guard let raw = items.first,
                   let dragged = AtriaVitalsSection.draggedSection(from: raw) else { return false }
             sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
@@ -79,7 +117,35 @@ struct AtriaVitalsTabContent: View {
         .accessibilityAction(named: Text("Move \(section.label) down")) {
             moveSection(section, direction: 1)
         }
-        .accessibilityHint("Drag to reorder this Vitals section, or use actions to move it.")
+        .accessibilityHint("Long press to edit, then drag to reorder this Vitals section or use the visible move controls.")
+    }
+
+    private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    moveSection(section, direction: -1)
+                }
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.caption.weight(.black))
+            }
+            .atriaGlassIconAction(tint: .secondary, size: 44)
+            .accessibilityLabel("Move \(section.label) up")
+
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    moveSection(section, direction: 1)
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.black))
+            }
+            .atriaGlassIconAction(tint: .secondary, size: 44)
+            .accessibilityLabel("Move \(section.label) down")
+        }
+        .fixedSize()
+        .accessibilityElement(children: .contain)
     }
 
     private func moveSection(_ section: AtriaVitalsSection, direction: Int) {
@@ -92,6 +158,7 @@ struct AtriaVitalsTabContent: View {
 
     private func resetVitalsLayout() {
         sectionOrderCSV = AtriaVitalsSection.allCases.map(\.rawValue).joined(separator: ",")
+        isEditingVitalsLayout = false
     }
 
     private var pulseCard: some View {
@@ -175,6 +242,20 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
         guard next != index else { return order.map(\.rawValue).joined(separator: ",") }
         order.swapAt(index, next)
         return order.map(\.rawValue).joined(separator: ",")
+    }
+}
+
+private struct AtriaConditionalVitalsStringDraggable: ViewModifier {
+    let isEnabled: Bool
+    let payload: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.draggable(payload)
+        } else {
+            content
+        }
     }
 }
 
