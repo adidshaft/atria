@@ -525,9 +525,8 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
                         .font(.caption2.weight(.bold))
                         .accessibilityHidden(true)
                 }
-                Image(systemName: "info.circle")
-                    .font(.caption2.weight(.bold))
-                    .symbolRenderingMode(.hierarchical)
+                Text("(i)")
+                    .font(.caption2.weight(.black).monospaced())
                     .accessibilityHidden(true)
             }
             .foregroundStyle(zone.tint)
