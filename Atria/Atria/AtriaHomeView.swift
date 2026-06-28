@@ -1235,14 +1235,28 @@ private struct AtriaMissedDataBanner: View, Equatable {
 
             Spacer(minLength: 0)
 
-            Button(action: onSync) {
-                Text(protectsLiveStream ? "Queued" : "Sync")
+            if protectsLiveStream {
+                Text("Protected")
                     .font(.caption.weight(.bold))
+                    .foregroundStyle(.cyan)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
-                    .frame(minWidth: protectsLiveStream ? 76 : 48)
+                    .frame(minWidth: 82)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(AtriaIconTileBackground(cornerRadius: 14, tint: .cyan))
+                    .accessibilityLabel("Missed data protected")
+                    .accessibilityHint("Atria will sync missed strap data after the live heart rate stream is stable.")
+            } else {
+                Button(action: onSync) {
+                    Text("Sync")
+                        .font(.caption.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(minWidth: 48)
+                }
+                .atriaCardAction(tint: .cyan)
             }
-            .atriaCardAction(tint: .cyan)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
