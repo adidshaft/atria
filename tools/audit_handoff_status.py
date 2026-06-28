@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -179,6 +180,12 @@ def running_long_wear_progress(metadata: dict[str, object],
     return progress
 
 
+def launchctl_long_wear_label(label: object) -> str:
+    raw = str(label or "run")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
+    return f"com.adidshaft.atria.longwear.{safe or 'run'}"
+
+
 def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     if explicit:
         candidate = explicit if explicit.is_absolute() else repo / explicit
@@ -243,6 +250,8 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
     result = {
         "status": "in_progress",
         "summary": str(samples_path),
+        "label": metadata.get("label", samples_path.parent.name),
+        "launchctl_label": launchctl_long_wear_label(metadata.get("label", samples_path.parent.name)),
         "acceptance_status": "running",
         "acceptance_blockers": ["overnight_summary_pending"],
         "audit_blockers": ["overnight_summary_pending"],
@@ -737,6 +746,8 @@ def markdown_summary(report: dict[str, object]) -> str:
         "",
         "## Physical Long-Wear",
         f"- Summary: `{physical['summary']}`",
+        f"- Label: `{physical.get('label', 'missing')}`",
+        f"- Launchctl label: `{physical.get('launchctl_label', 'missing')}`",
         f"- Preset: `{physical.get('preset', 'missing')}`",
         f"- Planned samples: `{physical.get('planned_samples', 'missing')}`",
         f"- Planned duration seconds: `{physical.get('planned_duration_s', 'missing')}`",

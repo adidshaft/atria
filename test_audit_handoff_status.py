@@ -163,6 +163,16 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(progress["running_next_sample_due_at"], "2026-06-28T01:00:00Z")
         self.assertEqual(progress["running_expected_finish_at"], "2026-06-28T09:00:00Z")
 
+    def test_long_wear_launchctl_label_matches_detached_monitor_format(self):
+        self.assertEqual(
+            audit_handoff_status.launchctl_long_wear_label("overnight handoff/21"),
+            "com.adidshaft.atria.longwear.overnight-handoff-21",
+        )
+        self.assertEqual(
+            audit_handoff_status.launchctl_long_wear_label(""),
+            "com.adidshaft.atria.longwear.run",
+        )
+
     def test_reports_physical_blockers_from_failed_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -397,6 +407,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
             running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
             running.parent.mkdir(parents=True)
             (running.parent / "run.json").write_text(json.dumps({
+                "label": "overnight-current",
                 "preset": "overnight",
                 "planned_samples": 11,
                 "planned_duration_s": 36_000,
@@ -418,6 +429,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["acceptance_status"], "running")
         self.assertIn("overnight_summary_pending", physical["audit_blockers"])
         self.assertEqual(physical["running_samples"], 1)
+        self.assertEqual(physical["label"], "overnight-current")
+        self.assertEqual(physical["launchctl_label"], "com.adidshaft.atria.longwear.overnight-current")
         self.assertEqual(physical["latest_recent_session_span_s"], 43578.6)
         self.assertEqual(physical["app_commit"], "installed-app")
         self.assertEqual(physical["monitor_commit"], "monitor-tooling")
