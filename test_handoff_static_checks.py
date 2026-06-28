@@ -725,7 +725,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var sleepGlanceValueText: String",
             "guard sleepHistory.candidateCount > 0 else { return \"--\" }",
             "private var sleepGlanceDetailText: String",
-            "return sleepHistory.candidateCount == 1 ? \"Review candidate\" : \"Review candidates\"",
+            "return \"Review\"",
             "private var sleepGlanceTint: Color",
             "sleepHistory.candidateCount > 0 ? .cyan : .orange",
             "private var sleepHistoryCard: some View",
