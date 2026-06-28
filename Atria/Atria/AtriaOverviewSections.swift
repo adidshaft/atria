@@ -1616,15 +1616,23 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepGlanceValueText: String {
+        if let latest = sleepHistory.latest {
+            return latest.durationText
+        }
+        if sleepHistory.candidateCount > 0 {
+            return "\(sleepHistory.candidateCount)"
+        }
         if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue }
-        guard sleepHistory.candidateCount > 0 else { return "--" }
-        return "\(sleepHistory.candidateCount)"
+        return "--"
     }
 
     private var sleepGlanceDetailText: String {
-        if !metricIsPending(snapshot.sleepValue) { return "Last" }
-        guard sleepHistory.candidateCount > 0 else { return "Learning" }
-        return "Review"
+        if let latest = sleepHistory.latest {
+            return latest.isNapEvidence ? "Last nap" : "Last"
+        }
+        if sleepHistory.candidateCount > 0 { return "Review" }
+        if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue == "Maybe" ? "Review" : "Last" }
+        return "Learning"
     }
 
     private var sleepGlanceTint: Color {
