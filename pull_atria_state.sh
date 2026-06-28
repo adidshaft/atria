@@ -349,6 +349,7 @@ def emit_historical_archive_summary():
     if not archive_path.exists():
         print("historical_archive_summary_status=missing")
         print("historical_archive_metric_ready=0")
+        print("historical_archive_metric_promotion_blocker=missing_archive")
         print("historical_archive_interpretation=missing_archive")
         return
     rows = 0
@@ -470,6 +471,7 @@ def emit_historical_archive_summary():
         print(f"historical_archive_clock_corrected_unix_last={max(corrected_values)}")
     print(f"historical_archive_metric_ready={1 if metric_ready else 0}")
     print(f"historical_archive_metric_gate={metric_gate}")
+    print(f"historical_archive_metric_promotion_blocker={metric_gate if not metric_ready else 'none'}")
     print(f"historical_archive_user_action={user_action}")
     print(f"historical_archive_interpretation={interpretation}")
 
