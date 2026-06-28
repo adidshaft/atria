@@ -1502,7 +1502,7 @@ final class AtriaHomeModel {
             switch batteryChargeStatus {
             case .levelOnly: return "State pending"
             case .charging: return "Charging"
-            case .notCharging: return "Not chg"
+            case .notCharging: return "Not charging"
             case .full: return "Full"
             }
         }
@@ -1510,8 +1510,8 @@ final class AtriaHomeModel {
             guard batteryLevel >= 0 else { return "--" }
             switch batteryChargeStatus {
             case .levelOnly: return "--"
-            case .charging: return "Chg"
-            case .notCharging: return "No chg"
+            case .charging: return "Charge"
+            case .notCharging: return "No plug"
             case .full: return "Full"
             }
         }
