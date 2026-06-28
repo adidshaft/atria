@@ -2251,7 +2251,7 @@ extension SavedSession {
                                          avgHR: avg, peakHR: peak,
                                          reason: "\(stepClause); HR workout gate not met; not counted as workout")
             }
-            if duration >= 3 * 60 * 60 && overnight && lowHR {
+            if duration >= AggregateSleepCandidate.strictMinimumDuration && overnight && lowHR {
                 let motionClause = motionHintCountValue > 0
                     ? "diagnostic motion observed unvalidated (\(motionHintKindsValue))"
                     : "motion not decoded"
@@ -2259,6 +2259,15 @@ extension SavedSession {
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
                                          reason: "HR-only overnight low-HR window; \(motionClause)")
+            }
+            if duration >= AggregateSleepCandidate.napMinimumDuration && overnight && lowHR {
+                let motionClause = motionHintCountValue > 0
+                    ? "diagnostic motion observed unvalidated (\(motionHintKindsValue))"
+                    : "motion not decoded"
+                return ActivityDetection(id: id, kind: .sleepCandidate, confidence: .low,
+                                         start: start, end: end, duration: duration,
+                                         avgHR: avg, peakHR: peak,
+                                         reason: "HR-only short overnight low-HR window; \(motionClause); user confirmation recommended")
             }
         }
         if duration < 3 * 60 * 60
@@ -2655,7 +2664,7 @@ final class SessionStore: ObservableObject {
     private func refreshHistorySnapshotCache(deferred: Bool = true) {
         historySnapshotRevision &+= 1
         let revision = historySnapshotRevision
-        let sourceSessions = sessions
+        let sourceSessions = canonicalSessions(includeActiveJournal: true)
         let confirmedWorkouts = cachedConfirmedWorkouts
         let confirmedSleeps = cachedConfirmedSleeps
         let baselineSnapshot = baseline
