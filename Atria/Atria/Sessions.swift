@@ -6047,6 +6047,16 @@ final class SessionStore: ObservableObject {
     }
 
     private static func defaultManualSleepStages(start: Date, end: Date, isNap: Bool) -> [SleepStageSegment] {
+        defaultSleepStageEstimate(start: start,
+                                  end: end,
+                                  isNap: isNap,
+                                  idPrefix: "manual")
+    }
+
+    private static func defaultSleepStageEstimate(start: Date,
+                                                  end: Date,
+                                                  isNap: Bool,
+                                                  idPrefix: String) -> [SleepStageSegment] {
         let duration = max(0, end.timeIntervalSince(start))
         guard duration > 0 else { return [] }
         let pattern: [(SleepStageKind, Double)] = isNap
@@ -6059,7 +6069,7 @@ final class SessionStore: ObservableObject {
                 : min(end, cursor.addingTimeInterval(duration * item.1))
             defer { cursor = next }
             guard next > cursor else { return nil }
-            return SleepStageSegment(id: "\(Int(cursor.timeIntervalSince1970))-\(item.0.rawValue)",
+            return SleepStageSegment(id: "\(idPrefix)-\(Int(cursor.timeIntervalSince1970))-\(index)-\(item.0.rawValue)",
                                      start: cursor,
                                      end: next,
                                      stage: item.0)
@@ -6185,7 +6195,55 @@ final class SessionStore: ObservableObject {
               let decoded = try? JSONDecoder().decode([UserConfirmedSleep].self, from: data) else {
             return []
         }
-        return decoded.sorted { $0.start > $1.start }
+        let sorted = decoded.sorted { $0.start > $1.start }
+        let migrated = sorted.map(Self.migratingConfirmedSleepStagesIfNeeded)
+        if migrated != sorted, let data = try? JSONEncoder().encode(migrated) {
+            UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
+            let migratedCount = zip(sorted, migrated).filter { $0.stageSegments != $1.stageSegments }.count
+            AtriaDebugLog("ATRIADBG sleep_confirmed_migration status=updated records=%d reason=legacy_missing_stage_segments",
+                          migratedCount)
+        }
+        return migrated
+    }
+
+    private static func migratingConfirmedSleepStagesIfNeeded(_ sleep: UserConfirmedSleep) -> UserConfirmedSleep {
+        if let stageSegments = sleep.stageSegments, !stageSegments.isEmpty {
+            return sleep
+        }
+        let isNap = confirmedSleepSourceIsNap(source: sleep.source,
+                                              duration: sleep.duration)
+        let migratedStages = defaultSleepStageEstimate(start: sleep.start,
+                                                       end: sleep.end,
+                                                       isNap: isNap,
+                                                       idPrefix: "migrated")
+        guard !migratedStages.isEmpty else { return sleep }
+        return UserConfirmedSleep(id: sleep.id,
+                                  createdAt: sleep.createdAt,
+                                  start: sleep.start,
+                                  end: sleep.end,
+                                  source: sleep.source,
+                                  confidence: sleep.confidence,
+                                  sessions: sleep.sessions,
+                                  samples: sleep.samples,
+                                  avgHR: sleep.avgHR,
+                                  peakHR: sleep.peakHR,
+                                  restingHR: sleep.restingHR,
+                                  duration: sleep.duration,
+                                  span: sleep.span,
+                                  reason: sleep.reason,
+                                  motionSource: sleep.motionSource,
+                                  motionValidated: sleep.motionValidated,
+                                  stageSegments: migratedStages)
+    }
+
+    private static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
+        if SleepHistorySnapshot.Night.explicitNapSources.contains(source) {
+            return true
+        }
+        if SleepHistorySnapshot.Night.explicitSleepSources.contains(source) {
+            return false
+        }
+        return duration <= AggregateSleepCandidate.napMaximumSpan
     }
 
     private func saveConfirmedSleeps(_ sleeps: [UserConfirmedSleep]) {
