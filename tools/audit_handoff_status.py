@@ -337,6 +337,13 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         "battery_delta": "pending",
         "latest_recent_session_span_s": sessions.get("recent_span_s", 0),
         "latest_recent_session_coverage_percent": sessions.get("recent_coverage_percent", 0),
+        "latest_active_status": active.get("status", "missing"),
+        "latest_active_duration_s": active.get("duration_s", 0),
+        "latest_active_accepted_hr": active.get("accepted_hr", 0),
+        "latest_active_delta_rr": active.get("delta_rr", 0),
+        "latest_active_segments": active.get("segments", 0),
+        "latest_active_battery": active.get("battery", "missing"),
+        "latest_active_bpm": active.get("latest_bpm", "missing"),
         "preset": metadata.get("preset", "overnight"),
         "planned_samples": metadata.get("planned_samples", MIN_OVERNIGHT_PLANNED_SAMPLES),
         "planned_duration_s": metadata.get("planned_duration_s", MIN_OVERNIGHT_PLANNED_DURATION_S),
@@ -857,6 +864,13 @@ def markdown_summary(report: dict[str, object]) -> str:
             f"({format_diagnostic_value(physical.get('running_next_sample_overdue_s', 'missing'))}s)",
             f"- Expected finish: `{physical.get('running_expected_finish_at', 'missing')}`",
             f"- Latest sample: `{physical.get('latest_sample', 'missing')}` at `{physical.get('latest_sample_at', 'missing')}`",
+            f"- Latest active journal: `{physical.get('latest_active_status', 'missing')}`, "
+            f"duration `{format_diagnostic_value(physical.get('latest_active_duration_s', 'missing'))}s`, "
+            f"HR `{physical.get('latest_active_accepted_hr', 'missing')}`, "
+            f"RR `{physical.get('latest_active_delta_rr', 'missing')}`, "
+            f"segments `{physical.get('latest_active_segments', 'missing')}`, "
+            f"battery `{physical.get('latest_active_battery', 'missing')}`, "
+            f"BPM `{physical.get('latest_active_bpm', 'missing')}`",
             f"- Latest sample log: `{physical.get('latest_sample_log', 'missing')}`",
         ])
 
