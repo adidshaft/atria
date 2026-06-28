@@ -5655,6 +5655,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "func testHRVAnalyzerRequiresContinuousCleanRRWindow()",
             "func testTrainingLoadFlagsUnsafeSpikesAndBalancedLoad()",
             "func testTargetZonesUseHandoffThresholdsAndStayBaselineGated()",
+            "func testPureDailyAggregationsHandleStepsCaloriesAndZones()",
+            "AtriaAnalytics.Daily.stepsDaily",
+            "AtriaAnalytics.Daily.dayCalories",
+            "AtriaAnalytics.Strain.maxHeartRateZoneSeconds",
             "AtriaAnalytics.CalibrationExamples.numericChecks",
             "AtriaAnalytics.CalibrationExamples.labelChecks",
         ]:

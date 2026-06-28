@@ -258,6 +258,52 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(elevatedRHR?.warningSystemImage, "exclamationmark.circle")
     }
 
+    func testPureDailyAggregationsHandleStepsCaloriesAndZones() {
+        let motion = AtriaAnalytics.Daily.stepsDaily([
+            .init(steps: 120, distanceMeters: 80, floorsAscended: 1, floorsDescended: 0),
+            .init(steps: -20, distanceMeters: nil, floorsAscended: nil, floorsDescended: 2),
+            .init(steps: 380, distanceMeters: 220, floorsAscended: 3, floorsDescended: -1)
+        ])
+
+        XCTAssertEqual(motion.steps, 500)
+        XCTAssertEqual(motion.distanceMeters, 300)
+        XCTAssertEqual(motion.floorsAscended, 4)
+        XCTAssertEqual(motion.floorsDescended, 2)
+
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = AthleteProfile(age: 35,
+                                     measuredMaxHR: 185,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 75,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        let activeCalories = AtriaAnalytics.Daily.dayCalories([
+            .init(t: start, bpm: 60),
+            .init(t: start.addingTimeInterval(60), bpm: 130),
+            .init(t: start.addingTimeInterval(120), bpm: 150)
+        ], rest: 60, profile: profile)
+        XCTAssertGreaterThan(activeCalories ?? 0, 4.0)
+
+        let gapDroppedCalories = AtriaAnalytics.Daily.dayCalories([
+            .init(t: start, bpm: 60),
+            .init(t: start.addingTimeInterval(600), bpm: 150)
+        ], rest: 60, profile: profile)
+        XCTAssertEqual(gapDroppedCalories, 0)
+
+        let zoneSeconds = AtriaAnalytics.Strain.maxHeartRateZoneSeconds([
+            (0, 90), (60, 110), (120, 130), (180, 150), (240, 170), (300, 190), (900, 190)
+        ], maxHR: 200)
+        XCTAssertEqual(zoneSeconds.rest, 0)
+        XCTAssertEqual(zoneSeconds.warmup, 60)
+        XCTAssertEqual(zoneSeconds.fatBurn, 60)
+        XCTAssertEqual(zoneSeconds.aerobic, 60)
+        XCTAssertEqual(zoneSeconds.anaerobic, 60)
+        XCTAssertEqual(zoneSeconds.max, 60)
+        XCTAssertEqual(zoneSeconds.droppedGapSeconds, 600)
+    }
+
     func testBodyAgeAndResearchZonesAreHonestEstimates() {
         let readySummary = AtriaAnalytics.BiologicalAge.summary(
             chronologicalAge: 40,
