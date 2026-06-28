@@ -673,6 +673,33 @@ def format_diagnostic_value(value: object) -> str:
     return str(value)
 
 
+def next_evidence_items(report: dict[str, object]) -> list[str]:
+    blockers = report.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = [str(blockers)]
+    blocker_set = {str(item) for item in blockers}
+    items: list[str] = []
+    if {"overnight_summary_pending", "physical_long_wear_acceptance"} & blocker_set:
+        physical = report.get("physical_long_wear", {})
+        if isinstance(physical, dict):
+            items.append(
+                "Wait for the overnight long-wear monitor to write `summary.json`, then require "
+                "`acceptance_status=pass`, at least 9 successful samples, at least 8h persisted-session span, "
+                "at least 85% coverage, accepted-gap <= 30s, nominal/fair thermal, and battery drop within limit."
+            )
+    if "dashboard_scroll_fps" in blocker_set:
+        items.append(
+            "Measure real dashboard scroll FPS on the physical iPhone 15 Pro Release app. "
+            "Then run `tools/capture_accessibility_visual_evidence.sh --device <device> --app-commit <installed-app-commit> "
+            "--dashboard-scroll-fps <fps> --final`; final mode requires fps >= 58."
+        )
+    if "external_reference_validation" in blocker_set:
+        items.append("Provide the deferred independent external reference validation, or continue auditing with `--skip-external-reference`.")
+    if "accessibility_performance_proof" in blocker_set and "dashboard_scroll_fps" not in blocker_set:
+        items.append("Inspect the Accessibility / Performance blockers below and regenerate `summary.json` only from measured device evidence.")
+    return items
+
+
 def markdown_summary(report: dict[str, object]) -> str:
     physical = report["physical_long_wear"]
     latest_device_pull = report["latest_device_pull"]
@@ -700,6 +727,11 @@ def markdown_summary(report: dict[str, object]) -> str:
         lines.extend(f"- `{item}`" for item in blockers)
     else:
         lines.append("- none")
+
+    evidence_items = next_evidence_items(report)
+    if evidence_items:
+        lines.extend(["", "## Next Required Evidence"])
+        lines.extend(f"- {item}" for item in evidence_items)
 
     lines.extend([
         "",
