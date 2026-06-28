@@ -2857,6 +2857,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func scheduleRangeLossBackfillIfNeeded(reason: String)",
             "private func scheduleRangeLossBackfillRetry(reason: String)",
             "rangeLossBackfillRetryInterval",
+            "private var offlineHistoricalSyncStartRows = 0",
+            "offlineHistoricalSyncStartRows = historicalArchiveRows",
+            "let newRows = max(0, rows - offlineHistoricalSyncStartRows)",
+            "new_rows=%d",
+            "if newRows > 0",
             "offline_sync_stale_peripheral",
             "ATRIADBG offline_sync status=pending_range_loss_backfill",
             "ATRIADBG offline_sync status=requesting_range_loss_backfill",
@@ -2966,7 +2971,7 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertIsNotNone(finish_sync)
         finish_body = finish_sync.group("body")
         assert_contains(self, finish_body, "if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)")
-        assert_contains(self, finish_body, "if rows > 0")
+        assert_contains(self, finish_body, "if newRows > 0")
         assert_contains(self, finish_body, "defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)")
         assert_contains(self, finish_body, "assignIfChanged(\\.rangeLossBackfillPending, false)")
         assert_contains(self, finish_body, "scheduleRangeLossBackfillRetry(reason: reason)")
