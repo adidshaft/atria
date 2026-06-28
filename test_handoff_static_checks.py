@@ -5332,8 +5332,14 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "var zone: AtriaMetricZone? = nil",
+            "var targetMetric: AtriaTodayMetric? = nil",
+            "@State private var editingTargetMetric: AtriaTodayMetric?",
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
+            "AtriaGlanceTargetEditorSheet(metric: metric)",
+            "Label(\"Edit target\", systemImage: \"target\")",
+            ".accessibilityAction(named: Text(\"Edit target\"))",
+            "parts.append(\"Long press to edit target.\")",
             "Text(\"(i)\")",
             ".font(.caption2.weight(.black).monospaced())",
             ".frame(minWidth: 44, minHeight: 44)",
@@ -5348,6 +5354,21 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, shared + overview + vitals, needle)
         assert_not_contains(self, shared + overview, ".frame(minWidth: 36, minHeight: 28)")
         assert_not_contains(self, overview, ".frame(width: 38, height: 32)")
+        for needle in [
+            "targetMetric: .bloodOxygen",
+            "targetMetric: .bodyTemp",
+            "targetMetric: .respiratoryRate",
+            "targetMetric: .strapSteps",
+            "targetMetric: .rhr",
+            "targetMetric: .hrv",
+            "targetMetric: .recovery",
+            "targetMetric: .strain",
+            "targetMetric: .sleep",
+            "targetMetric: .sleepEfficiency",
+            "targetMetric: .vo2max",
+            "targetMetric: .bioAge",
+        ]:
+            assert_contains(self, vitals, needle)
         for needle in [
             "private var accessibilityText: String",
             "var parts = [\"\\(title) \\(displayValue)\", detail]",
