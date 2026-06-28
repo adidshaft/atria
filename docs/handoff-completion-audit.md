@@ -93,6 +93,17 @@ Remaining handoff-21 blockers:
 - A final requirement-by-requirement audit should be run after those checks before
   calling the goal complete.
 
+2026-06-28 visual/accessibility progress:
+
+- A bounded physical iPhone 15 Pro capture produced
+  `docs/evidence/accessibility-performance/summary.draft.json`.
+- The draft records passing screenshots for dark mode, light mode, Increase
+  Contrast, Reduce Motion, and Reduce Transparency.
+- The draft also records a fresh 10s Time Profiler trace at
+  `docs/evidence/accessibility-performance/trace-live-20260628T132245Z.trace`.
+- This is not final acceptance because `dashboard_scroll_fps` remains `0`; a real
+  measured scroll FPS pass is still required before writing final `summary.json`.
+
 ## Local Implementation Evidence
 
 ### Pillar 1: SwiftUI / Liquid Glass UI
