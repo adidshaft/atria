@@ -1697,13 +1697,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         let lastAttempt = defaults.object(forKey: OfflineSyncDefaults.lastAttemptAt) as? Date
-        if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < offlineHistoricalSyncMinimumInterval {
+        let minimumInterval = offlineHistoricalSyncMinimumInterval(for: reason)
+        if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < minimumInterval {
             defaults.set("throttled", forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
             AtriaDebugLog("ATRIADBG offline_sync status=skipped reason=%@ detail=throttled age_s=%.0f min_s=%.0f",
                   reason,
                   now.timeIntervalSince(lastAttempt),
-                  offlineHistoricalSyncMinimumInterval)
+                  minimumInterval)
             return false
         }
         defaults.set(now, forKey: OfflineSyncDefaults.lastAttemptAt)
@@ -1888,6 +1889,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         return now.timeIntervalSince1970 - requestedAt >= rangeLossBackfillRetryInterval
+    }
+
+    private func offlineHistoricalSyncMinimumInterval(for reason: String) -> TimeInterval {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else {
+            return offlineHistoricalSyncMinimumInterval
+        }
+        let pendingReason = defaults.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? ""
+        guard reason == pendingReason || reason.contains("range_loss") || reason.contains("long_wear_range_loss") else {
+            return offlineHistoricalSyncMinimumInterval
+        }
+        return rangeLossBackfillRetryInterval
     }
 
     private func shouldProtectLiveStreamForOfflineSync(now: Date = Date()) -> Bool {
