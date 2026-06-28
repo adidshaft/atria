@@ -5484,6 +5484,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "targetsSection",
             "Text(\"Targets & zones\")",
+            "private func resetAllTargetZones()",
+            "resetAllTargetZones()",
+            "Label(\"Reset all targets\", systemImage: \"arrow.counterclockwise.circle.fill\")",
             "Stepper(value: $recoveryGreenLower",
             "Stepper(value: $recoveryYellowLower",
             "Stepper(value: $strainGreenBand",

@@ -254,6 +254,37 @@ struct AtriaSettingsView: View {
         vo2RedDelta = max(min(vo2RedDelta, -0.05), -2.0)
     }
 
+    private func resetAllTargetZones() {
+        recoveryGreenLower = 67
+        recoveryYellowLower = 34
+        strainGreenBand = 1.5
+        strainYellowBand = 3.0
+        loadACWRWatchLow = 0.80
+        loadACWRWatchHigh = 1.30
+        loadACWRBadLow = 0.60
+        loadACWRBadHigh = 1.50
+        loadMonotonyWatch = 2.0
+        loadMonotonyBad = 2.5
+        stepsGoal = 8_000
+        caloriesGoal = 500
+        sleepGoalHours = 8.0
+        sleepEfficiencyGreenLower = 90
+        sleepEfficiencyYellowLower = 80
+        hrvGreenRatio = 0.95
+        hrvYellowRatio = 0.85
+        restingGreenDelta = 3
+        restingYellowDelta = 7
+        respiratoryGreenDelta = 1.5
+        respiratoryYellowDelta = 3.0
+        skinTemperatureGreenDelta = 0.5
+        skinTemperatureYellowDelta = 1.0
+        bloodOxygenCandidateGoal = 8
+        biologicalAgeGreenOlderDelta = 0
+        biologicalAgeYellowOlderDelta = 3
+        vo2GreenDelta = 0.2
+        vo2RedDelta = -0.2
+    }
+
     // MARK: Appearance
 
     private var appearanceSection: some View {
@@ -359,6 +390,16 @@ struct AtriaSettingsView: View {
                                                 yellowLower: recoveryYellowLower)
         return Section {
             VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    resetAllTargetZones()
+                } label: {
+                    Label("Reset all targets", systemImage: "arrow.counterclockwise.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+
+                Divider()
+
                 HStack(spacing: 12) {
                     Image(systemName: "gauge.with.dots.needle.67percent")
                         .font(.headline.weight(.semibold))
