@@ -1059,6 +1059,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
 
             Menu {
+                Section("Manage") {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            isEditingGlance = true
+                        }
+                    } label: {
+                        Label("Edit widgets", systemImage: "square.grid.2x2")
+                    }
+                }
+
                 if !hiddenMetrics.isEmpty {
                     Section("Add widget") {
                         ForEach(hiddenMetrics) { metric in
@@ -1175,6 +1185,41 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .onLongPressGesture(minimumDuration: 0.45) {
                 withAnimation(.snappy(duration: 0.2)) {
                     isEditingGlance = true
+                }
+            }
+            .onTapGesture {
+                guard isEditingGlance, metric.supportsGlanceTargetEditing else { return }
+                targetEditorMetric = metric
+            }
+            .contextMenu {
+                if metric.supportsGlanceTargetEditing {
+                    Button {
+                        targetEditorMetric = metric
+                    } label: {
+                        Label("Edit target", systemImage: "target")
+                    }
+                }
+
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        onToggleMetricSize(metric)
+                    }
+                } label: {
+                    Label(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) ? "Make compact" : "Make wide",
+                          systemImage: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                          ? "rectangle.compress.horizontal"
+                          : "rectangle.expand.horizontal")
+                }
+
+                Button(role: .destructive) {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        onHideMetric(metric)
+                        if visibleMetrics.count <= 1 {
+                            isEditingGlance = false
+                        }
+                    }
+                } label: {
+                    Label("Remove widget", systemImage: "xmark")
                 }
             }
             .layoutPriority(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) ? 2 : 1)
