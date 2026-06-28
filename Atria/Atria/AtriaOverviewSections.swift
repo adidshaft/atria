@@ -1411,7 +1411,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             Image(systemName: "target")
                 .font(.callout.weight(.bold))
         }
-        .atriaGlassIconAction(tint: metric.targetEditorTint, size: 44)
+        .atriaGlassIconAction(tint: metric.targetEditorTint, size: 36)
         .accessibilityLabel("Edit \(metric.label) target")
         .accessibilityHint("Opens the target zone controls for this Today widget.")
     }
@@ -1428,7 +1428,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             Image(systemName: "xmark.circle.fill")
                 .font(.callout.weight(.black))
         }
-        .atriaGlassIconAction(tint: .red, size: 44)
+        .atriaGlassIconAction(tint: .red, size: 36)
         .contentShape(Circle())
         .accessibilityLabel("Remove \(metric.label) widget")
         .accessibilityHint("Removes this card from Today at a glance. Use the plus button to add it back.")
@@ -1446,7 +1446,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                   : "rectangle.expand.horizontal")
                 .font(.callout.weight(.bold))
         }
-        .atriaGlassIconAction(tint: .secondary, size: 44)
+        .atriaGlassIconAction(tint: .secondary, size: 36)
         .accessibilityLabel(metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
                             ? "Make \(metric.label) compact"
                             : "Make \(metric.label) wide")
