@@ -81,11 +81,16 @@ Most recent physical-device evidence from non-disruptive pulls:
   `historical_archive_metric_promotion_blocker=continuity_repair_only`.
 - Confirmed sleep records exist: `confirmed_sleep_records=2`, including one nap
   and one overnight record, with zero validated stage records.
-- Latest pull (`artifacts/goal-21-state-20260628T132712Z`) showed the active
-  journal fresh/active with `active_journal_samples=598`, `active_journal_rr_values=125`,
-  `active_journal_duration_s=588`, and `active_journal_age_s=10`.
-- The same pull reported `offline_sync_last_status=deferred_live_link`, which is
-  expected while live HR is protected and range-loss backfill is pending.
+- Latest correct-bundle pull (`artifacts/goal-21-state-20260628T133936Z`)
+  showed the active journal fresh/active with `active_journal_samples=1308`,
+  `active_journal_rr_values=247`, `active_journal_duration_s=1331`, and
+  `active_journal_age_s=19`.
+- The same pull reported `offline_sync_last_status=deferred_live_link`, pending
+  range-loss backfill, `battery_level=58`, `battery_charge_status=notCharging`,
+  `battery_is_charging=0`, and no listed official WHOOP process/widget.
+- The current RR stream is present but still not locally promotion-ready:
+  `active_journal_rr_gate_b_local_ready=0` because the usable RR window is short,
+  gappy, and below the corrected-beat threshold.
 
 Remaining handoff-21 blockers:
 
