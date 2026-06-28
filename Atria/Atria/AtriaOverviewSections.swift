@@ -729,12 +729,24 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)[rawValue] ?? defaultGlanceGridSize
     }
 
+    fileprivate func glanceGridSize(sizeOverrides: [String: AtriaGlanceGridSize]) -> AtriaGlanceGridSize {
+        sizeOverrides[rawValue] ?? defaultGlanceGridSize
+    }
+
     func glanceColumnSpan(sizeOverridesCSV: String) -> Int {
         glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).columns
     }
 
+    fileprivate func glanceColumnSpan(sizeOverrides: [String: AtriaGlanceGridSize]) -> Int {
+        glanceGridSize(sizeOverrides: sizeOverrides).columns
+    }
+
     fileprivate func isWideGlanceCard(sizeOverridesCSV: String) -> Bool {
         glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).isWide
+    }
+
+    fileprivate func isWideGlanceCard(sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool {
+        glanceGridSize(sizeOverrides: sizeOverrides).isWide
     }
 
     /// Persisted as a comma-separated list of HIDDEN raw values. Empty storage is
@@ -984,6 +996,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     var body: some View {
+        let glanceSizeOverrides = AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
@@ -1007,9 +1020,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             } else {
                 VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
                     VStack(spacing: Self.glanceGridSpacing) {
-                        ForEach(glanceRows, id: \.glanceRowID) { row in
+                        ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
                             HStack(spacing: Self.glanceGridSpacing) {
-                                glanceRowContent(row)
+                                glanceRowContent(row, sizeOverrides: glanceSizeOverrides)
                             }
                             .frame(maxWidth: .infinity,
                                    minHeight: Self.glanceRowHeight,
@@ -1122,12 +1135,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private static let glanceGridColumnCount = 2
     private static let glanceRowHeight = AtriaGlanceMetricCard.cardHeight
 
-    private var glanceRows: [[AtriaTodayMetric]] {
+    private func glanceRows(sizeOverrides: [String: AtriaGlanceGridSize]) -> [[AtriaTodayMetric]] {
         var rows: [[AtriaTodayMetric]] = []
         var pending: [AtriaTodayMetric] = []
         for metric in visibleMetrics {
-            guard metric.glanceGridSize(sizeOverridesCSV: sizeOverridesCSV).isValidGlanceShape else { continue }
-            if metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) {
+            guard metric.glanceGridSize(sizeOverrides: sizeOverrides).isValidGlanceShape else { continue }
+            if metric.isWideGlanceCard(sizeOverrides: sizeOverrides) {
                 if !pending.isEmpty {
                     rows.append(pending)
                     pending.removeAll(keepingCapacity: true)
@@ -1144,29 +1157,34 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if !pending.isEmpty {
             rows.append(pending)
         }
-        return rows.filter(rowFitsGlanceGrid)
+        return rows.filter { rowFitsGlanceGrid($0, sizeOverrides: sizeOverrides) }
     }
 
-    private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric]) -> Bool {
+    private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool {
         var span = 0
         for metric in row {
-            span += metric.glanceColumnSpan(sizeOverridesCSV: sizeOverridesCSV)
+            span += metric.glanceColumnSpan(sizeOverrides: sizeOverrides)
         }
         return span <= Self.glanceGridColumnCount
     }
 
     @ViewBuilder
-    private func glanceRowContent(_ row: [AtriaTodayMetric]) -> some View {
+    private func glanceRowContent(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         GeometryReader { proxy in
             HStack(spacing: Self.glanceGridSpacing) {
                 ForEach(row) { metric in
                     glanceCardCell(metric,
-                                   width: glanceCardWidth(for: metric, containerWidth: proxy.size.width))
+                                   width: glanceCardWidth(for: metric,
+                                                          containerWidth: proxy.size.width,
+                                                          sizeOverrides: sizeOverrides),
+                                   sizeOverrides: sizeOverrides)
                 }
 
-                if row.count == 1, row.first?.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) == false {
+                if row.count == 1, row.first?.isWideGlanceCard(sizeOverrides: sizeOverrides) == false {
                     AtriaGlanceMetricCard.placeholder
-                        .frame(width: glanceCardWidth(for: .recovery, containerWidth: proxy.size.width),
+                        .frame(width: glanceCardWidth(for: .recovery,
+                                                      containerWidth: proxy.size.width,
+                                                      sizeOverrides: sizeOverrides),
                                height: Self.glanceRowHeight)
                         .accessibilityHidden(true)
                 }
@@ -1174,7 +1192,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
     }
 
-    private func glanceCardCell(_ metric: AtriaTodayMetric, width: CGFloat) -> some View {
+    private func glanceCardCell(_ metric: AtriaTodayMetric,
+                                width: CGFloat,
+                                sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         let upLabel = Text("Move \(metric.label) up")
         let downLabel = Text("Move \(metric.label) down")
 
@@ -1194,7 +1214,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
             .overlay(alignment: .bottomTrailing) {
                 if isEditingGlance {
-                    glanceResizeControl(for: metric)
+                    glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)
                         .padding(8)
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -1230,8 +1250,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         onToggleMetricSize(metric)
                     }
                 } label: {
-                    Label(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) ? "Make compact" : "Make wide",
-                          systemImage: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                    Label(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? "Make compact" : "Make wide",
+                          systemImage: metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
                           ? "rectangle.compress.horizontal"
                           : "rectangle.expand.horizontal")
                 }
@@ -1247,7 +1267,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     Label("Remove widget", systemImage: "xmark")
                 }
             }
-            .layoutPriority(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) ? 2 : 1)
+            .layoutPriority(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? 2 : 1)
             .draggable(metric.dragPayload)
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
@@ -1269,7 +1289,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     targetEditorMetric = metric
                 }
             }
-            .accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+            .accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
                                             ? "Make \(metric.label) compact"
                                             : "Make \(metric.label) wide")) {
                 onToggleMetricSize(metric)
@@ -1292,21 +1312,24 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
     }
 
-    private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
+    private func glanceCardWidth(for metric: AtriaTodayMetric,
+                                 containerWidth: CGFloat,
+                                 sizeOverrides: [String: AtriaGlanceGridSize]) -> CGFloat {
         let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)
-        if metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV) {
+        if metric.isWideGlanceCard(sizeOverrides: sizeOverrides) {
             return (columnWidth * CGFloat(Self.glanceGridColumnCount)) + Self.glanceGridSpacing
         }
         return columnWidth
     }
 
-    private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
+    private func glanceEditControls(for metric: AtriaTodayMetric,
+                                    sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         HStack(spacing: 8) {
             glanceRemoveControl(for: metric)
             if metric.supportsGlanceTargetEditing {
                 glanceTargetControl(for: metric)
             }
-            glanceResizeControl(for: metric)
+            glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
@@ -1344,19 +1367,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .accessibilityHint("Removes this card from Today at a glance. Use the plus button to add it back.")
     }
 
-    private func glanceResizeControl(for metric: AtriaTodayMetric) -> some View {
+    private func glanceResizeControl(for metric: AtriaTodayMetric,
+                                     sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         Button {
             withAnimation(.snappy(duration: 0.2)) {
                 onToggleMetricSize(metric)
             }
         } label: {
-            Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+            Image(systemName: metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
                   ? "rectangle.compress.horizontal"
                   : "rectangle.expand.horizontal")
                 .font(.callout.weight(.bold))
         }
         .atriaGlassIconAction(tint: .secondary, size: 44)
-        .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+        .accessibilityLabel(metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
                             ? "Make \(metric.label) compact"
                             : "Make \(metric.label) wide")
     }
