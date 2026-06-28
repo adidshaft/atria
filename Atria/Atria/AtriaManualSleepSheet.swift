@@ -103,13 +103,37 @@ struct AtriaManualSleepSheet: View {
                                        systemImage: isNap ? "moon.zzz.fill" : "bed.double.fill",
                                        tint: .cyan)
 
-            Picker("Type", selection: typeBinding) {
-                Text("Sleep").tag(false)
-                Text("Nap").tag(true)
+            HStack(spacing: 8) {
+                manualTypeButton(title: "Sleep",
+                                 systemImage: "bed.double.fill",
+                                 isSelected: !isNap,
+                                 isNapValue: false)
+                manualTypeButton(title: "Nap",
+                                 systemImage: "moon.zzz.fill",
+                                 isSelected: isNap,
+                                 isNapValue: true)
             }
-            .pickerStyle(.segmented)
         }
         .manualSleepCard(tint: .cyan)
+    }
+
+    private func manualTypeButton(title: String,
+                                  systemImage: String,
+                                  isSelected: Bool,
+                                  isNapValue: Bool) -> some View {
+        Button {
+            typeBinding.wrappedValue = isNapValue
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        .atriaGlassSelectable(selected: isSelected, tint: .cyan)
+        .accessibilityLabel("Save as \(title)")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 
     private var timeCard: some View {
@@ -145,7 +169,7 @@ struct AtriaManualSleepSheet: View {
     private var stagesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaManualSleepCardHeader(title: "Stages",
-                                       detail: isNap ? "Nap-weighted research split." : "Sleep-weighted research split.",
+                                       detail: isNap ? "Estimated nap preview." : "Estimated sleep preview.",
                                        systemImage: "waveform.path.ecg",
                                        tint: .purple)
 
@@ -169,7 +193,7 @@ struct AtriaManualSleepSheet: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle.fill")
                 .foregroundStyle(.secondary)
-            Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, REM, SWS, and Deep.")
+            Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Stage bars are an editable estimate from the manual window, not sensor-validated sleep staging.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
