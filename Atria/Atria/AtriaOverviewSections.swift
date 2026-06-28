@@ -1228,11 +1228,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .onLongPressGesture(minimumDuration: 0.45) {
-                withAnimation(.snappy(duration: 0.2)) {
-                    isEditingGlance = true
-                }
-            }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45)
+                    .onEnded { _ in
+                        withAnimation(.snappy(duration: 0.2)) {
+                            isEditingGlance = true
+                        }
+                    }
+            )
             .onTapGesture {
                 guard isEditingGlance, metric.supportsGlanceTargetEditing else { return }
                 targetEditorMetric = metric
@@ -1272,6 +1275,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .modifier(AtriaConditionalStringDraggable(isEnabled: isEditingGlance,
                                                        payload: metric.dragPayload))
             .dropDestination(for: String.self) { items, _ in
+                guard isEditingGlance else { return false }
                 guard let raw = items.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
                 onMoveMetric(dragged, metric)
@@ -1358,7 +1362,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: "minus.circle.fill")
                 .font(.callout.weight(.black))
         }
         .atriaGlassIconAction(tint: .red, size: 44)
