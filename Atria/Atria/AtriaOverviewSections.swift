@@ -2945,9 +2945,11 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                         Text(stage.shortLabel)
                             .font(.system(size: 8, weight: .bold, design: .rounded))
                             .lineLimit(1)
+                            .minimumScaleFactor(0.62)
+                            .allowsTightening(true)
                     }
                     .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .accessibilityLabel("\(stage.label) \(latest.stageText(stage))")
                 }
             }
