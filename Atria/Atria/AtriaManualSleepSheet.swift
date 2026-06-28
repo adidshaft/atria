@@ -68,46 +68,15 @@ struct AtriaManualSleepSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Picker("Type", selection: typeBinding) {
-                    Text("Sleep").tag(false)
-                    Text("Nap").tag(true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    typeCard
+                    timeCard
+                    durationCard
+                    stagesCard
+                    footnoteCard
                 }
-                .pickerStyle(.segmented)
-
-                Text(typeSuggestionText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
-                DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
-
-                Section("Duration") {
-                    LabeledContent("Window") {
-                        Text(durationText)
-                            .monospacedDigit()
-                    }
-                    Text(validationText)
-                        .font(.caption)
-                        .foregroundStyle(canSave ? Color.secondary : Color.orange)
-                }
-
-                Section("Stages") {
-                    ForEach(SleepStageKind.allCases) { stage in
-                        HStack {
-                            Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
-                            Spacer()
-                            Text(stagePreviewText(stage))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Section {
-                    Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, REM, SWS, and Deep.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                .padding(20)
             }
             .navigationTitle("Add \(isNap ? "Nap" : "Sleep")")
             .onAppear(perform: applyInferredTypeIfNeeded)
@@ -125,6 +94,87 @@ struct AtriaManualSleepSheet: View {
                 }
             }
         }
+    }
+
+    private var typeCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaManualSleepCardHeader(title: "Type",
+                                       detail: typeSuggestionText,
+                                       systemImage: isNap ? "moon.zzz.fill" : "bed.double.fill",
+                                       tint: .cyan)
+
+            Picker("Type", selection: typeBinding) {
+                Text("Sleep").tag(false)
+                Text("Nap").tag(true)
+            }
+            .pickerStyle(.segmented)
+        }
+        .manualSleepCard(tint: .cyan)
+    }
+
+    private var timeCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaManualSleepCardHeader(title: "Window",
+                                       detail: "Choose the local time range Atria should save.",
+                                       systemImage: "clock.fill",
+                                       tint: .blue)
+
+            DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+            DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+        }
+        .manualSleepCard(tint: .blue)
+    }
+
+    private var durationCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaManualSleepCardHeader(title: "Duration",
+                                       detail: validationText,
+                                       systemImage: canSave ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                                       tint: canSave ? .green : .orange)
+
+            LabeledContent("Window") {
+                Text(durationText)
+                    .font(.headline.weight(.semibold).monospacedDigit())
+            }
+        }
+        .manualSleepCard(tint: canSave ? .green : .orange)
+    }
+
+    private var stagesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaManualSleepCardHeader(title: "Stages",
+                                       detail: isNap ? "Nap-weighted research split." : "Sleep-weighted research split.",
+                                       systemImage: "waveform.path.ecg",
+                                       tint: .purple)
+
+            ForEach(SleepStageKind.allCases) { stage in
+                HStack(spacing: 10) {
+                    Label(stage.label, systemImage: AtriaSleepStageGlyph.symbol(for: stage))
+                        .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 8)
+                    Text(stagePreviewText(stage))
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline.monospacedDigit())
+                }
+                .accessibilityLabel("\(stage.label) \(stagePreviewText(stage))")
+            }
+        }
+        .manualSleepCard(tint: .purple)
+    }
+
+    private var footnoteCard: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.secondary)
+            Text("Atria will save this \(isNap ? "nap" : "sleep") locally and split the window into research stages: Awake, Light, REM, SWS, and Deep.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .manualSleepCard(tint: .secondary)
     }
 
     private func applyInferredTypeIfNeeded() {
@@ -146,5 +196,40 @@ struct AtriaManualSleepSheet: View {
         case (false, .deep): fraction = 0.12
         }
         return SleepHistorySnapshot.formatDuration(duration * fraction)
+    }
+}
+
+private struct AtriaManualSleepCardHeader: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private extension View {
+    func manualSleepCard(tint: Color) -> some View {
+        self
+            .padding(14)
+            .atriaInsetCard(tint: tint)
     }
 }
