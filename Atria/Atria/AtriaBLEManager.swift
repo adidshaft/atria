@@ -9238,7 +9238,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
             let wasUserRequestedDisconnect = userRequestedDisconnect
-            if !wasUserRequestedDisconnect && connectedDuration > 0 && connectedDuration < 90 {
+            let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress || historyOnlyProbeEnabled || historyOnlyProbeMode
+            if atriaOwnedOfflineSyncDisconnect {
+                AtriaDebugLog("ATRIADBG official_app_coexistence status=ignored reason=atria_owned_offline_sync_disconnect action=keep_current_risk")
+            } else if !wasUserRequestedDisconnect && connectedDuration > 0 && connectedDuration < 90 {
                 persistOfficialAppCoexistenceRisk(.suspected, reason: "short_disconnect_after_connect")
             }
             let shouldPreserveLongWearSession = longWearModeEnabled && !wasUserRequestedDisconnect

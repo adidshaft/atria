@@ -1015,6 +1015,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private struct AtriaConnectionDiagnosis: Equatable",
@@ -1106,6 +1107,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "forget it in Bluetooth and reconnect",
         ]:
             assert_contains(self, home, needle)
+        for needle in [
+            "let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress || historyOnlyProbeEnabled || historyOnlyProbeMode",
+            "reason=atria_owned_offline_sync_disconnect",
+            "persistOfficialAppCoexistenceRisk(.suspected, reason: \"short_disconnect_after_connect\")",
+        ]:
+            assert_contains(self, ble, needle)
         assert_not_contains(self, home, "Connected, no pulse")
         diagnosis_banner = re.search(
             r"private struct AtriaConnectionDiagnosisBanner: View, Equatable \{(?P<body>.*?)\n\}",
