@@ -5880,6 +5880,16 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, app, needle)
         assert_contains(self, debug_logging, "--atria-analytics-calibration-audit")
+        harness = source(ROOT / "live_device_debug.sh")
+        for needle in [
+            "--analytics-calibration-audit",
+            "analytics_calibration_audit=0",
+            "analytics_calibration_audit=1",
+            "analytics_calibration_audit_raw",
+            "analytics_calibration_audit = analytics_calibration_audit_raw == \"1\"",
+            "cmd.append(\"--atria-analytics-calibration-audit\")",
+        ]:
+            assert_contains(self, harness, needle)
 
         for needle in [
             "AtriaTests.xctest",
