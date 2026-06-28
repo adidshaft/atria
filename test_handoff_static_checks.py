@@ -346,6 +346,8 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, home, needle)
         assert_contains(self, hero, "return \"Beat-to-beat settling\"")
+        assert_contains(self, hero, "return \"pending\"")
+        assert_not_contains(self, hero, "return \"not yet\"")
         assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
 
         for forbidden in [

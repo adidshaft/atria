@@ -344,7 +344,7 @@ private struct AtriaHeroMetricRow: View, Equatable {
     private var compactBackupDetail: String {
         let normalized = hero.backupDetail.lowercased()
         if normalized.contains("no backup") {
-            return "not yet"
+            return "pending"
         }
         if normalized.contains("saved") {
             return "saved"
