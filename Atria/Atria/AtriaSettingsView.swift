@@ -35,6 +35,12 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
+    @AppStorage("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
+    @AppStorage("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
+    @AppStorage("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
+    @AppStorage("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
+    @AppStorage("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
+    @AppStorage("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
@@ -132,6 +138,12 @@ struct AtriaSettingsView: View {
             recoveryYellowLower,
             strainGreenBand,
             strainYellowBand,
+            loadACWRWatchLow,
+            loadACWRWatchHigh,
+            loadACWRBadLow,
+            loadACWRBadHigh,
+            loadMonotonyWatch,
+            loadMonotonyBad,
             Double(stepsGoal),
             Double(caloriesGoal),
             sleepGoalHours,
@@ -158,6 +170,7 @@ struct AtriaSettingsView: View {
     private func normalizeAllTargets() {
         normalizeRecoveryTargets()
         normalizeStrainTargets()
+        normalizeTrainingLoadTargets()
         normalizeStepsGoal()
         normalizeCaloriesGoal()
         normalizeSleepGoal()
@@ -187,6 +200,15 @@ struct AtriaSettingsView: View {
     private func normalizeStrainTargets() {
         strainGreenBand = min(max(strainGreenBand, 0.5), 5.0)
         strainYellowBand = min(max(strainYellowBand, strainGreenBand + 0.5), 8.0)
+    }
+
+    private func normalizeTrainingLoadTargets() {
+        loadACWRBadLow = min(max(loadACWRBadLow, 0.30), 0.95)
+        loadACWRWatchLow = min(max(loadACWRWatchLow, loadACWRBadLow + 0.05), 1.00)
+        loadACWRWatchHigh = min(max(loadACWRWatchHigh, 1.00), 1.60)
+        loadACWRBadHigh = min(max(loadACWRBadHigh, loadACWRWatchHigh + 0.05), 2.20)
+        loadMonotonyWatch = min(max(loadMonotonyWatch, 1.0), 4.0)
+        loadMonotonyBad = min(max(loadMonotonyBad, loadMonotonyWatch + 0.1), 5.0)
     }
 
     private func normalizeSleepGoal() {
@@ -402,6 +424,67 @@ struct AtriaSettingsView: View {
                     Label("Reset strain band", systemImage: "figure.run")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+
+                Divider()
+
+                Stepper(value: $loadACWRWatchLow, in: 0.50...1.00, step: 0.05) {
+                    LabeledContent("ACWR low watch") {
+                        Text(String(format: "%.2f", loadACWRWatchLow))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $loadACWRWatchHigh, in: 1.00...1.60, step: 0.05) {
+                    LabeledContent("ACWR high watch") {
+                        Text(String(format: "%.2f", loadACWRWatchHigh))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $loadACWRBadLow, in: 0.30...0.95, step: 0.05) {
+                    LabeledContent("ACWR low red") {
+                        Text(String(format: "%.2f", loadACWRBadLow))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $loadACWRBadHigh, in: 1.10...2.20, step: 0.05) {
+                    LabeledContent("ACWR high red") {
+                        Text(String(format: "%.2f", loadACWRBadHigh))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $loadMonotonyWatch, in: 1.0...4.0, step: 0.1) {
+                    LabeledContent("Monotony watch") {
+                        Text(String(format: "%.1f", loadMonotonyWatch))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $loadMonotonyBad, in: 1.2...5.0, step: 0.1) {
+                    LabeledContent("Monotony red") {
+                        Text(String(format: "%.1f", loadMonotonyBad))
+                            .monospacedDigit()
+                    }
+                }
+
+                Button {
+                    loadACWRWatchLow = 0.80
+                    loadACWRWatchHigh = 1.30
+                    loadACWRBadLow = 0.60
+                    loadACWRBadHigh = 1.50
+                    loadMonotonyWatch = 2.0
+                    loadMonotonyBad = 2.5
+                } label: {
+                    Label("Reset training-load target", systemImage: "chart.bar.xaxis")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+
+                Text("Training Load uses ACWR and monotony from saved strain. These controls tune readiness colors and guidance, not the underlying history.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 
