@@ -162,8 +162,12 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "--instrument 'Time Profiler'",
             "devicectl device capture screen-record",
             "--attach \"$pid\"",
+            "core-animation-fps-estimate",
+            "dashboard-scroll.fps.xml",
+            "dashboard-scroll.fps.txt",
+            "Extracted Core Animation FPS max",
             "--measured-fps",
-            "Final mode requires --measured-fps from a real dashboard scroll pass.",
+            "Final mode requires measured FPS from the xctrace FPS table or --measured-fps override.",
             "prepare_accessibility_performance_evidence.py",
             "--dashboard-scroll-fps",
         ]:
