@@ -475,7 +475,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                 sleepGoalHours: sleepGoalHours,
                                 sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                 sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
-                                onAddManualSleep: addManualSleep)
+                                onAddManualSleep: addManualSleep,
+                                onConfirmSleep: confirmSleepCandidate)
             .equatable()
     }
 
@@ -484,6 +485,11 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                  end: end,
                                  isNap: isNap,
                                  rest: store.baseline.restingInt ?? 60)
+    }
+
+    private func confirmSleepCandidate() {
+        _ = store.confirmBestSleepCandidateForUI(rest: store.baseline.restingInt ?? 60,
+                                                 source: "vitals_sleep_history")
     }
 }
 
@@ -2014,6 +2020,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
+    let onConfirmSleep: () -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
@@ -2075,7 +2082,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                                   sleepGoalHours: sleepGoalHours,
                                   sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
                                   sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
-                                  onAddManualSleep: onAddManualSleep)
+                                  onAddManualSleep: onAddManualSleep,
+                                  onConfirmSleep: onConfirmSleep)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
@@ -2188,6 +2196,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
+    let onConfirmSleep: () -> Void
     @State private var showManualSleepSheet = false
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
@@ -2229,6 +2238,15 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         return latest.confirmed
             ? "\(latest.confidenceText) · \(latest.confirmationText)"
             : "\(latest.confidenceText) · \(latest.confirmationText.lowercased())"
+    }
+
+    private var shouldShowConfirmSleep: Bool {
+        guard snapshot.candidateCount > 0 else { return false }
+        return snapshot.latest?.confirmed != true
+    }
+
+    private var confirmSleepLabel: String {
+        snapshot.latest?.isNapEvidence == true ? "Confirm nap" : "Confirm sleep"
     }
 
     private var restingHeartRateZone: AtriaMetricZone? {
@@ -2290,6 +2308,16 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                 .atriaCardAction(prominent: false, tint: .cyan)
                 .accessibilityLabel("Add sleep manually")
                 AtriaStateBadge(state: snapshot.confirmedCount > 0 ? .validated : (snapshot.candidateCount > 0 ? .research : .learning))
+            }
+
+            if shouldShowConfirmSleep {
+                Button(action: onConfirmSleep) {
+                    Label(confirmSleepLabel, systemImage: "checkmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(tint: .cyan)
+                .accessibilityHint("Saves the best detected sleep or nap candidate locally.")
             }
 
             if snapshot.nights.isEmpty {
