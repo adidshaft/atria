@@ -3939,10 +3939,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: summary.agingPaceText",
             "footnote: summary.agingPaceDetail",
             "ForEach(summary.factors)",
+            "AtriaBioAgeFactorRow(factor: factor)",
+            "private struct AtriaBioAgeFactorRow: View, Equatable",
+            "case .neutral: return .blue",
+            "case .neutral: return \"equal.circle.fill\"",
             "Text(summary.footnote)",
         ]:
             assert_contains(self, vitals, needle)
 
+        self.assertEqual(vitals.count("AtriaBioAgeFactorRow(factor: factor)"), 2)
+        assert_not_contains(self, vitals, "factor.direction == .older ?")
         assert_not_contains(self, sessions + overview + vitals, "longevity")
         assert_not_contains(self, sessions + overview + vitals, "lifespan")
         assert_not_contains(self, sessions + overview + vitals, "disease risk")
