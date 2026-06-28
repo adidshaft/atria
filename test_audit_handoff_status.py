@@ -481,7 +481,16 @@ class AuditHandoffStatusTests(unittest.TestCase):
                 "sample": 0,
                 "captured_at": "20260627T231930Z",
                 "log": "/tmp/pull.log",
-                "active_journal": {"status": "ok", "thermal": "nominal"},
+                "active_journal": {
+                    "status": "ok",
+                    "thermal": "nominal",
+                    "duration_s": 4978.3,
+                    "accepted_hr": 5179,
+                    "delta_rr": 4653,
+                    "segments": 172,
+                    "battery": 74,
+                    "latest_bpm": 62,
+                },
                 "sessions": {"status": "ok", "recent_span_s": 43578.6, "recent_coverage_percent": 48.8},
             }) + "\n", encoding="utf-8")
 
@@ -497,6 +506,13 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["app_commit"], "installed-app")
         self.assertEqual(physical["monitor_commit"], "monitor-tooling")
         self.assertEqual(physical["monitor_started_at"], "2026-06-27T23:19:29Z")
+        self.assertEqual(physical["latest_active_status"], "ok")
+        self.assertEqual(physical["latest_active_duration_s"], 4978.3)
+        self.assertEqual(physical["latest_active_accepted_hr"], 5179)
+        self.assertEqual(physical["latest_active_delta_rr"], 4653)
+        self.assertEqual(physical["latest_active_segments"], 172)
+        self.assertEqual(physical["latest_active_battery"], 74)
+        self.assertEqual(physical["latest_active_bpm"], 62)
         self.assertEqual(physical["running_remaining_samples"], 10)
         self.assertEqual(physical["running_next_sample_due_at"], "2026-06-28T00:19:29Z")
         self.assertEqual(physical["running_expected_finish_at"], "2026-06-28T09:19:29Z")
