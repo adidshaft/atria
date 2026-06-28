@@ -2431,8 +2431,12 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                             goalHours: sleepGoalHours)
                 }
 
-                if let latest = snapshot.latest, !latest.displayStageSegments.isEmpty {
-                    AtriaSleepStageSummary(night: latest)
+                if let latest = snapshot.latest {
+                    if !latest.displayStageSegments.isEmpty {
+                        AtriaSleepStageSummary(night: latest)
+                    } else {
+                        AtriaSleepStageBuildingSummary(night: latest)
+                    }
                 }
 
                 ForEach(snapshot.nights.prefix(3)) { night in
@@ -2578,6 +2582,67 @@ private struct AtriaSleepStageSummary: View, Equatable {
         case .sws: return "waveform.path"
         case .deep: return "moon.stars.fill"
         }
+    }
+
+    private func color(for stage: SleepStageKind) -> Color {
+        switch stage {
+        case .awake: return .orange
+        case .light: return .cyan
+        case .rem: return .indigo
+        case .sws: return .blue
+        case .deep: return .purple
+        }
+    }
+}
+
+private struct AtriaSleepStageBuildingSummary: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Stages building")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Text(night.evidenceLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
+                ForEach(SleepStageKind.allCases) { stage in
+                    HStack(spacing: 7) {
+                        Image(systemName: AtriaSleepStageSummary.symbol(for: stage))
+                            .font(.caption2.weight(.bold))
+                            .frame(width: 16, height: 16)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(stage.label.uppercased())
+                                .font(.caption2.weight(.bold))
+                            Text("--")
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(color(for: stage).opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .foregroundStyle(color(for: stage))
+                }
+            }
+
+            Text("Stage breakdown needs validated sleep-stage evidence; duration, RHR, HRV, and respiratory estimates stay visible while Atria learns.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .atriaInsetCard(tint: .cyan)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(night.evidenceLabel) stages building. Awake, Light, REM, SWS, and Deep are not ready yet.")
     }
 
     private func color(for stage: SleepStageKind) -> Color {
