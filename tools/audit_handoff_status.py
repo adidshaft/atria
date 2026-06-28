@@ -51,6 +51,7 @@ MIN_OVERNIGHT_COVERAGE_PERCENT = 85.0
 MAX_OVERNIGHT_GAP_S = 30.0
 MAX_OVERNIGHT_BATTERY_DROP_PERCENT = 35.0
 ALLOWED_OVERNIGHT_THERMAL = {"nominal", "fair"}
+RUNNING_SAMPLE_OVERDUE_GRACE_S = 10 * 60
 PROOF_ONLY_PREFIXES = (
     "docs/evidence/",
     "logs/live-device/",
@@ -168,8 +169,10 @@ def running_long_wear_progress(metadata: dict[str, object],
     progress: dict[str, object] = {
         "running_elapsed_s": "pending",
         "running_expected_finish_at": "pending",
+        "running_next_sample_overdue_s": 0.0,
         "running_next_sample_due_at": "pending",
         "running_remaining_samples": remaining_samples,
+        "running_sample_overdue": False,
     }
     if started is None:
         return progress
@@ -179,10 +182,15 @@ def running_long_wear_progress(metadata: dict[str, object],
     expected_finish = started.timestamp() + float(planned_duration)
     next_sample_index = min(sample_count, max(0, int(planned_samples) - 1))
     next_sample_due = started.timestamp() + (next_sample_index * float(interval))
+    overdue_s = 0.0
+    if sample_count < int(planned_samples):
+        overdue_s = max(0.0, current.timestamp() - next_sample_due)
     progress.update({
         "running_elapsed_s": elapsed,
         "running_expected_finish_at": datetime.fromtimestamp(expected_finish, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "running_next_sample_overdue_s": overdue_s,
         "running_next_sample_due_at": datetime.fromtimestamp(next_sample_due, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "running_sample_overdue": overdue_s > RUNNING_SAMPLE_OVERDUE_GRACE_S,
     })
     return progress
 
@@ -345,7 +353,10 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
     result.update(launchctl)
     if launchctl.get("launchctl_status") == "not_running":
         result["audit_blockers"].append("overnight_monitor_not_running")
-    result.update(running_long_wear_progress(metadata, samples))
+    progress = running_long_wear_progress(metadata, samples)
+    result.update(progress)
+    if progress.get("running_sample_overdue") is True:
+        result["audit_blockers"].append("overnight_sample_overdue")
     return result
 
 
@@ -840,6 +851,8 @@ def markdown_summary(report: dict[str, object]) -> str:
             f"- Running elapsed seconds: `{format_diagnostic_value(physical.get('running_elapsed_s', 'missing'))}`",
             f"- Remaining samples: `{physical.get('running_remaining_samples', 'missing')}`",
             f"- Next sample due: `{physical.get('running_next_sample_due_at', 'missing')}`",
+            f"- Next sample overdue: `{physical.get('running_sample_overdue', 'missing')}` "
+            f"({format_diagnostic_value(physical.get('running_next_sample_overdue_s', 'missing'))}s)",
             f"- Expected finish: `{physical.get('running_expected_finish_at', 'missing')}`",
             f"- Latest sample: `{physical.get('latest_sample', 'missing')}` at `{physical.get('latest_sample_at', 'missing')}`",
             f"- Latest sample log: `{physical.get('latest_sample_log', 'missing')}`",

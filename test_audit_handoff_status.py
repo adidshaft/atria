@@ -162,6 +162,24 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(progress["running_remaining_samples"], 9)
         self.assertEqual(progress["running_next_sample_due_at"], "2026-06-28T01:00:00Z")
         self.assertEqual(progress["running_expected_finish_at"], "2026-06-28T09:00:00Z")
+        self.assertFalse(progress["running_sample_overdue"])
+        self.assertEqual(progress["running_next_sample_overdue_s"], 0.0)
+
+    def test_running_long_wear_progress_flags_overdue_sample_after_grace(self):
+        progress = audit_handoff_status.running_long_wear_progress(
+            {
+                "planned_samples": 11,
+                "planned_duration_s": 36_000,
+                "planned_interval_s": 3_600,
+                "monitor_started_at": "2026-06-27T23:00:00Z",
+            },
+            1,
+            now=datetime(2026, 6, 28, 0, 15, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(progress["running_next_sample_due_at"], "2026-06-28T00:00:00Z")
+        self.assertEqual(progress["running_next_sample_overdue_s"], 900.0)
+        self.assertTrue(progress["running_sample_overdue"])
 
     def test_long_wear_launchctl_label_matches_detached_monitor_format(self):
         self.assertEqual(
@@ -456,6 +474,31 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["running_remaining_samples"], 10)
         self.assertEqual(physical["running_next_sample_due_at"], "2026-06-28T00:19:29Z")
         self.assertEqual(physical["running_expected_finish_at"], "2026-06-28T09:19:29Z")
+
+    def test_running_overnight_flags_overdue_sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
+            running.parent.mkdir(parents=True)
+            (running.parent / "run.json").write_text(json.dumps({
+                "label": "overnight-current",
+                "preset": "overnight",
+                "planned_samples": 11,
+                "planned_duration_s": 36_000,
+                "planned_interval_s": 3_600,
+                "monitor_started_at": "2020-01-01T00:00:00Z",
+            }), encoding="utf-8")
+            running.write_text(json.dumps({
+                "sample": 0,
+                "captured_at": "20200101T000000Z",
+                "active_journal": {"status": "ok", "thermal": "nominal"},
+                "sessions": {"status": "ok"},
+            }) + "\n", encoding="utf-8")
+
+            physical = audit_handoff_status.evaluate_physical_long_wear(repo)
+
+        self.assertTrue(physical["running_sample_overdue"])
+        self.assertIn("overnight_sample_overdue", physical["audit_blockers"])
 
     def test_running_overnight_flags_stopped_launchctl_service(self):
         original = audit_handoff_status.inspect_launchctl_service
