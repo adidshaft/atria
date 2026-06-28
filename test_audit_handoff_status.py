@@ -146,6 +146,32 @@ class AuditHandoffStatusTests(unittest.TestCase):
         ]:
             self.assertNotIn(forbidden, script)
 
+    def test_dashboard_scroll_performance_helper_is_physical_and_non_invasive(self):
+        script = (Path(__file__).resolve().parent / "tools" / "capture_dashboard_scroll_performance.sh").read_text(encoding="utf-8")
+
+        for required in [
+            "xcrun xctrace record",
+            "--template 'SwiftUI'",
+            "--instrument 'Core Animation FPS'",
+            "--instrument 'Hitches'",
+            "--instrument 'Time Profiler'",
+            "devicectl device capture screen-record",
+            "--attach \"$pid\"",
+            "--measured-fps",
+            "Final mode requires --measured-fps from a real dashboard scroll pass.",
+            "prepare_accessibility_performance_evidence.py",
+            "--dashboard-scroll-fps",
+        ]:
+            self.assertIn(required, script)
+
+        for forbidden in [
+            "device install app",
+            "device process launch",
+            "device process terminate",
+            "live_device_debug.sh",
+        ]:
+            self.assertNotIn(forbidden, script)
+
     def test_running_long_wear_progress_reports_eta_and_remaining_samples(self):
         progress = audit_handoff_status.running_long_wear_progress(
             {
@@ -689,7 +715,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertIn("Measure real dashboard scroll FPS", items[0])
-        self.assertIn("--dashboard-scroll-fps <fps> --final", items[0])
+        self.assertIn("capture_dashboard_scroll_performance.sh", items[0])
+        self.assertIn("--measured-fps <fps> --final", items[0])
         self.assertIn("fps >= 58", items[0])
 
     def test_accessibility_performance_evidence_can_complete_non_reference_audit(self):

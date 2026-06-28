@@ -21,6 +21,7 @@ LOCAL_CHECK_FILES = [
     Path("test_prepare_accessibility_performance_evidence.sh"),
     Path("test_prepare_accessibility_performance_evidence.py"),
     Path("tools/capture_accessibility_visual_evidence.sh"),
+    Path("tools/capture_dashboard_scroll_performance.sh"),
     Path("tools/monitor_long_wear.py"),
     Path("tools/prepare_accessibility_performance_evidence.py"),
 ]
@@ -782,8 +783,9 @@ def next_evidence_items(report: dict[str, object]) -> list[str]:
     if "dashboard_scroll_fps" in blocker_set:
         items.append(
             "Measure real dashboard scroll FPS on the physical iPhone 15 Pro Release app. "
-            "Then run `tools/capture_accessibility_visual_evidence.sh --device <device> --app-commit <installed-app-commit> "
-            "--dashboard-scroll-fps <fps> --final`; final mode requires fps >= 58."
+            "Use `tools/capture_dashboard_scroll_performance.sh --device <device> --app-commit <installed-app-commit>` "
+            "to capture a timed scroll trace/video, then rerun it with `--measured-fps <fps> --final` "
+            "after reading the measured FPS; final mode requires fps >= 58."
         )
     if "external_reference_validation" in blocker_set:
         items.append("Provide the deferred independent external reference validation, or continue auditing with `--skip-external-reference`.")
