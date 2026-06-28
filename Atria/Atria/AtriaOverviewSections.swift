@@ -1070,7 +1070,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 if !visibleMetrics.isEmpty {
-                    Section("Remove widget") {
+                    Section("Added widgets") {
                         ForEach(visibleMetrics) { metric in
                             Button(role: .destructive) {
                                 withAnimation(.snappy(duration: 0.2)) {
@@ -1080,7 +1080,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     }
                                 }
                             } label: {
-                                Label(metric.label, systemImage: "xmark")
+                                Label("Remove \(metric.label)", systemImage: "minus.circle.fill")
                             }
                         }
                     }
@@ -1111,10 +1111,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .frame(width: 20, height: 20)
             }
             .atriaGlassIconAction(tint: .secondary, size: 38)
-            .accessibilityLabel("Add Today widget")
+            .accessibilityLabel("Manage Today widgets")
             .accessibilityHint(hiddenMetrics.isEmpty
-                               ? "All Today widgets are already visible."
-                               : "Opens the list of hidden Today widgets.")
+                               ? "Opens added widgets so you can remove cards."
+                               : "Opens added and hidden Today widgets so you can remove or add cards.")
         }
     }
 
