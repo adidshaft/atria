@@ -18,6 +18,7 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showOnboarding) {
                 ProfileOnboardingView(profile: store.profile,
+                                      ble: ble,
                                       debugInitialStep: Self.debugOnboardingStepArgument()) { profile in
                     store.completeOnboarding(with: profile)
                     showOnboarding = false
@@ -95,8 +96,103 @@ struct AtriaDashboardBackdrop: View {
     }
 }
 
+/// Live, observed connection state for the onboarding "Connect your strap" step.
+/// A dedicated `@ObservedObject` subview so heart-rate ticks only re-render this
+/// card, not the whole onboarding screen.
+private struct OnboardingConnectionStatusView: View {
+    @ObservedObject var ble: AtriaBLEManager
+
+    private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.16))
+                    .frame(width: 46, height: 46)
+                if isSearching {
+                    ProgressView().tint(tint)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .symbolRenderingMode(.hierarchical)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if ble.status == .connected, ble.heartRate > 0 {
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(ble.heartRate)")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text("bpm")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(18)
+        .atriaCard(emphasis: .soft)
+        .animation(.snappy(duration: 0.25), value: ble.status)
+        .animation(.snappy(duration: 0.25), value: ble.hasContact)
+    }
+
+    private var isSearching: Bool {
+        ble.status == .scanning || ble.status == .connecting || ble.status == .disconnected
+    }
+
+    private var title: String {
+        switch ble.status {
+        case .poweredOff: return "Bluetooth is off"
+        case .scanning, .disconnected: return "Searching for your strap…"
+        case .connecting: return "Connecting…"
+        case .connected: return isHealthyContact ? "You’re connected" : "Adjust the strap"
+        }
+    }
+
+    private var subtitle: String {
+        switch ble.status {
+        case .poweredOff: return "Turn on Bluetooth in Settings to connect."
+        case .scanning, .disconnected: return "Make sure the strap is on your wrist."
+        case .connecting: return "Linking to your strap."
+        case .connected: return isHealthyContact ? "Atria is reading your heart rate." : "Snug it up for a clean pulse signal."
+        }
+    }
+
+    private var symbol: String {
+        switch ble.status {
+        case .poweredOff: return "bolt.slash.fill"
+        case .scanning, .disconnected, .connecting: return "dot.radiowaves.left.and.right"
+        case .connected: return isHealthyContact ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch ble.status {
+        case .poweredOff: return .red
+        case .scanning, .disconnected: return .blue
+        case .connecting: return .yellow
+        case .connected: return isHealthyContact ? .green : .orange
+        }
+    }
+}
+
 struct ProfileOnboardingView: View {
     @State private var draft: AthleteProfile
+    let ble: AtriaBLEManager
     let onComplete: (AthleteProfile) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -126,10 +222,12 @@ struct ProfileOnboardingView: View {
     }
 
     init(profile: AthleteProfile,
+         ble: AtriaBLEManager,
          debugInitialStep: String? = nil,
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: OnboardingStep(debugName: debugInitialStep) ?? .welcome)
+        self.ble = ble
         self.onComplete = onComplete
     }
 
@@ -390,20 +488,24 @@ struct ProfileOnboardingView: View {
                     .foregroundStyle(.blue)
                 Text("Connect your strap")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
-                Text("Atria reads your strap over Bluetooth.")
+                Text("Put it on — Atria finds it on its own.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Live, guided feedback: the user watches the strap actually connect
+            // and start reading their pulse before moving on.
+            OnboardingConnectionStatusView(ble: ble)
+
             VStack(alignment: .leading, spacing: 14) {
                 onboardingNumberedStep(1,
                                        title: "Put the strap on",
-                                       detail: "Wear it snug.")
+                                       detail: "Wear it snug, sensors against your skin.")
                 onboardingNumberedStep(2,
                                        title: "Keep your phone nearby",
-                                       detail: "Atria connects on its own.")
+                                       detail: "Stay within a few metres while it links.")
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
@@ -415,13 +517,14 @@ struct ProfileOnboardingView: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Label("No strap nearby? Continue anyway.",
+            Label("No strap nearby? You can continue and connect later.",
                   systemImage: "info.circle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .onAppear { ble.startScan(reason: "onboarding_connect") }
     }
 
     // MARK: - Step 4: Profile
