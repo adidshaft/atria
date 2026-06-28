@@ -827,6 +827,8 @@ def evaluate(
     summary_path: Path | None = None,
     *,
     skip_external_reference: bool = False,
+    defer_physical_long_wear: bool = False,
+    defer_accessibility_performance: bool = False,
     accessibility_performance_path: Path | None = None,
     device_pull_path: Path | None = None,
 ) -> dict[str, object]:
@@ -839,14 +841,22 @@ def evaluate(
     blockers: list[str] = []
     if local_status != "pass":
         blockers.append("local_artifacts")
-    if physical["status"] != "pass":
+    deferred_gates: list[str] = []
+    if defer_physical_long_wear:
+        deferred_gates.append("physical_long_wear_acceptance")
+    if defer_accessibility_performance:
+        deferred_gates.append("accessibility_performance_proof")
+
+    if physical["status"] != "pass" and not defer_physical_long_wear:
         blockers.append("physical_long_wear_acceptance")
-    blockers.extend(str(item) for item in physical.get("audit_blockers", []))
+    if not defer_physical_long_wear:
+        blockers.extend(str(item) for item in physical.get("audit_blockers", []))
     accessibility_performance = evaluate_accessibility_performance(repo, accessibility_performance_path)
     latest_device_pull = evaluate_latest_device_pull(repo, device_pull_path)
-    if accessibility_performance["status"] != "pass":
+    if accessibility_performance["status"] != "pass" and not defer_accessibility_performance:
         blockers.append("accessibility_performance_proof")
-    blockers.extend(str(item) for item in accessibility_performance.get("blockers", []))
+    if not defer_accessibility_performance:
+        blockers.extend(str(item) for item in accessibility_performance.get("blockers", []))
     if not skip_external_reference:
         blockers.append("external_reference_validation")
 
@@ -859,6 +869,7 @@ def evaluate(
         "latest_device_pull": latest_device_pull,
         "accessibility_performance": accessibility_performance,
         "external_reference_status": "skipped" if skip_external_reference else "required",
+        "deferred_gates": sorted(deferred_gates),
         "blockers": sorted(set(blockers)),
     }
 
@@ -935,6 +946,7 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Latest device pull: `{latest_device_pull['status']}`",
         f"- Accessibility/performance: `{accessibility['status']}`",
         f"- External reference: `{report['external_reference_status']}`",
+        f"- Deferred gates: `{', '.join(report.get('deferred_gates', [])) or 'none'}`",
         "",
         "## Blockers",
     ]
@@ -1090,6 +1102,16 @@ def main() -> int:
         help="Treat external reference validation as deliberately deferred/gated for this audit.",
     )
     parser.add_argument(
+        "--defer-physical-long-wear",
+        action="store_true",
+        help="Owner-defer overnight long-wear acceptance for this audit; evidence remains reported but non-blocking.",
+    )
+    parser.add_argument(
+        "--defer-accessibility-performance",
+        action="store_true",
+        help="Owner-defer final accessibility/performance proof for this audit; evidence remains reported but non-blocking.",
+    )
+    parser.add_argument(
         "--pull-summary",
         type=Path,
         default=None,
@@ -1103,6 +1125,8 @@ def main() -> int:
         args.repo.resolve(),
         args.summary,
         skip_external_reference=args.skip_external_reference,
+        defer_physical_long_wear=args.defer_physical_long_wear,
+        defer_accessibility_performance=args.defer_accessibility_performance,
         accessibility_performance_path=args.accessibility_performance,
         device_pull_path=args.pull_summary,
     )
@@ -1121,6 +1145,7 @@ def main() -> int:
             f"acceptance_blockers={','.join(physical['acceptance_blockers']) or 'none'} "
             f"accessibility_performance_status={report['accessibility_performance']['status']} "
             f"external_reference_status={report['external_reference_status']} "
+            f"deferred_gates={','.join(report['deferred_gates']) or 'none'} "
             f"blockers={','.join(report['blockers']) or 'none'} "
             f"summary={physical['summary']}"
         )
