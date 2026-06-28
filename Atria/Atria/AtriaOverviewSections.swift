@@ -641,11 +641,17 @@ struct AtriaOverviewReadinessSectionHost: View {
     }
 
     private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
-        orderCSV = AtriaTodayMetric.moving(dragged, before: target, in: orderCSV)
+        orderCSV = AtriaTodayMetric.moving(dragged,
+                                           before: target,
+                                           in: orderCSV,
+                                           hiddenCSV: hiddenCSV)
     }
 
     private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int) {
-        orderCSV = AtriaTodayMetric.moving(metric, direction: direction, in: orderCSV)
+        orderCSV = AtriaTodayMetric.moving(metric,
+                                           direction: direction,
+                                           in: orderCSV,
+                                           hiddenCSV: hiddenCSV)
     }
 
     private func hideMetric(_ metric: AtriaTodayMetric) {
@@ -875,6 +881,25 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         return order.map(\.rawValue).joined(separator: ",")
     }
 
+    static func moving(_ dragged: AtriaTodayMetric,
+                       before target: AtriaTodayMetric,
+                       in csv: String,
+                       hiddenCSV: String) -> String {
+        guard dragged != target else { return ordered(from: csv).map(\.rawValue).joined(separator: ",") }
+        let hidden = hidden(from: hiddenCSV)
+        let currentOrder = ordered(from: csv)
+        let currentVisible = currentOrder.filter { !hidden.contains($0.rawValue) }
+        guard currentVisible.contains(dragged), currentVisible.contains(target) else {
+            return moving(dragged, before: target, in: csv)
+        }
+        var nextVisible = currentVisible.filter { $0 != dragged }
+        let insertIndex = nextVisible.firstIndex(of: target) ?? nextVisible.endIndex
+        nextVisible.insert(dragged, at: insertIndex)
+        return mergedOrder(replacingVisibleSlotsIn: currentOrder,
+                           hidden: hidden,
+                           with: nextVisible)
+    }
+
     static func moving(_ metric: AtriaTodayMetric, direction: Int, in csv: String) -> String {
         var order = ordered(from: csv)
         guard let index = order.firstIndex(of: metric) else { return order.map(\.rawValue).joined(separator: ",") }
@@ -882,6 +907,34 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         guard next != index else { return order.map(\.rawValue).joined(separator: ",") }
         order.swapAt(index, next)
         return order.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func moving(_ metric: AtriaTodayMetric,
+                       direction: Int,
+                       in csv: String,
+                       hiddenCSV: String) -> String {
+        let hidden = hidden(from: hiddenCSV)
+        let currentOrder = ordered(from: csv)
+        var visible = currentOrder.filter { !hidden.contains($0.rawValue) }
+        guard let index = visible.firstIndex(of: metric) else {
+            return moving(metric, direction: direction, in: csv)
+        }
+        let next = max(0, min(visible.count - 1, index + direction))
+        guard next != index else { return currentOrder.map(\.rawValue).joined(separator: ",") }
+        visible.swapAt(index, next)
+        return mergedOrder(replacingVisibleSlotsIn: currentOrder,
+                           hidden: hidden,
+                           with: visible)
+    }
+
+    private static func mergedOrder(replacingVisibleSlotsIn order: [AtriaTodayMetric],
+                                    hidden: Set<String>,
+                                    with visible: [AtriaTodayMetric]) -> String {
+        var visibleIterator = visible.makeIterator()
+        let merged = order.map { metric in
+            hidden.contains(metric.rawValue) ? metric : (visibleIterator.next() ?? metric)
+        }
+        return merged.map(\.rawValue).joined(separator: ",")
     }
 }
 
