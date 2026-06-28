@@ -1361,7 +1361,7 @@ private struct AtriaLiveTabAccessory: View {
         .padding(.horizontal, isInline ? 8 : 12)
         .padding(.vertical, isInline ? 4 : 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
+        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryAccessibilityChargeText).")
     }
 }
 
@@ -1515,20 +1515,23 @@ final class AtriaHomeModel {
         var batteryShowsPowered: Bool { batteryChargeStatus == .charging || batteryChargeStatus == .full }
         var batteryChargeCompactText: String {
             switch batteryChargeStatus {
-            case .levelOnly: return "State pending"
-            case .charging: return "Charging"
-            case .notCharging: return "Not charging"
-            case .full: return "Full"
+            case .levelOnly: return "Strap state pending"
+            case .charging: return "Strap charging"
+            case .notCharging: return "Strap not charging"
+            case .full: return "Strap full"
             }
         }
         var batteryHeaderChargeText: String {
             guard batteryLevel >= 0 else { return "--" }
             switch batteryChargeStatus {
             case .levelOnly: return "--"
-            case .charging: return "Charging"
-            case .notCharging: return "Not charging"
-            case .full: return "Full"
+            case .charging: return "Strap charging"
+            case .notCharging: return "Strap not charging"
+            case .full: return "Strap full"
             }
+        }
+        var batteryAccessibilityChargeText: String {
+            batteryHeaderChargeText == "--" ? batteryChargeText : batteryHeaderChargeText
         }
         var batteryStatusSummaryText: String {
             guard batteryLevel >= 0 else { return "Waiting" }
@@ -1536,7 +1539,7 @@ final class AtriaHomeModel {
         }
         var batteryDetailText: String {
             guard batteryLevel >= 0 else { return "Waiting for strap battery" }
-            return batteryChargeStatus == .levelOnly ? "Battery level is live; waiting for charger-state signal" : batteryChargeText
+            return batteryChargeStatus == .levelOnly ? "Strap battery level is live; waiting for strap charger-state signal" : batteryHeaderChargeText
         }
         var rrContinuityText: String { rrContinuityState.replacingOccurrences(of: "_", with: " ") }
         var hrvSDNNText: String { hrvSDNN.map { "\(Int($0.rounded()))" } ?? "--" }
@@ -3245,8 +3248,8 @@ private struct AtriaHeaderBatteryIndicator: View {
         .frame(width: AtriaHeaderControlMetrics.batteryWidth,
                height: AtriaHeaderControlMetrics.height)
         .atriaChromeCapsule(tint: tint)
-        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
-        .accessibilityHint(phonePowerText)
+        .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryAccessibilityChargeText).")
+        .accessibilityHint("iPhone power: \(phonePowerText).")
     }
 }
 
