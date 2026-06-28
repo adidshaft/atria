@@ -3019,10 +3019,20 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                                     duration: latest.duration)
             .frame(height: 18, alignment: .center)
         } else {
-            Text(latest?.stageEvidence.label ?? "Stages not ready")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(height: 18, alignment: .center)
+            HStack(spacing: 4) {
+                Text("Stages building")
+                Spacer(minLength: 0)
+                Text("AWAKE")
+                Text("LIGHT")
+                Text("REM")
+                Text("SWS")
+                Text("DEEP")
+            }
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.58)
+            .frame(height: 18, alignment: .center)
         }
     }
 
@@ -3034,7 +3044,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             return "Sleep history building. Wear the strap overnight or during a nap."
         }
         guard !latest.displayStageSegments.isEmpty else {
-            return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(latest.stageEvidence.label)."
+            return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Stages building: Awake, Light, REM, SWS, and Deep are not ready yet."
         }
         return "Sleep history \(valueText). \(latest.evidenceLabel). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
     }
