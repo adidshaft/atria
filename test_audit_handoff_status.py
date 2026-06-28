@@ -924,6 +924,27 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("--measured-fps <fps> --final", items[0])
         self.assertIn("fps >= 58", items[0])
 
+    def test_next_evidence_items_name_draft_trace_finalization_when_summary_missing(self):
+        report = {
+            "blockers": ["missing_accessibility_performance_summary", "accessibility_performance_proof"],
+            "accessibility_performance": {
+                "status": "missing",
+                "draft": {
+                    "status": "present",
+                    "instruments_trace": "docs/evidence/accessibility-performance/dashboard-scroll.trace",
+                },
+            },
+        }
+
+        items = audit_handoff_status.next_evidence_items(report)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("Finalize the physical accessibility/performance proof", items[0])
+        self.assertIn("docs/evidence/accessibility-performance/dashboard-scroll.trace", items[0])
+        self.assertIn("prepare_accessibility_performance_evidence.py", items[0])
+        self.assertIn("--all-accessibility-checks-pass --final", items[0])
+        self.assertIn("Do not write final `summary.json` from an assumed FPS", items[0])
+
     def test_accessibility_performance_evidence_can_complete_non_reference_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

@@ -885,6 +885,13 @@ def next_evidence_items(report: dict[str, object]) -> list[str]:
                 "`acceptance_status=pass`, at least 9 successful samples, at least 8h persisted-session span, "
                 "at least 85% coverage, accepted-gap <= 30s, nominal/fair thermal, and battery drop within limit."
             )
+    accessibility = report.get("accessibility_performance", {})
+    accessibility_draft: dict[str, object] = {}
+    if isinstance(accessibility, dict):
+        draft = accessibility.get("draft", {})
+        if isinstance(draft, dict):
+            accessibility_draft = draft
+
     if "dashboard_scroll_fps" in blocker_set:
         items.append(
             "Measure real dashboard scroll FPS on the physical iPhone 15 Pro Release app. "
@@ -894,7 +901,16 @@ def next_evidence_items(report: dict[str, object]) -> list[str]:
         )
     if "external_reference_validation" in blocker_set:
         items.append("Provide the deferred independent external reference validation, or continue auditing with `--skip-external-reference`.")
-    if "accessibility_performance_proof" in blocker_set and "dashboard_scroll_fps" not in blocker_set:
+    if "missing_accessibility_performance_summary" in blocker_set and accessibility_draft.get("status") in {"present", "draft"}:
+        trace = accessibility_draft.get("instruments_trace", "the draft Instruments trace")
+        items.append(
+            "Finalize the physical accessibility/performance proof from measured evidence: inspect "
+            f"`{trace}` for real dashboard scroll FPS, then run "
+            "`tools/prepare_accessibility_performance_evidence.py --dashboard-scroll-fps <fps> "
+            "--instruments-trace <trace> --all-accessibility-checks-pass --final` with fps >= 58. "
+            "Do not write final `summary.json` from an assumed FPS."
+        )
+    elif "accessibility_performance_proof" in blocker_set and "dashboard_scroll_fps" not in blocker_set:
         items.append("Inspect the Accessibility / Performance blockers below and regenerate `summary.json` only from measured device evidence.")
     return items
 
