@@ -3299,6 +3299,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
         let stalePairingSuspected = !officialAppInstalled && live.officialAppCoexistenceRisk == .suspected
         let pendingKnownReconnectAge = live.pendingKnownReconnectAge() ?? 0
         let pendingKnownReconnectActive = pendingKnownReconnectAge >= Self.pendingKnownReconnectActionAge
+        let hasLivePulseSignal = pulse.hasPulseSignal || live.hasRecentHeartRateSample
+        let needsContactCoach = pulse.needsContactCoach && !live.hasRecentHeartRateSample
 
         switch live.status {
         case .poweredOff:
@@ -3312,17 +3314,17 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red)
-        case .connected where pulse.needsContactCoach:
+        case .connected where needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
                                             tint: .orange)
-        case .connected where live.needsRRQualityCoach && !pulse.hasPulseSignal:
+        case .connected where live.needsRRQualityCoach && !hasLivePulseSignal:
             return AtriaConnectionDiagnosis(title: "Beat-to-beat waiting",
                                             action: "Atria needs pulse before it can build HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
                                             tint: .orange)
-        case .connected where live.needsRRQualityCoach && pulse.hasPulseSignal:
+        case .connected where live.needsRRQualityCoach && hasLivePulseSignal:
             return AtriaConnectionDiagnosis(title: "HRV settling",
                                             action: "Heart rate is live. Keep wearing normally while HRV settles.",
                                             systemImage: "waveform.path.ecg",

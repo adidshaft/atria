@@ -248,11 +248,12 @@ private struct AtriaHeroStatusCardLiveHost: View {
     @ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore
 
     var body: some View {
+        let hasPulseSignal = pulseStore.state.hasPulseSignal || liveStore.state.hasRecentHeartRateSample
         AtriaHeroStatusCardHost(status: statusStore.state.status,
                                 displayDeviceName: liveStore.state.displayDeviceName,
                                 heartRateText: pulseStore.state.heartRateText,
-                                hasPulseSignal: pulseStore.state.hasPulseSignal,
-                                needsContactCoach: pulseStore.state.needsContactCoach)
+                                hasPulseSignal: hasPulseSignal,
+                                needsContactCoach: pulseStore.state.needsContactCoach && !liveStore.state.hasRecentHeartRateSample)
             .equatable()
     }
 }
