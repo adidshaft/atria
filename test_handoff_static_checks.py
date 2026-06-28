@@ -919,6 +919,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_contains(self, home, "profileMetricsStore: model.profileMetricsStore")
         assert_contains(self, home, "onStartWorkout: {\n                                        workoutSession = AtriaWorkoutSession(start: Date())\n                                    }")
+        assert_contains(self, vitals, "AtriaTrainingLoadTile(ratio: hero.loadRatioText")
+        assert_contains(self, vitals, "targetMetric: .load)")
+        assert_contains(self, vitals, "Long press to edit target.")
 
         assert_not_contains(self, overview, "LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)]")
         assert_not_contains(self, overview, "row.map(\\.glanceColumnSpan).reduce")
@@ -2772,7 +2775,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaTrainingSignalChip(title: \"Monotony\", value: monotony, signal: monotonySignal)",
             "Label(acwrDetail, systemImage: \"gauge.with.dots.needle.50percent\")",
             "Label(monotonyDetail, systemImage: \"waveform.path\")",
-            ".accessibilityLabel(\"Readiness \\(readiness). \\(signalSummary). \\(acwrDetail) \\(monotonyDetail) \\(narrative)\")",
+            ".accessibilityLabel(\"Readiness \\(readiness). \\(signalSummary). \\(acwrDetail) \\(monotonyDetail) \\(narrative) Long press to edit target.\")",
             "Text(\"Target \\(target)\")",
         ]:
             assert_contains(self, vitals, needle)

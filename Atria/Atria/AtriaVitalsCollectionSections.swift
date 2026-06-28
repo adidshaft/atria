@@ -2162,7 +2162,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                               acwrDetail: hero.loadACWRDetailText,
                               monotonyDetail: hero.loadMonotonyDetailText,
                               signalSummary: hero.loadSignalSummaryText,
-                              narrative: hero.loadNarrative)
+                              narrative: hero.loadNarrative,
+                              targetMetric: .load)
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
@@ -2700,6 +2701,23 @@ private struct AtriaTrainingLoadTile: View, Equatable {
     let monotonyDetail: String
     let signalSummary: String
     let narrative: String
+    let targetMetric: AtriaTodayMetric?
+    @State private var editingTargetMetric: AtriaTodayMetric?
+
+    static func == (lhs: AtriaTrainingLoadTile, rhs: AtriaTrainingLoadTile) -> Bool {
+        lhs.ratio == rhs.ratio
+            && lhs.target == rhs.target
+            && lhs.confidence == rhs.confidence
+            && lhs.readiness == rhs.readiness
+            && lhs.acwrSignal == rhs.acwrSignal
+            && lhs.monotony == rhs.monotony
+            && lhs.monotonySignal == rhs.monotonySignal
+            && lhs.acwrDetail == rhs.acwrDetail
+            && lhs.monotonyDetail == rhs.monotonyDetail
+            && lhs.signalSummary == rhs.signalSummary
+            && lhs.narrative == rhs.narrative
+            && lhs.targetMetric == rhs.targetMetric
+    }
 
     private var confidenceTint: Color {
         switch readiness.lowercased() {
@@ -2752,7 +2770,26 @@ private struct AtriaTrainingLoadTile: View, Equatable {
                alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: confidenceTint)
-            .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(acwrDetail) \(monotonyDetail) \(narrative)")
+        .contextMenu {
+            if let targetMetric {
+                Button {
+                    editingTargetMetric = targetMetric
+                } label: {
+                    Label("Edit target", systemImage: "target")
+                }
+            }
+        }
+        .accessibilityAction(named: Text("Edit target")) {
+            if let targetMetric {
+                editingTargetMetric = targetMetric
+            }
+        }
+        .accessibilityLabel("Readiness \(readiness). \(signalSummary). \(acwrDetail) \(monotonyDetail) \(narrative) Long press to edit target.")
+        .sheet(item: $editingTargetMetric) { metric in
+            AtriaGlanceTargetEditorSheet(metric: metric)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 }
 
