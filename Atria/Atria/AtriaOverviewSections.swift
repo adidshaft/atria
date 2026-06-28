@@ -856,7 +856,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         return ordered(from: orderCSV).filter { hidden.contains($0.rawValue) }
     }
 
-    fileprivate var dragPayload: String {
+    var dragPayload: String {
         Self.dragPayloadPrefix + rawValue
     }
 
@@ -1184,32 +1184,34 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var addWidgetMenu: some View {
-        HStack(spacing: 8) {
-            if isEditingGlance {
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        isEditingGlance = false
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 8) {
+                if isEditingGlance {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            isEditingGlance = false
+                        }
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 18, height: 18)
                     }
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.bold))
-                        .frame(width: 18, height: 18)
+                    .atriaGlassIconAction(tint: .green, size: 38)
+                    .accessibilityLabel("Finish editing widgets")
+                    .transition(.scale.combined(with: .opacity))
                 }
-                .atriaGlassIconAction(tint: .green, size: 38)
-                .accessibilityLabel("Finish editing widgets")
-                .transition(.scale.combined(with: .opacity))
-            }
 
-            Button {
-                showWidgetManager = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 20, height: 20)
+                Button {
+                    showWidgetManager = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 20, height: 20)
+                }
+                .atriaGlassIconAction(tint: .secondary, size: 38)
+                .accessibilityLabel("Add Today widget")
+                .accessibilityHint("Opens hidden Today widgets you can add. Long press a card to remove or resize it.")
             }
-            .atriaGlassIconAction(tint: .secondary, size: 38)
-            .accessibilityLabel("Add Today widget")
-            .accessibilityHint("Opens hidden Today widgets you can add. Long press a card to remove or resize it.")
         }
     }
 

@@ -42,20 +42,10 @@ struct AtriaVitalsTabContent: View {
 
             Group {
                 if horizontalSizeClass == .regular {
-                    HStack(alignment: .top, spacing: 18) {
-                        LazyVStack(spacing: 18) {
-                            ForEach(sections.enumeratedColumn(0)) { section in
-                                sectionCard(section)
-                            }
+                    LazyVGrid(columns: Self.regularSectionColumns, spacing: 18) {
+                        ForEach(sections) { section in
+                            sectionCard(section)
                         }
-                        .frame(maxWidth: .infinity, alignment: .top)
-
-                        LazyVStack(spacing: 18) {
-                            ForEach(sections.enumeratedColumn(1)) { section in
-                                sectionCard(section)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .top)
                     }
                 } else {
                     LazyVStack(spacing: 18) {
@@ -78,6 +68,11 @@ struct AtriaVitalsTabContent: View {
         }
         .sensoryFeedback(.selection, trigger: sectionOrderCSV)
     }
+
+    private static let regularSectionColumns = [
+        GridItem(.flexible(), spacing: 18, alignment: .top),
+        GridItem(.flexible(), spacing: 18, alignment: .top),
+    ]
 
     @ViewBuilder
     private func sectionCard(_ section: AtriaVitalsSection) -> some View {
@@ -123,28 +118,30 @@ struct AtriaVitalsTabContent: View {
     }
 
     private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                withAnimation(.snappy(duration: 0.2)) {
-                    moveSection(section, direction: -1)
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        moveSection(section, direction: -1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.caption.weight(.black))
                 }
-            } label: {
-                Image(systemName: "chevron.up")
-                    .font(.caption.weight(.black))
-            }
-            .atriaGlassIconAction(tint: .secondary, size: 44)
-            .accessibilityLabel("Move \(section.label) up")
+                .atriaGlassIconAction(tint: .secondary, size: 44)
+                .accessibilityLabel("Move \(section.label) up")
 
-            Button {
-                withAnimation(.snappy(duration: 0.2)) {
-                    moveSection(section, direction: 1)
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        moveSection(section, direction: 1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.black))
                 }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.black))
+                .atriaGlassIconAction(tint: .secondary, size: 44)
+                .accessibilityLabel("Move \(section.label) down")
             }
-            .atriaGlassIconAction(tint: .secondary, size: 44)
-            .accessibilityLabel("Move \(section.label) down")
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
@@ -219,7 +216,7 @@ enum AtriaVitalsSection: String, CaseIterable, Identifiable {
         return result
     }
 
-    fileprivate var dragPayload: String {
+    var dragPayload: String {
         Self.dragPayloadPrefix + rawValue
     }
 
@@ -257,14 +254,6 @@ private struct AtriaConditionalVitalsStringDraggable: ViewModifier {
             content.draggable(payload)
         } else {
             content
-        }
-    }
-}
-
-private extension Array where Element == AtriaVitalsSection {
-    func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection] {
-        enumerated().compactMap { index, section in
-            index % 2 == column ? section : nil
         }
     }
 }

@@ -268,13 +268,16 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
+        home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         assert_not_contains(self, content, "self.buttonStyle(.glassProminent).tint(tint)")
         assert_not_contains(self, content, "self.buttonStyle(.glass)\n        }")
-        for scroll_surface in [overview, vitals, settings]:
-            assert_not_contains(self, scroll_surface, "GlassEffectContainer")
+        assert_contains(self, home, "GlassEffectContainer(spacing: 10)")
+        assert_contains(self, overview, "GlassEffectContainer(spacing: 10)")
+        assert_contains(self, vitals, "GlassEffectContainer(spacing: 10)")
+        assert_not_contains(self, settings, "GlassEffectContainer")
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
         shared_chrome = source(ROOT / "Atria" / "Atria" / "AtriaSharedChrome.swift")
         icon_style = re.search(
@@ -755,7 +758,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "onOpenInsights: openTrendsSegment",
             "let onOpenInsights: () -> Void",
             "private static let dragPayloadPrefix = \"atria.today.metric:\"",
-            "fileprivate var dragPayload: String",
+            "var dragPayload: String",
             "Self.dragPayloadPrefix + rawValue",
             "static func draggedMetric(from payload: String) -> AtriaTodayMetric?",
             "guard payload.hasPrefix(dragPayloadPrefix) else { return nil }",
@@ -880,7 +883,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let onToggleMetricSize: (AtriaTodayMetric) -> Void",
             "@State private var isEditingGlance = false",
             "@State private var showWidgetManager = false",
-            "if isEditingGlance {\n                Button {",
+            "if isEditingGlance {",
             ".transition(.scale.combined(with: .opacity))",
             "isEditingGlance = false",
             ".accessibilityLabel(\"Finish editing widgets\")",
@@ -941,6 +944,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "managerSection(title: \"Add widget\"",
             "Label(\"Edit on cards\", systemImage: \"square.grid.2x2\")",
             "Image(systemName: \"plus\")",
+            "GlassEffectContainer(spacing: 10)",
             "glanceRemoveControl(for: metric)",
             "glanceTargetControl(for: metric)",
             "glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)",
@@ -1087,13 +1091,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
             "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
             "private static let dragPayloadPrefix = \"atria.vitals.section:\"",
-            "fileprivate var dragPayload: String",
+            "var dragPayload: String",
             "static func draggedSection(from payload: String) -> AtriaVitalsSection?",
             "var label: String",
             "case .recoveryStrain: return \"Recovery and strain\"",
             "private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View",
             "Image(systemName: \"chevron.up\")",
             "Image(systemName: \"chevron.down\")",
+            "GlassEffectContainer(spacing: 10)",
             ".atriaGlassIconAction(tint: .secondary, size: 44)",
             "private struct AtriaConditionalVitalsStringDraggable: ViewModifier",
             ".modifier(AtriaConditionalVitalsStringDraggable(isEnabled: true,",
@@ -1113,16 +1118,32 @@ class HandoffStaticChecks(unittest.TestCase):
             "Label(\"Reset Vitals layout\", systemImage: \"arrow.counterclockwise\")",
             ".accessibilityHint(\"Restores Pulse, HRV, Recovery and strain, and Profile to the default order.\")",
             ".sensoryFeedback(.selection, trigger: sectionOrderCSV)",
+            "private static let regularSectionColumns = [",
+            "LazyVGrid(columns: Self.regularSectionColumns, spacing: 18)",
             "static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String",
-            "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]",
         ]:
             assert_contains(self, vitals, needle)
 
+        assert_not_contains(self, vitals, "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]")
+        assert_not_contains(self, vitals, "sections.enumeratedColumn(")
         assert_not_contains(self, overview, ".draggable(metric.rawValue)")
         assert_not_contains(self, overview, ".draggable(metric.dragPayload)")
         assert_not_contains(self, overview, "let dragged = AtriaTodayMetric(rawValue: raw)")
         assert_not_contains(self, vitals, ".draggable(section.rawValue)")
         assert_not_contains(self, vitals, "let dragged = AtriaVitalsSection(rawValue: raw)")
+
+        layout_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaLayoutModelTests.swift")
+        for needle in [
+            "final class AtriaLayoutModelTests: XCTestCase",
+            "testVitalsSectionOrderRepairsMalformedAndDuplicateCSV",
+            "testVitalsSectionDragAndBoundaryMovesStayStable",
+            "testTodayMetricVisibleReorderPreservesHiddenSlots",
+            "testTodayMetricDragPayloadRejectsRawValues",
+            "AtriaVitalsSection.moving(.profile, before: .pulse",
+            "AtriaTodayMetric.moving(.stress,",
+            "hiddenStorageValue(for:",
+        ]:
+            assert_contains(self, layout_tests, needle)
 
     def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")

@@ -3131,42 +3131,44 @@ private struct AtriaHomeTopChrome: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: AtriaHeaderControlMetrics.iconSpacing) {
-                AtriaHeaderBatteryIndicator(liveStore: coreLiveStore,
-                                            phoneBatteryState: phoneBatteryState)
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: AtriaHeaderControlMetrics.iconSpacing) {
+                    AtriaHeaderBatteryIndicator(liveStore: coreLiveStore,
+                                                phoneBatteryState: phoneBatteryState)
 
-                if showWorkout {
-                    Button(action: onStartWorkout) {
-                        AtriaToolbarIcon(symbol: "figure.run")
+                    if showWorkout {
+                        Button(action: onStartWorkout) {
+                            AtriaToolbarIcon(symbol: "figure.run")
+                        }
+                        .buttonStyle(AtriaHeaderActionButtonStyle())
+                        .accessibilityLabel("Start workout")
+                    }
+
+                    if showHelp {
+                        Button(action: onShowHelp) {
+                            AtriaToolbarIcon(symbol: "questionmark.circle")
+                        }
+                        .buttonStyle(AtriaHeaderActionButtonStyle())
+                        .accessibilityLabel("Connection help")
+                    }
+
+                    NavigationLink {
+                        HistoryView(store: store)
+                    } label: {
+                        AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
                     }
                     .buttonStyle(AtriaHeaderActionButtonStyle())
-                    .accessibilityLabel("Start workout")
-                }
+                    .accessibilityLabel("History")
 
-                if showHelp {
-                    Button(action: onShowHelp) {
-                        AtriaToolbarIcon(symbol: "questionmark.circle")
+                    Button(action: onShowSettings) {
+                        AtriaToolbarIcon(symbol: "gearshape")
                     }
                     .buttonStyle(AtriaHeaderActionButtonStyle())
-                    .accessibilityLabel("Connection help")
+                    .accessibilityLabel("Settings")
                 }
-
-                NavigationLink {
-                    HistoryView(store: store)
-                } label: {
-                    AtriaToolbarIcon(symbol: "clock.arrow.circlepath")
-                }
-                .buttonStyle(AtriaHeaderActionButtonStyle())
-                .accessibilityLabel("History")
-
-                Button(action: onShowSettings) {
-                    AtriaToolbarIcon(symbol: "gearshape")
-                }
-                .buttonStyle(AtriaHeaderActionButtonStyle())
-                .accessibilityLabel("Settings")
+                .frame(height: AtriaHeaderControlMetrics.height, alignment: .center)
+                .fixedSize()
             }
-            .frame(height: AtriaHeaderControlMetrics.height, alignment: .center)
-            .fixedSize()
         }
         .frame(maxWidth: .infinity,
                minHeight: AtriaHeaderControlMetrics.height,
