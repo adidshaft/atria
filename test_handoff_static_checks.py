@@ -3801,6 +3801,14 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "enum BiologicalAge",
+            "enum ReferenceSource: String, CaseIterable",
+            "static let referenceSourceFootnotes = ReferenceSource.allCases.map(\\.rawValue)",
+            "case vo2max = \"VO2max: ACSM/Cooper",
+            "case restingHeartRate = \"Resting HR:",
+            "case hrv = \"HRV: age-related RMSSD",
+            "case sleep = \"Sleep:",
+            "case activity = \"Activity:",
+            "case bmi = \"BMI:",
             "trendDeltaYears: Int? = nil",
             "static func estimatedAge(chronologicalAge: Int, factors: [BioAgeFactor]) -> Int",
             "min(max(unclamped, chronologicalAge - 20), chronologicalAge + 20)",
@@ -5643,6 +5651,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "final class AtriaAnalyticsTests: XCTestCase",
             "func testCalibrationExamplesRemainInRange()",
             "func testBiologicalAgeIsLocalEstimateAndClamped()",
+            "func testBiologicalAgeReferenceSourcesAreDocumentedLocally()",
             "func testHRVAnalyzerRequiresContinuousCleanRRWindow()",
             "func testTrainingLoadFlagsUnsafeSpikesAndBalancedLoad()",
             "func testTargetZonesUseHandoffThresholdsAndStayBaselineGated()",

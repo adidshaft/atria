@@ -65,6 +65,22 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(widening.agingPaceText, "Widening pace")
     }
 
+    func testBiologicalAgeReferenceSourcesAreDocumentedLocally() {
+        let footnotes = AtriaAnalytics.BiologicalAge.referenceSourceFootnotes
+        let joined = footnotes.joined(separator: " ")
+
+        XCTAssertEqual(footnotes.count, 6)
+        XCTAssertTrue(joined.contains("ACSM/Cooper"))
+        XCTAssertTrue(joined.contains("Resting HR"))
+        XCTAssertTrue(joined.contains("RMSSD"))
+        XCTAssertTrue(joined.contains("Sleep"))
+        XCTAssertTrue(joined.contains("Activity"))
+        XCTAssertTrue(joined.contains("BMI"))
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("lifespan"))
+        XCTAssertFalse(joined.localizedCaseInsensitiveContains("diagnosis"))
+        XCTAssertFalse(joined.contains("http"))
+    }
+
     func testHRVAnalyzerRequiresContinuousCleanRRWindow() {
         let now = Date()
         let cleanRR = (0...300).map { index in
