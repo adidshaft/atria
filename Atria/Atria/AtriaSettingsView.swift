@@ -688,19 +688,12 @@ struct AtriaSettingsView: View {
                 var hidden = AtriaTodayMetric.hidden(from: todayHiddenCSV)
                 if visible {
                     hidden.remove(metric.rawValue)
-                } else if canHideTodayMetric(metric, hidden: hidden) {
+                } else {
                     hidden.insert(metric.rawValue)
                 }
                 todayHiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
             }
         )
-    }
-
-    private func canHideTodayMetric(_ metric: AtriaTodayMetric,
-                                    hidden: Set<String>? = nil) -> Bool {
-        let activeHidden = hidden ?? AtriaTodayMetric.hidden(from: todayHiddenCSV)
-        return AtriaTodayMetric.defaultGlanceOrder.filter { !activeHidden.contains($0.rawValue) }.count > 1
-            || activeHidden.contains(metric.rawValue)
     }
 
     private func resetTodayLayout() {
@@ -716,7 +709,6 @@ struct AtriaSettingsView: View {
                     Toggle(isOn: todayBinding(metric)) {
                         Label(metric.label, systemImage: metric.systemImage)
                     }
-                    .disabled(todayBinding(metric).wrappedValue && !canHideTodayMetric(metric))
 
                     Spacer(minLength: 0)
 
