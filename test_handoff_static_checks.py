@@ -3483,6 +3483,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "preserveLongWearRangeLossRecovery(reason: \"accepted_hr_watchdog\")",
             "preserveLongWearRangeLossRecovery(reason: \"central_powered_off\")",
             "ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected",
+            "private let minimumFinishedLongWearDuration: TimeInterval = 5 * 60",
+            "saved.duration < minimumFinishedLongWearDuration",
+            "retained_short_fragment",
+            "reason=long_wear_short_fragment",
+            "action=retain_active_journal",
         ]:
             assert_contains(self, text, needle)
 
