@@ -3147,9 +3147,9 @@ private struct AtriaHomeTopChrome: View {
 
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 44
-    static let batteryWidth: CGFloat = 68
-    static let statusMinWidth: CGFloat = 152
-    static let iconSpacing: CGFloat = 6
+    static let batteryWidth: CGFloat = 64
+    static let statusMinWidth: CGFloat = 132
+    static let iconSpacing: CGFloat = 4
 }
 
 private struct AtriaHeaderBatteryIndicator: View {
