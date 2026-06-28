@@ -408,12 +408,24 @@ def emit_historical_archive_summary():
     metric_ready = parse_errors == 0 and rows > 0 and metric_usable_rows > 0 and current_usable_rows > 0
     if parse_errors:
         interpretation = "parse_errors"
+        metric_gate = "repair_needed"
+        user_action = "archive_needs_repair"
     elif metric_ready:
         interpretation = "metric_ready"
+        metric_gate = "metric_ready"
+        user_action = "historical_rows_can_feed_metrics"
+    elif current_usable_rows > 0:
+        interpretation = "archive_persisted_continuity_repair_only"
+        metric_gate = "continuity_repair_only"
+        user_action = "safe_for_gap_repair_but_metrics_wait_for_rr_validation"
     elif rows > 0:
         interpretation = "archive_persisted_fail_closed_rows"
+        metric_gate = "metrics_gated"
+        user_action = "validate_historical_rr_layout_before_metric_use"
     else:
         interpretation = "empty_archive"
+        metric_gate = "waiting"
+        user_action = "wait_for_missed_data_after_reconnect"
     print("historical_archive_summary_status=ok")
     print(f"historical_archive_rows={rows}")
     print(f"historical_archive_parse_errors={parse_errors}")
@@ -445,6 +457,8 @@ def emit_historical_archive_summary():
         print(f"historical_archive_clock_corrected_unix_first={min(corrected_values)}")
         print(f"historical_archive_clock_corrected_unix_last={max(corrected_values)}")
     print(f"historical_archive_metric_ready={1 if metric_ready else 0}")
+    print(f"historical_archive_metric_gate={metric_gate}")
+    print(f"historical_archive_user_action={user_action}")
     print(f"historical_archive_interpretation={interpretation}")
 
 emit_historical_archive_summary()
