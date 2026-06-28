@@ -74,14 +74,18 @@ Most recent physical-device evidence from non-disruptive pulls:
 - Atria process running on Aman's iPhone.
 - Official WHOOP process/widget not listed.
 - Saved sessions present.
-- Historical archive present with `historical_archive_rows=46245`,
-  `historical_archive_current_session_usable_rows=45306`,
+- Historical archive present with `historical_archive_rows=46353`,
+  `historical_archive_current_session_usable_rows=45414`,
   and `historical_archive_metric_ready=0`.
 - Metric promotion blocker remains
   `historical_archive_metric_promotion_blocker=continuity_repair_only`.
 - Confirmed sleep records exist: `confirmed_sleep_records=2`, including one nap
   and one overnight record, with zero validated stage records.
-- Post-install active journal recovered to fresh/active with RR present.
+- Latest pull (`artifacts/goal-21-state-20260628T132712Z`) showed the active
+  journal fresh/active with `active_journal_samples=598`, `active_journal_rr_values=125`,
+  `active_journal_duration_s=588`, and `active_journal_age_s=10`.
+- The same pull reported `offline_sync_last_status=deferred_live_link`, which is
+  expected while live HR is protected and range-loss backfill is pending.
 
 Remaining handoff-21 blockers:
 
