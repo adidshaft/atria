@@ -1524,8 +1524,8 @@ final class AtriaHomeModel {
             guard batteryLevel >= 0 else { return "--" }
             switch batteryChargeStatus {
             case .levelOnly: return "--"
-            case .charging: return "Charge"
-            case .notCharging: return "Strap"
+            case .charging: return "Charging"
+            case .notCharging: return "Not charging"
             case .full: return "Full"
             }
         }
@@ -3161,7 +3161,7 @@ private struct AtriaHomeTopChrome: View {
 
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 44
-    static let batteryWidth: CGFloat = 64
+    static let batteryWidth: CGFloat = 108
     static let statusMinWidth: CGFloat = 132
     static let iconSpacing: CGFloat = 4
 }
