@@ -586,7 +586,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private static let ringLineWidth: CGFloat = 3",
             "static var placeholder: some View",
             "private var hasProgressSignal: Bool",
-            "title == \"Recovery\" || title == \"Strain\"",
+            "ringFraction != nil",
             "private var clampedRingFraction: Double?",
             "AtriaGlanceMetricMarker(systemImage: systemImage,",
             "guard metric.glanceGridSize(sizeOverrides: sizeOverrides).isValidGlanceShape else { continue }",

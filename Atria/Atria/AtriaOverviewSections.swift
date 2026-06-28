@@ -1969,7 +1969,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     private var hasProgressSignal: Bool {
-        title == "Recovery" || title == "Strain"
+        ringFraction != nil
     }
 
     private var clampedRingFraction: Double? {
