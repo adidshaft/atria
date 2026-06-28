@@ -1622,7 +1622,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepGlanceDetailText: String {
-        if !metricIsPending(snapshot.sleepValue) { return "Last sleep" }
+        if !metricIsPending(snapshot.sleepValue) { return "Last" }
         guard sleepHistory.candidateCount > 0 else { return "Learning" }
         return "Review"
     }
