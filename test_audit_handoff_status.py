@@ -309,6 +309,51 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("- Active HR nondecreasing: `True`", markdown)
         self.assertIn("- Battery drop from first percent: `-12`", markdown)
 
+    def test_final_long_wear_trends_fall_back_to_sibling_samples_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            data = json.loads(summary.read_text(encoding="utf-8"))
+            for key in [
+                "active_duration_nondecreasing",
+                "active_hr_nondecreasing",
+                "active_rr_nondecreasing",
+                "battery_drop_from_first_percent",
+            ]:
+                data.pop(key, None)
+            summary.write_text(json.dumps(data), encoding="utf-8")
+            (summary.parent / "samples.jsonl").write_text("\n".join([
+                json.dumps({
+                    "sample": 0,
+                    "active_journal": {
+                        "duration_s": 100.0,
+                        "accepted_hr": 100,
+                        "delta_rr": 95,
+                        "battery": 80,
+                    },
+                }),
+                json.dumps({
+                    "sample": 1,
+                    "active_journal": {
+                        "duration_s": 3700.0,
+                        "accepted_hr": 3600,
+                        "delta_rr": 3300,
+                        "battery": 78,
+                    },
+                }),
+                "",
+            ]), encoding="utf-8")
+
+            physical = audit_handoff_status.evaluate_physical_long_wear(repo, summary)
+
+        self.assertTrue(physical["active_duration_nondecreasing"])
+        self.assertTrue(physical["active_hr_nondecreasing"])
+        self.assertTrue(physical["active_rr_nondecreasing"])
+        self.assertEqual(physical["battery_drop_from_first_percent"], -2.0)
+
     def test_short_custom_long_wear_pass_cannot_complete_physical_acceptance(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
