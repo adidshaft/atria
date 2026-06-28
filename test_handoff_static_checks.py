@@ -449,6 +449,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "historical_archive_current_session_usable_rows=",
             "historical_archive_metric_ready=",
             "historical_archive_metric_gate=",
+            "historical_archive_metric_promotion_blocker=",
             "historical_archive_user_action=",
             "archive_persisted_fail_closed_rows",
         ]:
