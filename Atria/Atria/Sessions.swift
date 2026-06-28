@@ -2563,6 +2563,7 @@ final class SessionStore: ObservableObject {
         let baseline: PersonalBaseline
         let didRebuildBaseline: Bool
         let backupStatus: SessionBackupStatus
+        let prunedShortLongWearFragments: Int
     }
 
     @Published private(set) var sessions: [SavedSession] = [] {
@@ -3414,7 +3415,7 @@ final class SessionStore: ObservableObject {
               health.planned.sleeps)
     }
 
-    private static func persistSessionsSnapshot(_ sessions: [SavedSession], to url: URL, reason: String) {
+    private nonisolated static func persistSessionsSnapshot(_ sessions: [SavedSession], to url: URL, reason: String) {
         do {
             let data = try JSONEncoder().encode(sessions)
             try data.write(to: url, options: .atomic)
@@ -10376,13 +10377,21 @@ final class SessionStore: ObservableObject {
                 return
             }
 
-            let preparation = Self.prepareDeferredLoad(decoded: decoded,
+            let migrated = Self.pruningShortLongWearFragments(from: decoded)
+            if migrated.prunedCount > 0 {
+                Self.persistSessionsSnapshot(migrated.sessions,
+                                             to: sourceURL,
+                                             reason: "prune_short_long_wear_fragments")
+            }
+
+            let preparation = Self.prepareDeferredLoad(decoded: migrated.sessions,
                                                        baseline: currentBaseline,
                                                        profile: currentProfile,
-                                                       sessionFileURL: sourceURL)
+                                                       sessionFileURL: sourceURL,
+                                                       prunedShortLongWearFragments: migrated.prunedCount)
             let elapsedMS = Int(((CFAbsoluteTimeGetCurrent() - startedAt) * 1000).rounded())
             await MainActor.run {
-                self.finishDeferredLoad(decoded, preparation: preparation, elapsedMS: elapsedMS)
+                self.finishDeferredLoad(migrated.sessions, preparation: preparation, elapsedMS: elapsedMS)
             }
         }
     }
@@ -10426,8 +10435,9 @@ final class SessionStore: ObservableObject {
         // light now, but never let it touch the first-frame budget on a big store.
         Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }
 
-        AtriaDebugLog("ATRIADBG session_store_load status=ok sessions=%d baseline_rebuilt=%d elapsed_ms=%d",
+        AtriaDebugLog("ATRIADBG session_store_load status=ok sessions=%d pruned_short_long_wear_fragments=%d baseline_rebuilt=%d elapsed_ms=%d",
               decoded.count,
+              preparation.prunedShortLongWearFragments,
               preparation.didRebuildBaseline ? 1 : 0,
               elapsedMS)
     }
@@ -10435,7 +10445,8 @@ final class SessionStore: ObservableObject {
     private nonisolated static func prepareDeferredLoad(decoded: [SavedSession],
                                                         baseline: PersonalBaseline,
                                                         profile: AthleteProfile,
-                                                        sessionFileURL: URL) -> DeferredLoadPreparation {
+                                                        sessionFileURL: URL,
+                                                        prunedShortLongWearFragments: Int = 0) -> DeferredLoadPreparation {
         let shouldRebuildBaseline = shouldRebuildBaselineAfterLoading(decoded, baseline: baseline)
         let preparedBaseline = shouldRebuildBaseline
             ? rebuildBaseline(from: decoded, previousBaseline: baseline, profile: profile)
@@ -10448,8 +10459,22 @@ final class SessionStore: ObservableObject {
             backupStatus: computeSessionBackupStatus(currentSessions: decoded,
                                                      baseline: preparedBaseline,
                                                      profile: profile,
-                                                     sessionFileURL: sessionFileURL)
+                                                     sessionFileURL: sessionFileURL),
+            prunedShortLongWearFragments: prunedShortLongWearFragments
         )
+    }
+
+    private nonisolated static func pruningShortLongWearFragments(from decoded: [SavedSession]) -> (sessions: [SavedSession], prunedCount: Int) {
+        let filtered = decoded.filter { !isShortLongWearFragment($0) }
+        return (filtered, decoded.count - filtered.count)
+    }
+
+    private nonisolated static func isShortLongWearFragment(_ session: SavedSession) -> Bool {
+        guard session.duration < 5 * 60 else { return false }
+        let label = session.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return label == "long wear"
+            || label == "auto-saved"
+            || label.hasPrefix("auto-saved chunk")
     }
 
     private nonisolated static func shouldRebuildBaselineAfterLoading(_ decoded: [SavedSession],
