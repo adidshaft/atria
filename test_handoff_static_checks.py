@@ -856,7 +856,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "role: .destructive",
             "Label(\"Edit on cards\", systemImage: \"square.grid.2x2\")",
             "Image(systemName: \"plus\")",
-            "private func glanceEditControls(for metric: AtriaTodayMetric,\n                                    sizeOverrides: [String: AtriaGlanceGridSize]) -> some View",
             "glanceRemoveControl(for: metric)",
             "glanceTargetControl(for: metric)",
             "glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)",
@@ -939,6 +938,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "private var hrvLearningState: AtriaMetricState")
         assert_not_contains(self, overview, "Label(\"Remove \\(metric.label)\", systemImage: \"minus.circle\")")
         assert_not_contains(self, overview, ".accessibilityLabel(\"Widget options for \\(metric.label)\")")
+        assert_not_contains(self, overview, "private func glanceEditControls(for metric: AtriaTodayMetric,")
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Circle())")
         assert_not_contains(self, overview, ".buttonStyle(.glass)")
         assert_not_contains(self, overview, ".buttonBorderShape(.circle)")

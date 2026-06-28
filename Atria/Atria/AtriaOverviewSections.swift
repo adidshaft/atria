@@ -1354,19 +1354,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return columnWidth
     }
 
-    private func glanceEditControls(for metric: AtriaTodayMetric,
-                                    sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
-        HStack(spacing: 8) {
-            glanceRemoveControl(for: metric)
-            if metric.supportsGlanceTargetEditing {
-                glanceTargetControl(for: metric)
-            }
-            glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)
-        }
-        .fixedSize()
-        .accessibilityElement(children: .contain)
-    }
-
     private func glanceTargetControl(for metric: AtriaTodayMetric) -> some View {
         Button {
             targetEditorMetric = metric
