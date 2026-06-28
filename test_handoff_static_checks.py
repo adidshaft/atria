@@ -1047,8 +1047,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research targets tune sleep-only deviations and candidate-frame evidence.",
             "They do not turn these signals into validated SpO2 or absolute body-temperature readings.",
             "targetGroupHeader(title: \"Body age\"",
-            "Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI.",
-            "These bands only tune younger/older color guidance.",
+            "Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI -- not a medical assessment.",
+            "not a medical assessment. These bands only tune younger/older color guidance.",
             "targetGroupHeader(title: \"VO2max\"",
         ]:
             assert_contains(self, settings, needle)
