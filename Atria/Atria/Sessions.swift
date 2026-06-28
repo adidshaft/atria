@@ -6106,9 +6106,7 @@ final class SessionStore: ObservableObject {
                                            reason: source,
                                            motionSource: "manual",
                                            motionValidated: false,
-                                           stageSegments: Self.defaultManualSleepStages(start: start,
-                                                                                       end: end,
-                                                                                       isNap: isNap))
+                                           stageSegments: nil)
         existing.append(confirmed)
         saveConfirmedSleeps(existing)
         AtriaDebugLog("ATRIADBG sleep_manual status=saved id=%@ source=%@ start=%@ end=%@ duration_s=%.0f kind=%@ stages=%d",
@@ -6120,13 +6118,6 @@ final class SessionStore: ObservableObject {
                       confirmed.source,
                       confirmed.stageSegments?.count ?? 0)
         return confirmed
-    }
-
-    private static func defaultManualSleepStages(start: Date, end: Date, isNap: Bool) -> [SleepStageSegment] {
-        defaultSleepStageEstimate(start: start,
-                                  end: end,
-                                  isNap: isNap,
-                                  idPrefix: "manual")
     }
 
     private static func defaultSleepStageEstimate(start: Date,
@@ -11046,9 +11037,9 @@ struct SleepHistorySnapshot: Equatable {
         for sleep in confirmedSleeps {
             let day = calendar.startOfDay(for: sleep.start)
             let stageSegments = sleep.stageSegments
-                ?? Self.estimatedConfirmedSleepStages(start: sleep.start,
-                                                      end: sleep.end,
-                                                      source: sleep.source)
+                ?? Self.legacyConfirmedSleepStageCompatibility(start: sleep.start,
+                                                               end: sleep.end,
+                                                               source: sleep.source)
             nightsByDay[day] = Night(id: sleep.id,
                                      day: day,
                                      start: sleep.start,
@@ -11150,6 +11141,15 @@ struct SleepHistorySnapshot: Equatable {
                                      end: next,
                                      stage: item.0)
         }
+    }
+
+    private static func legacyConfirmedSleepStageCompatibility(start: Date,
+                                                               end: Date,
+                                                               source: String) -> [SleepStageSegment] {
+        if Night.explicitNapSources.contains(source) || Night.explicitSleepSources.contains(source) {
+            return []
+        }
+        return estimatedConfirmedSleepStages(start: start, end: end, source: source)
     }
 
     var latest: Night? {

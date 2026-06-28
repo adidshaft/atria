@@ -2219,7 +2219,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "source: String = \"manual_ui\") -> UserConfirmedSleep?",
             "let sleepSource = isNap ? \"manual_nap\" : \"manual_sleep\"",
             "confidence: \"manual_user_entered\"",
-            "stageSegments: Self.defaultManualSleepStages(start: start,",
+            "motionSource: \"manual\"",
+            "motionValidated: false",
+            "stageSegments: nil",
             "let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),",
             "stageSegments: stageSegments.isEmpty ? nil : stageSegments",
             "stage_research_segments=%d",
@@ -2287,7 +2289,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"Sleep needs at least 3 hours.\"",
             ".disabled(!canSave)",
             "ForEach(SleepStageKind.allCases)",
-            "Stage bars are an editable estimate from the manual window, not sensor-validated sleep staging.",
+            "Manual entries save the window only.",
+            "will not fabricate stage bars.",
+            "Manual entries improve duration, nap, and sleep-history continuity; sleep stages require sensor evidence.",
             "AtriaSleepStageSummary(night: latest)",
             "AtriaMetricTile(label: \"Consistency\"",
             "value: snapshot.sleepConsistencyText",
@@ -6200,11 +6204,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, sessions, "sleep_confirmed_migration")
         assert_contains(self, sessions, "UserConfirmedSleep(id: sleep.id,")
         assert_contains(self, sessions, "stageSegments: migratedStages")
-        assert_contains(self, sessions, "Self.estimatedConfirmedSleepStages(start: sleep.start,")
+        assert_contains(self, sessions, "Self.legacyConfirmedSleepStageCompatibility(start: sleep.start,")
         assert_contains(self, sessions, 'source: sleep.source)')
         assert_contains(self, sessions, '"aggregate_sleep"')
         assert_contains(self, sessions, '"sleep_window"')
         assert_contains(self, sessions, "private static func estimatedConfirmedSleepStages")
+        assert_contains(self, sessions, "private static func legacyConfirmedSleepStageCompatibility")
+        assert_contains(self, sessions, "if Night.explicitNapSources.contains(source) || Night.explicitSleepSources.contains(source)")
+        assert_contains(self, sessions, "return []")
         assert_contains(self, sessions, "(.awake, 0.08), (.light, 0.47), (.rem, 0.17), (.sws, 0.16), (.deep, 0.12)")
         assert_contains(self, sessions, "(.awake, 0.06), (.light, 0.68), (.rem, 0.08), (.sws, 0.12), (.deep, 0.06)")
 
