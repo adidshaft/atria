@@ -6186,12 +6186,14 @@ final class SessionStore: ObservableObject {
             return already
         }
         let confidence = best.motionEvidenceValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only"
-        let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
-                                                            start: best.start,
-                                                            end: best.end,
-                                                            restingHR: best.restingHR,
-                                                            isNap: best.kind == "nap_candidate",
-                                                            motionValidated: best.motionEvidenceValidated)
+        let stageSegments = best.motionEvidenceValidated
+            ? Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                              start: best.start,
+                                              end: best.end,
+                                              restingHR: best.restingHR,
+                                              isNap: best.kind == "nap_candidate",
+                                              motionValidated: best.motionEvidenceValidated)
+            : []
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: best.start,
@@ -6274,16 +6276,30 @@ final class SessionStore: ObservableObject {
     }
 
     private static func migratingConfirmedSleepStagesIfNeeded(_ sleep: UserConfirmedSleep) -> UserConfirmedSleep {
-        if let stageSegments = sleep.stageSegments, !stageSegments.isEmpty {
+        if Self.shouldPreserveConfirmedSleepStageSegments(sleep) {
             return sleep
         }
-        let isNap = confirmedSleepSourceIsNap(source: sleep.source,
-                                              duration: sleep.duration)
-        let migratedStages = defaultSleepStageEstimate(start: sleep.start,
-                                                       end: sleep.end,
-                                                       isNap: isNap,
-                                                       idPrefix: "migrated")
+        if sleep.stageSegments?.isEmpty == false {
+            return Self.copyConfirmedSleep(sleep, stageSegments: nil)
+        }
+        let migratedStages = Self.legacyConfirmedSleepStageCompatibility(start: sleep.start,
+                                                                         end: sleep.end,
+                                                                         source: sleep.source)
         guard !migratedStages.isEmpty else { return sleep }
+        return Self.copyConfirmedSleep(sleep, stageSegments: migratedStages)
+    }
+
+    private static func shouldPreserveConfirmedSleepStageSegments(_ sleep: UserConfirmedSleep) -> Bool {
+        guard let stageSegments = sleep.stageSegments, !stageSegments.isEmpty else { return false }
+        if sleep.source == "manual_sleep" || sleep.source == "manual_nap" { return false }
+        if sleep.confidence.localizedCaseInsensitiveContains("hr_only") { return false }
+        guard sleep.motionValidated || sleep.source == "validated_sleep_stages" else { return false }
+        let covered = stageSegments.reduce(0) { $0 + max(0, $1.duration) }
+        return covered >= max(60, sleep.duration * 0.85)
+    }
+
+    private static func copyConfirmedSleep(_ sleep: UserConfirmedSleep,
+                                           stageSegments: [SleepStageSegment]?) -> UserConfirmedSleep {
         return UserConfirmedSleep(id: sleep.id,
                                   createdAt: sleep.createdAt,
                                   start: sleep.start,
@@ -6300,7 +6316,22 @@ final class SessionStore: ObservableObject {
                                   reason: sleep.reason,
                                   motionSource: sleep.motionSource,
                                   motionValidated: sleep.motionValidated,
-                                  stageSegments: migratedStages)
+                                  stageSegments: stageSegments)
+    }
+
+    private static func legacyConfirmedSleepStageCompatibility(start: Date,
+                                                               end: Date,
+                                                               source: String) -> [SleepStageSegment] {
+        if SleepHistorySnapshot.Night.explicitNapSources.contains(source)
+            || SleepHistorySnapshot.Night.explicitSleepSources.contains(source) {
+            return []
+        }
+        let isNap = confirmedSleepSourceIsNap(source: source,
+                                              duration: end.timeIntervalSince(start))
+        return defaultSleepStageEstimate(start: start,
+                                         end: end,
+                                         isNap: isNap,
+                                         idPrefix: "migrated")
     }
 
     private static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
