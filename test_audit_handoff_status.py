@@ -173,6 +173,21 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "com.adidshaft.atria.longwear.run",
         )
 
+    def test_parse_launchctl_service_extracts_running_monitor_facts(self):
+        parsed = audit_handoff_status.parse_launchctl_service("\n".join([
+            "state = running",
+            "runs = 1",
+            "pid = 52971",
+            "last exit code = (never exited)",
+            "state = active",
+        ]))
+
+        self.assertEqual(parsed["launchctl_status"], "running")
+        self.assertEqual(parsed["launchctl_state"], "running")
+        self.assertEqual(parsed["launchctl_pid"], 52971)
+        self.assertEqual(parsed["launchctl_runs"], 1)
+        self.assertEqual(parsed["launchctl_last_exit"], "(never exited)")
+
     def test_reports_physical_blockers_from_failed_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -438,6 +453,41 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["running_remaining_samples"], 10)
         self.assertEqual(physical["running_next_sample_due_at"], "2026-06-28T00:19:29Z")
         self.assertEqual(physical["running_expected_finish_at"], "2026-06-28T09:19:29Z")
+
+    def test_running_overnight_flags_stopped_launchctl_service(self):
+        original = audit_handoff_status.inspect_launchctl_service
+        audit_handoff_status.inspect_launchctl_service = lambda label: {
+            "launchctl_status": "not_running",
+            "launchctl_state": "waiting",
+            "launchctl_pid": "missing",
+            "launchctl_runs": 1,
+            "launchctl_last_exit": "1",
+        }
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
+                running.parent.mkdir(parents=True)
+                (running.parent / "run.json").write_text(json.dumps({
+                    "label": "overnight-current",
+                    "preset": "overnight",
+                    "planned_samples": 11,
+                    "planned_duration_s": 36_000,
+                    "monitor_started_at": "2026-06-27T23:19:29Z",
+                }), encoding="utf-8")
+                running.write_text(json.dumps({
+                    "sample": 0,
+                    "captured_at": "20260627T231930Z",
+                    "active_journal": {"status": "ok", "thermal": "nominal"},
+                    "sessions": {"status": "ok"},
+                }) + "\n", encoding="utf-8")
+
+                physical = audit_handoff_status.evaluate_physical_long_wear(repo)
+        finally:
+            audit_handoff_status.inspect_launchctl_service = original
+
+        self.assertEqual(physical["launchctl_status"], "not_running")
+        self.assertIn("overnight_monitor_not_running", physical["audit_blockers"])
 
     def test_markdown_summary_includes_current_blocking_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
