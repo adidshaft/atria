@@ -538,6 +538,12 @@ struct AtriaOverviewReadinessSectionHost: View {
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
+    @AppStorage("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
+    @AppStorage("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
+    @AppStorage("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
+    @AppStorage("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
+    @AppStorage("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
+    @AppStorage("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
@@ -575,6 +581,12 @@ struct AtriaOverviewReadinessSectionHost: View {
                                                                                 yellowLower: recoveryYellowLower),
                                      strainGreenBand: strainGreenBand,
                                      strainYellowBand: strainYellowBand,
+                                     loadACWRWatchLow: loadACWRWatchLow,
+                                     loadACWRWatchHigh: loadACWRWatchHigh,
+                                     loadACWRBadLow: loadACWRBadLow,
+                                     loadACWRBadHigh: loadACWRBadHigh,
+                                     loadMonotonyWatch: loadMonotonyWatch,
+                                     loadMonotonyBad: loadMonotonyBad,
                                      hrvBaseline: store.baseline.hrvInt,
                                      hrvBaselineSamples: store.baseline.freshHRVSampleCount(),
                                      hrvBaselineTrusted: store.baseline.hasTrustedHRVBaseline(),
@@ -835,7 +847,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var supportsGlanceTargetEditing: Bool {
         switch self {
-        case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp:
+        case .recovery, .strain, .load, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp:
             return true
         default:
             return false
@@ -889,6 +901,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let recoveryTarget: AtriaMetricTarget
     let strainGreenBand: Double
     let strainYellowBand: Double
+    let loadACWRWatchLow: Double
+    let loadACWRWatchHigh: Double
+    let loadACWRBadLow: Double
+    let loadACWRBadHigh: Double
+    let loadMonotonyWatch: Double
+    let loadMonotonyBad: Double
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
@@ -968,6 +986,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.recoveryTarget == rhs.recoveryTarget
             && lhs.strainGreenBand == rhs.strainGreenBand
             && lhs.strainYellowBand == rhs.strainYellowBand
+            && lhs.loadACWRWatchLow == rhs.loadACWRWatchLow
+            && lhs.loadACWRWatchHigh == rhs.loadACWRWatchHigh
+            && lhs.loadACWRBadLow == rhs.loadACWRBadLow
+            && lhs.loadACWRBadHigh == rhs.loadACWRBadHigh
+            && lhs.loadMonotonyWatch == rhs.loadMonotonyWatch
+            && lhs.loadMonotonyBad == rhs.loadMonotonyBad
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
@@ -1415,7 +1439,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: hero.loadReadinessText,
                                   detail: hero.loadConfidence == "learning" ? "Learning" : hero.loadSignalSummaryText,
                                   systemImage: metric.systemImage,
-                                  tint: loadReadinessTint,
+                                  tint: loadReadinessZone?.tint ?? loadReadinessTint,
                                   ringFraction: loadReadinessFraction,
                                   zone: loadReadinessZone)
                 .accessibilityLabel("Training load readiness \(hero.loadReadinessText). \(hero.loadSignalSummaryText). \(hero.loadNarrative)")
@@ -1702,40 +1726,65 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var loadReadinessZone: AtriaMetricZone? {
         let readiness = hero.loadReadinessText.lowercased()
-        guard readiness != "learning" else { return nil }
-
-        let level: AtriaMetricZoneLevel
-        switch readiness {
-        case "primed", "balanced":
-            level = .green
-        case "strained":
-            level = .yellow
-        case "rundown":
-            level = .red
-        default:
-            return nil
-        }
+        guard readiness != "learning",
+              let level = loadReadinessZoneLevel else { return nil }
 
         let recommendation: String
-        switch readiness {
-        case "primed":
-            recommendation = "Recent load is below your base. Add training gradually if recovery and schedule support it."
-        case "balanced":
-            recommendation = "Training load is aligned with your longer baseline. Keep alternating hard and easy days."
-        case "strained":
-            recommendation = "ACWR or monotony is elevated. Favor recovery, vary intensity, or keep the next session lighter."
-        case "rundown":
-            recommendation = "Training load is spiking or too repetitive. Keep the next session easy and rebuild gradually."
-        default:
-            recommendation = hero.loadNarrative
+        switch level {
+        case .green:
+            recommendation = readiness == "primed"
+                ? "Recent load is below your base. Add training gradually if recovery and schedule support it."
+                : "Training load is aligned with your longer baseline. Keep alternating hard and easy days."
+        case .yellow:
+            recommendation = "ACWR or monotony is near your watch band. Favor recovery, vary intensity, or keep the next session lighter."
+        case .red:
+            recommendation = "Training load is outside your edited red band. Keep the next session easy and rebuild gradually."
         }
 
         return AtriaMetricZone(level: level,
                                title: "Training load readiness",
                                current: hero.loadNarrative,
-                               targetSummary: "ACWR \(hero.loadRatioText) \(hero.loadACWRSignalText); monotony \(hero.loadMonotonyText) \(hero.loadMonotonySignalText). \(hero.loadACWRDetailText) \(hero.loadMonotonyDetailText)",
+                               targetSummary: loadTargetSummary,
                                recommendation: recommendation,
                                disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
+    }
+
+    private var loadReadinessZoneLevel: AtriaMetricZoneLevel? {
+        let ratio = parseDouble(hero.loadRatioText)
+        let monotony = parseDouble(hero.loadMonotonyText)
+        guard ratio != nil || monotony != nil else { return nil }
+
+        if let ratio,
+           ratio < loadACWRBadLow || ratio >= loadACWRBadHigh {
+            return .red
+        }
+        if let monotony, monotony >= loadMonotonyBad {
+            return .red
+        }
+        if let ratio,
+           ratio < loadACWRWatchLow || ratio > loadACWRWatchHigh {
+            return .yellow
+        }
+        if let monotony, monotony >= loadMonotonyWatch {
+            return .yellow
+        }
+        return .green
+    }
+
+    private var loadTargetSummary: String {
+        let target = String(format: "Editable target · ACWR green %.2f-%.2f, red <%.2f or >=%.2f; monotony watch %.1f, red %.1f.",
+                            loadACWRWatchLow,
+                            loadACWRWatchHigh,
+                            loadACWRBadLow,
+                            loadACWRBadHigh,
+                            loadMonotonyWatch,
+                            loadMonotonyBad)
+        return "\(target) Current: ACWR \(hero.loadRatioText) \(hero.loadACWRSignalText); monotony \(hero.loadMonotonyText) \(hero.loadMonotonySignalText)."
+    }
+
+    private func parseDouble(_ value: String) -> Double? {
+        Double(value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0.isNumber || $0 == "." || $0 == "-" })
     }
 
     private var hrvZone: AtriaMetricZone? {
@@ -2133,6 +2182,12 @@ private struct AtriaGlanceTargetEditorSheet: View {
     @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
     @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
     @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
+    @AppStorage("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
+    @AppStorage("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
+    @AppStorage("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
+    @AppStorage("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
+    @AppStorage("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
+    @AppStorage("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
     @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
     @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
@@ -2203,6 +2258,12 @@ private struct AtriaGlanceTargetEditorSheet: View {
             recoveryYellowLower,
             strainGreenBand,
             strainYellowBand,
+            loadACWRWatchLow,
+            loadACWRWatchHigh,
+            loadACWRBadLow,
+            loadACWRBadHigh,
+            loadMonotonyWatch,
+            loadMonotonyBad,
             Double(stepsGoal),
             Double(caloriesGoal),
             sleepGoalHours,
@@ -2229,6 +2290,7 @@ private struct AtriaGlanceTargetEditorSheet: View {
     private func normalizeAllTargets() {
         normalizeRecoveryTargets()
         normalizeStrainTargets()
+        normalizeTrainingLoadTargets()
         normalizeStepsGoal()
         normalizeCaloriesGoal()
         normalizeSleepGoal()
@@ -2288,6 +2350,60 @@ private struct AtriaGlanceTargetEditorSheet: View {
                     Label("Reset strain band", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+            }
+        case .load:
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper(value: $loadACWRWatchLow, in: 0.50...1.00, step: 0.05) {
+                    LabeledContent("ACWR low watch") {
+                        Text(String(format: "%.2f", loadACWRWatchLow))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $loadACWRWatchHigh, in: 1.00...1.60, step: 0.05) {
+                    LabeledContent("ACWR high watch") {
+                        Text(String(format: "%.2f", loadACWRWatchHigh))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $loadACWRBadLow, in: 0.30...0.95, step: 0.05) {
+                    LabeledContent("ACWR low red") {
+                        Text(String(format: "%.2f", loadACWRBadLow))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $loadACWRBadHigh, in: 1.10...2.20, step: 0.05) {
+                    LabeledContent("ACWR high red") {
+                        Text(String(format: "%.2f", loadACWRBadHigh))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $loadMonotonyWatch, in: 1.0...4.0, step: 0.1) {
+                    LabeledContent("Monotony watch") {
+                        Text(String(format: "%.1f", loadMonotonyWatch))
+                            .monospacedDigit()
+                    }
+                }
+                Stepper(value: $loadMonotonyBad, in: 1.2...5.0, step: 0.1) {
+                    LabeledContent("Monotony red") {
+                        Text(String(format: "%.1f", loadMonotonyBad))
+                            .monospacedDigit()
+                    }
+                }
+                Button {
+                    loadACWRWatchLow = 0.80
+                    loadACWRWatchHigh = 1.30
+                    loadACWRBadLow = 0.60
+                    loadACWRBadHigh = 1.50
+                    loadMonotonyWatch = 2.0
+                    loadMonotonyBad = 2.5
+                } label: {
+                    Label("Reset training-load target", systemImage: "chart.bar.xaxis")
+                }
+                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                Text("ACWR compares 7-day strain with 28-day strain; monotony flags repetitive load. This tunes guidance colors only.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case .sleep, .sleepHistory:
             VStack(alignment: .leading, spacing: 12) {
@@ -2529,6 +2645,15 @@ private struct AtriaGlanceTargetEditorSheet: View {
         strainYellowBand = min(max(strainYellowBand, strainGreenBand + 0.5), 8.0)
     }
 
+    private func normalizeTrainingLoadTargets() {
+        loadACWRBadLow = min(max(loadACWRBadLow, 0.30), 0.95)
+        loadACWRWatchLow = min(max(loadACWRWatchLow, loadACWRBadLow + 0.05), 1.00)
+        loadACWRWatchHigh = min(max(loadACWRWatchHigh, 1.00), 1.60)
+        loadACWRBadHigh = min(max(loadACWRBadHigh, loadACWRWatchHigh + 0.05), 2.20)
+        loadMonotonyWatch = min(max(loadMonotonyWatch, 1.0), 4.0)
+        loadMonotonyBad = min(max(loadMonotonyBad, loadMonotonyWatch + 0.1), 5.0)
+    }
+
     private func normalizeStepsGoal() {
         stepsGoal = min(max(stepsGoal, 1_000), 30_000)
     }
@@ -2585,7 +2710,7 @@ private extension AtriaTodayMetric {
     var targetEditorTint: Color {
         switch self {
         case .recovery, .steps, .strapSteps: return .green
-        case .strain, .calories: return .orange
+        case .strain, .load, .calories: return .orange
         case .hrv: return .pink
         case .rhr: return .red
         case .bioAge: return .purple
@@ -2603,6 +2728,8 @@ private extension AtriaTodayMetric {
             return "Adjust the green/yellow recovery thresholds used by target zones."
         case .strain:
             return "Adjust how tightly Strain should track today's recovery-scaled target."
+        case .load:
+            return "Adjust ACWR and monotony bands used by training-load readiness colors."
         case .sleep:
             return "Adjust the sleep duration goal used by sleep target zones."
         case .sleepHistory:
