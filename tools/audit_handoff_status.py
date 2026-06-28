@@ -57,6 +57,9 @@ PROOF_ONLY_PREFIXES = (
     "test_",
     "tools/",
 )
+PROOF_ONLY_FILES = {
+    ".gitignore",
+}
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -120,7 +123,10 @@ def proof_only_changes_since_app_commit(repo: Path, app_commit: str, expected_co
     if not commit_is_ancestor(repo, app_commit, expected_commit):
         return False
     changed = changed_files_between(repo, app_commit, expected_commit)
-    return bool(changed) and all(path.startswith(PROOF_ONLY_PREFIXES) for path in changed)
+    return bool(changed) and all(
+        path in PROOF_ONLY_FILES or path.startswith(PROOF_ONLY_PREFIXES)
+        for path in changed
+    )
 
 
 def is_utc_timestamp(value: str) -> bool:

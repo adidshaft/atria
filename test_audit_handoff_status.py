@@ -351,6 +351,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
             (repo / "tools/monitor_long_wear.py").write_text("proof tooling\n", encoding="utf-8")
             subprocess.run(["git", "add", "tools/monitor_long_wear.py"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-m", "proof tooling"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (repo / ".gitignore").write_text("tmp/\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "ignore local diagnostics"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
             write_passing_long_wear_summary(summary)
             data = json.loads(summary.read_text(encoding="utf-8"))
