@@ -91,6 +91,12 @@ Most recent physical-device evidence from non-disruptive pulls:
 - The current RR stream is present but still not locally promotion-ready:
   `active_journal_rr_gate_b_local_ready=0` because the usable RR window is short,
   gappy, and below the corrected-beat threshold.
+- Post charge-status UI install pull
+  (`artifacts/goal-21-post-charge-ui-20260628T135351Z`) confirmed the updated
+  app running with no official WHOOP process/widget, `battery_level=63`,
+  `battery_charge_status=charging`, `battery_is_charging=1`, and a fresh active
+  journal. This proves the strap charge-state signal is available to the app
+  after the copy clarification.
 
 Remaining handoff-21 blockers:
 

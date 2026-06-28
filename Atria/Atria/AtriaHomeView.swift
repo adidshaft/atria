@@ -1511,7 +1511,15 @@ final class AtriaHomeModel {
         var pendingKnownReconnectReason: String
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "Waiting" }
-        var batteryChargeText: String { batteryLevel >= 0 ? batteryChargeStatus.label : "Waiting" }
+        var batteryChargeText: String {
+            guard batteryLevel >= 0 else { return "Waiting" }
+            switch batteryChargeStatus {
+            case .levelOnly: return "Charger unknown"
+            case .charging: return "Strap charging"
+            case .notCharging: return "Strap not charging"
+            case .full: return "Strap full"
+            }
+        }
         var batteryShowsPowered: Bool { batteryChargeStatus == .charging || batteryChargeStatus == .full }
         var batteryChargeCompactText: String {
             switch batteryChargeStatus {
@@ -3188,6 +3196,16 @@ private struct AtriaHeaderBatteryIndicator: View {
 
     private var phonePowerText: String {
         switch phoneBatteryState {
+        case .charging: return "Charging"
+        case .full: return "Full"
+        case .unplugged: return "On battery"
+        case .unknown: return "Unknown"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    private var phonePowerAccessibilityText: String {
+        switch phoneBatteryState {
         case .charging: return "iPhone charging"
         case .full: return "iPhone full"
         case .unplugged: return "iPhone on battery"
@@ -3249,7 +3267,7 @@ private struct AtriaHeaderBatteryIndicator: View {
                height: AtriaHeaderControlMetrics.height)
         .atriaChromeCapsule(tint: tint)
         .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryAccessibilityChargeText).")
-        .accessibilityHint("iPhone power: \(phonePowerText).")
+        .accessibilityHint("iPhone power: \(phonePowerAccessibilityText).")
     }
 }
 
