@@ -4926,7 +4926,7 @@ final class SessionStore: ObservableObject {
             : "\(best.reason)_motion_validated_\(best.motionEvidenceValidated ? 1 : 0)_hr_only_fallback_labeled_\(hrOnlyFallbackAccepted ? 1 : 0)"
         return (autoReady,
                 reason,
-                best.sessions > 1 ? "aggregate_sleep" : "sleep_window",
+                sleepCandidateSource(for: best),
                 overlap,
                 best.duration,
                 best.span,
@@ -6104,7 +6104,7 @@ final class SessionStore: ObservableObject {
         var existing = cachedConfirmedSleeps
         let sleepSource = best.kind == "nap_candidate"
             ? "nap_candidate"
-            : (best.sessions > 1 ? "aggregate_sleep" : "sleep_window")
+            : sleepCandidateSource(for: best)
         let id = confirmedSleepID(start: best.start, end: best.end, source: sleepSource)
         if let already = existing.first(where: { $0.id == id }) {
             AtriaDebugLog("ATRIADBG sleep_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
@@ -7492,14 +7492,14 @@ final class SessionStore: ObservableObject {
             let endHour = calendar.component(.hour, from: session.end)
             let overnight = startHour >= 20 || startHour <= 5 || endHour <= 11
             let daytimeNapWindow = !overnight && startHour >= 11 && endHour <= 20
-            let napLike = daytimeNapWindow
-                && session.duration >= AggregateSleepCandidate.napMinimumDuration
+            let shortLowHRNapLike = session.duration >= AggregateSleepCandidate.napMinimumDuration
                 && session.duration <= AggregateSleepCandidate.napMaximumSpan
                 && session.avg <= rest + 12
                 && session.peak <= rest + 35
+            let napLike = daytimeNapWindow && shortLowHRNapLike
             let lowHR = session.avg <= rest + 18 && session.peak <= rest + 55
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
-            return ((overnight && lowHR) || napLike) && notWorkout
+            return ((overnight && lowHR) || napLike || shortLowHRNapLike) && notWorkout
         }
         let grouped = Dictionary(grouping: eligible) { session in
             Self.aggregateSleepDay(for: session, calendar: calendar)
@@ -7517,6 +7517,9 @@ final class SessionStore: ObservableObject {
                 let allHR = cluster.flatMap(\.bpms)
                 guard !allHR.isEmpty, let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
                 let span = end.timeIntervalSince(start)
+                let avg = allHR.reduce(0, +) / allHR.count
+                let peak = allHR.max() ?? 0
+                let resting = Self.percentileHR(0.05, values: allHR)
                 let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                 let fragmentedFallbackReady = cluster.count > 1
                     && span >= AggregateSleepCandidate.fragmentedMinimumSpan
@@ -7524,14 +7527,17 @@ final class SessionStore: ObservableObject {
                     && maxGap <= 2 * 60 * 60
                 let clusterStartHour = calendar.component(.hour, from: start)
                 let clusterEndHour = calendar.component(.hour, from: end)
-                let napCandidateReady = clusterStartHour >= 11
+                let daytimeNapCandidateReady = clusterStartHour >= 11
                     && clusterEndHour <= 20
                     && span <= AggregateSleepCandidate.napMaximumSpan
                     && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                let shortLowHRNapCandidateReady = cluster.count == 1
+                    && span <= AggregateSleepCandidate.napMaximumSpan
+                    && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                    && avg <= rest + 12
+                    && peak <= rest + 35
+                let napCandidateReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady
                 guard strictDurationReady || fragmentedFallbackReady || napCandidateReady else { return nil }
-                let avg = allHR.reduce(0, +) / allHR.count
-                let peak = allHR.max() ?? 0
-                let resting = Self.percentileHR(0.05, values: allHR)
                 let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
                 let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
                 let historicalMotion = HistoricalArchive.motionWindowDiagnostics(start: start, end: end)
@@ -7550,6 +7556,8 @@ final class SessionStore: ObservableObject {
                 let reason: String
                 if fragmentedFallbackReady && !strictDurationReady {
                     reason = "HR-only interrupted overnight low-HR aggregate; below strict 3h low-HR total but span supports broken sleep fallback; \(motionReason)"
+                } else if shortLowHRNapCandidateReady {
+                    reason = "HR-only short low-HR nap/rest candidate; user confirmation required; \(motionReason)"
                 } else if napCandidateReady {
                     reason = "HR-only daytime nap candidate; user confirmation required; \(motionReason)"
                 } else if cluster.count > 1 {
@@ -7794,6 +7802,11 @@ final class SessionStore: ObservableObject {
     private func sleepFallbackSource(for candidate: AggregateSleepCandidate) -> String {
         if candidate.kind == "nap_candidate" { return "hr_only_nap" }
         return candidate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep"
+    }
+
+    private func sleepCandidateSource(for candidate: AggregateSleepCandidate) -> String {
+        if candidate.kind == "nap_candidate" { return "nap_candidate" }
+        return candidate.sessions > 1 ? "aggregate_sleep" : "sleep_window"
     }
 
     private func incompleteSleepFallback(in sourceSessions: [SavedSession],
@@ -8538,18 +8551,22 @@ final class SessionStore: ObservableObject {
            let aggregate = aggregateSleepCandidatesForValidation.first {
             let startHour = calendar.component(.hour, from: aggregate.start)
             let endHour = calendar.component(.hour, from: aggregate.end)
-            let matchedLabel = aggregate.sessions > 1
-                ? "aggregate_sleep_\(aggregate.sessions)_chunks"
-                : "aggregate_sleep_single_chunk"
+            let aggregateSource = sleepCandidateSource(for: aggregate)
+            let matchedLabel = aggregate.kind == "nap_candidate"
+                ? "nap_candidate_\(aggregate.sessions)_chunk\(aggregate.sessions == 1 ? "" : "s")"
+                : (aggregate.sessions > 1
+                   ? "aggregate_sleep_\(aggregate.sessions)_chunks"
+                   : "aggregate_sleep_single_chunk")
             let validationReady = aggregate.motionEvidenceValidated && aggregate.confidence != .low
             let validationReason = validationReady
                 ? "aggregate_overnight_low_hr_window"
                 : sleepEvidenceBlocker(for: aggregate)
-            AtriaDebugLog("ATRIADBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=aggregate_sleep duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
+            AtriaDebugLog("ATRIADBG sleep_validation status=%@ reason=%@ label=%@ matched_label=%@ source=%@ duration_s=%.0f span_s=%.0f max_gap_s=%.0f samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d start_hour=%d end_hour=%d overnight=1 low_hr=1 sleep_candidates_matching=%d confidence=%@ fallback_available=1 fallback_source=%@ fallback_duration_s=%.0f fallback_span_s=%.0f fallback_chunks=%d fallback_diagnostic_only=1 motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d motion_short_count=%d motion_short_mean=%@ motion_short_min=%@ motion_short_max=%@ motion_short_over_1=%d motion_short_validated=0 historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_archive_first_unix=%d historical_motion_archive_last_unix=%d historical_motion_nearest_separation_s=%d historical_motion_mean_delta=%@ historical_motion_p95_delta=%@ historical_motion_mag_stddev=%@ historical_motion_validated=%d detail=%@",
                   validationReady ? "ready" : "learning",
                   validationReason,
                   "latest",
                   matchedLabel,
+                  aggregateSource,
                   aggregate.duration,
                   aggregate.span,
                   aggregate.maxGap,
@@ -8562,7 +8579,7 @@ final class SessionStore: ObservableObject {
                   endHour,
                   aggregateSleepCandidatesForValidation.count,
                   aggregate.confidence.rawValue,
-                  aggregate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep",
+                  sleepFallbackSource(for: aggregate),
                   aggregate.duration,
                   aggregate.span,
                   aggregate.sessions,
