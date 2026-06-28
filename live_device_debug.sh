@@ -2047,6 +2047,7 @@ flags = {
     "trend_windows_complete": False,
     "strain_validation_complete": False,
     "widget_snapshot_complete": False,
+    "analytics_calibration_complete": False,
 }
 capture_file_path = ""
 backup_file_path = ""
@@ -2055,6 +2056,9 @@ rr_reference_csv_path = ""
 rr_reference_manifest_path = ""
 hr_reference_csv_path = ""
 hr_reference_manifest_path = ""
+analytics_calibration_status = ""
+analytics_calibration_numeric_checks = ""
+analytics_calibration_label_checks = ""
 cmd_response_statuses: list[str] = []
 frame_type_counts = {
     "61080004": Counter(),
@@ -2125,6 +2129,8 @@ def requested_post_gate_work_complete() -> bool:
     if log_strain_validation and not flags["strain_validation_complete"]:
         return False
     if log_widget_snapshot and not flags["widget_snapshot_complete"]:
+        return False
+    if analytics_calibration_audit and not flags["analytics_calibration_complete"]:
         return False
     if pull_capture_dir and not capture_file_path:
         return False
@@ -2399,6 +2405,14 @@ def ingest_whoopdbg(line: str) -> None:
         flags["strain_validation_complete"] = True
     if "ATRIADBG widget_snapshot status=" in line:
         flags["widget_snapshot_complete"] = True
+    if "ATRIADBG analytics_calibration_audit status=" in line:
+        global analytics_calibration_status, analytics_calibration_numeric_checks, analytics_calibration_label_checks
+        tokens = tokens_after("ATRIADBG analytics_calibration_audit", line)
+        analytics_calibration_status = tokens.get("status", "")
+        analytics_calibration_numeric_checks = tokens.get("numeric_checks", "")
+        analytics_calibration_label_checks = tokens.get("label_checks", "")
+        if analytics_calibration_status == "ok":
+            flags["analytics_calibration_complete"] = True
     if "ATRIADBG gate_status gate=" in line and "radio_standard_hr_only=1" in line:
         radio_fields = tokens_after("evidence=", line.replace(";", " "))
         skipped = int(radio_fields.get("_radio_custom_notify_skipped", radio_fields.get("radio_custom_notify_skipped", "0")) or "0")
@@ -2934,6 +2948,9 @@ rr_summary["metadata_0x31_lengths"] = format_counter(metadata_0x31_lengths)
 rr_summary["metadata_0x31_body_hashes"] = format_counter(metadata_0x31_body_hashes)
 for name, value in flags.items():
     emit(f"{name}={str(value)}")
+emit(f"analytics_calibration_status={analytics_calibration_status}")
+emit(f"analytics_calibration_numeric_checks={analytics_calibration_numeric_checks}")
+emit(f"analytics_calibration_label_checks={analytics_calibration_label_checks}")
 for name, value in rr_summary.items():
     emit(f"{name}={value}")
 for index, segment in enumerate(segments):

@@ -5888,6 +5888,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "analytics_calibration_audit_raw",
             "analytics_calibration_audit = analytics_calibration_audit_raw == \"1\"",
             "cmd.append(\"--atria-analytics-calibration-audit\")",
+            "\"analytics_calibration_complete\": False",
+            "if analytics_calibration_audit and not flags[\"analytics_calibration_complete\"]",
+            "ATRIADBG analytics_calibration_audit status=",
+            "analytics_calibration_status = tokens.get(\"status\", \"\")",
+            "analytics_calibration_numeric_checks = tokens.get(\"numeric_checks\", \"\")",
+            "analytics_calibration_label_checks = tokens.get(\"label_checks\", \"\")",
+            "flags[\"analytics_calibration_complete\"] = True",
+            "emit(f\"analytics_calibration_status={analytics_calibration_status}\")",
+            "emit(f\"analytics_calibration_numeric_checks={analytics_calibration_numeric_checks}\")",
+            "emit(f\"analytics_calibration_label_checks={analytics_calibration_label_checks}\")",
         ]:
             assert_contains(self, harness, needle)
 
