@@ -1015,6 +1015,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        shell_support = source(ROOT / "Atria" / "Atria" / "AtriaHomeShellSupport.swift")
+        hero_connection = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
@@ -1107,6 +1109,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "forget it in Bluetooth and reconnect",
         ]:
             assert_contains(self, home, needle)
+        for needle in [
+            "officialAppInstalled\n                ? \"Atria has seen connection behavior that can happen when the official strap app or widget is still holding the strap.\"",
+            "Atria has seen quick connection drops. Since the official strap app is not detected, this usually points to range, battery, or a stale Bluetooth pairing.",
+            "officialAppInstalled\n                ? \"Remove or fully disable the official strap app before relying on Atria for overnight or workout collection.\"",
+            "Keep the strap close and charged. If drops continue, forget the strap in Bluetooth, then reconnect in Atria.",
+            "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path.",
+        ]:
+            assert_contains(self, shell_support + hero_connection, needle)
         for needle in [
             "let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress || historyOnlyProbeEnabled || historyOnlyProbeMode",
             "reason=atria_owned_offline_sync_disconnect",

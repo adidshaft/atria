@@ -228,7 +228,7 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                 .equatable()
         case .disconnected:
             AtriaHeroStatusTile(title: "Automatic setup is ready",
-                                detail: "Atria keeps scanning. If the official strap app or its widget is still running, close it first so it cannot reclaim the strap.",
+                                detail: "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path.",
                                 systemImage: "bolt.horizontal.circle",
                                 tint: .blue)
                 .equatable()

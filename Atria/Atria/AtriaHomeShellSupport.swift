@@ -129,7 +129,9 @@ struct AtriaConnectionGuideContext: Equatable {
 
     var progressDetail: String {
         if officialAppCoexistenceRisk == .suspected {
-            return "Atria has seen connection behavior that can happen when the official strap app or widget is still holding the strap."
+            return officialAppInstalled
+                ? "Atria has seen connection behavior that can happen when the official strap app or widget is still holding the strap."
+                : "Atria has seen quick connection drops. Since the official strap app is not detected, this usually points to range, battery, or a stale Bluetooth pairing."
         }
         if hasEverConnected {
             return "Atria keeps reconnecting in the background and saves what the strap makes available."
@@ -146,7 +148,9 @@ struct AtriaConnectionGuideContext: Equatable {
 
     var actionSummary: String {
         if officialAppCoexistenceRisk == .suspected {
-            return "Remove or fully disable the official strap app before relying on Atria for overnight or workout collection."
+            return officialAppInstalled
+                ? "Remove or fully disable the official strap app before relying on Atria for overnight or workout collection."
+                : "Keep the strap close and charged. If drops continue, forget the strap in Bluetooth, then reconnect in Atria."
         }
         if hasEverConnected {
             return "You can lock the phone after setup; Atria resumes from saved sessions and background reconnects."
