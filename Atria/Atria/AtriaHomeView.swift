@@ -933,7 +933,7 @@ struct AtriaHomeView: View {
         case .disconnected, .poweredOff:
             return model.coreLiveStore.state.sessionSampleCount == 0
         case .connecting, .scanning:
-            return false
+            return true
         }
     }
 
@@ -1225,9 +1225,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
                 .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(protectsLiveStream ? "Missed data queued" : "New data on your strap")
+                Text(protectsLiveStream ? "Saved data protected" : "Backfill ready")
                     .font(.subheadline.weight(.semibold))
-                Text(protectsLiveStream ? "Live HR stays protected. Sync when you can pause the stream." : "Sync missed data when you are ready.")
+                Text(protectsLiveStream ? "Live HR stays protected while Atria waits for the best sync moment." : "Atria saved the gap marker. Sync missed strap data when you are ready.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
