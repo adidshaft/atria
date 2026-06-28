@@ -102,13 +102,15 @@ struct AtriaVitalsTabContent: View {
                 isEditingVitalsLayout = true
             }
         }
-        .modifier(AtriaConditionalVitalsStringDraggable(isEnabled: isEditingVitalsLayout,
+        .modifier(AtriaConditionalVitalsStringDraggable(isEnabled: true,
                                                         payload: section.dragPayload))
         .dropDestination(for: String.self) { items, _ in
-            guard isEditingVitalsLayout else { return false }
             guard let raw = items.first,
                   let dragged = AtriaVitalsSection.draggedSection(from: raw) else { return false }
-            sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
+            withAnimation(.snappy(duration: 0.2)) {
+                isEditingVitalsLayout = true
+                sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
+            }
             return true
         }
         .accessibilityAction(named: Text("Move \(section.label) up")) {
@@ -117,7 +119,7 @@ struct AtriaVitalsTabContent: View {
         .accessibilityAction(named: Text("Move \(section.label) down")) {
             moveSection(section, direction: 1)
         }
-        .accessibilityHint("Long press to edit, then drag to reorder this Vitals section or use the visible move controls.")
+        .accessibilityHint("Drag to reorder this Vitals section, or long press to reveal the visible move controls.")
     }
 
     private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View {

@@ -690,7 +690,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, load, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, load, workout, backfill, hapticAlerts, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -701,6 +701,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .backfill: return "Backfill"
         case .hapticAlerts: return "Alerts"
         case .hrv: return "HRV"
+        case .stress: return "Stress"
         case .sleep: return "Sleep"
         case .sleepHistory: return "Sleep history"
         case .sleepEfficiency: return "Sleep eff"
@@ -726,6 +727,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .backfill: return "arrow.triangle.2.circlepath"
         case .hapticAlerts: return "iphone.radiowaves.left.and.right"
         case .hrv: return "waveform.path.ecg"
+        case .stress: return "bolt.heart.fill"
         case .sleep: return "bed.double.fill"
         case .sleepHistory: return "moon.zzz.fill"
         case .sleepEfficiency: return "percent"
@@ -791,7 +793,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .backfill, .load, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .backfill, .load, .hapticAlerts, .hrv, .stress, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -1027,6 +1029,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.guidance.target == rhs.hero.guidance.target
             && lhs.hero.hrvValue == rhs.hero.hrvValue
             && lhs.hero.hrvDetail == rhs.hero.hrvDetail
+            && lhs.hero.stressValue == rhs.hero.stressValue
+            && lhs.hero.stressDetail == rhs.hero.stressDetail
+            && lhs.hero.stressNarrative == rhs.hero.stressNarrative
             && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.status == rhs.live.status
@@ -1348,13 +1353,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
             .layoutPriority(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? 2 : 1)
-            .modifier(AtriaConditionalStringDraggable(isEnabled: isEditingGlance,
+            .modifier(AtriaConditionalStringDraggable(isEnabled: true,
                                                        payload: metric.dragPayload))
             .dropDestination(for: String.self) { items, _ in
-                guard isEditingGlance else { return false }
                 guard let raw = items.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
-                onMoveMetric(dragged, metric)
+                withAnimation(.snappy(duration: 0.2)) {
+                    isEditingGlance = true
+                    onMoveMetric(dragged, metric)
+                }
                 return true
             }
             .accessibilityAction(named: upLabel) {
@@ -1382,7 +1389,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     isEditingGlance = false
                 }
             }
-            .accessibilityHint("Long press to edit, then use the target, resize, and remove controls, drag to reorder, or use actions.")
+            .accessibilityHint("Drag to reorder, or long press to edit with target, resize, and remove controls.")
     }
 
     @ViewBuilder
@@ -1498,6 +1505,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: hrvZone?.tint ?? .pink,
                                   zone: hrvZone)
+        case .stress:
+            AtriaGlanceMetricCard(title: "Stress",
+                                  value: hero.stressValue,
+                                  detail: hero.stressDetail,
+                                  systemImage: metric.systemImage,
+                                  tint: stressTint,
+                                  accessibilityDetail: hero.stressNarrative)
         case .sleep:
             AtriaGlanceMetricCard(title: "Sleep",
                                   value: sleepGlanceValueText,
@@ -1701,6 +1715,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .accessibilityLabel(insights.isEmpty
                             ? "Open Trends. Insights building from \(taggedDays) tagged days"
                             : "Open Trends. \(insights.count) local insights ready")
+    }
+
+    private var stressTint: Color {
+        if hero.stressValue == "Learning" { return .orange }
+        if hero.stressValue.hasPrefix("0") { return .green }
+        if hero.stressValue.hasPrefix("1") { return .mint }
+        if hero.stressValue.hasPrefix("2") { return .orange }
+        return .red
     }
 
     private var hrvDetailText: String {
@@ -2764,7 +2786,7 @@ private extension AtriaTodayMetric {
         switch self {
         case .recovery, .steps, .strapSteps: return .green
         case .strain, .load, .calories: return .orange
-        case .hrv: return .pink
+        case .hrv, .stress: return .pink
         case .rhr: return .red
         case .bioAge: return .purple
         case .vo2max: return .blue

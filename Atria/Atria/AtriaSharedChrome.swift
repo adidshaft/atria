@@ -50,6 +50,8 @@ struct AtriaCardActionButtonStyle: ButtonStyle {
             .background {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(fill)
+                    .glassEffect(.regular.tint(tint.opacity(prominent ? 0.16 : 0.08)).interactive(),
+                                 in: .rect(cornerRadius: 13))
                     .overlay {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
                             .stroke(stroke, lineWidth: 1)
@@ -95,6 +97,7 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
             .background {
                 Circle()
                     .fill(fill)
+                    .glassEffect(.regular.interactive(), in: .circle)
                     .overlay {
                         Circle()
                             .stroke(stroke, lineWidth: 1)
@@ -358,13 +361,11 @@ private struct AtriaCapsuleChromeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        // Decorative chrome that appears on every card header — use a cheap
-        // translucent fill, NOT .glassEffect. Liquid Glass is GPU-expensive and
-        // belongs on floating navigation/controls (the system tab bar and live
-        // accessory already use it); a dozen live glass passes inside a scroll
-        // is the main cause of scroll jank, including in the Simulator.
+        // Keep this to compact chrome only. Large content cards still use static
+        // material fills so scrolling stays smooth while controls feel native.
         Capsule(style: .continuous)
             .fill(fillColor)
+            .glassEffect(.regular.tint(tint.opacity(0.10)), in: Capsule(style: .continuous))
             .overlay(stroke)
     }
 
