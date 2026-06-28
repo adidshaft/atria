@@ -1554,6 +1554,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, shared_ui, "minHeight: sparklineValues == nil ? 100 : 130")
         assert_not_contains(self, shared_ui, ".buttonStyle(.glass")
         assert_not_contains(self, shared_ui, ".fill(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.24))")
+        assert_not_contains(self, shared_ui, "struct AtriaGuidanceCard")
+        assert_not_contains(self, shared_ui, "220 * CGFloat")
         assert_contains(self, vitals, "private static let statColumns = AtriaMetricTile.gridColumns")
         assert_contains(self, vitals, "LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing)")
         assert_not_contains(self, vitals, "private static let statColumns = [GridItem(.adaptive(minimum:")
