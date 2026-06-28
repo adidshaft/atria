@@ -33,6 +33,9 @@ keys/
 # Local execution contracts can contain device-specific history.
 GOAL.md
 
+# Local physical-device diagnostics and generated screenshots.
+tmp/
+
 # Local design experiments; curated public assets live in assets/.
 design/
 
