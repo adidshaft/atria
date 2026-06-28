@@ -167,6 +167,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "dashboard-scroll.fps.txt",
             "Extracted Core Animation FPS max",
             "--xctrace-stop-grace",
+            "Another xctrace record process is already running",
+            "Stop stale Instruments captures before starting dashboard scroll proof.",
             "wait_with_timeout",
             "%s did not finish after %ss",
             "--measured-fps",

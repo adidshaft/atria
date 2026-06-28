@@ -117,6 +117,15 @@ if [[ "$xctrace_stop_grace_int" -lt 5 ]]; then
   printf 'xctrace stop grace must be at least 5 seconds.\n' >&2
   exit 64
 fi
+existing_xctrace=$(
+  ps -axo pid=,command= |
+    awk '/xctrace record/ && $1 != "'"$$"'" { print $1 ":" substr($0, index($0,$2)); exit }'
+)
+if [[ -n "$existing_xctrace" ]]; then
+  printf 'Another xctrace record process is already running: %s\n' "$existing_xctrace" >&2
+  printf 'Stop stale Instruments captures before starting dashboard scroll proof.\n' >&2
+  exit 67
+fi
 
 wait_with_timeout() {
   local pid_to_wait=$1
