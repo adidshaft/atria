@@ -814,6 +814,47 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("accessibility_performance_proof", report["blockers"])
         self.assertIn("missing_accessibility_performance_summary", report["blockers"])
 
+    def test_accessibility_performance_missing_final_reports_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            draft_trace = repo / "docs/evidence/accessibility-performance/trace-live.trace"
+            draft_trace.parent.mkdir(parents=True)
+            draft_trace.write_text("trace", encoding="utf-8")
+            draft = repo / "docs/evidence/accessibility-performance/summary.draft.json"
+            draft.write_text(json.dumps({
+                "device": "iPhone 15 Pro",
+                "accessibility_checks": {
+                    "dark_mode": True,
+                    "increase_contrast": True,
+                    "light_mode": True,
+                    "reduce_motion": True,
+                    "reduce_transparency": True,
+                },
+                "dashboard_scroll_fps": 0,
+                "instruments_trace": "docs/evidence/accessibility-performance/trace-live.trace",
+                "measured_at": "2026-06-28T13:23:55Z",
+                "app_commit": "abc123",
+                "app_build": "Atria 1.0 (1)",
+            }), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(repo, summary, skip_external_reference=True)
+            markdown = audit_handoff_status.markdown_summary(report)
+
+        self.assertEqual(report["status"], "not_complete")
+        self.assertEqual(report["accessibility_performance"]["status"], "missing")
+        self.assertIn("missing_accessibility_performance_summary", report["blockers"])
+        draft_report = report["accessibility_performance"]["draft"]
+        self.assertEqual(draft_report["status"], "present")
+        self.assertEqual(draft_report["dashboard_scroll_fps"], 0)
+        self.assertTrue(draft_report["instruments_trace_exists"])
+        self.assertIn("### Accessibility Draft Evidence", markdown)
+        self.assertIn("Draft dashboard scroll fps: `0`", markdown)
+        self.assertIn("Draft passed checks: `dark_mode, increase_contrast, light_mode, reduce_motion, reduce_transparency`", markdown)
+
     def test_accessibility_performance_evidence_must_cover_required_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
