@@ -720,7 +720,7 @@ struct AtriaSettingsView: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
 
-                Text("Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI. These bands only tune younger/older color guidance.")
+                Text("Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI -- not a medical assessment. These bands only tune younger/older color guidance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
