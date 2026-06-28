@@ -315,6 +315,7 @@ extension Metrics {
 
 struct AtriaMetricZoneInfoSheet: View {
     let zone: AtriaMetricZone
+    var onEditTarget: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -377,6 +378,18 @@ struct AtriaMetricZoneInfoSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let onEditTarget {
+                    Button {
+                        dismiss()
+                        onEditTarget()
+                    } label: {
+                        Label("Edit target", systemImage: "target")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AtriaCardActionButtonStyle(prominent: true, tint: zone.tint))
+                    .accessibilityHint("Opens the target controls for this metric.")
+                }
 
                 Spacer(minLength: 0)
             }
