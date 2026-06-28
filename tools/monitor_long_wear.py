@@ -284,6 +284,39 @@ def evaluate_acceptance(final: dict[str, object], args: argparse.Namespace) -> d
     }
 
 
+def numeric_series(samples: list[dict[str, object]], section: str, key: str) -> list[float]:
+    values: list[float] = []
+    for item in samples:
+        source = item.get(section, {})
+        if not isinstance(source, dict):
+            continue
+        value = source.get(key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def nondecreasing(values: list[float]) -> bool:
+    return all(current >= previous for previous, current in zip(values, values[1:]))
+
+
+def trend_summary(samples: list[dict[str, object]]) -> dict[str, object]:
+    active_duration = numeric_series(samples, "active_journal", "duration_s")
+    active_hr = numeric_series(samples, "active_journal", "delta_samples")
+    active_rr = numeric_series(samples, "active_journal", "delta_rr")
+    batteries = numeric_series(samples, "active_journal", "battery")
+    return {
+        "active_duration_series_s": active_duration,
+        "active_hr_series": active_hr,
+        "active_rr_series": active_rr,
+        "battery_series": batteries,
+        "active_duration_nondecreasing": nondecreasing(active_duration),
+        "active_hr_nondecreasing": nondecreasing(active_hr),
+        "active_rr_nondecreasing": nondecreasing(active_rr),
+        "battery_drop_from_first_percent": (batteries[-1] - batteries[0]) if batteries else "missing",
+    }
+
+
 def rollup(samples: list[dict[str, object]]) -> dict[str, object]:
     active_samples = [item.get("active_journal", {}) for item in samples if isinstance(item.get("active_journal"), dict)]
     session_samples = [item.get("sessions", {}) for item in samples if isinstance(item.get("sessions"), dict)]
@@ -297,7 +330,7 @@ def rollup(samples: list[dict[str, object]]) -> dict[str, object]:
         for item in ok_active
         if isinstance(item.get("battery"), int) and int(item["battery"]) >= 0
     ]
-    return {
+    final = {
         "status": "ok" if samples else "empty",
         "samples": len(samples),
         "active_ok_samples": len(ok_active),
@@ -319,6 +352,8 @@ def rollup(samples: list[dict[str, object]]) -> dict[str, object]:
         "battery_latest": batteries[-1] if batteries else "missing",
         "battery_delta": (batteries[-1] - batteries[0]) if batteries else "missing",
     }
+    final.update(trend_summary(samples))
+    return final
 
 
 def main() -> int:
