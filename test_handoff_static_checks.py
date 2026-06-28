@@ -4651,29 +4651,32 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, widget, "// Recovery + Strain are the headline pair.")
 
-    def test_single_metric_widgets_support_home_screen_small_layouts(self):
+    def test_single_metric_widgets_support_home_screen_small_and_medium_layouts(self):
         widget = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
 
         for needle in [
             "// MARK: - Single-metric widgets (Home Screen + Lock Screen)",
             "case .systemSmall:\n                systemSmallMetric",
+            "case .systemMedium:\n                systemMediumMetric",
             "private var systemSmallMetric: some View",
+            "private var systemMediumMetric: some View",
             "var tint: Color",
             "var unit: String",
             "Text(metric.unit.uppercased())",
             "Text(metricFooterText)",
             "private var metricFooterText: String",
             ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metricFooterText)\")",
+            ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metric.unit), \\(metricFooterText)\")",
             ".description(\"Today's steps on your Home Screen or Lock Screen.\")",
             ".description(\"Today's strain on your Home Screen or Lock Screen.\")",
             ".description(\"Latest HRV on your Home Screen or Lock Screen.\")",
             ".description(\"Latest heart rate on your Home Screen or Lock Screen.\")",
-            ".supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])",
+            ".supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])",
         ]:
             assert_contains(self, widget, needle)
 
         self.assertGreaterEqual(
-            widget.count(".supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])"),
+            widget.count(".supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])"),
             4,
         )
 
