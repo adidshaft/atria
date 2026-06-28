@@ -461,6 +461,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("- Status: `not_complete`", markdown)
         self.assertIn("- Local checks: `pass`", markdown)
         self.assertIn("- External reference: `skipped`", markdown)
+        self.assertIn("## Next Required Evidence", markdown)
+        self.assertIn("Wait for the overnight long-wear monitor to write `summary.json`", markdown)
         self.assertIn("`session_span`: observed_s=2731.1, required_min_s=28800, ok=False", markdown)
         self.assertIn("`session_coverage`: observed_percent=50, required_min_percent=85, ok=False", markdown)
         self.assertIn("`missing_accessibility_performance_summary`", markdown)
@@ -567,6 +569,19 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("missing_measured_at", report["blockers"])
         self.assertIn("missing_app_commit", report["blockers"])
         self.assertIn("missing_app_build", report["blockers"])
+
+    def test_next_evidence_items_name_measured_scroll_fps_finalization(self):
+        report = {
+            "blockers": ["dashboard_scroll_fps", "accessibility_performance_proof"],
+            "physical_long_wear": {"status": "pass"},
+        }
+
+        items = audit_handoff_status.next_evidence_items(report)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("Measure real dashboard scroll FPS", items[0])
+        self.assertIn("--dashboard-scroll-fps <fps> --final", items[0])
+        self.assertIn("fps >= 58", items[0])
 
     def test_accessibility_performance_evidence_can_complete_non_reference_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
