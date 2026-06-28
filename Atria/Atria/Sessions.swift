@@ -2518,7 +2518,7 @@ final class SessionStore: ObservableObject {
             if !parseOK { return "Repair" }
             if rows <= 0 { return "Empty" }
             if metricReady { return "Ready" }
-            return "Gated"
+            return "Saved"
         }
 
         var detailText: String {
@@ -2526,8 +2526,8 @@ final class SessionStore: ObservableObject {
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
             if rows <= 0 { return "No backfill rows yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            if currentSessionUsableRows > 0 { return "\(currentSessionUsableRows)/\(rows) repair rows" }
-            return "\(rows) saved · metric gated"
+            if currentSessionUsableRows > 0 { return "Metrics gated" }
+            return "Saved · metrics gated"
         }
 
         var userFootnoteText: String {
@@ -2536,14 +2536,14 @@ final class SessionStore: ObservableObject {
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
             if currentSessionUsableRows > 0 {
-                return "Backfill can repair session continuity; HRV, Recovery and Sleep stay gated until historical RR is validated."
+                return "\(currentSessionUsableRows)/\(rows) backfill rows saved for continuity repair. HRV, Recovery and Sleep stay gated until historical RR is validated."
             }
-            return "Backfill archived locally; HRV, Recovery and Sleep stay gated until historical RR is validated."
+            return "\(rows) backfill rows archived locally. HRV, Recovery and Sleep stay gated until historical RR is validated."
         }
 
         var metricGateText: String {
             if metricReady { return "Metric-ready" }
-            if hasArchiveRows { return "Metric gated" }
+            if hasArchiveRows { return "Metrics gated" }
             if !parseOK { return "Repair needed" }
             return "Waiting"
         }
