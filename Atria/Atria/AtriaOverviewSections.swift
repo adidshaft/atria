@@ -1199,6 +1199,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
+            .overlay(alignment: .bottomLeading) {
+                if isEditingGlance, metric.supportsGlanceTargetEditing {
+                    glanceTargetControl(for: metric)
+                        .padding(8)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .onLongPressGesture(minimumDuration: 0.45) {
                 withAnimation(.snappy(duration: 0.2)) {
@@ -1273,7 +1280,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     isEditingGlance = false
                 }
             }
-            .accessibilityHint("Long press to edit, then tap to edit targets, drag to reorder, or use actions to resize and remove.")
+            .accessibilityHint("Long press to edit, then use the target, resize, and remove controls, drag to reorder, or use actions.")
     }
 
     @ViewBuilder
@@ -1296,10 +1303,25 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
         HStack(spacing: 8) {
             glanceRemoveControl(for: metric)
+            if metric.supportsGlanceTargetEditing {
+                glanceTargetControl(for: metric)
+            }
             glanceResizeControl(for: metric)
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
+    }
+
+    private func glanceTargetControl(for metric: AtriaTodayMetric) -> some View {
+        Button {
+            targetEditorMetric = metric
+        } label: {
+            Image(systemName: "target")
+                .font(.callout.weight(.bold))
+        }
+        .atriaGlassIconAction(tint: metric.targetEditorTint, size: 44)
+        .accessibilityLabel("Edit \(metric.label) target")
+        .accessibilityHint("Opens the target zone controls for this Today widget.")
     }
 
     private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View {
