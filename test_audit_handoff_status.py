@@ -840,6 +840,44 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(report["accessibility_performance"]["status"], "pass")
         self.assertEqual(report["blockers"], [])
 
+    def test_accessibility_performance_accepts_dashboard_scroll_swiftui_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+            accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
+            write_passing_accessibility_performance(accessibility)
+            trace = repo / "docs/evidence/accessibility-performance/trace.trace"
+            audit_handoff_status.trace_toc_sidecar(trace).write_text("""
+<?xml version="1.0"?>
+<trace-toc>
+  <run number="1">
+    <info>
+      <target>
+        <device model="iPhone 15 Pro"/>
+        <process name="Atria"/>
+      </target>
+      <summary>
+        <duration>12.0</duration>
+        <template-name>SwiftUI</template-name>
+      </summary>
+    </info>
+  </run>
+</trace-toc>
+""".strip(), encoding="utf-8")
+
+            report = audit_handoff_status.evaluate(
+                repo,
+                summary,
+                skip_external_reference=True,
+                accessibility_performance_path=accessibility,
+            )
+
+        self.assertEqual(report["accessibility_performance"]["status"], "pass")
+        self.assertNotIn("instruments_trace_template", report["blockers"])
+
     def test_accessibility_performance_trace_toc_must_match_device_app_and_template(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
