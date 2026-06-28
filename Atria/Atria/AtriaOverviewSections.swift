@@ -1388,7 +1388,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
         } label: {
-            Image(systemName: "minus.circle.fill")
+            Image(systemName: "xmark.circle.fill")
                 .font(.callout.weight(.black))
         }
         .atriaGlassIconAction(tint: .red, size: 44)
@@ -1911,7 +1911,7 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                             ForEach(visibleMetrics) { metric in
                                 managerRow(metric: metric,
                                            actionTitle: "Remove",
-                                           actionImage: "minus.circle.fill",
+                                           actionImage: "xmark.circle.fill",
                                            tint: .red,
                                            role: .destructive) {
                                     onHideMetric(metric)
