@@ -252,9 +252,21 @@ def emit_offline_sync_preferences():
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
     print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
-    print(f"link_last_auto_save_status={pref(prefs, 'link.lastAutoSaveStatus', 'none') or 'none'}")
-    print(f"link_last_auto_save_samples={int(pref(prefs, 'link.lastAutoSaveSamples', 0) or 0)}")
-    print(f"link_last_auto_save_duration_s={int(pref(prefs, 'link.lastAutoSaveDuration', 0) or 0)}")
+    link_auto_save_status = pref(prefs, "link.lastAutoSaveStatus", "none") or "none"
+    link_auto_save_samples = int(pref(prefs, "link.lastAutoSaveSamples", 0) or 0)
+    link_auto_save_duration = int(pref(prefs, "link.lastAutoSaveDuration", 0) or 0)
+    if link_auto_save_status == "saved":
+        link_auto_save_interpretation = "saved_session"
+    elif link_auto_save_status == "checkpointed_continuity":
+        link_auto_save_interpretation = "active_journal_checkpoint_not_saved_session"
+    elif link_auto_save_status.startswith("skipped"):
+        link_auto_save_interpretation = "no_session_saved"
+    else:
+        link_auto_save_interpretation = "unknown"
+    print(f"link_last_auto_save_status={link_auto_save_status}")
+    print(f"link_last_auto_save_samples={link_auto_save_samples}")
+    print(f"link_last_auto_save_duration_s={link_auto_save_duration}")
+    print(f"link_last_auto_save_interpretation={link_auto_save_interpretation}")
 
 def emit_battery_preferences():
     prefs_path = evidence / "preferences.plist"

@@ -5141,6 +5141,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "active_journal_final_status=missing",
             "active_journal_continuity_status=",
             "link_connected = (pref(prefs, \"link.lastStatus\", \"\") == \"connected\")",
+            "link_auto_save_interpretation = \"active_journal_checkpoint_not_saved_session\"",
+            "link_last_auto_save_interpretation=",
             "continuity = \"warming\"",
             "continuity_reason = \"fresh_connected_warming\"",
             "active_journal_interruption_class=live_stream_interrupted_saved_sessions_present",
