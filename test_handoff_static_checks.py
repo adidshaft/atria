@@ -135,6 +135,26 @@ def today_moving_before(dragged, target, csv):
     return ",".join(order)
 
 
+def today_merge_visible_slots(order, hidden, visible):
+    visible_iter = iter(visible)
+    return [metric if metric in hidden else next(visible_iter, metric) for metric in order]
+
+
+def today_moving_visible_before(dragged, target, csv, hidden_csv):
+    hidden = today_hidden_from_csv(hidden_csv)
+    ordered = today_ordered(csv)
+    visible = [metric for metric in ordered if metric not in hidden]
+    if dragged == target or dragged not in visible or target not in visible:
+        return today_moving_before(dragged, target, csv)
+    next_visible = [metric for metric in visible if metric != dragged]
+    try:
+        index = next_visible.index(target)
+    except ValueError:
+        index = len(next_visible)
+    next_visible.insert(index, dragged)
+    return ",".join(today_merge_visible_slots(ordered, hidden, next_visible))
+
+
 def today_moving_direction(metric, direction, csv):
     order = today_ordered(csv)
     if metric not in order:
@@ -144,6 +164,20 @@ def today_moving_direction(metric, direction, csv):
     if next_index != index:
         order[index], order[next_index] = order[next_index], order[index]
     return ",".join(order)
+
+
+def today_moving_visible_direction(metric, direction, csv, hidden_csv):
+    hidden = today_hidden_from_csv(hidden_csv)
+    ordered = today_ordered(csv)
+    visible = [item for item in ordered if item not in hidden]
+    if metric not in visible:
+        return today_moving_direction(metric, direction, csv)
+    index = visible.index(metric)
+    next_index = max(0, min(len(visible) - 1, index + direction))
+    if next_index == index:
+        return ",".join(ordered)
+    visible[index], visible[next_index] = visible[next_index], visible[index]
+    return ",".join(today_merge_visible_slots(ordered, hidden, visible))
 
 
 class HandoffStaticChecks(unittest.TestCase):
@@ -176,6 +210,15 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertEqual(today_ordered(today_moving_direction("recovery", -1, ",".join(default_order)))[0], "recovery")
         self.assertEqual(today_ordered(today_moving_direction("strain", -1, ",".join(default_order)))[0:2], ["strain", "recovery"])
         self.assertEqual(today_ordered(today_moving_direction("insights", 1, ",".join(default_order)))[-1], "insights")
+
+        hidden_between = "steps,strapSteps,calories,recovery,strain"
+        visible_shifted = today_moving_visible_direction("steps", 1, hidden_between, "")
+        self.assertEqual(today_visible_ordered(visible_shifted, "")[0:3], ["calories", "steps", "recovery"])
+        self.assertEqual(today_hidden_ordered(visible_shifted, "")[0], "strapSteps")
+
+        visible_dropped = today_moving_visible_before("calories", "steps", hidden_between, "")
+        self.assertEqual(today_visible_ordered(visible_dropped, "")[0:3], ["calories", "steps", "recovery"])
+        self.assertEqual(today_hidden_ordered(visible_dropped, "")[0], "strapSteps")
 
     def test_ios_26_ui_has_no_legacy_availability_or_material_fallbacks(self):
         text = all_swift_source()
