@@ -755,6 +755,8 @@ struct AtriaMetricWidgetEntryView: View {
                 .containerBackground(.clear, for: .widget)
             case .systemSmall:
                 systemSmallMetric
+            case .systemMedium:
+                systemMediumMetric
             default:
                 VStack(spacing: 0) {
                     Image(systemName: metric.icon)
@@ -815,6 +817,55 @@ struct AtriaMetricWidgetEntryView: View {
         .accessibilityLabel("\(metric.title) \(value), \(metricFooterText)")
     }
 
+    private var systemMediumMetric: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: metric.icon)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(metric.tint)
+                        .frame(width: 34, height: 34)
+                        .background(metric.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    Text(metric.title)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(value)
+                    .font(.system(size: 48, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.45)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                Text(metric.unit.uppercased())
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(metric.tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: 0)
+
+                Text(metricFooterText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(entry.snapshot == nil ? .orange : .secondary)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(width: 104, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .containerBackground(.background, for: .widget)
+        .accessibilityLabel("\(metric.title) \(value), \(metric.unit), \(metricFooterText)")
+    }
+
     private var metricFooterText: String {
         guard let snapshot = entry.snapshot else { return "Open Atria" }
         let age = max(0, Int(Date().timeIntervalSince(snapshot.createdAt) / 60))
@@ -831,7 +882,7 @@ struct AtriaStepsWidget: Widget {
         }
         .configurationDisplayName("Atria Steps")
         .description("Today's steps on your Home Screen or Lock Screen.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -842,7 +893,7 @@ struct AtriaStrainWidget: Widget {
         }
         .configurationDisplayName("Atria Strain")
         .description("Today's strain on your Home Screen or Lock Screen.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -853,7 +904,7 @@ struct AtriaHRVWidget: Widget {
         }
         .configurationDisplayName("Atria HRV")
         .description("Latest HRV on your Home Screen or Lock Screen.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
@@ -864,7 +915,7 @@ struct AtriaBPMWidget: Widget {
         }
         .configurationDisplayName("Atria BPM")
         .description("Latest heart rate on your Home Screen or Lock Screen.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }
 
