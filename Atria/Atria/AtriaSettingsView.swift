@@ -571,6 +571,8 @@ struct AtriaSettingsView: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
 
+                Divider()
+
                 Stepper(value: $vo2GreenDelta, in: 0.0...2.0, step: 0.1) {
                     LabeledContent("VO2 green gain") {
                         Text(String(format: "+%.1f", vo2GreenDelta))
