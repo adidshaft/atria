@@ -795,8 +795,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var addWidgetMenu: some View",
             "Section(\"Add widget\")",
             "Image(systemName: \"plus\")",
-            "glanceEditControls(for: metric)",
             "private func glanceEditControls(for metric: AtriaTodayMetric) -> some View",
+            "glanceRemoveControl(for: metric)",
+            "glanceResizeControl(for: metric)",
+            "private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View",
+            "private func glanceResizeControl(for metric: AtriaTodayMetric) -> some View",
+            ".overlay(alignment: .topLeading)",
+            ".overlay(alignment: .topTrailing)",
             "@State private var targetEditorMetric: AtriaTodayMetric?",
             "if metric.supportsGlanceTargetEditing",
             "case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps",
@@ -810,8 +815,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ": \"rectangle.expand.horizontal\"",
             "onToggleMetricSize(metric)",
             ".atriaGlassIconAction(tint: .secondary, size: 38)",
-            ".atriaGlassIconAction(tint: .secondary, size: 30)",
-            ".atriaGlassIconAction(tint: .red, size: 30)",
+            ".atriaGlassIconAction(tint: .secondary, size: 44)",
+            ".atriaGlassIconAction(tint: .red, size: 44)",
             ".accessibilityLabel(\"Add Today widget\")",
             "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
             "onOpenVitals: onOpenVitals",
@@ -844,6 +849,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "private var customizeMenu: some View")
         assert_not_contains(self, overview, "Label(isEditingGlance ? \"Done editing\" : \"Edit widgets\", systemImage: \"square.grid.2x2\")")
         assert_not_contains(self, overview, "Section(\"Hide widget\")")
+        assert_not_contains(self, overview, "guard visibleCount > 1 else { return }")
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.82), in: Capsule(style: .continuous))")
         assert_not_contains(self, overview, ".background(Color(.systemBackground).opacity(0.74), in: Capsule(style: .continuous))")
         assert_not_contains(self, overview, "Image(systemName: \"slider.horizontal.3\")")
@@ -5717,6 +5723,11 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_confirmed_sleep_stage_compatibility_for_older_records(self):
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+        assert_contains(self, sessions, "let migrated = sorted.map(Self.migratingConfirmedSleepStagesIfNeeded)")
+        assert_contains(self, sessions, "UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)")
+        assert_contains(self, sessions, "sleep_confirmed_migration")
+        assert_contains(self, sessions, "UserConfirmedSleep(id: sleep.id,")
+        assert_contains(self, sessions, "stageSegments: migratedStages")
         assert_contains(self, sessions, "Self.estimatedConfirmedSleepStages(start: sleep.start,")
         assert_contains(self, sessions, 'source: sleep.source)')
         assert_contains(self, sessions, '"aggregate_sleep"')

@@ -631,8 +631,6 @@ struct AtriaOverviewReadinessSectionHost: View {
 
     private func hideMetric(_ metric: AtriaTodayMetric) {
         var hidden = AtriaTodayMetric.hidden(from: hiddenCSV)
-        let visibleCount = AtriaTodayMetric.defaultGlanceOrder.filter { !hidden.contains($0.rawValue) }.count
-        guard visibleCount > 1 else { return }
         hidden.insert(metric.rawValue)
         hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
     }
@@ -1158,10 +1156,19 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    height: Self.glanceRowHeight,
                    alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+            .overlay(glanceEditingBorder(for: metric))
+            .overlay(alignment: .topLeading) {
+                if isEditingGlance {
+                    glanceRemoveControl(for: metric)
+                        .padding(8)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
-                    glanceEditControls(for: metric)
-                        .padding(6)
+                    glanceResizeControl(for: metric)
+                        .padding(8)
+                        .transition(.scale.combined(with: .opacity))
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
@@ -1199,11 +1206,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
             .accessibilityAction(named: Text("Remove \(metric.label) widget")) {
                 onHideMetric(metric)
-                if visibleMetrics.count <= 2 {
+                if visibleMetrics.count <= 1 {
                     isEditingGlance = false
                 }
             }
             .accessibilityHint("Long press to edit, then tap to edit targets, drag to reorder, or use actions to resize and remove.")
+    }
+
+    @ViewBuilder
+    private func glanceEditingBorder(for metric: AtriaTodayMetric) -> some View {
+        if isEditingGlance {
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
+                .stroke(metric.targetEditorTint.opacity(0.32), lineWidth: 1.2)
+                .allowsHitTesting(false)
+        }
     }
 
     private func glanceCardWidth(for metric: AtriaTodayMetric, containerWidth: CGFloat) -> CGFloat {
@@ -1215,36 +1231,45 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private func glanceEditControls(for metric: AtriaTodayMetric) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                onToggleMetricSize(metric)
-            } label: {
-                Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
-                      ? "rectangle.compress.horizontal"
-                      : "rectangle.expand.horizontal")
-                    .font(.caption.weight(.bold))
-            }
-            .atriaGlassIconAction(tint: .secondary, size: 30)
-            .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
-                                ? "Make \(metric.label) compact"
-                                : "Make \(metric.label) wide")
-
-            Button(role: .destructive) {
-                onHideMetric(metric)
-                if visibleMetrics.count <= 2 {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        isEditingGlance = false
-                    }
-                }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-            }
-            .atriaGlassIconAction(tint: .red, size: 30)
-            .accessibilityLabel("Remove \(metric.label)")
+        HStack(spacing: 8) {
+            glanceRemoveControl(for: metric)
+            glanceResizeControl(for: metric)
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
+    }
+
+    private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View {
+        Button(role: .destructive) {
+            withAnimation(.snappy(duration: 0.2)) {
+                onHideMetric(metric)
+                if visibleMetrics.count <= 1 {
+                    isEditingGlance = false
+                }
+            }
+        } label: {
+            Image(systemName: "xmark")
+                .font(.callout.weight(.bold))
+        }
+        .atriaGlassIconAction(tint: .red, size: 44)
+        .accessibilityLabel("Remove \(metric.label) widget")
+    }
+
+    private func glanceResizeControl(for metric: AtriaTodayMetric) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) {
+                onToggleMetricSize(metric)
+            }
+        } label: {
+            Image(systemName: metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                  ? "rectangle.compress.horizontal"
+                  : "rectangle.expand.horizontal")
+                .font(.callout.weight(.bold))
+        }
+        .atriaGlassIconAction(tint: .secondary, size: 44)
+        .accessibilityLabel(metric.isWideGlanceCard(sizeOverridesCSV: sizeOverridesCSV)
+                            ? "Make \(metric.label) compact"
+                            : "Make \(metric.label) wide")
     }
 
     @ViewBuilder
