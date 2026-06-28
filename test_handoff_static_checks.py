@@ -2423,6 +2423,15 @@ class HandoffStaticChecks(unittest.TestCase):
             'AtriaDebugLog("ATRIADBG session_store_load_wait status=%@ elapsed_ms=%d sessions=%d"',
             "self.hasCompletedDeferredSessionLoad = true",
             "hasCompletedDeferredSessionLoad = true",
+            "Self.pruningShortLongWearFragments(from: decoded)",
+            "reason: \"prune_short_long_wear_fragments\"",
+            "pruned_short_long_wear_fragments=%d",
+            "private nonisolated static func persistSessionsSnapshot",
+            "private nonisolated static func isShortLongWearFragment(_ session: SavedSession) -> Bool",
+            "guard session.duration < 5 * 60 else { return false }",
+            "label == \"long wear\"",
+            "label == \"auto-saved\"",
+            "label.hasPrefix(\"auto-saved chunk\")",
         ]:
             assert_contains(self, sessions, needle)
 
