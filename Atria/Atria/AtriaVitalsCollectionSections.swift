@@ -1388,7 +1388,11 @@ private struct AtriaCollectionStatusCardHost: View {
                         value: store.historicalArchiveStatus.valueText,
                         state: backfillState,
                         tint: .cyan,
-                        footnote: store.historicalArchiveStatus.userFootnoteText)
+                        footnote: backfillFootnote)
+    }
+
+    private var backfillFootnote: String {
+        "\(store.historicalArchiveStatus.userFootnoteText) \(store.historicalArchiveStatus.actionText)"
     }
 
     private var backfillState: AtriaMetricState {
