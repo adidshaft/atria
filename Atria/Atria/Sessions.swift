@@ -2541,6 +2541,17 @@ final class SessionStore: ObservableObject {
             return "\(rows) backfill rows archived locally. HRV, Recovery and Sleep stay gated until historical RR is validated."
         }
 
+        var actionText: String {
+            if !exists { return "Wear normally; Atria will pull missed rows after reconnect." }
+            if !parseOK { return "Keep the archive saved and repair parsing before using it for metrics." }
+            if rows <= 0 { return "No action yet; wait for a reconnect with missed strap data." }
+            if metricReady { return "Backfilled rows can contribute to metrics." }
+            if currentSessionUsableRows > 0 {
+                return "Continuity is repaired; validate historical RR against a reference before promoting HRV, Recovery or Sleep."
+            }
+            return "Archive is saved; validate historical RR against a reference before promoting metrics."
+        }
+
         var metricGateText: String {
             if metricReady { return "Metric-ready" }
             if currentSessionUsableRows > 0 { return "Continuity only" }

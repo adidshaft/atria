@@ -1640,7 +1640,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   tint: backfillTint)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open Data. Backfill \(historicalArchiveStatus.valueText). \(historicalArchiveStatus.userFootnoteText)")
+        .accessibilityLabel("Open Data. Backfill \(historicalArchiveStatus.valueText). \(historicalArchiveStatus.userFootnoteText) \(historicalArchiveStatus.actionText)")
     }
 
     private var backfillTint: Color {
