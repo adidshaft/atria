@@ -54,10 +54,9 @@ struct AtriaSettingsView: View {
     @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
     @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
-    /// Privacy/support destinations are shown as text only. Atria's core stays
-    /// local-first with no in-app network/browser clients, so contact details are
-    /// surfaced for the user to open themselves rather than launched in-app.
-    private let privacyComingSoon = true
+    /// Support destinations are shown as text only. Atria's core stays local-first
+    /// with no in-app network/browser clients, so contact details are surfaced for
+    /// the user to open themselves rather than launched in-app.
     private let supportHandle = "@adidshaft on X"
 
     init(profile: AthleteProfile,
@@ -841,8 +840,8 @@ struct AtriaSettingsView: View {
             LabeledContent("Version") {
                 Text(appVersion).foregroundStyle(.secondary).monospacedDigit()
             }
-            LabeledContent("Privacy Policy") {
-                Text(privacyComingSoon ? "Coming soon" : "").foregroundStyle(.secondary)
+            LabeledContent("Privacy") {
+                Text("Local-first; no account or cloud sync").foregroundStyle(.secondary)
             }
             LabeledContent("Support & contact") {
                 Text(supportHandle).foregroundStyle(.secondary)
