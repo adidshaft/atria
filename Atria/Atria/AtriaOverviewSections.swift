@@ -927,6 +927,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onAddManualSleep: (Date, Date, Bool) -> Void
     let onStartWorkout: () -> Void
     @State private var isEditingGlance = false
+    @State private var showWidgetManager = false
     @State private var showManualSleepSheet = false
     @State private var targetEditorMetric: AtriaTodayMetric?
 
@@ -1052,6 +1053,31 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showWidgetManager) {
+            AtriaGlanceWidgetManagerSheet(visibleMetrics: visibleMetrics,
+                                          hiddenMetrics: hiddenMetrics,
+                                          onEditWidgets: {
+                                              withAnimation(.snappy(duration: 0.2)) {
+                                                  isEditingGlance = true
+                                              }
+                                          },
+                                          onHideMetric: { metric in
+                                              withAnimation(.snappy(duration: 0.2)) {
+                                                  onHideMetric(metric)
+                                                  if visibleMetrics.count <= 1 {
+                                                      isEditingGlance = false
+                                                  }
+                                              }
+                                          },
+                                          onShowMetric: { metric in
+                                              withAnimation(.snappy(duration: 0.2)) {
+                                                  onShowMetric(metric)
+                                                  isEditingGlance = false
+                                              }
+                                          })
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     private var addWidgetMenu: some View {
@@ -1071,53 +1097,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .transition(.scale.combined(with: .opacity))
             }
 
-            Menu {
-                Section("Manage") {
-                    Button {
-                        withAnimation(.snappy(duration: 0.2)) {
-                            isEditingGlance = true
-                        }
-                    } label: {
-                        Label("Edit widgets", systemImage: "square.grid.2x2")
-                    }
-                }
-
-                if !visibleMetrics.isEmpty {
-                    Section("Added widgets") {
-                        ForEach(visibleMetrics) { metric in
-                            Button(role: .destructive) {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    onHideMetric(metric)
-                                    if visibleMetrics.count <= 1 {
-                                        isEditingGlance = false
-                                    }
-                                }
-                            } label: {
-                                Label("Remove \(metric.label)", systemImage: "minus.circle.fill")
-                            }
-                        }
-                    }
-                }
-
-                if !hiddenMetrics.isEmpty {
-                    Section("Add widget") {
-                        ForEach(hiddenMetrics) { metric in
-                            Button {
-                                onShowMetric(metric)
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    isEditingGlance = false
-                                }
-                            } label: {
-                                Label(metric.label, systemImage: metric.systemImage)
-                            }
-                        }
-                    }
-                } else {
-                    Section("Add widget") {
-                        Label("All widgets added", systemImage: "checkmark.circle")
-                    }
-                }
-
+            Button {
+                showWidgetManager = true
             } label: {
                 Image(systemName: "plus")
                     .font(.callout.weight(.semibold))
@@ -1125,9 +1106,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
             .atriaGlassIconAction(tint: .secondary, size: 38)
             .accessibilityLabel("Manage Today widgets")
-            .accessibilityHint(hiddenMetrics.isEmpty
-                               ? "Opens added widgets so you can remove cards."
-                               : "Opens added and hidden Today widgets so you can remove or add cards.")
+            .accessibilityHint("Opens added and hidden Today widgets so you can remove or add cards.")
         }
     }
 
@@ -1746,6 +1725,138 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .filter { $0.isNumber })
     }
 
+}
+
+private struct AtriaGlanceWidgetManagerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let visibleMetrics: [AtriaTodayMetric]
+    let hiddenMetrics: [AtriaTodayMetric]
+    let onEditWidgets: () -> Void
+    let onHideMetric: (AtriaTodayMetric) -> Void
+    let onShowMetric: (AtriaTodayMetric) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !visibleMetrics.isEmpty {
+                        managerSection(title: "Added widgets",
+                                       subtitle: "Remove cards you do not want in Today at a glance.") {
+                            ForEach(visibleMetrics) { metric in
+                                managerRow(metric: metric,
+                                           actionTitle: "Remove",
+                                           actionImage: "minus.circle.fill",
+                                           tint: .red,
+                                           role: .destructive) {
+                                    onHideMetric(metric)
+                                }
+                            }
+                        }
+                    }
+
+                    managerSection(title: "Add widget",
+                                   subtitle: hiddenMetrics.isEmpty ? "All glance widgets are already visible." : "Bring hidden cards back to Today at a glance.") {
+                        if hiddenMetrics.isEmpty {
+                            Label("All widgets added", systemImage: "checkmark.circle.fill")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                                .atriaInsetCard(tint: .secondary)
+                        } else {
+                            ForEach(hiddenMetrics) { metric in
+                                managerRow(metric: metric,
+                                           actionTitle: "Add",
+                                           actionImage: "plus.circle.fill",
+                                           tint: metric.targetEditorTint,
+                                           role: nil) {
+                                    onShowMetric(metric)
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        onEditWidgets()
+                        dismiss()
+                    } label: {
+                        Label("Edit on cards", systemImage: "square.grid.2x2")
+                            .font(.footnote.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AtriaCardActionButtonStyle(tint: .secondary))
+                    .accessibilityHint("Shows remove and resize controls directly on Today widgets.")
+                }
+                .padding(16)
+            }
+            .navigationTitle("Today widgets")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func managerSection<Content: View>(title: String,
+                                               subtitle: String,
+                                               @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline.weight(.bold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 8) {
+                content()
+            }
+        }
+    }
+
+    private func managerRow(metric: AtriaTodayMetric,
+                            actionTitle: String,
+                            actionImage: String,
+                            tint: Color,
+                            role: ButtonRole?,
+                            action: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: metric.systemImage)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+
+            Text(metric.label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            Button(role: role) {
+                action()
+            } label: {
+                Label(actionTitle, systemImage: actionImage)
+                    .font(.caption.weight(.bold))
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.bordered)
+            .tint(tint)
+        }
+        .padding(12)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: Text("\(actionTitle) \(metric.label) widget")) {
+            action()
+        }
+    }
 }
 
 private struct AtriaGlanceMetricCard: View, Equatable {
