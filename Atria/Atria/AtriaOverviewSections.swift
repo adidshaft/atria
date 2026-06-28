@@ -1247,7 +1247,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
             .layoutPriority(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? 2 : 1)
-            .draggable(metric.dragPayload)
+            .modifier(AtriaConditionalStringDraggable(isEnabled: isEditingGlance,
+                                                       payload: metric.dragPayload))
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
@@ -1725,6 +1726,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .filter { $0.isNumber })
     }
 
+}
+
+private struct AtriaConditionalStringDraggable: ViewModifier {
+    let isEnabled: Bool
+    let payload: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.draggable(payload)
+        } else {
+            content
+        }
+    }
 }
 
 private struct AtriaGlanceWidgetManagerSheet: View {

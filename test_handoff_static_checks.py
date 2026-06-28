@@ -784,7 +784,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaGlanceMetricCard(title: \"Insights\"",
             "detail: topInsight?.tagLabel ?? (taggedDays > 0 ? \"Learning patterns\" : \"Tag today\")",
             "Open Trends. Insights building from \\(taggedDays) tagged days",
-            ".draggable(metric.dragPayload)",
+            "private struct AtriaConditionalStringDraggable: ViewModifier",
+            ".modifier(AtriaConditionalStringDraggable(isEnabled: isEditingGlance,",
+            "payload: metric.dragPayload))",
+            "if isEnabled {\n            content.draggable(payload)",
             ".dropDestination(for: String.self)",
             "AtriaTodayMetric.draggedMetric(from: raw)",
             "onMoveMetric(dragged, metric)",
@@ -954,6 +957,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, vitals, needle)
 
         assert_not_contains(self, overview, ".draggable(metric.rawValue)")
+        assert_not_contains(self, overview, ".draggable(metric.dragPayload)")
         assert_not_contains(self, overview, "let dragged = AtriaTodayMetric(rawValue: raw)")
         assert_not_contains(self, vitals, ".draggable(section.rawValue)")
         assert_not_contains(self, vitals, "let dragged = AtriaVitalsSection(rawValue: raw)")
@@ -4473,8 +4477,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "Strap tap shortcuts",
             "music, calls",
             "are coming once",
+            "privacyComingSoon",
+            "Coming soon",
         ]:
             assert_not_contains(self, settings, forbidden)
+        assert_contains(self, settings, "LabeledContent(\"Privacy\")")
+        assert_contains(self, settings, "Local-first; no account or cloud sync")
 
     def test_deferred_home_diagnostics_do_not_overlap(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
