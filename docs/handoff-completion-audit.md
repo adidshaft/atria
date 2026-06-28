@@ -121,6 +121,10 @@ Remaining handoff-21 blockers:
   plus `dashboard-scroll.trace.toc.xml`. CoreDevice screen recording was
   unavailable on this device path, so the capture keeps Instruments trace
   evidence as the durable artifact and treats video as optional.
+- Exporting `core-animation-fps-estimate` from that smoke trace produced FPS rows
+  `0, 2, 1, 2, 1` (`max=2`, `mean=1.2`), so it cannot satisfy the 58fps final
+  acceptance gate. Treat it as tooling smoke only; final proof needs a fresh
+  physical capture during real dashboard scrolling.
 - This is not final acceptance because `dashboard_scroll_fps` remains `0`; a real
   measured scroll FPS pass is still required before writing final `summary.json`.
 
