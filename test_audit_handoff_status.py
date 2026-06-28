@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -797,6 +798,24 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(latest_pull["status"], "attention")
         self.assertEqual(latest_pull["active_journal_rr_gate_b_local_ready"], "0")
         self.assertEqual(latest_pull["active_journal_rr_gate_b_local_blocker"], "rr_gap_4.0s_gt_3s")
+
+    def test_latest_device_pull_prefers_newer_goal_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            old_pull = repo / "tmp/diag/current/pull-summary.txt"
+            new_pull = repo / "artifacts/goal-21-state-current/pull-summary.txt"
+            write_ready_device_pull(old_pull)
+            write_ready_device_pull(new_pull)
+            text = new_pull.read_text(encoding="utf-8")
+            text = text.replace("battery_level=75", "battery_level=58")
+            new_pull.write_text(text, encoding="utf-8")
+            os.utime(old_pull, (1, 1))
+            os.utime(new_pull, (2, 2))
+
+            latest_pull = audit_handoff_status.evaluate_latest_device_pull(repo)
+
+        self.assertEqual(latest_pull["summary"], str(new_pull))
+        self.assertEqual(latest_pull["battery_level"], "58")
 
     def test_accessibility_performance_evidence_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:

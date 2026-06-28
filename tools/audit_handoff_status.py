@@ -43,6 +43,10 @@ ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
 DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-performance/summary.json")
 DEFAULT_ACCESSIBILITY_PERFORMANCE_DRAFT = Path("docs/evidence/accessibility-performance/summary.draft.json")
 DEFAULT_DEVICE_PULL_ROOT = Path("tmp/diag")
+DEFAULT_DEVICE_PULL_ROOTS = (
+    DEFAULT_DEVICE_PULL_ROOT,
+    Path("artifacts"),
+)
 
 MIN_SCROLL_FPS = 58.0
 ALLOWED_ACCESSIBILITY_TRACE_TEMPLATES = {"Time Profiler", "SwiftUI"}
@@ -668,8 +672,11 @@ def latest_device_pull_summary(repo: Path, explicit: Path | None = None) -> Path
     if explicit is not None:
         candidate = explicit if explicit.is_absolute() else repo / explicit
         return candidate if candidate.exists() else None
-    root = repo / DEFAULT_DEVICE_PULL_ROOT
-    summaries = sorted(root.glob("*/pull-summary.txt"), key=lambda path: path.stat().st_mtime)
+    summaries: list[Path] = []
+    for relative_root in DEFAULT_DEVICE_PULL_ROOTS:
+        root = repo / relative_root
+        summaries.extend(root.glob("*/pull-summary.txt"))
+    summaries = sorted(summaries, key=lambda path: path.stat().st_mtime)
     return summaries[-1] if summaries else None
 
 
@@ -691,7 +698,7 @@ def evaluate_latest_device_pull(repo: Path, explicit: Path | None = None) -> dic
     if candidate is None:
         return {
             "status": "missing",
-            "summary": str(repo / DEFAULT_DEVICE_PULL_ROOT / "*/pull-summary.txt") if explicit is None else str(explicit),
+            "summary": ", ".join(str(repo / root / "*/pull-summary.txt") for root in DEFAULT_DEVICE_PULL_ROOTS) if explicit is None else str(explicit),
         }
 
     values = parse_key_value_summary(candidate)
