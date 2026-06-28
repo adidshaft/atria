@@ -3902,7 +3902,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "enum VO2Max",
             "guard rest > 0, maxHR > rest else",
-            "guard restingSamples >= 7 else",
+            "guard restingSamples >= PersonalBaseline.trustedMinimumSamples else",
+            "\"\\(restingSamples)/\\(PersonalBaseline.trustedMinimumSamples) RHR\"",
+            "Atria needs a trusted resting baseline before estimating VO2max.",
             "guard maxHRMeasured else",
             "VO2MaxEstimateSummary(value: nil",
             "let rawEstimate = 15.3 * Double(maxHR) / Double(rest)",
@@ -3919,16 +3921,19 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, analytics, needle)
         self.assertGreater(analytics.find("let rawEstimate = 15.3"), analytics.find("guard maxHRMeasured else"))
+        assert_not_contains(self, analytics, "guard restingSamples >= 7 else")
+        assert_not_contains(self, analytics, "Atria needs 7 resting nights before estimating VO2max.")
 
         for needle in [
             "profile.maxHRSource == .measured",
-            "restingBaselineSamples >= 7",
-            "if !vo2MaxPlanned,\n               profile.maxHRSource == .measured,\n               restingBaselineSamples >= 7,\n               snapshot?.vo2MaxExported != true",
-            "if snapshot?.vo2MaxExported != true,\n           let profile,\n           profile.maxHRSource == .measured,\n           restingBaselineSamples >= 7,\n           rest > 0,\n           maxHR > rest",
+            "restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples",
+            "if !vo2MaxPlanned,\n               profile.maxHRSource == .measured,\n               restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples,\n               snapshot?.vo2MaxExported != true",
+            "if snapshot?.vo2MaxExported != true,\n           let profile,\n           profile.maxHRSource == .measured,\n           restingBaselineSamples >= PersonalBaseline.trustedMinimumSamples,\n           rest > 0,\n           maxHR > rest",
             "\"atria_metric_confidence\": \"rough_estimate\"",
             "\"atria_metric_source\": \"uth_sorensen_resting_hr\"",
         ]:
             assert_contains(self, healthkit, needle)
+        assert_not_contains(self, healthkit, "restingBaselineSamples >= 7")
 
         for needle in [
             "AtriaMetricTile(label: \"VO2max\"",
