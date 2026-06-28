@@ -158,6 +158,8 @@ python3 tools/audit_handoff_status.py \
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
 | `assets/` | Logo and README screenshots. |
 
+- [Research & validation audit](docs/22-research-and-validation.md) — accuracy vs WHOOP, data completeness, open research questions.
+
 ## Contributing
 
 The fastest useful contributions are:

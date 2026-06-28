@@ -6,6 +6,8 @@ Owner-requested. This is a **build spec** for Codex to execute. Read
 the A0/A0′ perf lessons) and `docs/18-codex-advanced-metrics-handoff.md` (the honest
 metric tiers) FIRST — they govern everything here.
 
+See also [docs/22-research-and-validation.md](22-research-and-validation.md) for the accuracy/completeness benchmark vs WHOOP and the open research questions.
+
 ## Non-negotiables (verify on every change)
 - **No lag.** No heavy compute in a `var body` or computed `some View` property; no
   `dailyRollups`/`detectedActivity`/O(sessions×detection) on the launch/render path
