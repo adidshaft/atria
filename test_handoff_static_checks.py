@@ -5004,6 +5004,10 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "Documents/atria-active-session.segments",
             "active_journal_segments_status=ok",
+            "active_journal_storage_mode=segmented_canonical",
+            'copy_first_from_container "$evidence_dir/atria-active-session.json" "active_journal_snapshot"',
+            "active_journal_file_status=missing_snapshot_segments_may_reconstruct",
+            "active_journal_snapshot",
             "def reconstructed_segmented_journal(evidence):",
             "active_journal_reconstructed_from_segments=1",
             "active_journal_final_status=ok",

@@ -171,19 +171,16 @@ if xcrun devicectl device copy from \
   printf 'active_journal_segments_status=ok\n' | tee -a "$summary"
   printf 'active_journal_segments_source=Documents/atria-active-session.segments\n' | tee -a "$summary"
   printf 'active_journal_segments_dir=%s\n' "$evidence_dir/atria-active-session.segments" | tee -a "$summary"
+  printf 'active_journal_storage_mode=segmented_canonical\n' | tee -a "$summary"
 else
   printf 'active_journal_segments_status=missing\n' | tee -a "$summary"
+  printf 'active_journal_storage_mode=flat_snapshot_or_missing\n' | tee -a "$summary"
 fi
 
-active_status=missing
-for active_source in "Documents/atria-active-session.json" "Documents/whoop-active-session.json"; do
-  if copy_from_container "$active_source" "$evidence_dir/atria-active-session.json" "active_journal"; then
-    active_status=ok
-    break
-  fi
-done
-if [[ "$active_status" != "ok" ]]; then
-  printf 'active_journal_file_status=missing\n' | tee -a "$summary"
+if ! copy_first_from_container "$evidence_dir/atria-active-session.json" "active_journal_snapshot" \
+  "Documents/atria-active-session.json" \
+  "Documents/whoop-active-session.json"; then
+  printf 'active_journal_file_status=missing_snapshot_segments_may_reconstruct\n' | tee -a "$summary"
 fi
 
 copy_first_from_container "$evidence_dir/historical-archive.jsonl" "historical_archive" \
