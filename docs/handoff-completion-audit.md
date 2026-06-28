@@ -105,6 +105,11 @@ Remaining handoff-21 blockers:
   Contrast, Reduce Motion, and Reduce Transparency.
 - The draft also records a fresh 10s Time Profiler trace at
   `docs/evidence/accessibility-performance/trace-live-20260628T132245Z.trace`.
+- Dashboard scroll capture tooling now produced a physical-device smoke trace at
+  `docs/evidence/accessibility-performance/dashboard-scroll-20260628T133529Z/dashboard-scroll.trace`
+  plus `dashboard-scroll.trace.toc.xml`. CoreDevice screen recording was
+  unavailable on this device path, so the capture keeps Instruments trace
+  evidence as the durable artifact and treats video as optional.
 - This is not final acceptance because `dashboard_scroll_fps` remains `0`; a real
   measured scroll FPS pass is still required before writing final `summary.json`.
 

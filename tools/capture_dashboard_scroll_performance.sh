@@ -124,7 +124,7 @@ cat > "$evidence_root/README.md" <<EOF
 
 Artifacts:
 - \`dashboard-scroll.trace\`
-- \`screen-recording.mp4\`
+- \`screen-recording.mp4\` when CoreDevice screen recording is available
 EOF
 
 printf 'Prepare Atria Today dashboard on the iPhone. Scroll continuously when capture starts.\n'
@@ -153,12 +153,23 @@ xcrun devicectl device capture screen-record \
   --codec h264 >"$log_root/screen-recording.log" 2>&1 &
 recording_pid=$!
 
-wait "$xctrace_pid"
-wait "$recording_pid"
+if ! wait "$xctrace_pid"; then
+  if [[ -e "$evidence_root/dashboard-scroll.trace" ]]; then
+    printf 'xctrace reported run issues but saved the trace; continuing. See %s\n' "$log_root/xctrace.log"
+    printf '\nxctrace reported run issues while stopping, but dashboard-scroll.trace was saved.\n' >> "$evidence_root/README.md"
+  else
+    printf 'xctrace failed and did not save dashboard-scroll.trace. See %s\n' "$log_root/xctrace.log" >&2
+    exit 66
+  fi
+fi
+if ! wait "$recording_pid"; then
+  printf 'Screen recording unavailable; continuing with Instruments trace only. See %s\n' "$log_root/screen-recording.log"
+  printf '\nScreen recording unavailable on this CoreDevice path; Instruments trace remains the required artifact.\n' >> "$evidence_root/README.md"
+fi
 
-xcrun xctrace export --input "$evidence_root/dashboard-scroll.trace" --toc --output "$evidence_root/dashboard-scroll.trace.toc.xml" >/dev/null
+xcrun xctrace export --input "$evidence_root/dashboard-scroll.trace" --toc --output "$evidence_root/dashboard-scroll.trace.toc.xml" >/dev/null || true
 
-if command -v ffprobe >/dev/null 2>&1; then
+if [[ -s "$evidence_root/screen-recording.mp4" ]] && command -v ffprobe >/dev/null 2>&1; then
   ffprobe -v error \
     -select_streams v:0 \
     -show_entries stream=avg_frame_rate,r_frame_rate,nb_frames,duration \
@@ -177,7 +188,7 @@ prepare_args=(
   --out "$summary_out"
   --all-accessibility-checks-pass
   --instruments-trace "$evidence_root/dashboard-scroll.trace"
-  --notes "Physical iPhone 15 Pro dashboard scroll capture ${stamp}; combined SwiftUI/Core Animation FPS/Hitches/Time Profiler trace and screen recording artifacts are in ${evidence_root#$repo_root/}. Use --measured-fps only after reading the trace/video evidence."
+  --notes "Physical iPhone 15 Pro dashboard scroll capture ${stamp}; combined SwiftUI/Core Animation FPS/Hitches/Time Profiler trace artifacts are in ${evidence_root#$repo_root/}. Screen recording is optional and may be unavailable on this CoreDevice path. Use --measured-fps only after reading the trace evidence."
 )
 if [[ -n "$app_commit" ]]; then
   prepare_args+=(--app-commit "$app_commit")
