@@ -952,10 +952,10 @@ struct GateETrainingSummary: Equatable {
         guard workout.present else { return "confirm_or_capture_workout" }
         guard !workout.autoReady else { return "none" }
         if workoutCoverageAndIntensityBlocked {
-            return "capture_clean_hrr50_or_validate_received_hr"
+            return "capture_steady_hrr50_or_validate_received_hr"
         }
         if workoutCoverageBlocked {
-            return "capture_clean_sustained_hrr50_with_stream_coverage"
+            return "capture_steady_sustained_hrr50_with_stream_coverage"
         }
         if workout.elevatedSeconds < workout.requiredElevatedSeconds {
             return "capture_sustained_hrr50_elevated_time"
@@ -4657,7 +4657,7 @@ final class SessionStore: ObservableObject {
               rrReplay.reason)
         let currentRRCaptureBlocked = currentRRCaptureHasIssue && !rrReplay.bestReady
         let nextAction = hrvValidated == 0
-            ? (currentRRCaptureBlocked ? "restore_current_rr_continuity_before_external_reference" : (rrReplay.bestReady ? "provide_external_rr_reference_for_ready_rr_window" : "provide_external_rr_reference_or_capture_clean_rr_window"))
+            ? (currentRRCaptureBlocked ? "restore_current_rr_continuity_before_external_reference" : (rrReplay.bestReady ? "provide_external_rr_reference_for_ready_rr_window" : "provide_external_rr_reference_or_capture_steady_rr_window"))
             : "capture_real_sustained_elevated_hr_workout"
         let localBlocked = [
             currentRRCaptureBlocked ? currentRRBlocker : nil,
@@ -5050,7 +5050,7 @@ final class SessionStore: ObservableObject {
                 ? currentRRAction
                 : rrReplay.bestReady
                 ? "provide_external_rr_reference_for_ready_rr_window"
-                : "capture_clean_5min_rr_window_before_reference"
+                : "capture_steady_5min_rr_window_before_reference"
         } else if workoutReplay.readySessions == 0 {
             nextGate = "E"
             nextAction = workoutReplay.bestNextAction == "inspect_detector_inputs"
