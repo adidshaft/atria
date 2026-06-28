@@ -330,7 +330,7 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     }
 
     private var setupDetail: String {
-        if context.officialAppCoexistenceRisk == .suspected {
+        if context.officialAppInstalled && context.officialAppCoexistenceRisk == .suspected {
             return "Remove the official strap app first."
         }
         switch status {
@@ -341,22 +341,29 @@ private struct AtriaDisconnectedOverviewPanel: View, Equatable {
         case .poweredOff:
             return "Bluetooth required."
         case .disconnected:
-            return "Free strap from the official app."
+            return "Keep strap nearby."
         case .connected:
             return "Reconnects automatically."
         }
     }
 
     private var setupItems: [String] {
-        var items = [
-            "Remove the official strap app",
+        if context.officialAppInstalled {
+            var items = [
+                "Remove the official strap app",
+                "Keep strap nearby",
+                "Let Atria scan"
+            ]
+            if context.officialAppCoexistenceRisk == .suspected {
+                items[2] = "Reconnect in Atria"
+            }
+            return items
+        }
+        return [
+            "Keep Bluetooth on",
             "Keep strap nearby",
             "Let Atria scan"
         ]
-        if context.officialAppCoexistenceRisk == .suspected {
-            items[2] = "Reconnect in Atria"
-        }
-        return items
     }
 
     var body: some View {

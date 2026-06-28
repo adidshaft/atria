@@ -1015,6 +1015,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_handoff_21_connection_diagnosis_is_actionable_inline(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         shell_support = source(ROOT / "Atria" / "Atria" / "AtriaHomeShellSupport.swift")
         hero_connection = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
@@ -1117,6 +1118,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path.",
         ]:
             assert_contains(self, shell_support + hero_connection, needle)
+        for needle in [
+            "if context.officialAppInstalled && context.officialAppCoexistenceRisk == .suspected",
+            "return \"Remove the official strap app first.\"",
+            "return \"Keep strap nearby.\"",
+            "if context.officialAppInstalled {\n            var items = [",
+            "\"Remove the official strap app\"",
+            "\"Keep Bluetooth on\"",
+            "\"Let Atria scan\"",
+        ]:
+            assert_contains(self, overview, needle)
         for needle in [
             "let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress || historyOnlyProbeEnabled || historyOnlyProbeMode",
             "reason=atria_owned_offline_sync_disconnect",
