@@ -409,22 +409,10 @@ struct AtriaMetricTile: View, Equatable {
                alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: tint)
-        .contextMenu {
-            if let targetMetric {
-                Button {
-                    editingTargetMetric = targetMetric
-                } label: {
-                    Label("Edit target", systemImage: "target")
-                }
-            }
-        }
+        .modifier(AtriaMetricTileTargetEditorModifier(targetMetric: targetMetric,
+                                                      editingTargetMetric: $editingTargetMetric))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
-        .accessibilityAction(named: Text("Edit target")) {
-            if let targetMetric {
-                editingTargetMetric = targetMetric
-            }
-        }
         .sheet(isPresented: $showingZoneInfo) {
             if let zone {
                 AtriaMetricZoneInfoSheet(zone: zone)
@@ -461,6 +449,30 @@ struct AtriaMetricTile: View, Equatable {
             Color.clear
                 .frame(height: Self.footerHeight)
                 .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct AtriaMetricTileTargetEditorModifier: ViewModifier {
+    let targetMetric: AtriaTodayMetric?
+    @Binding var editingTargetMetric: AtriaTodayMetric?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let targetMetric {
+            content
+                .contextMenu {
+                    Button {
+                        editingTargetMetric = targetMetric
+                    } label: {
+                        Label("Edit target", systemImage: "target")
+                    }
+                }
+                .accessibilityAction(named: Text("Edit target")) {
+                    editingTargetMetric = targetMetric
+                }
+        } else {
+            content
         }
     }
 }

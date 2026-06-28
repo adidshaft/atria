@@ -5334,6 +5334,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "var zone: AtriaMetricZone? = nil",
             "var targetMetric: AtriaTodayMetric? = nil",
             "@State private var editingTargetMetric: AtriaTodayMetric?",
+            "AtriaMetricTileTargetEditorModifier(targetMetric: targetMetric,",
+            "if let targetMetric {",
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
             "AtriaGlanceTargetEditorSheet(metric: metric)",
