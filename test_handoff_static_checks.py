@@ -5275,6 +5275,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".font(.caption2.weight(.black).monospaced())",
             ".frame(minWidth: 44, minHeight: 44)",
             ".frame(width: 44, height: 44)",
+            ".accessibilityLabel(\"Target guidance for \\(zone.title). \\(zone.current)\")",
             "if let zone, zone.showsWarning",
             "parts.append(zone.level.label)",
             "parts.append(zone.targetSummary)",

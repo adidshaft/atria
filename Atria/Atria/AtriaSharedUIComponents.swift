@@ -465,7 +465,7 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(zone.title). \(zone.current)")
+        .accessibilityLabel("Target guidance for \(zone.title). \(zone.current)")
         .accessibilityHint("Opens target guidance and general wellness recommendations.")
     }
 }
