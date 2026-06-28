@@ -845,27 +845,31 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 state: summary.spo2CandidateFrames > 0 ? .research : .learning,
                                 tint: bloodOxygenResearchZone?.tint ?? .blue,
                                 footnote: summary.spo2CandidateFrames > 0 ? "\(summary.spo2CandidateFrames) candidate frames; not a SpO2 value." : "Early signal; not a SpO2 value.",
-                                zone: bloodOxygenResearchZone)
+                                zone: bloodOxygenResearchZone,
+                                targetMetric: .bloodOxygen)
                 AtriaMetricTile(label: "Body temp",
                                 value: summary.skinTemperatureDeviation.valueText,
                                 unit: summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
                                 state: summary.skinTemperatureDeviation.isReady ? .research : .learning,
                                 tint: skinTemperatureDeviationZone?.tint ?? (summary.skinTemperatureDeviation.isReady ? .teal : .orange),
                                 footnote: summary.skinTemperatureDeviation.footnoteText,
-                                zone: skinTemperatureDeviationZone)
+                                zone: skinTemperatureDeviationZone,
+                                targetMetric: .bodyTemp)
                 AtriaMetricTile(label: "Resp rate",
                                 value: latestRespiratoryRate,
                                 unit: latestRespiratoryRate == "--" ? nil : "/min",
                                 state: latestRespiratoryRate == "--" ? .learning : .research,
                                 tint: respiratoryRateZone?.tint ?? .teal,
                                 footnote: "Sleep-only estimate; needs comparison data.",
-                                zone: respiratoryRateZone)
+                                zone: respiratoryRateZone,
+                                targetMetric: .respiratoryRate)
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
                                 tint: strapStepsZone?.tint ?? .green,
                                 footnote: summary.agreementText,
-                                zone: strapStepsZone)
+                                zone: strapStepsZone,
+                                targetMetric: .strapSteps)
             }
 
             Text("Early sensor rows show evidence counts, not measurements. Atria shows skin temperature only as a sleep-baseline deviation, never as an absolute body-temperature value.")
@@ -1632,7 +1636,8 @@ private struct AtriaPulseCard: View, Equatable {
                         value: restingHeartRateText,
                         state: .personalBaseline,
                         tint: restingHeartRateZone?.tint ?? .blue,
-                        zone: restingHeartRateZone)
+                        zone: restingHeartRateZone,
+                        targetMetric: .rhr)
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
@@ -1966,7 +1971,8 @@ private struct AtriaHRVCard: View, Equatable {
                         state: hrvState,
                         tint: hrvZone?.tint ?? .pink,
                         footnote: hero.hrvDetail,
-                        zone: hrvZone)
+                        zone: hrvZone,
+                        targetMetric: .hrv)
         AtriaMetricTile(label: "Window",
                         value: hero.rrPackageText,
                         state: isConnected && !live.rrContinuityText.localizedCaseInsensitiveContains("waiting") ? .live : .learning,
@@ -2136,12 +2142,14 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                         state: recoveryState,
                         tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
                         footnote: hero.recoveryEstimate.confidence.rawValue,
-                        zone: recoveryZone)
+                        zone: recoveryZone,
+                        targetMetric: .recovery)
         AtriaMetricTile(label: "Strain",
                         value: String(format: "%.1f", hero.strain),
                         state: .local,
                         tint: strainZone?.tint ?? Metrics.strainColor(hero.strain),
-                        zone: strainZone)
+                        zone: strainZone,
+                        targetMetric: .strain)
         AtriaTrainingLoadTile(ratio: hero.loadRatioText,
                               target: hero.loadTargetText,
                               confidence: hero.loadConfidence,
@@ -2333,7 +2341,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     state: snapshot.latest?.confirmed == true ? .validated : .research,
                                     tint: sleepDurationZone?.tint ?? .cyan,
                                     footnote: latestEvidenceFootnote,
-                                    zone: sleepDurationZone)
+                                    zone: sleepDurationZone,
+                                    targetMetric: .sleep)
                     AtriaMetricTile(label: "Average",
                                     value: snapshot.averageDurationText,
                                     state: .local,
@@ -2354,27 +2363,31 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     unit: snapshot.latest?.restingHR == nil ? nil : "bpm",
                                     state: snapshot.latest?.restingHR == nil ? .learning : .personalBaseline,
                                     tint: restingHeartRateZone?.tint ?? .red,
-                                    zone: restingHeartRateZone)
+                                    zone: restingHeartRateZone,
+                                    targetMetric: .rhr)
                     AtriaMetricTile(label: "Efficiency",
                                     value: snapshot.latest?.sleepEfficiencyText ?? "--",
                                     state: snapshot.latest?.sleepEfficiency == nil ? .learning : .research,
                                     tint: sleepEfficiencyZone?.tint ?? .cyan,
                                     footnote: "Duration-based estimate",
-                                    zone: sleepEfficiencyZone)
+                                    zone: sleepEfficiencyZone,
+                                    targetMetric: .sleepEfficiency)
                     AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") HRV",
                                     value: snapshot.latest?.hrvText ?? "--",
                                     unit: snapshot.latest?.hrv == nil ? nil : "ms",
                                     state: snapshot.latest?.hrv == nil ? .learning : .research,
                                     tint: hrvZone?.tint ?? .purple,
                                     footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate",
-                                    zone: hrvZone)
+                                    zone: hrvZone,
+                                    targetMetric: .hrv)
                     AtriaMetricTile(label: "\(snapshot.latest?.evidenceLabel ?? "Sleep") resp",
                                     value: snapshot.latest?.respiratoryRateText ?? "--",
                                     unit: snapshot.latest?.respiratoryRate == nil ? nil : "/min",
                                     state: snapshot.latest?.respiratoryRate == nil ? .learning : .research,
                                     tint: respiratoryRateZone?.tint ?? .teal,
                                     footnote: snapshot.latest?.evidenceOnlyFootnote ?? "Sleep-only estimate",
-                                    zone: respiratoryRateZone)
+                                    zone: respiratoryRateZone,
+                                    targetMetric: .respiratoryRate)
                 }
 
                 if chartNights.count > 1 {
@@ -2835,19 +2848,22 @@ private struct AtriaProfileCard: View, Equatable {
                                 state: vo2MaxEstimate.value == nil ? .learning : .estimate,
                                 tint: vo2TrendZone?.tint ?? .orange,
                                 footnote: vo2MaxEstimate.confidence,
-                                zone: vo2TrendZone)
+                                zone: vo2TrendZone,
+                                targetMetric: .vo2max)
                 AtriaMetricTile(label: "VO2 trend",
                                 value: vo2MaxEstimate.trendText,
                                 state: vo2MaxEstimate.value == nil || vo2MaxEstimate.trendText == "Learning" ? .learning : .estimate,
                                 tint: vo2TrendZone?.tint ?? .orange,
                                 footnote: vo2MaxEstimate.trendDetail,
-                                zone: vo2TrendZone)
+                                zone: vo2TrendZone,
+                                targetMetric: .vo2max)
                 AtriaMetricTile(label: "Body age",
                                 value: biologicalAgeSummary.valueText,
                                 state: biologicalAgeSummary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? .purple : .orange),
                                 footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Building your body-age baseline",
-                                zone: biologicalAgeZone)
+                                zone: biologicalAgeZone,
+                                targetMetric: .bioAge)
                 AtriaMetricTile(label: "Aging pace",
                                 value: biologicalAgeSummary.agingPaceText,
                                 state: biologicalAgeSummary.isReady ? .estimate : .learning,

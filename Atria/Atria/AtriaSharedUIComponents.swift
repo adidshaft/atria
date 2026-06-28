@@ -321,7 +321,9 @@ struct AtriaMetricTile: View, Equatable {
     var footnote: String? = nil
     var sparklineValues: [Int]? = nil
     var zone: AtriaMetricZone? = nil
+    var targetMetric: AtriaTodayMetric? = nil
     @State private var showingZoneInfo = false
+    @State private var editingTargetMetric: AtriaTodayMetric?
 
     static func == (lhs: AtriaMetricTile, rhs: AtriaMetricTile) -> Bool {
         lhs.label == rhs.label
@@ -332,6 +334,7 @@ struct AtriaMetricTile: View, Equatable {
             && lhs.footnote == rhs.footnote
             && lhs.sparklineValues == rhs.sparklineValues
             && lhs.zone == rhs.zone
+            && lhs.targetMetric == rhs.targetMetric
     }
 
     private var displayValue: String {
@@ -359,6 +362,9 @@ struct AtriaMetricTile: View, Equatable {
             parts.append(zone.level.label)
             parts.append(zone.targetSummary)
             parts.append("Tap info for guidance.")
+        }
+        if targetMetric != nil {
+            parts.append("Long press to edit target.")
         }
         return parts.joined(separator: ", ")
     }
@@ -403,14 +409,33 @@ struct AtriaMetricTile: View, Equatable {
                alignment: .leading)
         .padding(13)
         .atriaInsetCard(tint: tint)
+        .contextMenu {
+            if let targetMetric {
+                Button {
+                    editingTargetMetric = targetMetric
+                } label: {
+                    Label("Edit target", systemImage: "target")
+                }
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+        .accessibilityAction(named: Text("Edit target")) {
+            if let targetMetric {
+                editingTargetMetric = targetMetric
+            }
+        }
         .sheet(isPresented: $showingZoneInfo) {
             if let zone {
                 AtriaMetricZoneInfoSheet(zone: zone)
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+        }
+        .sheet(item: $editingTargetMetric) { metric in
+            AtriaGlanceTargetEditorSheet(metric: metric)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
