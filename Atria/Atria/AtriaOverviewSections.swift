@@ -745,21 +745,29 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         }
     }
 
-    fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize {
+    /// Only chart-style metrics can be wide. A single-value metric (HRV, RHR,
+    /// Recovery, Steps…) in a full-width card just leaves the row half-empty, so we
+    /// clamp those to compact regardless of any saved override — keeps the glance a
+    /// clean, uniform 2-up grid.
+    fileprivate var canBeWideGlanceCard: Bool {
         switch self {
-        case .sleepHistory, .load, .trend, .insights:
-            return .wide
-        default:
-            return .compact
+        case .sleepHistory, .load, .trend, .insights: return true
+        default: return false
         }
     }
 
+    fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize {
+        canBeWideGlanceCard ? .wide : .compact
+    }
+
     fileprivate func glanceGridSize(sizeOverridesCSV: String) -> AtriaGlanceGridSize {
-        AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)[rawValue] ?? defaultGlanceGridSize
+        guard canBeWideGlanceCard else { return .compact }
+        return AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)[rawValue] ?? defaultGlanceGridSize
     }
 
     fileprivate func glanceGridSize(sizeOverrides: [String: AtriaGlanceGridSize]) -> AtriaGlanceGridSize {
-        sizeOverrides[rawValue] ?? defaultGlanceGridSize
+        guard canBeWideGlanceCard else { return .compact }
+        return sizeOverrides[rawValue] ?? defaultGlanceGridSize
     }
 
     func glanceColumnSpan(sizeOverridesCSV: String) -> Int {

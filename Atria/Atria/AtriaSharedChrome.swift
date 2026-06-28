@@ -87,42 +87,24 @@ struct AtriaCardActionButtonStyle: ButtonStyle {
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
     var size: CGFloat = 38
-    @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
+        // Native Liquid Glass: a real translucent glass circle with a clearly
+        // legible icon. No opaque white fill underneath — that turned the glass into
+        // a flat white disc and hid the icon entirely.
         configuration.label
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(foreground)
             .frame(width: size, height: size)
-            .background {
-                Circle()
-                    .fill(fill)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .overlay {
-                        Circle()
-                            .stroke(stroke, lineWidth: 1)
-                    }
-            }
+            .glassEffect(.regular.interactive(), in: .circle)
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.snappy(duration: 0.12), value: configuration.isPressed)
     }
 
     private var foreground: Color {
-        tint == .secondary ? .secondary : tint
-    }
-
-    private var fill: AnyShapeStyle {
-        AnyShapeStyle(
-            LinearGradient(colors: [
-                colorScheme == .dark ? Color.white.opacity(0.075) : Color.white.opacity(0.72),
-                colorScheme == .dark ? tint.opacity(0.18) : tint.opacity(0.10)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-    }
-
-    private var stroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.10)
+        // `.secondary` icons vanish on glass — fall back to a fully legible primary.
+        tint == .secondary ? .primary : tint
     }
 }
 

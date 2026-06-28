@@ -361,12 +361,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "@ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore",
             "Image(systemName: liveStore.state.batterySymbol)",
             "case .notCharging: return \"Strap not charging\"",
-            "case .unplugged: return \"On battery\"",
-            "private var phonePowerAccessibilityText: String",
-            "Text(liveStore.state.batteryHeaderChargeText)",
-            ".frame(width: AtriaHeaderControlMetrics.batteryWidth,\n               height: AtriaHeaderControlMetrics.height)",
+            # Compact header battery: strap glyph + % only. Phone power lives in the
+            # iOS status bar — packing it here overflowed the header off-screen.
+            "Text(liveStore.state.batteryText)",
             "accessibilityLabel(\"Strap battery \\(liveStore.state.batteryText), \\(liveStore.state.batteryAccessibilityChargeText).\")",
-            "accessibilityHint(\"iPhone power: \\(phonePowerAccessibilityText).\")",
             "AtriaToolbarIcon(symbol: \"figure.run\")",
             "AtriaToolbarIcon(symbol: \"questionmark.circle\")",
             "AtriaToolbarIcon(symbol: \"clock.arrow.circlepath\")",
@@ -376,8 +374,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(height: AtriaHeaderControlMetrics.height, alignment: .center)",
             "private enum AtriaHeaderControlMetrics",
             "static let height: CGFloat = 44",
-            "static let batteryWidth: CGFloat = 108",
-            "static let statusMinWidth: CGFloat = 132",
+            "static let statusMinWidth: CGFloat = 96",
             "static let iconSpacing: CGFloat = 4",
             "minHeight: AtriaHeaderControlMetrics.height",
             "maxHeight: AtriaHeaderControlMetrics.height",
@@ -600,7 +597,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "var storageValue: String",
             "static func storageSize(from raw: String) -> AtriaGlanceGridSize?",
             "fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize",
-            "case .sleepHistory, .load, .trend, .insights:\n            return .wide",
+            # Only chart-style metrics may be wide; single-value tiles clamp to
+            # compact so the glance stays a clean, uniform 2-up grid.
+            "fileprivate var canBeWideGlanceCard: Bool",
+            "case .sleepHistory, .load, .trend, .insights: return true",
             "static let sizeStorageKey = \"atria.overview.glanceSizeCSV\"",
             "static func sizeOverrides(from csv: String) -> [String: AtriaGlanceGridSize]",
             "static func sizeStorageValue(updating metric: AtriaTodayMetric,",
