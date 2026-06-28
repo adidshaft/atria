@@ -33,6 +33,40 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (native Liquid Glass + guided onboarding pass)
+
+On-device review (light mode, strap connected) showed the Overview header had
+regressed and the glance grid was inconsistent. Fixes landed and verified on the
+physical device:
+
+- **Header no longer overflows the screen.** The strap-battery indicator is now a
+  compact glyph + % (charging shown by the bolt in the glyph); the phone-power
+  row was removed — phone battery already lives in the iOS status bar and packing
+  it here pushed the action buttons off the right edge. Status-chip `minWidth`
+  trimmed 132→96 and its horizontal padding 18→12 so the Live chip + battery +
+  action cluster all fit. `batteryWidth` and the dead `phonePower*` helpers were
+  deleted.
+- **Header icon buttons are real Liquid Glass again.** `AtriaGlassIconButtonStyle`
+  was rendering an opaque white fill *under* `.glassEffect`, turning each button
+  into a flat white disc with an invisible `.secondary` icon. Now it is a pure
+  `.glassEffect(.regular.interactive(), in: .circle)` with a legible icon
+  (`.secondary` falls back to `.primary`). Help/History/Settings + the glance "+"
+  now read as a proper connected glass cluster.
+- **Glance grid is a clean, uniform 2-up.** Single-value tiles (HRV, RHR,
+  Recovery, Steps…) clamp to compact via `AtriaTodayMetric.canBeWideGlanceCard`;
+  only chart cards (trend/insights/sleep-history/load) may span wide. This kills
+  the giant half-empty "wide HRV" card and the lone-card gaps from mixed spans.
+- **Guided onboarding — the Connect step now connects live.** `ProfileOnboarding
+  View` receives the shared `AtriaBLEManager`; a dedicated `OnboardingConnection
+  StatusView` (`@ObservedObject`, so only it re-renders on HR ticks) shows the
+  real state: Bluetooth off (red) → Searching… (blue spinner) → Connecting…
+  (yellow) → You're connected + live bpm (green) / Adjust the strap (orange). A
+  scan is kicked off when the step appears. The user now *watches it work* before
+  finishing, instead of reading static instructions.
+
+Open / not yet done: deeper card-chrome polish (the dashed "building" rings read
+busy), and the RR-stream-at-rest reliability work (still tracked in docs/22).
+
 ## 2026-06-27 progress
 
 - **Part A started:** Overview glance cards now use a persisted
