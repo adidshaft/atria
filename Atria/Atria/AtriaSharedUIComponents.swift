@@ -544,7 +544,7 @@ struct AtriaSectionDivider: View {
 
     var body: some View {
         Rectangle()
-            .fill(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.24))
+            .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.10))
             .frame(height: 1)
     }
 }
