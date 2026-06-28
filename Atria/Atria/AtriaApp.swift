@@ -146,13 +146,16 @@ struct AtriaApp: App {
         }
 
         ble.flushLifecycleRealtimeState(reason: reason)
+        let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: "\(reason)_opportunistic")
         store.requestPersistenceFlush(reason: reason)
         scheduleBackgroundMaintenance(reason: reason)
 
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
         }
-        AtriaDebugLog("ATRIADBG background_flush status=ok reason=%@", reason)
+        AtriaDebugLog("ATRIADBG background_flush status=ok reason=%@ offline_sync_started=%d",
+                      reason,
+                      syncStarted ? 1 : 0)
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {

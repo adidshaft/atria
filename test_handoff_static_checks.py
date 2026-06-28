@@ -2730,6 +2730,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "ble.flushLifecycleRealtimeState(reason: \"scene_inactive_checkpoint\")",
             "handleBackgroundTask",
             "performSceneBackgroundMaintenance",
+            "let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: \"\\(reason)_opportunistic\")",
+            "offline_sync_started=%d",
         ]:
             assert_contains(self, app, needle)
 
@@ -2747,8 +2749,11 @@ class HandoffStaticChecks(unittest.TestCase):
             re.S,
         )
         self.assertIsNotNone(scene_background)
-        self.assertNotIn("requestOfflineHistoricalSyncIfNeeded", scene_background.group("body"))
-        assert_contains(self, scene_background.group("body"), "ble.flushLifecycleRealtimeState(reason: reason)")
+        scene_background_body = scene_background.group("body")
+        assert_contains(self, scene_background_body, "ble.flushLifecycleRealtimeState(reason: reason)")
+        assert_contains(self, scene_background_body, "ble.requestOfflineHistoricalSyncIfNeeded(reason: \"\\(reason)_opportunistic\")")
+        self.assertNotIn("force: true", scene_background_body)
+        self.assertNotIn("cancelPeripheralConnection", scene_background_body)
         unattended_mode = re.search(
             r"func handleUnattendedMode\(rest: Int, maxHR: Int, reason: String\) \{(?P<body>.*?)\n    \}",
             ble,
@@ -4670,6 +4675,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "requiresNetworkConnectivity = false",
             "UIApplication.shared.beginBackgroundTask",
             "ble.flushActiveSessionJournal(reason: reason)",
+            "ble.requestOfflineHistoricalSyncIfNeeded(reason: \"\\(reason)_opportunistic\")",
+            "offline_sync_started=%d",
             "store.performBackgroundMaintenance(reason: reason)",
         ]:
             assert_contains(self, app, needle)
