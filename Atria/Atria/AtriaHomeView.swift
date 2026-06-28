@@ -2596,10 +2596,12 @@ final class AtriaHomeModel {
         } else {
             index = 3
         }
-        let badge = stats.count >= PersonalBaseline.trustedMinimumSamples ? "personal baseline" : "unverified"
+        let hasTrustedBaseline = stats.count >= PersonalBaseline.trustedMinimumSamples
+        let badge = hasTrustedBaseline ? "personal baseline" : "unverified"
+        let comparisonLabel = hasTrustedBaseline ? "your baseline" : "an early unverified HRV average"
         return StressState(value: "\(index)/3",
                            detail: badge,
-                           narrative: String(format: "Live lnRMSSD is %.1f SD from your baseline.", z))
+                           narrative: String(format: "Live lnRMSSD is %.1f SD from %@.", z, comparisonLabel))
     }
 
     private static func fallbackHeroHRVState(ble: AtriaBLEManager,
