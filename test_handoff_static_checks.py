@@ -1992,7 +1992,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "sleepEnd: sleepEnd",
             "start: rollup.sleepStart",
             "end: rollup.sleepEnd",
-            "sleepSource: aggregateSleep?.kind",
+            "sleepSource: aggregateSleep?.kind ?? (singleSessionSleepDuration > 0 ? \"single_session_sleep_candidate\" : nil)",
             'source: rollup.sleepReady > 0 ? "validated_sleep_window" : (rollup.sleepSource ?? "sleep_candidate")',
             "if let existing = nightsByDay[day], existing.confirmed {",
             "nightsByDay[day] = Self.mergingConfirmedNight(existing, with: rollup)",
