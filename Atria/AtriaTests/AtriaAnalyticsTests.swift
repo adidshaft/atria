@@ -20,6 +20,60 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(SleepStageKind.allCases.map(\.label), ["Awake", "Light", "REM", "SWS", "Deep"])
     }
 
+    func testSleepStageResearchProducesUserVisibleBreakdown() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(4 * 60 * 60)
+        let samples = syntheticSleepSamples(start: start)
+
+        let stages = AtriaSleepWakeResearch.stageSegments(samples: samples,
+                                                          start: start,
+                                                          end: end,
+                                                          restingHR: 60,
+                                                          isNap: false,
+                                                          motionValidated: true)
+        let stageKinds = Set(stages.map(\.stage))
+
+        XCTAssertFalse(stages.isEmpty)
+        XCTAssertTrue(stageKinds.contains(.awake), "expected an awake edge segment")
+        XCTAssertTrue(stageKinds.contains(.light), "expected light sleep to be distinguishable")
+        XCTAssertTrue(stageKinds.contains(.rem), "expected REM to be distinguishable")
+        XCTAssertTrue(stageKinds.contains(.sws) || stageKinds.contains(.deep),
+                      "expected restorative SWS/deep sleep to be distinguishable")
+        XCTAssertLessThanOrEqual(stages.first?.start ?? end, start)
+        XCTAssertGreaterThanOrEqual(stages.last?.end ?? start, end.addingTimeInterval(-30))
+    }
+
+    func testManualSleepInferenceSeparatesNapsFromOvernightSleep() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = DateComponents(calendar: calendar,
+                                 timeZone: calendar.timeZone,
+                                 year: 2026,
+                                 month: 6,
+                                 day: 28,
+                                 hour: 14).date!
+        let night = DateComponents(calendar: calendar,
+                                   timeZone: calendar.timeZone,
+                                   year: 2026,
+                                   month: 6,
+                                   day: 28,
+                                   hour: 23).date!
+
+        XCTAssertTrue(AtriaAnalytics.ManualSleep.inferredIsNap(start: day,
+                                                               end: day.addingTimeInterval(45 * 60),
+                                                               currentSelection: false,
+                                                               calendar: calendar))
+        XCTAssertFalse(AtriaAnalytics.ManualSleep.inferredIsNap(start: night,
+                                                                end: night.addingTimeInterval(7 * 60 * 60),
+                                                                currentSelection: true,
+                                                                calendar: calendar))
+        XCTAssertFalse(AtriaAnalytics.ManualSleep.inferredIsNap(start: day,
+                                                                end: day.addingTimeInterval(10 * 60),
+                                                                currentSelection: false,
+                                                                calendar: calendar),
+                       "too-short manual windows should preserve the user's sleep/nap choice")
+    }
+
     func testBiologicalAgeIsLocalEstimateAndClamped() {
         let factors = [
             AtriaAnalytics.BiologicalAge.factor(id: "vo2",
@@ -470,6 +524,29 @@ final class AtriaAnalyticsTests: XCTestCase {
             PersonalBaseline.BaselineSample(date: now.addingTimeInterval(Double(-index * 86_400)),
                                             restingHR: [58.0, 60.0, 62.0][index % 3],
                                             rmssd: [48.0, 52.0, 56.0][index % 3])
+        }
+    }
+
+    private func syntheticSleepSamples(start: Date) -> [AtriaSleepWakeResearch.HeartSample] {
+        stride(from: 0, through: 4 * 60 * 60, by: 30).map { second in
+            let minute = Double(second) / 60.0
+            let bpm: Int
+            switch minute {
+            case ..<20:
+                bpm = 74
+            case ..<80:
+                bpm = 61 + ((second / 30).isMultiple(of: 8) ? 1 : 0)
+            case ..<150:
+                bpm = (second / 30).isMultiple(of: 2) ? 64 : 72
+            case ..<205:
+                bpm = 66
+            case ..<230:
+                bpm = 69
+            default:
+                bpm = 73
+            }
+            return AtriaSleepWakeResearch.HeartSample(t: start.addingTimeInterval(TimeInterval(second)),
+                                                      bpm: bpm)
         }
     }
 
