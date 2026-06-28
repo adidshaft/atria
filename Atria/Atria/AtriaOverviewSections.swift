@@ -1463,10 +1463,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   zone: hrvZone)
         case .sleep:
             AtriaGlanceMetricCard(title: "Sleep",
-                                  value: metricDisplayValue(snapshot.sleepValue),
-                                  detail: metricIsPending(snapshot.sleepValue) ? "Learning" : "Last sleep",
+                                  value: sleepGlanceValueText,
+                                  detail: sleepGlanceDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: sleepDurationZone?.tint ?? .cyan,
+                                  tint: sleepDurationZone?.tint ?? sleepGlanceTint,
                                   zone: sleepDurationZone)
         case .sleepHistory:
             sleepHistoryCard
@@ -1613,6 +1613,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .accessibilityLabel(sleepHistory.nights.isEmpty
                             ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
                             : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
+    }
+
+    private var sleepGlanceValueText: String {
+        if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue }
+        guard sleepHistory.candidateCount > 0 else { return "--" }
+        return "\(sleepHistory.candidateCount)"
+    }
+
+    private var sleepGlanceDetailText: String {
+        if !metricIsPending(snapshot.sleepValue) { return "Last sleep" }
+        guard sleepHistory.candidateCount > 0 else { return "Learning" }
+        return sleepHistory.candidateCount == 1 ? "Review candidate" : "Review candidates"
+    }
+
+    private var sleepGlanceTint: Color {
+        sleepHistory.candidateCount > 0 ? .cyan : .orange
     }
 
     private var trendCard: some View {
@@ -2846,12 +2862,19 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     }
 
     private var valueText: String {
-        guard !snapshot.nights.isEmpty else { return "--" }
+        guard !snapshot.nights.isEmpty else {
+            return snapshot.candidateCount > 0 ? "\(snapshot.candidateCount)" : "--"
+        }
         return snapshot.averageDurationText
     }
 
     private var detailText: String {
-        guard let latest else { return "Wear strap overnight or nap" }
+        guard let latest else {
+            if snapshot.candidateCount > 0 {
+                return snapshot.candidateCount == 1 ? "Sleep/nap candidate" : "Sleep/nap candidates"
+            }
+            return "Wear strap overnight or nap"
+        }
         return "\(latest.evidenceLabel) · debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours))"
     }
 
@@ -2966,6 +2989,9 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
 
     private var accessibilityText: String {
         guard let latest else {
+            if snapshot.candidateCount > 0 {
+                return "Sleep history has \(snapshot.candidateCount) sleep or nap candidate\(snapshot.candidateCount == 1 ? "" : "s") ready to review."
+            }
             return "Sleep history building. Wear the strap overnight or during a nap."
         }
         guard !latest.displayStageSegments.isEmpty else {
@@ -3279,8 +3305,8 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
     }
 
     private var shouldShowConfirmSleep: Bool {
-        guard let latestNight else { return false }
-        return !latestNight.confirmed && sleepHistory.candidateCount > 0
+        guard sleepHistory.candidateCount > 0 else { return false }
+        return latestNight?.confirmed != true
     }
 
     private var sleepReviewTitle: String {
