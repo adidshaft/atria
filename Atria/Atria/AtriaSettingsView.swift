@@ -686,6 +686,11 @@ struct AtriaSettingsView: View {
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
 
+                Text("Research targets tune sleep-only deviations and candidate-frame evidence. They do not turn these signals into validated SpO2 or absolute body-temperature readings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Divider()
 
                 targetGroupHeader(title: "Body age",
@@ -714,6 +719,11 @@ struct AtriaSettingsView: View {
                     Label("Reset body-age target", systemImage: "figure.stand")
                 }
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
+
+                Text("Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI. These bands only tune younger/older color guidance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 
