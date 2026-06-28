@@ -5686,6 +5686,18 @@ final class SessionStore: ObservableObject {
         confirmBestWorkoutCandidate(rest: rest, maxHR: maxHR, source: source)
     }
 
+    func confirmWorkoutWindowForUI(start: Date,
+                                   end: Date,
+                                   rest: Int,
+                                   maxHR: Int,
+                                   source: String = "ui_window") -> UserConfirmedWorkout? {
+        confirmWorkoutWindow(start: start,
+                             end: end,
+                             rest: rest,
+                             maxHR: maxHR,
+                             source: source)
+    }
+
     func confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-confirm-best-workout-candidate") else { return }
         let rest = baseline.restingInt ?? 60
@@ -5761,6 +5773,138 @@ final class SessionStore: ObservableObject {
                                              streamCoveragePercent: summary.bestStreamCoveragePercent,
                                              observedDuration: summary.bestObservedDuration,
                                              reason: summary.bestReason,
+                                             strain: enriched.strain,
+                                             activeEnergyKilocalories: enriched.activeEnergyKilocalories,
+                                             activeEnergyConfidence: enriched.activeEnergyConfidence,
+                                             zoneSeconds: enriched.zoneSeconds)
+        existing.append(confirmed)
+        saveConfirmedWorkouts(existing)
+        AtriaDebugLog("ATRIADBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ strain=%.2f active_energy_kcal=%.0f active_energy_confidence=%@ zone_rest_s=%.0f zone_warmup_s=%.0f zone_fat_burn_s=%.0f zone_aerobic_s=%.0f zone_anaerobic_s=%.0f zone_max_s=%.0f auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
+              confirmed.id,
+              source,
+              confirmed.source,
+              confirmed.label,
+              isoString(confirmed.start),
+              isoString(confirmed.end),
+              confirmed.duration,
+              confirmed.observedDuration,
+              confirmed.sessions,
+              confirmed.samples,
+              confirmed.avgHR,
+              confirmed.peakHR,
+              confirmed.p95HR,
+              confirmed.p99HR,
+              confirmed.thresholdHR,
+              confirmed.streamCoveragePercent,
+              confirmed.confidence,
+              confirmed.strain ?? 0,
+              confirmed.activeEnergyKilocalories ?? 0,
+              confirmed.activeEnergyConfidence ?? "none",
+              confirmed.zoneSeconds?["rest"] ?? 0,
+              confirmed.zoneSeconds?["warmup"] ?? 0,
+              confirmed.zoneSeconds?["fatBurn"] ?? 0,
+              confirmed.zoneSeconds?["aerobic"] ?? 0,
+              confirmed.zoneSeconds?["anaerobic"] ?? 0,
+              confirmed.zoneSeconds?["max"] ?? 0)
+        return confirmed
+    }
+
+    private func confirmWorkoutWindow(start requestedStart: Date,
+                                      end requestedEnd: Date,
+                                      rest: Int,
+                                      maxHR: Int,
+                                      source: String) -> UserConfirmedWorkout? {
+        guard requestedEnd > requestedStart else {
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
+                  source,
+                  isoString(requestedStart),
+                  isoString(requestedEnd))
+            return nil
+        }
+
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
+            session.end > requestedStart && session.start < requestedEnd && !session.points.isEmpty
+        }
+        var points: [SavedSession.Point] = []
+        for session in overlapping {
+            for point in session.points {
+                let absoluteTime = session.start.addingTimeInterval(max(0, point.t))
+                guard absoluteTime >= requestedStart,
+                      absoluteTime <= requestedEnd,
+                      point.bpm > 0 else { continue }
+                points.append(SavedSession.Point(t: absoluteTime.timeIntervalSince(requestedStart),
+                                                 bpm: point.bpm))
+            }
+        }
+        points.sort { $0.t < $1.t }
+
+        guard points.count >= 2 else {
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_too_few_samples source=%@ start=%@ end=%@ samples=%d metric_promotions=0",
+                  source,
+                  isoString(requestedStart),
+                  isoString(requestedEnd),
+                  points.count)
+            return nil
+        }
+
+        let window = SavedSession(id: UUID(),
+                                  start: requestedStart,
+                                  end: requestedEnd,
+                                  label: "Live workout",
+                                  points: points,
+                                  hrv: nil)
+        let readiness = window.workoutReadiness(rest: rest, maxHR: maxHR)
+        let confirmable = readiness.observedDuration >= 10 * 60
+            && (readiness.ready || readiness.nearMiss || readiness.strengthCandidate || readiness.streamCoveragePercent >= 20)
+        guard confirmable else {
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_candidate_too_weak source=%@ observed_s=%.0f stream_coverage_percent=%d ready=%d near_miss=%d strength_candidate=%d primary_blocker=%@ metric_promotions=0",
+                  source,
+                  readiness.observedDuration,
+                  readiness.streamCoveragePercent,
+                  readiness.ready ? 1 : 0,
+                  readiness.nearMiss ? 1 : 0,
+                  readiness.strengthCandidate ? 1 : 0,
+                  readiness.primaryBlocker)
+            return nil
+        }
+
+        var existing = cachedConfirmedWorkouts
+        let workoutSource = "live_workout_window"
+        let id = confirmedWorkoutID(start: requestedStart, end: requestedEnd, source: workoutSource)
+        if let already = existing.first(where: { $0.id == id }) {
+            AtriaDebugLog("ATRIADBG workout_confirm status=already_confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ metric_promotions=0 auto_gate_e_unchanged=1",
+                  already.id,
+                  source,
+                  already.source,
+                  isoString(already.start),
+                  isoString(already.end),
+                  already.confidence)
+            return already
+        }
+
+        let confidence = readiness.ready ? "live_window_user_confirmed" :
+            (readiness.nearMiss ? "live_window_near_miss" : "live_window_candidate")
+        let enriched = confirmedWorkoutMetrics(start: requestedStart,
+                                               end: requestedEnd,
+                                               rest: rest,
+                                               maxHR: maxHR)
+        let confirmed = UserConfirmedWorkout(id: id,
+                                             createdAt: Date(),
+                                             start: requestedStart,
+                                             end: requestedEnd,
+                                             label: "Live workout",
+                                             source: workoutSource,
+                                             confidence: confidence,
+                                             sessions: overlapping.count,
+                                             samples: points.count,
+                                             avgHR: readiness.avgHR,
+                                             peakHR: readiness.peakHR,
+                                             p95HR: readiness.p95HR,
+                                             p99HR: readiness.p99HR,
+                                             thresholdHR: readiness.thresholdHR,
+                                             streamCoveragePercent: readiness.streamCoveragePercent,
+                                             observedDuration: readiness.observedDuration,
+                                             reason: readiness.ready ? readiness.reason : readiness.primaryBlocker,
                                              strain: enriched.strain,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
                                              activeEnergyConfidence: enriched.activeEnergyConfidence,
@@ -10661,14 +10805,16 @@ struct SleepHistorySnapshot: Equatable {
             return totals
         }
 
-        private static let explicitNapSources: Set<String> = [
+        fileprivate static let explicitNapSources: Set<String> = [
             "manual_nap",
             "nap_candidate",
             "hr_only_nap"
         ]
 
-        private static let explicitSleepSources: Set<String> = [
+        fileprivate static let explicitSleepSources: Set<String> = [
             "manual_sleep",
+            "aggregate_sleep",
+            "sleep_window",
             "validated_sleep_window",
             "overnight_sleep",
             "sleep_candidate",
@@ -10721,6 +10867,10 @@ struct SleepHistorySnapshot: Equatable {
         var nightsByDay: [Date: Night] = [:]
         for sleep in confirmedSleeps {
             let day = calendar.startOfDay(for: sleep.start)
+            let stageSegments = sleep.stageSegments
+                ?? Self.estimatedConfirmedSleepStages(start: sleep.start,
+                                                      end: sleep.end,
+                                                      source: sleep.source)
             nightsByDay[day] = Night(id: sleep.id,
                                      day: day,
                                      start: sleep.start,
@@ -10733,7 +10883,7 @@ struct SleepHistorySnapshot: Equatable {
                                      confidence: sleep.confidence,
                                      source: sleep.source,
                                      confirmed: true,
-                                     stageSegments: sleep.stageSegments ?? [])
+                                     stageSegments: stageSegments)
         }
 
         for rollup in rollups where rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
@@ -10797,6 +10947,31 @@ struct SleepHistorySnapshot: Equatable {
               source: night.source,
               confirmed: night.confirmed,
               stageSegments: night.stageSegments)
+    }
+
+    private static func estimatedConfirmedSleepStages(start: Date,
+                                                      end: Date,
+                                                      source: String) -> [SleepStageSegment] {
+        let duration = end.timeIntervalSince(start)
+        guard duration > 0 else { return [] }
+        let isNap = Night.explicitNapSources.contains(source)
+            || (!Night.explicitSleepSources.contains(source)
+                && duration <= AggregateSleepCandidate.napMaximumSpan)
+        let pattern: [(SleepStageKind, Double)] = isNap
+            ? [(.awake, 0.06), (.light, 0.68), (.rem, 0.08), (.sws, 0.12), (.deep, 0.06)]
+            : [(.awake, 0.08), (.light, 0.47), (.rem, 0.17), (.sws, 0.16), (.deep, 0.12)]
+        var cursor = start
+        return pattern.enumerated().compactMap { index, item in
+            let next = index == pattern.count - 1
+                ? end
+                : min(end, cursor.addingTimeInterval(duration * item.1))
+            defer { cursor = next }
+            guard next > cursor else { return nil }
+            return SleepStageSegment(id: "estimated-\(Int(cursor.timeIntervalSince1970))-\(index)-\(item.0.rawValue)",
+                                     start: cursor,
+                                     end: next,
+                                     stage: item.0)
+        }
     }
 
     var latest: Night? {
