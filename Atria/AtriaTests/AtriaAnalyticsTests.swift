@@ -209,6 +209,73 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(balanced.targetBand)
     }
 
+    func testTargetZonesUseHandoffThresholdsAndStayBaselineGated() {
+        XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(67)?.level, .green)
+        XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(34)?.level, .yellow)
+        XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(33)?.level, .red)
+        XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(33)?.warningSystemImage,
+                       "exclamationmark.triangle.fill")
+        XCTAssertTrue(AtriaAnalytics.TargetZones.recovery(33)?.disclaimer.lowercased().contains("not medical advice") == true)
+
+        XCTAssertNil(AtriaAnalytics.TargetZones.hrv(70,
+                                                    baseline: 80,
+                                                    baselineSamples: PersonalBaseline.trustedMinimumSamples - 1,
+                                                    baselineTrusted: true))
+        XCTAssertNil(AtriaAnalytics.TargetZones.restingHeartRate(66,
+                                                                 baseline: 60,
+                                                                 baselineSamples: PersonalBaseline.trustedMinimumSamples,
+                                                                 baselineTrusted: false))
+
+        let lowHRV = AtriaAnalytics.TargetZones.hrv(64,
+                                                    baseline: 80,
+                                                    baselineSamples: PersonalBaseline.trustedMinimumSamples,
+                                                    baselineTrusted: true)
+        XCTAssertEqual(lowHRV?.level, .red)
+        XCTAssertEqual(lowHRV?.warningSystemImage, "exclamationmark.triangle.fill")
+        XCTAssertTrue(lowHRV?.targetSummary.contains("Personal baseline") == true)
+
+        let elevatedRHR = AtriaAnalytics.TargetZones.restingHeartRate(64,
+                                                                     baseline: 60,
+                                                                     baselineSamples: PersonalBaseline.trustedMinimumSamples,
+                                                                     baselineTrusted: true)
+        XCTAssertEqual(elevatedRHR?.level, .yellow)
+        XCTAssertEqual(elevatedRHR?.warningSystemImage, "exclamationmark.circle")
+    }
+
+    func testBodyAgeAndResearchZonesAreHonestEstimates() {
+        let readySummary = AtriaAnalytics.BiologicalAge.summary(
+            chronologicalAge: 40,
+            factors: [
+                AtriaAnalytics.BiologicalAge.factor(id: "vo2",
+                                                    label: "VO2max",
+                                                    ageEquivalent: 47,
+                                                    chronologicalAge: 40,
+                                                    weight: 1,
+                                                    detail: "below trend")
+            ]
+        )
+        let bodyAgeZone = AtriaAnalytics.TargetZones.biologicalAge(readySummary,
+                                                                   greenOlderDelta: 0,
+                                                                   yellowOlderDelta: 3)
+        XCTAssertEqual(bodyAgeZone?.level, .red)
+        XCTAssertTrue(bodyAgeZone?.disclaimer.lowercased().contains("estimate") == true)
+
+        let building = BiologicalAgeSummary.building(chronologicalAge: 40,
+                                                     blockers: ["14 fresh HRV baseline nights"])
+        XCTAssertNil(AtriaAnalytics.TargetZones.biologicalAge(building))
+
+        XCTAssertNil(AtriaAnalytics.TargetZones.respiratoryRate(18.0,
+                                                               baseline: 16.0,
+                                                               baselineSamples: 2))
+        let respiratory = AtriaAnalytics.TargetZones.respiratoryRate(19.5,
+                                                                    baseline: 16.0,
+                                                                    baselineSamples: 3,
+                                                                    greenDelta: 1.5,
+                                                                    yellowDelta: 3.0)
+        XCTAssertEqual(respiratory?.level, .red)
+        XCTAssertTrue(respiratory?.disclaimer.contains("Research sleep-only estimate") == true)
+    }
+
     func testHistoricalArchiveStatusFailsClosedUntilArchiveIsParseable() {
         let parseFailed = SessionStore.HistoricalArchiveStatus(exists: true,
                                                                parseOK: false,
