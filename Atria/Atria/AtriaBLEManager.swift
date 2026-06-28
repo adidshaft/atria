@@ -1018,6 +1018,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let maxScanRetries = 4
     private var forceFreshScanOnRestore = false
     private var forceFreshScanAfterDisconnect = false
+    private let minimumFinishedLongWearDuration: TimeInterval = 5 * 60
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
@@ -8634,6 +8635,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     @discardableResult
     private func persistFinishedSession(_ saved: SavedSession, reason: String) -> Bool {
+        if longWearModeEnabled,
+           saved.duration < minimumFinishedLongWearDuration,
+           reason != "user_stop",
+           reason != "manual_finish" {
+            persistActiveSessionJournalIfNeeded(reason: "\(reason)_short_fragment_checkpoint", force: true)
+            ActiveSessionJournal.recordClose(status: "retained_short_fragment",
+                                             reason: reason,
+                                             label: saved.label,
+                                             samples: saved.points.count,
+                                             duration: saved.duration)
+            AtriaDebugLog("ATRIADBG session_finish status=skipped reason=long_wear_short_fragment finish_reason=%@ samples=%d rr_samples=%d duration_s=%.0f min_duration_s=%.0f label=%@ action=retain_active_journal",
+                          reason,
+                          saved.points.count,
+                          saved.rrSampleCount,
+                          saved.duration,
+                          minimumFinishedLongWearDuration,
+                          saved.label)
+            return false
+        }
         guard onSessionEnd?(saved) == true else {
             ActiveSessionJournal.recordClose(status: "store_failed",
                                              reason: reason,
