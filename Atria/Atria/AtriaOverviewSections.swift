@@ -1187,7 +1187,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceRemoveControl(for: metric)
-                        .padding(8)
+                        .padding(6)
+                        .zIndex(3)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
@@ -1310,11 +1311,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
         } label: {
-            Image(systemName: "xmark")
-                .font(.callout.weight(.bold))
+            Image(systemName: "xmark.circle.fill")
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, Color.red)
+                .font(.title3.weight(.bold))
         }
-        .atriaGlassIconAction(tint: .red, size: 44)
+        .atriaGlassIconAction(tint: .red, size: 48)
+        .contentShape(Circle())
         .accessibilityLabel("Remove \(metric.label) widget")
+        .accessibilityHint("Removes this card from Today at a glance. Use the plus button to add it back.")
     }
 
     private func glanceResizeControl(for metric: AtriaTodayMetric) -> some View {
