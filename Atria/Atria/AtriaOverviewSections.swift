@@ -2392,9 +2392,14 @@ private struct AtriaGlanceTargetEditorSheet: View {
                 .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
             }
         default:
-            Text("This widget does not have an editable target yet.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Label("No target controls", systemImage: "info.circle")
+                    .font(.subheadline.weight(.semibold))
+                Text("This Today card is an action or trend shortcut, so it uses its source state instead of a personal target zone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -2509,7 +2514,7 @@ private extension AtriaTodayMetric {
         case .sleepEfficiency:
             return "Adjust the sleep-efficiency green/yellow target bands."
         default:
-            return "Target editing is not available for this widget yet."
+            return "Action and trend shortcuts do not use personal target zones."
         }
     }
 }
