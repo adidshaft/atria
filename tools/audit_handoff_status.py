@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import xml.etree.ElementTree as ET
@@ -186,6 +187,66 @@ def launchctl_long_wear_label(label: object) -> str:
     return f"com.adidshaft.atria.longwear.{safe or 'run'}"
 
 
+def parse_launchctl_service(output: str) -> dict[str, object]:
+    state = "missing"
+    pid: int | str = "missing"
+    runs: int | str = "missing"
+    last_exit = "missing"
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if state == "missing":
+            match = re.fullmatch(r"state = (.+)", line)
+            if match:
+                state = match.group(1)
+                continue
+        if pid == "missing":
+            match = re.fullmatch(r"pid = (\d+)", line)
+            if match:
+                pid = int(match.group(1))
+                continue
+        if runs == "missing":
+            match = re.fullmatch(r"runs = (\d+)", line)
+            if match:
+                runs = int(match.group(1))
+                continue
+        if last_exit == "missing":
+            match = re.fullmatch(r"last exit code = (.+)", line)
+            if match:
+                last_exit = match.group(1)
+    status = "running" if state == "running" else "not_running"
+    return {
+        "launchctl_status": status,
+        "launchctl_state": state,
+        "launchctl_pid": pid,
+        "launchctl_runs": runs,
+        "launchctl_last_exit": last_exit,
+    }
+
+
+def inspect_launchctl_service(label: str) -> dict[str, object]:
+    if not label:
+        return {"launchctl_status": "missing_label"}
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError:
+        return {"launchctl_status": "unavailable"}
+    if result.returncode != 0:
+        return {
+            "launchctl_status": "not_found",
+            "launchctl_state": "missing",
+            "launchctl_pid": "missing",
+            "launchctl_runs": "missing",
+            "launchctl_last_exit": "missing",
+        }
+    return parse_launchctl_service(result.stdout)
+
+
 def latest_summary(repo: Path, explicit: Path | None = None) -> Path | None:
     if explicit:
         candidate = explicit if explicit.is_absolute() else repo / explicit
@@ -247,11 +308,12 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         active = {}
     if not isinstance(sessions, dict):
         sessions = {}
+    launchctl_label = launchctl_long_wear_label(metadata.get("label", samples_path.parent.name))
     result = {
         "status": "in_progress",
         "summary": str(samples_path),
         "label": metadata.get("label", samples_path.parent.name),
-        "launchctl_label": launchctl_long_wear_label(metadata.get("label", samples_path.parent.name)),
+        "launchctl_label": launchctl_label,
         "acceptance_status": "running",
         "acceptance_blockers": ["overnight_summary_pending"],
         "audit_blockers": ["overnight_summary_pending"],
@@ -273,6 +335,10 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         "monitor_started_at": metadata.get("monitor_started_at", "pending"),
         "monitor_finished_at": "pending",
     }
+    launchctl = inspect_launchctl_service(launchctl_label)
+    result.update(launchctl)
+    if launchctl.get("launchctl_status") == "not_running":
+        result["audit_blockers"].append("overnight_monitor_not_running")
     result.update(running_long_wear_progress(metadata, samples))
     return result
 
@@ -748,6 +814,10 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Summary: `{physical['summary']}`",
         f"- Label: `{physical.get('label', 'missing')}`",
         f"- Launchctl label: `{physical.get('launchctl_label', 'missing')}`",
+        f"- Launchctl status: `{physical.get('launchctl_status', 'missing')}`",
+        f"- Launchctl state: `{physical.get('launchctl_state', 'missing')}`",
+        f"- Launchctl PID: `{physical.get('launchctl_pid', 'missing')}`",
+        f"- Launchctl last exit: `{physical.get('launchctl_last_exit', 'missing')}`",
         f"- Preset: `{physical.get('preset', 'missing')}`",
         f"- Planned samples: `{physical.get('planned_samples', 'missing')}`",
         f"- Planned duration seconds: `{physical.get('planned_duration_s', 'missing')}`",
