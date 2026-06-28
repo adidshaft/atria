@@ -2222,7 +2222,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "motionSource: \"manual\"",
             "motionValidated: false",
             "stageSegments: nil",
-            "let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),",
+            "let stageSegments = best.motionEvidenceValidated",
+            "? Self.sleepStageResearchSegments(from: canonicalSessions(),",
             "stageSegments: stageSegments.isEmpty ? nil : stageSegments",
             "stage_research_segments=%d",
             "private nonisolated static func sleepStageResearchSegments(from sessions: [SavedSession],",
@@ -6227,8 +6228,17 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, sessions, "let migrated = sorted.map(Self.migratingConfirmedSleepStagesIfNeeded)")
         assert_contains(self, sessions, "UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)")
         assert_contains(self, sessions, "sleep_confirmed_migration")
+        assert_contains(self, sessions, "if Self.shouldPreserveConfirmedSleepStageSegments(sleep)")
+        assert_contains(self, sessions, "return Self.copyConfirmedSleep(sleep, stageSegments: nil)")
+        assert_contains(self, sessions, "private static func shouldPreserveConfirmedSleepStageSegments(_ sleep: UserConfirmedSleep) -> Bool")
+        assert_contains(self, sessions, 'if sleep.source == "manual_sleep" || sleep.source == "manual_nap" { return false }')
+        assert_contains(self, sessions, 'sleep.confidence.localizedCaseInsensitiveContains("hr_only")')
+        assert_contains(self, sessions, 'guard sleep.motionValidated || sleep.source == "validated_sleep_stages" else { return false }')
+        assert_contains(self, sessions, "return covered >= max(60, sleep.duration * 0.85)")
+        assert_contains(self, sessions, "private static func copyConfirmedSleep(_ sleep: UserConfirmedSleep,")
         assert_contains(self, sessions, "UserConfirmedSleep(id: sleep.id,")
-        assert_contains(self, sessions, "stageSegments: migratedStages")
+        assert_contains(self, sessions, "stageSegments: stageSegments")
+        assert_contains(self, sessions, "return Self.copyConfirmedSleep(sleep, stageSegments: migratedStages)")
         assert_contains(self, sessions, "Self.legacyConfirmedSleepStageCompatibility(start: sleep.start,")
         assert_contains(self, sessions, 'source: sleep.source)')
         assert_contains(self, sessions, '"aggregate_sleep"')
