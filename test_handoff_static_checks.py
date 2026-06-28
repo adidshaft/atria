@@ -5427,6 +5427,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "if let targetMetric {",
             "AtriaMetricZoneInfoButton(zone: zone)",
             "AtriaMetricZoneInfoSheet(zone: zone)",
+            "onEditTarget: targetMetric.map",
             "AtriaGlanceTargetEditorSheet(metric: metric)",
             "Label(\"Edit target\", systemImage: \"target\")",
             ".accessibilityAction(named: Text(\"Edit target\"))",
@@ -5443,6 +5444,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityHint(\"Opens target guidance and general wellness recommendations.\")",
         ]:
             assert_contains(self, shared + overview + vitals, needle)
+        assert_contains(self, targets, ".accessibilityHint(\"Opens the target controls for this metric.\")")
         assert_not_contains(self, shared + overview, ".frame(minWidth: 36, minHeight: 28)")
         assert_not_contains(self, overview, ".frame(width: 38, height: 32)")
         for needle in [

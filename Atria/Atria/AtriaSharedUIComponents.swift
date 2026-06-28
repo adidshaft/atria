@@ -415,7 +415,10 @@ struct AtriaMetricTile: View, Equatable {
         .accessibilityLabel(accessibilityText)
         .sheet(isPresented: $showingZoneInfo) {
             if let zone {
-                AtriaMetricZoneInfoSheet(zone: zone)
+                AtriaMetricZoneInfoSheet(zone: zone,
+                                         onEditTarget: targetMetric.map { metric in
+                                             { editingTargetMetric = metric }
+                                         })
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
