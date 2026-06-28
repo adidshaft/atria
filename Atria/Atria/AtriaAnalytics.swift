@@ -1082,10 +1082,20 @@ enum AtriaAnalytics {
     }
 
     enum BiologicalAge {
-        // Reference curves are compact local approximations of commonly published
-        // ACSM/Cooper VO2max percentile tables, resting-HR norms, age-related RMSSD
-        // decline, adult sleep guidance, activity norms, and BMI bands. They are
-        // monotonic and intentionally conservative; no network or medical inference.
+        enum ReferenceSource: String, CaseIterable {
+            case vo2max = "VO2max: ACSM/Cooper VO2max percentile tables, sex-specific decade anchors"
+            case restingHeartRate = "Resting HR: adult resting heart-rate norms, lower-is-younger local anchors"
+            case hrv = "HRV: age-related RMSSD decline literature, morning/sleep RMSSD local anchors"
+            case sleep = "Sleep: adult sleep duration and efficiency guidance, plus consistency penalty"
+            case activity = "Activity: public step and cardio-load norms, monotonic local training-load proxy"
+            case bmi = "BMI: adult BMI category bands used only as a low-weight body-composition proxy"
+        }
+
+        static let referenceSourceFootnotes = ReferenceSource.allCases.map(\.rawValue)
+
+        // These reference curves are compact local approximations, not medical
+        // diagnosis or lifespan prediction. They intentionally avoid network calls
+        // and keep each source family visible for audit through ReferenceSource.
         static func summary(chronologicalAge: Int,
                             factors: [BioAgeFactor],
                             trendDeltaYears: Int? = nil) -> BiologicalAgeSummary {
@@ -1171,10 +1181,8 @@ enum AtriaAnalytics {
                                              higherIsYounger: true)
         }
 
-        // Compact local age-equivalent reference tables adapted from ACSM/Cooper
-        // VO2max norms, resting-HR norms, and age-related RMSSD decline. Values are
-        // approximate decade anchors; interpolation keeps the estimate monotonic
-        // while avoiding a fake precision curve.
+        // VO2max: adapted from ACSM/Cooper decade fitness norms. The app keeps
+        // only sex-specific decade anchors and interpolates locally.
         private static let maleVO2AgeReference: [(age: Int, value: Double)] = [
             (20, 52.0), (30, 48.5), (40, 45.0), (50, 41.5),
             (60, 38.0), (70, 34.5), (80, 31.0), (90, 27.5)
@@ -1185,11 +1193,15 @@ enum AtriaAnalytics {
             (60, 32.0), (70, 29.0), (80, 26.0), (90, 23.0)
         ]
 
+        // Resting HR: adapted from adult resting-heart-rate norms where lower
+        // resting rate is a younger local anchor after baseline quality gates.
         private static let restingHRAgeReference: [(age: Int, value: Double)] = [
             (20, 58), (30, 60), (40, 62), (50, 64),
             (60, 66), (70, 68), (80, 70), (90, 72)
         ]
 
+        // HRV: adapted from age-related RMSSD decline literature, using a
+        // conservative morning/sleep RMSSD curve and no acute-health inference.
         private static let rmssdAgeReference: [(age: Int, value: Double)] = [
             (20, 70), (30, 58), (40, 46), (50, 36),
             (60, 28), (70, 22), (80, 18), (90, 14)
