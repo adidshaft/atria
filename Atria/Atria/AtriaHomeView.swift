@@ -740,6 +740,7 @@ struct AtriaHomeView: View {
                            coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            store: store,
+                           phoneBatteryState: batteryState,
                            showWorkout: model.statusStore.state.status == .connected,
                            showHelp: model.statusStore.state.status != .connected,
                            onStartWorkout: {
@@ -3100,6 +3101,7 @@ private struct AtriaHomeTopChrome: View {
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let store: SessionStore
+    let phoneBatteryState: UIDevice.BatteryState
     let showWorkout: Bool
     let showHelp: Bool
     let onStartWorkout: () -> Void
@@ -3117,7 +3119,8 @@ private struct AtriaHomeTopChrome: View {
             Spacer(minLength: 12)
 
             HStack(spacing: AtriaHeaderControlMetrics.iconSpacing) {
-                AtriaHeaderBatteryIndicator(liveStore: coreLiveStore)
+                AtriaHeaderBatteryIndicator(liveStore: coreLiveStore,
+                                            phoneBatteryState: phoneBatteryState)
 
                 if showWorkout {
                     Button(action: onStartWorkout) {
@@ -3168,6 +3171,7 @@ private enum AtriaHeaderControlMetrics {
 
 private struct AtriaHeaderBatteryIndicator: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    let phoneBatteryState: UIDevice.BatteryState
 
     private var tint: Color {
         switch liveStore.state.batteryChargeStatus {
@@ -3177,23 +3181,70 @@ private struct AtriaHeaderBatteryIndicator: View {
         }
     }
 
+    private var phonePowerText: String {
+        switch phoneBatteryState {
+        case .charging: return "iPhone charging"
+        case .full: return "iPhone full"
+        case .unplugged: return "iPhone on battery"
+        case .unknown: return "iPhone power unknown"
+        @unknown default: return "iPhone power unknown"
+        }
+    }
+
+    private var phonePowerSymbol: String {
+        switch phoneBatteryState {
+        case .charging, .full: return "iphone.gen3.radiowaves.left.and.right"
+        case .unplugged: return "iphone.gen3"
+        case .unknown: return "questionmark.circle"
+        @unknown default: return "questionmark.circle"
+        }
+    }
+
+    private var phonePowerTint: Color {
+        switch phoneBatteryState {
+        case .charging, .full: return .green
+        case .unplugged: return .secondary
+        case .unknown: return .secondary
+        @unknown default: return .secondary
+        }
+    }
+
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Image(systemName: liveStore.state.batterySymbol)
                 .font(.footnote.weight(.semibold))
                 .symbolRenderingMode(.hierarchical)
                 .imageScale(.small)
 
-            Text(liveStore.state.batteryHeaderChargeText)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 3) {
+                    Text(liveStore.state.batteryText)
+                    if liveStore.state.batteryHeaderChargeText != "--" {
+                        Text("·")
+                        Text(liveStore.state.batteryHeaderChargeText)
+                    }
+                }
                 .font(.caption2.weight(.bold))
                 .lineLimit(1)
-                .minimumScaleFactor(0.68)
+                .minimumScaleFactor(0.58)
+
+                HStack(spacing: 3) {
+                    Image(systemName: phonePowerSymbol)
+                        .imageScale(.small)
+                    Text(phonePowerText)
+                }
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(phonePowerTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.54)
+            }
         }
         .foregroundStyle(tint)
         .frame(width: AtriaHeaderControlMetrics.batteryWidth,
                height: AtriaHeaderControlMetrics.height)
         .atriaChromeCapsule(tint: tint)
         .accessibilityLabel("Strap battery \(liveStore.state.batteryText), \(liveStore.state.batteryChargeText).")
+        .accessibilityHint(phonePowerText)
     }
 }
 
