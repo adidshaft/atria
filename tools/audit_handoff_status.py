@@ -44,6 +44,7 @@ DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-pe
 DEFAULT_DEVICE_PULL_ROOT = Path("tmp/diag")
 
 MIN_SCROLL_FPS = 58.0
+ALLOWED_ACCESSIBILITY_TRACE_TEMPLATES = {"Time Profiler", "SwiftUI"}
 MIN_OVERNIGHT_PLANNED_DURATION_S = 10 * 60 * 60
 MIN_OVERNIGHT_PLANNED_SAMPLES = 11
 MIN_OVERNIGHT_ACCEPTED_SAMPLES = 9
@@ -605,7 +606,7 @@ def evaluate_instruments_trace(path: Path) -> dict[str, object]:
         blockers.append("instruments_trace_device")
     if metadata.get("process_name") not in {"Atria", ""}:
         blockers.append("instruments_trace_process")
-    if metadata.get("template_name") not in {"Time Profiler", ""}:
+    if metadata.get("template_name") not in (ALLOWED_ACCESSIBILITY_TRACE_TEMPLATES | {""}):
         blockers.append("instruments_trace_template")
     duration = metadata.get("duration_s")
     if isinstance(duration, (int, float)) and duration <= 0:
