@@ -85,10 +85,18 @@ trace_path="$evidence_root/trace-live-${stamp}.trace"
 log_path="$repo_root/tmp/diag/xctrace-live-${stamp}.log"
 mkdir -p "$screenshot_dir" "$(dirname "$log_path")"
 
+device_details=$(xcrun devicectl device info details --device "$device_id")
+xctrace_device_id=$(
+  awk -F': ' '/UDID:/ { print $2; exit }' <<<"$device_details"
+)
+if [[ -z "$xctrace_device_id" ]]; then
+  xctrace_device_id="$device_id"
+fi
+
 if [[ -z "$pid" ]]; then
   pid=$(
     xcrun devicectl device info processes --device "$device_id" |
-      awk '/Atria[.]app\\/Atria$/ { print $1; exit }'
+      awk 'index($0, "/Atria.app/Atria") && !index($0, "/PlugIns/") { print $1; exit }'
   )
 fi
 if [[ -z "$pid" ]]; then
@@ -121,7 +129,7 @@ trap restore_appearance EXIT
 
 xcrun xctrace record \
   --template 'Time Profiler' \
-  --device "$device_id" \
+  --device "$xctrace_device_id" \
   --attach "$pid" \
   --time-limit "$time_limit" \
   --output "$trace_path" \
