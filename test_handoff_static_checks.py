@@ -2173,9 +2173,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var typeSuggestionText: String",
             "\"Suggested by the window: \\(suggested). Your manual choice is kept.\"",
             "\"Atria suggested \\(suggested) from duration and time of day.\"",
-            "Text(\"Sleep\").tag(false)",
-            "Text(\"Nap\").tag(true)",
-            "Picker(\"Type\", selection: typeBinding)",
+            "manualTypeButton(title: \"Sleep\"",
+            "manualTypeButton(title: \"Nap\"",
+            "private func manualTypeButton(title: String,",
+            "typeBinding.wrappedValue = isNapValue",
+            ".atriaGlassSelectable(selected: isSelected, tint: .cyan)",
+            ".accessibilityValue(isSelected ? \"Selected\" : \"Not selected\")",
             ".onAppear(perform: applyInferredTypeIfNeeded)",
             ".onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }",
             ".onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }",
@@ -2205,7 +2208,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"Sleep needs at least 3 hours.\"",
             ".disabled(!canSave)",
             "ForEach(SleepStageKind.allCases)",
-            "research stages: Awake, Light, REM, SWS, and Deep.",
+            "Stage bars are an editable estimate from the manual window, not sensor-validated sleep staging.",
             "AtriaSleepStageSummary(night: latest)",
             "AtriaMetricTile(label: \"Consistency\"",
             "value: snapshot.sleepConsistencyText",
@@ -2296,6 +2299,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration",
         ]:
             assert_contains(self, sessions + vitals + manual_sheet + sleep_research + analytics + healthkit, needle)
+        assert_not_contains(self, manual_sheet, ".pickerStyle(.segmented)")
+        assert_not_contains(self, manual_sheet, "Picker(\"Type\", selection:")
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
