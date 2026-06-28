@@ -36,6 +36,10 @@ def write_passing_long_wear_summary(path: Path) -> None:
         "battery_delta": -12,
         "latest_recent_session_span_s": 30_000.0,
         "latest_recent_session_coverage_percent": 91.0,
+        "active_duration_nondecreasing": True,
+        "active_hr_nondecreasing": True,
+        "active_rr_nondecreasing": True,
+        "battery_drop_from_first_percent": -12.0,
         "app_commit": current_test_commit(path),
         "monitor_started_at": "2026-06-22T00:00:00Z",
         "monitor_finished_at": "2026-06-22T10:00:00Z",
@@ -279,6 +283,32 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertIn("external_reference_validation", report["blockers"])
         self.assertEqual(report["external_reference_status"], "required")
 
+    def test_final_long_wear_trend_fields_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
+                touch(repo, rel)
+            summary = repo / "logs/live-device/long-wear-monitor/check/summary.json"
+            write_passing_long_wear_summary(summary)
+
+            physical = audit_handoff_status.evaluate_physical_long_wear(repo, summary)
+            markdown = audit_handoff_status.markdown_summary({
+                "status": "not_complete",
+                "local_status": "pass",
+                "physical_long_wear": physical,
+                "latest_device_pull": {"status": "missing", "summary": "missing"},
+                "accessibility_performance": {"status": "missing", "summary": "missing"},
+                "external_reference_status": "skipped",
+                "blockers": ["accessibility_performance_proof"],
+            })
+
+        self.assertTrue(physical["active_duration_nondecreasing"])
+        self.assertTrue(physical["active_hr_nondecreasing"])
+        self.assertTrue(physical["active_rr_nondecreasing"])
+        self.assertEqual(physical["battery_drop_from_first_percent"], -12.0)
+        self.assertIn("- Active HR nondecreasing: `True`", markdown)
+        self.assertIn("- Battery drop from first percent: `-12`", markdown)
+
     def test_short_custom_long_wear_pass_cannot_complete_physical_acceptance(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -513,9 +543,63 @@ class AuditHandoffStatusTests(unittest.TestCase):
         self.assertEqual(physical["latest_active_segments"], 172)
         self.assertEqual(physical["latest_active_battery"], 74)
         self.assertEqual(physical["latest_active_bpm"], 62)
+        self.assertEqual(physical["active_duration_nondecreasing"], "pending")
+        self.assertEqual(physical["active_hr_nondecreasing"], "pending")
+        self.assertEqual(physical["active_rr_nondecreasing"], "pending")
+        self.assertEqual(physical["battery_drop_from_first_percent"], 0.0)
         self.assertEqual(physical["running_remaining_samples"], 10)
         self.assertEqual(physical["running_next_sample_due_at"], "2026-06-28T00:19:29Z")
         self.assertEqual(physical["running_expected_finish_at"], "2026-06-28T09:19:29Z")
+
+    def test_running_overnight_reports_sample_trends_from_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            running = repo / "logs/live-device/long-wear-monitor/overnight-current/samples.jsonl"
+            running.parent.mkdir(parents=True)
+            (running.parent / "run.json").write_text(json.dumps({
+                "label": "overnight-current",
+                "preset": "overnight",
+                "planned_samples": 11,
+                "planned_duration_s": 36_000,
+                "monitor_started_at": "2026-06-27T23:19:29Z",
+            }), encoding="utf-8")
+            running.write_text("\n".join([
+                json.dumps({
+                    "sample": 0,
+                    "captured_at": "20260627T231930Z",
+                    "active_journal": {
+                        "status": "ok",
+                        "thermal": "nominal",
+                        "duration_s": 100.0,
+                        "accepted_hr": 100,
+                        "delta_rr": 90,
+                        "battery": 80,
+                    },
+                    "sessions": {"status": "ok"},
+                }),
+                json.dumps({
+                    "sample": 1,
+                    "captured_at": "20260628T001930Z",
+                    "active_journal": {
+                        "status": "ok",
+                        "thermal": "nominal",
+                        "duration_s": 3700.0,
+                        "accepted_hr": 3600,
+                        "delta_rr": 3300,
+                        "battery": 78,
+                    },
+                    "sessions": {"status": "ok"},
+                }),
+                "",
+            ]), encoding="utf-8")
+
+            physical = audit_handoff_status.evaluate_physical_long_wear(repo)
+
+        self.assertTrue(physical["active_duration_nondecreasing"])
+        self.assertTrue(physical["active_hr_nondecreasing"])
+        self.assertTrue(physical["active_rr_nondecreasing"])
+        self.assertEqual(physical["battery_drop_from_first_percent"], -2.0)
+        self.assertEqual(physical["running_samples"], 2)
 
     def test_running_overnight_flags_overdue_sample(self):
         with tempfile.TemporaryDirectory() as tmp:
