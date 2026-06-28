@@ -1876,7 +1876,7 @@ private struct AtriaGlanceWidgetManagerSheet: View {
 
 private struct AtriaGlanceMetricCard: View, Equatable {
     static let cardHeight: CGFloat = 152
-    private static let headerHeight: CGFloat = 42
+    private static let headerHeight: CGFloat = 44
     private static let valueHeight: CGFloat = 38
     private static let footerHeight: CGFloat = 30
 
@@ -1958,7 +1958,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                     AtriaMetricZoneInfoButton(zone: zone) {
                         showingZoneInfo = true
                     }
-                    .frame(width: 38, height: 32)
+                    .frame(width: 44, height: 44)
                 }
             }
             .frame(height: Self.headerHeight, alignment: .center)

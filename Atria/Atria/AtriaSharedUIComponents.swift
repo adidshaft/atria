@@ -531,7 +531,7 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
                     .accessibilityHidden(true)
             }
             .foregroundStyle(zone.tint)
-            .frame(minWidth: 36, minHeight: 28)
+            .frame(minWidth: 44, minHeight: 44)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
