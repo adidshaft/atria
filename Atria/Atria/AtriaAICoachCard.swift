@@ -62,7 +62,7 @@ struct AtriaAICoachCard: View, Equatable {
             .atriaInsetCard(cornerRadius: 14, tint: .indigo)
         }
         .padding(14)
-        .atriaRaisedCard(emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         .task(id: refreshID) {
             await refreshAnswer()
         }

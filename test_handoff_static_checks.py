@@ -4045,6 +4045,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, card, ".privacySensitive()")
         assert_contains(self, card, ".atriaCardAction(tint: .indigo)")
         assert_contains(self, card, ".atriaCardAction(prominent: false, tint: .gray)")
+        assert_contains(self, card, ".atriaCard(emphasis: .soft)")
+        assert_not_contains(self, card, ".atriaRaisedCard(")
         assert_not_contains(self, card, ".buttonStyle(.glass")
         assert_not_contains(self, card, ".buttonStyle(.glassProminent")
         assert_not_contains(self, card, "sends selected local metrics")
