@@ -490,7 +490,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private(set) var rrSamples = 0
     @Published var hrvSnapshot: HRVSnapshot?
     private(set) var tachogram: [RRSample] = []
-    @Published var hrvQuality = "waiting for stable contact"
+    @Published var hrvQuality = "waiting for beat-to-beat samples"
     @Published var rrContinuityState = "learning"
     private(set) var rrContinuityDetail = "RR continuity waiting"
     private(set) var rrContinuityFraction = 0.0
@@ -5419,7 +5419,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             hrv = 0
             assignIfChanged(\.hrvSnapshot, nil)
             tachogram.removeAll(keepingCapacity: true)
-            assignIfChanged(\.hrvQuality, "waiting for stable contact")
+            assignIfChanged(\.hrvQuality, "waiting for beat-to-beat samples")
             assignIfChanged(\.isRecording, true)
             let startedAtUTC = ISO8601DateFormatter().string(from: captureStart)
             let context = [

@@ -262,6 +262,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_top_left_status_restores_original_chip_and_labels(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+        ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
 
         for needle in [
             "private struct AtriaHomeTopChrome: View",
@@ -341,6 +343,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "liveHeartRate: liveHeartRate(ble: ble))",
         ]:
             assert_contains(self, home, needle)
+        assert_contains(self, hero, "return \"Beat-to-beat settling\"")
+        assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
 
         for forbidden in [
             "ToolbarItem(placement: .topBarLeading)",
@@ -803,8 +807,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "glanceResizeControl(for: metric)",
             "private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View",
             "private func glanceResizeControl(for metric: AtriaTodayMetric) -> some View",
-            ".overlay(alignment: .topLeading)",
             ".overlay(alignment: .topTrailing)",
+            ".overlay(alignment: .bottomTrailing)",
+            "Section(\"Remove widget\")",
             "@State private var targetEditorMetric: AtriaTodayMetric?",
             "if metric.supportsGlanceTargetEditing",
             "case .recovery, .strain, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps",
@@ -4526,6 +4531,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, ble, "collecting beat-to-beat samples")
         assert_contains(self, hrv, "learning: need 240 beat-to-beat samples")
         assert_contains(self, sessions, "Rest candidates are recovery context only; they do not count as sleep.")
+        assert_contains(self, sessions, "capture_steady_hrr50_or_validate_received_hr")
+        assert_contains(self, sessions, "capture_steady_sustained_hrr50_with_stream_coverage")
+        assert_contains(self, sessions, "provide_external_rr_reference_or_capture_steady_rr_window")
+        assert_contains(self, sessions, "capture_steady_5min_rr_window_before_reference")
 
         for text in [content, hero, home, overview, sessions, ble]:
             for forbidden in [
@@ -4550,6 +4559,11 @@ class HandoffStaticChecks(unittest.TestCase):
                 "waiting for clean RR",
                 "collecting clean RR",
                 "clean beats",
+                "waiting for stable contact",
+                "capture_clean_hrr50_or_validate_received_hr",
+                "capture_clean_sustained_hrr50_with_stream_coverage",
+                "provide_external_rr_reference_or_capture_clean_rr_window",
+                "capture_clean_5min_rr_window_before_reference",
                 "loggingText: \"warming up\"",
                 "Validation-ready",
                 "Not validation-ready",

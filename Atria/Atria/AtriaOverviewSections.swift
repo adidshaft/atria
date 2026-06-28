@@ -1069,6 +1069,23 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     }
                 }
 
+                if !visibleMetrics.isEmpty {
+                    Section("Remove widget") {
+                        ForEach(visibleMetrics) { metric in
+                            Button(role: .destructive) {
+                                withAnimation(.snappy(duration: 0.2)) {
+                                    onHideMetric(metric)
+                                    if visibleMetrics.count <= 1 {
+                                        isEditingGlance = false
+                                    }
+                                }
+                            } label: {
+                                Label(metric.label, systemImage: "xmark")
+                            }
+                        }
+                    }
+                }
+
                 if !hiddenMetrics.isEmpty {
                     Section("Add widget") {
                         ForEach(hiddenMetrics) { metric in
@@ -1167,14 +1184,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                    alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .overlay(glanceEditingBorder(for: metric))
-            .overlay(alignment: .topLeading) {
+            .overlay(alignment: .topTrailing) {
                 if isEditingGlance {
                     glanceRemoveControl(for: metric)
                         .padding(8)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .bottomTrailing) {
                 if isEditingGlance {
                     glanceResizeControl(for: metric)
                         .padding(8)

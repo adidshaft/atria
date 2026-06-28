@@ -368,7 +368,7 @@ private struct AtriaHeroMetricRow: View, Equatable {
             }
         case "HRV":
             if normalized.contains("stable contact") {
-                return "stable contact"
+                return "Beat-to-beat settling"
             }
             if normalized.contains("rr window") {
                 return "Beat-to-beat window"
