@@ -930,12 +930,21 @@ if journal is None:
 if journal is not None:
     print("active_journal_final_status=ok")
     try:
+        prefs = {}
+        prefs_path = evidence / "preferences.plist"
+        if prefs_path.exists():
+            try:
+                with prefs_path.open("rb") as handle:
+                    prefs = plistlib.load(handle)
+            except Exception as exc:
+                print(f"active_journal_preferences_error={type(exc).__name__}:{exc}")
         samples = journal.get("samples") or []
         rr = journal.get("rrSamples") or []
         started = app_time(journal.get("startedAt", samples[0].get("t") if samples else 0))
         updated = app_time(journal.get("updatedAt", samples[-1].get("t") if samples else 0))
         bpms = [int(sample.get("bpm", 0)) for sample in samples if sample.get("bpm") is not None]
         now = dt.datetime.now(dt.timezone.utc)
+        link_connected = (pref(prefs, "link.lastStatus", "") == "connected")
         print(f"active_journal_schema={journal.get('schema')}")
         print(f"active_journal_label={journal.get('label', '')}")
         print(f"active_journal_samples={len(samples)}")
@@ -951,8 +960,12 @@ if journal is not None:
             continuity = "stalled"
             continuity_reason = "stale_journal"
         elif len(samples) < 2:
-            continuity = "stalled"
-            continuity_reason = "insufficient_active_samples"
+            if link_connected:
+                continuity = "warming"
+                continuity_reason = "fresh_connected_warming"
+            else:
+                continuity = "stalled"
+                continuity_reason = "insufficient_active_samples"
         elif not rr:
             continuity = "hr_only"
             continuity_reason = "no_active_rr"
