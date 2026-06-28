@@ -804,6 +804,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
 private struct AtriaResearchSignalInfoSheet: View {
     let spo2CandidateFrames: Int
     let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -832,6 +833,14 @@ private struct AtriaResearchSignalInfoSheet: View {
             .padding(20)
             .navigationTitle("Sensor research")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .font(.body.weight(.semibold))
+                }
+            }
         }
     }
 
