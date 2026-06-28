@@ -665,12 +665,13 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, load, workout, backfill, hapticAlerts, hrv, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, strapSteps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recovery: return "Recovery"
         case .strain: return "Strain"
+        case .load: return "Load"
         case .workout: return "Workout"
         case .backfill: return "Backfill"
         case .hapticAlerts: return "Alerts"
@@ -695,6 +696,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         switch self {
         case .recovery: return "gauge.with.dots.needle.67percent"
         case .strain: return "figure.run"
+        case .load: return "chart.bar.xaxis"
         case .workout: return "stopwatch.fill"
         case .backfill: return "arrow.triangle.2.circlepath"
         case .hapticAlerts: return "iphone.radiowaves.left.and.right"
@@ -718,7 +720,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize {
         switch self {
-        case .sleepHistory, .trend, .insights:
+        case .sleepHistory, .load, .trend, .insights:
             return .wide
         default:
             return .compact
@@ -764,7 +766,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .workout, .backfill, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]
+        [.recovery, .strain, .workout, .backfill, .load, .hapticAlerts, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -1408,6 +1410,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   tint: strainZone?.tint ?? .orange,
                                   ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
                                   zone: strainZone)
+        case .load:
+            AtriaGlanceMetricCard(title: "Training load",
+                                  value: hero.loadReadinessText,
+                                  detail: hero.loadConfidence == "learning" ? "Learning" : hero.loadSignalSummaryText,
+                                  systemImage: metric.systemImage,
+                                  tint: loadReadinessTint,
+                                  ringFraction: loadReadinessFraction)
+                .accessibilityLabel("Training load readiness \(hero.loadReadinessText). \(hero.loadSignalSummaryText). \(hero.loadNarrative)")
         case .workout:
             workoutCard(metric)
         case .backfill:
@@ -1659,6 +1669,34 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            target: hero.guidance.target,
                            greenBand: strainGreenBand,
                            yellowBand: strainYellowBand)
+    }
+
+    private var loadReadinessTint: Color {
+        switch hero.loadReadinessText.lowercased() {
+        case "balanced", "primed":
+            return .green
+        case "strained":
+            return .orange
+        case "rundown":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private var loadReadinessFraction: Double? {
+        switch hero.loadReadinessText.lowercased() {
+        case "primed":
+            return 0.88
+        case "balanced":
+            return 0.72
+        case "strained":
+            return 0.46
+        case "rundown":
+            return 0.22
+        default:
+            return nil
+        }
     }
 
     private var hrvZone: AtriaMetricZone? {
