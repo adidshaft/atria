@@ -5463,6 +5463,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "Guidance is general wellness information, not medical advice.",
         ]:
             assert_contains(self, settings, needle)
+        self.assertRegex(
+            settings,
+            r"Reset body-age target[\s\S]*?\.buttonStyle\(AtriaCardActionButtonStyle\(tint: \.purple\)\)[\s\S]*?Divider\(\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
+        )
         assert_not_contains(self, settings, "7-night baseline")
 
     def test_pure_analytics_calibration_examples_are_monotonic_and_gated(self):
