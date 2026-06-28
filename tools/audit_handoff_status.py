@@ -286,7 +286,12 @@ def latest_running_overnight_samples(repo: Path) -> Path | None:
 
 
 def load_jsonl_last(path: Path) -> dict[str, object]:
-    last: dict[str, object] = {}
+    items = load_jsonl_items(path)
+    return items[-1] if items else {}
+
+
+def load_jsonl_items(path: Path) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
@@ -295,8 +300,39 @@ def load_jsonl_last(path: Path) -> dict[str, object]:
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict):
-            last = item
-    return last
+            items.append(item)
+    return items
+
+
+def sample_numeric_series(samples: list[dict[str, object]], section: str, key: str) -> list[float]:
+    values: list[float] = []
+    for sample in samples:
+        section_data = sample.get(section, {})
+        if not isinstance(section_data, dict):
+            continue
+        value = section_data.get(key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def sample_nondecreasing(values: list[float]) -> bool | str:
+    if len(values) < 2:
+        return "pending"
+    return all(current >= previous for previous, current in zip(values, values[1:]))
+
+
+def running_sample_trends(samples: list[dict[str, object]]) -> dict[str, object]:
+    active_duration = sample_numeric_series(samples, "active_journal", "duration_s")
+    active_hr = sample_numeric_series(samples, "active_journal", "accepted_hr")
+    active_rr = sample_numeric_series(samples, "active_journal", "delta_rr")
+    batteries = sample_numeric_series(samples, "active_journal", "battery")
+    return {
+        "active_duration_nondecreasing": sample_nondecreasing(active_duration),
+        "active_hr_nondecreasing": sample_nondecreasing(active_hr),
+        "active_rr_nondecreasing": sample_nondecreasing(active_rr),
+        "battery_drop_from_first_percent": (batteries[-1] - batteries[0]) if batteries else "missing",
+    }
 
 
 def load_running_metadata(samples_path: Path) -> dict[str, object]:
@@ -310,13 +346,10 @@ def load_running_metadata(samples_path: Path) -> dict[str, object]:
 
 
 def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
-    item = load_jsonl_last(samples_path)
+    sample_items = load_jsonl_items(samples_path)
+    item = sample_items[-1] if sample_items else {}
     metadata = load_running_metadata(samples_path)
-    samples = 0
-    try:
-        samples = sum(1 for line in samples_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
-    except OSError:
-        samples = 0
+    samples = len(sample_items)
     active = item.get("active_journal", {})
     sessions = item.get("sessions", {})
     if not isinstance(active, dict):
@@ -344,6 +377,7 @@ def evaluate_running_long_wear(samples_path: Path) -> dict[str, object]:
         "latest_active_segments": active.get("segments", 0),
         "latest_active_battery": active.get("battery", "missing"),
         "latest_active_bpm": active.get("latest_bpm", "missing"),
+        **running_sample_trends(sample_items),
         "preset": metadata.get("preset", "overnight"),
         "planned_samples": metadata.get("planned_samples", MIN_OVERNIGHT_PLANNED_SAMPLES),
         "planned_duration_s": metadata.get("planned_duration_s", MIN_OVERNIGHT_PLANNED_DURATION_S),
@@ -446,6 +480,10 @@ def evaluate_physical_long_wear(repo: Path, summary_path: Path | None = None) ->
         "battery_delta": data.get("battery_delta", "missing"),
         "latest_recent_session_span_s": data.get("latest_recent_session_span_s", 0),
         "latest_recent_session_coverage_percent": data.get("latest_recent_session_coverage_percent", 0),
+        "active_duration_nondecreasing": data.get("active_duration_nondecreasing", "missing"),
+        "active_hr_nondecreasing": data.get("active_hr_nondecreasing", "missing"),
+        "active_rr_nondecreasing": data.get("active_rr_nondecreasing", "missing"),
+        "battery_drop_from_first_percent": data.get("battery_drop_from_first_percent", data.get("battery_delta", "missing")),
         "preset": data.get("preset", criteria.get("preset", "missing")),
         "planned_samples": data.get("planned_samples", "missing"),
         "planned_duration_s": data.get("planned_duration_s", "missing"),
@@ -850,6 +888,10 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Session span seconds: `{format_diagnostic_value(physical.get('latest_recent_session_span_s', 'missing'))}`",
         f"- Session coverage percent: `{format_diagnostic_value(physical.get('latest_recent_session_coverage_percent', 'missing'))}`",
         f"- Thermal states: `{format_diagnostic_value(physical.get('thermal_states', []))}`",
+        f"- Active duration nondecreasing: `{physical.get('active_duration_nondecreasing', 'missing')}`",
+        f"- Active HR nondecreasing: `{physical.get('active_hr_nondecreasing', 'missing')}`",
+        f"- Active RR nondecreasing: `{physical.get('active_rr_nondecreasing', 'missing')}`",
+        f"- Battery drop from first percent: `{format_diagnostic_value(physical.get('battery_drop_from_first_percent', 'missing'))}`",
         f"- App commit: `{physical.get('app_commit', 'missing')}`",
         f"- Monitor started: `{physical.get('monitor_started_at', 'missing')}`",
         f"- Monitor finished: `{physical.get('monitor_finished_at', 'missing')}`",
