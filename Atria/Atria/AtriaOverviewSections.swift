@@ -2196,7 +2196,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 }
 
-private struct AtriaGlanceTargetEditorSheet: View {
+struct AtriaGlanceTargetEditorSheet: View {
     let metric: AtriaTodayMetric
     @Environment(\.dismiss) private var dismiss
     @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
