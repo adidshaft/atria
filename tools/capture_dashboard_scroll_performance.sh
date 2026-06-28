@@ -86,10 +86,18 @@ evidence_root="$repo_root/docs/evidence/accessibility-performance/dashboard-scro
 log_root="$repo_root/tmp/diag/dashboard-scroll-${stamp}"
 mkdir -p "$evidence_root" "$log_root"
 
+device_details=$(xcrun devicectl device info details --device "$device_id")
+xctrace_device_id=$(
+  awk -F': ' '/UDID:/ { print $2; exit }' <<<"$device_details"
+)
+if [[ -z "$xctrace_device_id" ]]; then
+  xctrace_device_id="$device_id"
+fi
+
 if [[ -z "$pid" ]]; then
   pid=$(
     xcrun devicectl device info processes --device "$device_id" |
-      awk '/Atria[.]app\\/Atria$/ { print $1; exit }'
+      awk 'index($0, "/Atria.app/Atria") && !index($0, "/PlugIns/") { print $1; exit }'
   )
 fi
 if [[ -z "$pid" ]]; then
@@ -131,7 +139,7 @@ xcrun xctrace record \
   --instrument 'Core Animation FPS' \
   --instrument 'Hitches' \
   --instrument 'Time Profiler' \
-  --device "$device_id" \
+  --device "$xctrace_device_id" \
   --attach "$pid" \
   --time-limit "${duration_int}s" \
   --output "$evidence_root/dashboard-scroll.trace" \
