@@ -21,26 +21,49 @@ enum AtriaTodaySegment: String, CaseIterable, Identifiable {
 fileprivate struct AtriaGlanceGridSize: Equatable {
     let rows: Int
     let columns: Int
+    var isShortHeight: Bool = false
 
     static let compact = AtriaGlanceGridSize(rows: 1, columns: 1)
     static let wide = AtriaGlanceGridSize(rows: 1, columns: 2)
+    // Full-width but ~half-height: a compact, WHOOP-style scannable row.
+    static let wideShort = AtriaGlanceGridSize(rows: 1, columns: 2, isShortHeight: true)
 
+    // Both `wide` and `wideShort` occupy the full 2-column width, so all the
+    // width / packing / layout-priority logic treats them identically; only the
+    // row HEIGHT and the card's internal layout differ.
     var isWide: Bool { columns == 2 }
+
+    var isWideShort: Bool { columns == 2 && isShortHeight }
 
     var isValidGlanceShape: Bool {
         rows == 1 && (columns == 1 || columns == 2)
     }
 
     var storageValue: String {
-        isWide ? "wide" : "compact"
+        if isWideShort { return "wideShort" }
+        return isWide ? "wide" : "compact"
     }
 
     static func storageSize(from raw: String) -> AtriaGlanceGridSize? {
         switch raw {
         case "compact": return .compact
         case "wide": return .wide
+        case "wideShort": return .wideShort
         default: return nil
         }
+    }
+}
+
+private struct AtriaGlanceCompactRowKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// When true, AtriaGlanceMetricCard renders its compact, full-width horizontal
+    /// row layout instead of the tall 152pt column card.
+    fileprivate var glanceCompactRow: Bool {
+        get { self[AtriaGlanceCompactRowKey.self] }
+        set { self[AtriaGlanceCompactRowKey.self] = newValue }
     }
 }
 
@@ -669,7 +692,15 @@ struct AtriaOverviewReadinessSectionHost: View {
 
     private func toggleMetricSize(_ metric: AtriaTodayMetric) {
         let current = metric.glanceGridSize(sizeOverridesCSV: sizeCSV)
-        let next: AtriaGlanceGridSize = current.isWide ? .compact : .wide
+        // Cycle compact -> wide (tall) -> wideShort (compact row) -> compact.
+        let next: AtriaGlanceGridSize
+        if current.isWideShort {
+            next = .compact
+        } else if current.isWide {
+            next = .wideShort
+        } else {
+            next = .wide
+        }
         sizeCSV = AtriaTodayMetric.sizeStorageValue(updating: metric, to: next, in: sizeCSV)
     }
 
@@ -779,6 +810,20 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
 
     fileprivate func isWideGlanceCard(sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool {
         glanceGridSize(sizeOverrides: sizeOverrides).isWide
+    }
+
+    /// Label/glyph for the size toggle, which cycles compact -> wide -> compact row.
+    fileprivate func nextGlanceSizeActionLabel(sizeOverrides: [String: AtriaGlanceGridSize]) -> String {
+        let size = glanceGridSize(sizeOverrides: sizeOverrides)
+        if size.isWideShort { return "Make compact" }
+        if size.isWide { return "Make compact row" }
+        return "Make wide"
+    }
+
+    fileprivate func nextGlanceSizeSystemImage(sizeOverrides: [String: AtriaGlanceGridSize]) -> String {
+        let size = glanceGridSize(sizeOverrides: sizeOverrides)
+        if size.isWide { return "rectangle.compress.vertical" }
+        return "rectangle.expand.horizontal"
     }
 
     /// Persisted as a comma-separated list of HIDDEN raw values. Empty storage is
@@ -1138,12 +1183,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
                     VStack(spacing: Self.glanceGridSpacing) {
                         ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
+                            let rowHeight = computedRowHeight(for: row, sizeOverrides: glanceSizeOverrides)
                             HStack(spacing: Self.glanceGridSpacing) {
-                                glanceRowContent(row, sizeOverrides: glanceSizeOverrides)
+                                glanceRowContent(row, rowHeight: rowHeight, sizeOverrides: glanceSizeOverrides)
                             }
                             .frame(maxWidth: .infinity,
-                                   minHeight: Self.glanceRowHeight,
-                                   maxHeight: Self.glanceRowHeight,
+                                   minHeight: rowHeight,
+                                   maxHeight: rowHeight,
                                    alignment: .topLeading)
                         }
                     }
@@ -1247,6 +1293,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return rows.filter { rowFitsGlanceGrid($0, sizeOverrides: sizeOverrides) }
     }
 
+    /// A row holding a half-height (wideShort) card renders at ~half the normal
+    /// height; every other row keeps the full card height.
+    private func computedRowHeight(for row: [AtriaTodayMetric],
+                                   sizeOverrides: [String: AtriaGlanceGridSize]) -> CGFloat {
+        let hasShort = row.contains { $0.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort }
+        return hasShort ? AtriaGlanceMetricCard.compactRowHeight : Self.glanceRowHeight
+    }
+
     private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool {
         var span = 0
         for metric in row {
@@ -1256,7 +1310,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     @ViewBuilder
-    private func glanceRowContent(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
+    private func glanceRowContent(_ row: [AtriaTodayMetric],
+                                  rowHeight: CGFloat,
+                                  sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         GeometryReader { proxy in
             HStack(spacing: Self.glanceGridSpacing) {
                 ForEach(row) { metric in
@@ -1264,6 +1320,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                    width: glanceCardWidth(for: metric,
                                                           containerWidth: proxy.size.width,
                                                           sizeOverrides: sizeOverrides),
+                                   rowHeight: rowHeight,
                                    sizeOverrides: sizeOverrides)
                 }
 
@@ -1272,7 +1329,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         .frame(width: glanceCardWidth(for: .recovery,
                                                       containerWidth: proxy.size.width,
                                                       sizeOverrides: sizeOverrides),
-                               height: Self.glanceRowHeight)
+                               height: rowHeight)
                         .accessibilityHidden(true)
                 }
             }
@@ -1281,13 +1338,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceCardCell(_ metric: AtriaTodayMetric,
                                 width: CGFloat,
+                                rowHeight: CGFloat,
                                 sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         let upLabel = Text("Move \(metric.label) up")
         let downLabel = Text("Move \(metric.label) down")
+        let isCompactRow = metric.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort
 
         return glanceCard(metric)
+            .environment(\.glanceCompactRow, isCompactRow)
             .frame(width: width,
-                   height: Self.glanceRowHeight,
+                   height: rowHeight,
                    alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .overlay(glanceEditingBorder(for: metric))
@@ -1340,10 +1400,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         onToggleMetricSize(metric)
                     }
                 } label: {
-                    Label(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? "Make compact" : "Make wide",
-                          systemImage: metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
-                          ? "rectangle.compress.horizontal"
-                          : "rectangle.expand.horizontal")
+                    Label(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides),
+                          systemImage: metric.nextGlanceSizeSystemImage(sizeOverrides: sizeOverrides))
                 }
 
                 Button(role: .destructive) {
@@ -1383,9 +1441,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     targetEditorMetric = metric
                 }
             }
-            .accessibilityAction(named: Text(metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
-                                            ? "Make \(metric.label) compact"
-                                            : "Make \(metric.label) wide")) {
+            .accessibilityAction(named: Text("\(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides)): \(metric.label)")) {
                 onToggleMetricSize(metric)
             }
             .accessibilityAction(named: Text("Remove \(metric.label) widget")) {
@@ -1453,15 +1509,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 onToggleMetricSize(metric)
             }
         } label: {
-            Image(systemName: metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
-                  ? "rectangle.compress.horizontal"
-                  : "rectangle.expand.horizontal")
+            Image(systemName: metric.nextGlanceSizeSystemImage(sizeOverrides: sizeOverrides))
                 .font(.callout.weight(.bold))
         }
         .atriaGlassIconAction(tint: .secondary, size: 36)
-        .accessibilityLabel(metric.isWideGlanceCard(sizeOverrides: sizeOverrides)
-                            ? "Make \(metric.label) compact"
-                            : "Make \(metric.label) wide")
+        .accessibilityLabel("\(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides)): \(metric.label)")
     }
 
     @ViewBuilder
@@ -2100,9 +2152,13 @@ private struct AtriaGlanceWidgetManagerSheet: View {
 
 private struct AtriaGlanceMetricCard: View, Equatable {
     static let cardHeight: CGFloat = 152
+    /// Full-width "2x0.5" compact row height — about half the tall card.
+    static let compactRowHeight: CGFloat = 76
     private static let headerHeight: CGFloat = 44
     private static let valueHeight: CGFloat = 38
     private static let footerHeight: CGFloat = 30
+
+    @Environment(\.glanceCompactRow) private var isCompactRow
 
     let title: String
     let value: String
@@ -2161,6 +2217,25 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     var body: some View {
+        Group {
+            if isCompactRow {
+                compactRowBody
+            } else {
+                tallBody
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+        .sheet(isPresented: $showingZoneInfo) {
+            if let zone {
+                AtriaMetricZoneInfoSheet(zone: zone)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+    }
+
+    private var tallBody: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 10) {
                 AtriaGlanceMetricMarker(systemImage: systemImage,
@@ -2210,15 +2285,52 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         .padding(12)
         .atriaInsetCard(tint: tint)
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
-        .sheet(isPresented: $showingZoneInfo) {
-            if let zone {
-                AtriaMetricZoneInfoSheet(zone: zone)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+    }
+
+    // WHOOP-style compact row: one horizontal scan line — color/identity marker,
+    // quiet name + context, then the hero value flush right. One metric, one job.
+    private var compactRowBody: some View {
+        HStack(alignment: .center, spacing: 12) {
+            AtriaGlanceMetricMarker(systemImage: systemImage,
+                                    tint: tint,
+                                    progressFraction: clampedRingFraction)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .allowsTightening(true)
+
+                Text(detail)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint.opacity(0.82))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .allowsTightening(true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(displayValue)
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .layoutPriority(1)
+
+            if let zone, zone.showsWarning {
+                AtriaMetricZoneInfoButton(zone: zone) {
+                    showingZoneInfo = true
+                }
+                .frame(width: 44, height: 44)
             }
         }
+        .frame(maxWidth: .infinity, minHeight: Self.compactRowHeight, maxHeight: Self.compactRowHeight, alignment: .center)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .atriaInsetCard(tint: tint)
+        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     @ViewBuilder
