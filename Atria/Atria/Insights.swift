@@ -14,16 +14,26 @@ struct PersonalBaseline: Codable {
     private static let maxSamples = 90
     static let trustedMinimumSamples = 14
     static let staleAfter: TimeInterval = 21 * 24 * 60 * 60
+    /// Once this many fresh OVERNIGHT HRV samples exist, the lnRMSSD baseline is
+    /// computed from overnight samples only (WHOOP-like sleep-window HRV). Below it,
+    /// we fall back to all samples so an intermittent overnight stream never starves
+    /// the baseline.
+    static let overnightHRVPreferenceMinimum = 7
 
     struct BaselineSample: Codable {
         let date: Date
         let restingHR: Double
         let rmssd: Double?
+        /// True when this sample came from an overnight/sleep window. Optional so
+        /// pre-existing persisted samples (no field) decode as nil = unknown/daytime.
+        var overnight: Bool?
 
         var lnRMSSD: Double? {
             guard let rmssd, rmssd > 0 else { return nil }
             return log(rmssd)
         }
+
+        var isOvernightSample: Bool { overnight == true }
     }
 
     init(restingHR: Double? = nil, hrvEMA: Double? = nil, sessions: Int = 0,
@@ -48,7 +58,7 @@ struct PersonalBaseline: Codable {
         samples = try c.decodeIfPresent([BaselineSample].self, forKey: .samples) ?? []
     }
 
-    mutating func learn(fromResting resting: Int, hrv: Int, at observedAt: Date = Date()) {
+    mutating func learn(fromResting resting: Int, hrv: Int, at observedAt: Date = Date(), overnight: Bool = false) {
         if resting > 0 {
             restingHR = restingHR.map { $0 * (1 - Self.alpha) + Double(resting) * Self.alpha }
                 ?? Double(resting)
@@ -62,7 +72,8 @@ struct PersonalBaseline: Codable {
         if resting > 0 {
             samples.append(BaselineSample(date: updated ?? observedAt,
                                           restingHR: Double(resting),
-                                          rmssd: hrv > 0 ? Double(hrv) : nil))
+                                          rmssd: hrv > 0 ? Double(hrv) : nil,
+                                          overnight: overnight))
             if samples.count > Self.maxSamples {
                 samples.removeFirst(samples.count - Self.maxSamples)
             }
@@ -89,6 +100,11 @@ struct PersonalBaseline: Codable {
         freshSamples(now: now).compactMap(\.lnRMSSD).count
     }
 
+    /// Fresh HRV samples that came from an overnight/sleep window.
+    func freshOvernightHRVSampleCount(now: Date = Date()) -> Int {
+        freshSamples(now: now).filter { $0.isOvernightSample }.compactMap(\.lnRMSSD).count
+    }
+
     func isStale(now: Date = Date()) -> Bool {
         guard let updated else { return true }
         return now.timeIntervalSince(updated) > Self.staleAfter
@@ -106,8 +122,21 @@ struct PersonalBaseline: Codable {
         stats(freshSamples().map(\.restingHR))
     }
 
+    /// HRV baseline stats, preferring overnight/sleep-window samples (like WHOOP's
+    /// sleep-weighted HRV) once enough exist; otherwise falls back to all fresh
+    /// samples so an intermittent overnight stream never blocks the baseline.
     var lnRMSSDStats: (mean: Double, sd: Double, count: Int)? {
-        stats(freshSamples().compactMap(\.lnRMSSD))
+        lnRMSSDStats(now: Date())
+    }
+
+    /// Testable variant with an explicit `now` for deterministic calibration.
+    func lnRMSSDStats(now: Date) -> (mean: Double, sd: Double, count: Int)? {
+        let fresh = freshSamples(now: now)
+        let overnight = fresh.filter { $0.isOvernightSample }.compactMap(\.lnRMSSD)
+        if overnight.count >= Self.overnightHRVPreferenceMinimum {
+            return stats(overnight)
+        }
+        return stats(fresh.compactMap(\.lnRMSSD))
     }
 
     /// Feedback vs the learned norm: negative = below baseline (more recovered).

@@ -1504,6 +1504,21 @@ enum AtriaAnalytics {
                                                                                         ratio: 1.35),
                                                  expected: "rundown")
 
+        // Sleep-window HRV: once >=7 fresh overnight HRV samples exist, the lnRMSSD
+        // baseline must be computed from overnight samples ONLY (count == overnight count),
+        // not blended with daytime samples.
+        static let hrvBaselinePrefersOvernight = LabelCheck(
+            name: "hrv_baseline_prefers_overnight",
+            actual: "\(overnightPreferredHRVBaseline.lnRMSSDStats(now: calibrationNow)?.count ?? -1)",
+            expected: "7")
+
+        // Safeguard: with too few overnight samples (<7), it must FALL BACK to all
+        // fresh samples so an intermittent overnight stream never starves the baseline.
+        static let hrvBaselineFallsBackBelowThreshold = LabelCheck(
+            name: "hrv_baseline_fallback_when_sparse_overnight",
+            actual: "\(sparseOvernightHRVBaseline.lnRMSSDStats(now: calibrationNow)?.count ?? -1)",
+            expected: "13")
+
         static var numericChecks: [Check] {
             [
                 strainTRIMP,
@@ -1524,7 +1539,9 @@ enum AtriaAnalytics {
                 manualNightSleep,
                 acwrWatch,
                 monotonyBad,
-                readinessRundown
+                readinessRundown,
+                hrvBaselinePrefersOvernight,
+                hrvBaselineFallsBackBelowThreshold
             ]
         }
 
@@ -1556,6 +1573,36 @@ enum AtriaAnalytics {
                                                                  sessions: 14,
                                                                  updated: calibrationNow,
                                                                  samples: staleBaselineSamples)
+
+        // 7 fresh overnight HRV samples + 6 fresh daytime: overnight preference (>=7)
+        // should make lnRMSSDStats use the 7 overnight samples only.
+        private static let overnightPreferredHRVBaseline: PersonalBaseline = {
+            var samples: [PersonalBaseline.BaselineSample] = []
+            for index in 0..<7 {
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 3_600),
+                                                              restingHR: 55, rmssd: 62, overnight: true))
+            }
+            for index in 0..<6 {
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 7) * 3_600),
+                                                              restingHR: 58, rmssd: 30, overnight: false))
+            }
+            return PersonalBaseline(restingHR: 56, hrvEMA: 55, sessions: samples.count, updated: calibrationNow, samples: samples)
+        }()
+
+        // 3 overnight + 10 daytime (13 total): below the 7-overnight threshold, so it
+        // must fall back to all 13 fresh HRV samples (no starvation).
+        private static let sparseOvernightHRVBaseline: PersonalBaseline = {
+            var samples: [PersonalBaseline.BaselineSample] = []
+            for index in 0..<3 {
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 3_600),
+                                                              restingHR: 55, rmssd: 62, overnight: true))
+            }
+            for index in 0..<10 {
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 3) * 3_600),
+                                                              restingHR: 58, rmssd: 40, overnight: false))
+            }
+            return PersonalBaseline(restingHR: 57, hrvEMA: 50, sessions: samples.count, updated: calibrationNow, samples: samples)
+        }()
 
         private static let staleBaselineSamples: [PersonalBaseline.BaselineSample] = {
             let oldDate = calibrationNow.addingTimeInterval(-(PersonalBaseline.staleAfter + 24 * 60 * 60))

@@ -2307,6 +2307,15 @@ extension SavedSession {
         return (restingStable, "session_10th_percentile")
     }
 
+    /// True when this session falls in an overnight / early-morning window — the
+    /// same predicate the sleep detector uses (Sessions.swift overnight check). Used
+    /// to tag HRV baseline samples so recovery can prefer sleep-window HRV like WHOOP.
+    func isOvernightHRVWindow(calendar: Calendar = .current) -> Bool {
+        let startHour = calendar.component(.hour, from: start)
+        let endHour = calendar.component(.hour, from: end)
+        return startHour >= 20 || startHour <= 3 || endHour <= 10
+    }
+
     func baselineLearningEvidence(rest: Int, maxHR: Int, calendar: Calendar = .current) -> BaselineLearningEvidence {
         let restingEvidence = restingHRForBaseline(rest: rest, maxHR: maxHR, calendar: calendar)
         if restingEvidence.source == "hr_only_sleep_candidate_5th_percentile" {
@@ -3902,7 +3911,8 @@ final class SessionStore: ObservableObject {
         }
         baseline.learn(fromResting: evidence.value,
                        hrv: session.localRMSSD ?? 0,
-                       at: session.end)
+                       at: session.end,
+                       overnight: session.isOvernightHRVWindow())
         baseline.save()
         refreshHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
@@ -3933,7 +3943,8 @@ final class SessionStore: ObservableObject {
             if evidence.accepted {
                 rebuilt.learn(fromResting: evidence.value,
                               hrv: session.localRMSSD ?? 0,
-                              at: session.end)
+                              at: session.end,
+                              overnight: session.isOvernightHRVWindow())
                 accepted += 1
             } else {
                 skipped += 1
@@ -10619,7 +10630,8 @@ final class SessionStore: ObservableObject {
             guard evidence.accepted else { continue }
             rebuilt.learn(fromResting: evidence.value,
                           hrv: session.localRMSSD ?? 0,
-                          at: session.end)
+                          at: session.end,
+                          overnight: session.isOvernightHRVWindow())
         }
         return rebuilt
     }
