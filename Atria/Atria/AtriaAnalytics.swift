@@ -316,21 +316,17 @@ enum AtriaAnalytics {
         static func steps(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
             guard let steps, steps > 0 else { return nil }
             let safeGoal = max(goal, 1_000)
-            let level: AtriaMetricZoneLevel = steps >= safeGoal ? .green : (steps >= safeGoal / 2 ? .yellow : .red)
-            let recommendation: String
-            switch level {
-            case .green:
-                recommendation = "Steps are at or above your daily goal."
-            case .yellow:
-                recommendation = "Below your step goal -- a short walk closes the gap."
-            case .red:
-                recommendation = "Well below your step goal. Add easy movement when it fits your day."
-            }
-            return AtriaMetricZone(level: level,
+            // A daily step goal is a progress target, not a physiological alarm.
+            // Being below goal partway through the day is normal for everyone, so
+            // we never raise a yellow/red warning triangle here (that read as "something
+            // is wrong" on a calm mid-day card). Only surface a quiet "goal met" state;
+            // the value itself communicates progress, like Apple/WHOOP rings.
+            guard steps >= safeGoal else { return nil }
+            return AtriaMetricZone(level: .green,
                                    title: "Steps target",
                                    current: "\(steps) steps vs \(safeGoal) goal.",
-                                   targetSummary: "User goal · Green >= \(safeGoal), yellow \(safeGoal / 2)-\(safeGoal - 1), red below \(safeGoal / 2).",
-                                   recommendation: recommendation,
+                                   targetSummary: "User goal · Green >= \(safeGoal) steps.",
+                                   recommendation: "Steps are at or above your daily goal.",
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
 
@@ -338,21 +334,14 @@ enum AtriaAnalytics {
             guard let calories, calories > 0 else { return nil }
             let roundedCalories = Int(calories.rounded())
             let safeGoal = min(max(goal, 100), 3_000)
-            let level: AtriaMetricZoneLevel = roundedCalories >= safeGoal ? .green : (roundedCalories >= safeGoal / 2 ? .yellow : .red)
-            let recommendation: String
-            switch level {
-            case .green:
-                recommendation = "Estimated active calories are at or above your daily goal."
-            case .yellow:
-                recommendation = "Below your active-calorie goal -- a short walk or easy session can close the gap."
-            case .red:
-                recommendation = "Well below your active-calorie goal. Add easy movement only if it fits your recovery."
-            }
-            return AtriaMetricZone(level: level,
+            // Same as steps: a daily active-calorie goal is progress, not an alarm.
+            // No yellow/red warning for being mid-day below goal — only a calm "met".
+            guard roundedCalories >= safeGoal else { return nil }
+            return AtriaMetricZone(level: .green,
                                    title: "Calories target",
                                    current: "\(roundedCalories) kcal vs \(safeGoal) kcal goal.",
-                                   targetSummary: "User goal · Green >= \(safeGoal) kcal, yellow \(safeGoal / 2)-\(safeGoal - 1) kcal, red below \(safeGoal / 2) kcal.",
-                                   recommendation: recommendation,
+                                   targetSummary: "User goal · Green >= \(safeGoal) kcal.",
+                                   recommendation: "Estimated active calories are at or above your daily goal.",
                                    disclaimer: "Estimated from heart rate/profile. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
 
