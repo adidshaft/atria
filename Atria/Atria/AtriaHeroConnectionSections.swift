@@ -305,6 +305,8 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
                 Text(heartRateText)
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.3), value: heartRateText)
                 Text("bpm")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)

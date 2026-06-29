@@ -2370,6 +2370,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                 Text(displayValue)
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.3), value: displayValue)
                     .lineLimit(1)
                     .minimumScaleFactor(0.58)
 
@@ -2413,6 +2415,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             Text(displayValue)
                 .font(.system(size: 26, weight: .bold, design: .rounded))
                 .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(.snappy(duration: 0.3), value: displayValue)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .layoutPriority(1)
