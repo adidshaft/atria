@@ -33,6 +33,28 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (Today-at-a-glance 2×0.5 compact row)
+
+Added a third glance widget size — a **full-width, half-height "2×0.5" compact
+row** — alongside compact (1×1) and wide (1×2), informed by WHOOP's user-centric
+metric display (a design workflow distilled the principles + adversarially
+verified the SwiftUI/grid integration before implementing).
+
+- **WHOOP-style anatomy:** one horizontal scan line — color/identity ring marker
+  → quiet name + context → hero value flush right (one metric, one job; color is
+  the data; lead with the answer). Reuses `AtriaGlanceMetricMarker` + `.atriaInsetCard`.
+- **Implementation (AtriaOverviewSections.swift):** new `AtriaGlanceGridSize.wideShort`
+  (columns:2, `isShortHeight`) with storage encode/decode; `isWide` stays true so all
+  width/packing/layout-priority logic is unchanged; only the row HEIGHT (new
+  `computedRowHeight(for:)`, threaded through `glanceRowContent`/`glanceCardCell`) and
+  the card's internal layout differ. The card branches on `@Environment(\.glanceCompactRow)`
+  between the tall 152pt column body and a new 76pt `compactRowBody`. `toggleMetricSize`
+  now cycles compact → wide → wideShort → compact, with size-accurate menu/resize labels.
+- **Verified:** sim screenshots in light AND dark via a throwaway `--atria-glance-row-demo`
+  scaffold (the connected glance grid needs a strap; scaffold now removed). High-contrast
+  hero values, color rings legible against the inset cards in both themes, clean ~half
+  height. Build + 84 static checks green (guards updated for the new tokens).
+
 ## 2026-06-29 progress (multi-select capsule glass-tint pass)
 
 Sim-verified (iPhone 15 Pro Max, 26.2), light **and** dark, via a throwaway DEBUG
