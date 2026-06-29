@@ -49,10 +49,11 @@ struct AtriaNotificationSettings: Codable, Equatable {
     var strainTarget = true
     var strapBattery = true
     var bluetoothOff = true
+    var fitCheck = true
 
     var enabledCount: Int {
         guard allowNotifications else { return 0 }
-        return [recoveryReady, strainTarget, strapBattery, bluetoothOff].filter { $0 }.count
+        return [recoveryReady, strainTarget, strapBattery, bluetoothOff, fitCheck].filter { $0 }.count
     }
 
     /// Whether a scheduler decision of the given `kind` is permitted by the user.
@@ -65,6 +66,7 @@ struct AtriaNotificationSettings: Codable, Equatable {
         case "strain": return strainTarget
         case "battery": return strapBattery
         case "bluetooth_off": return bluetoothOff
+        case "fit_check": return fitCheck
         default: return true
         }
     }
@@ -287,6 +289,7 @@ struct AtriaNotificationSettingsCard: View {
                     notificationToggle("Strain", keyPath: \.strainTarget)
                     notificationToggle("Battery", keyPath: \.strapBattery)
                     notificationToggle("Bluetooth", keyPath: \.bluetoothOff)
+                    notificationToggle("Fit check", keyPath: \.fitCheck)
                 }
                 .transition(.opacity)
             }

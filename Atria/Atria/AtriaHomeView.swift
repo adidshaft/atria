@@ -917,6 +917,15 @@ struct AtriaHomeView: View {
                   reason,
                   next.title,
                   elapsed)
+            // Persistence-gated diagnoses (e.g. "Fit check needed") only notify once
+            // they have stayed visible past the candidate delay — avoids alerting on
+            // momentary poor-contact blips.
+            if next.sendsLocalNotification {
+                LocalNotificationScheduler.scheduleActionableConnectionDiagnosis(title: next.title,
+                                                                                 body: next.action,
+                                                                                 reason: reason,
+                                                                                 now: now)
+            }
         }
         visibleConnectionDiagnosis = next
     }
@@ -3353,6 +3362,9 @@ private struct AtriaConnectionDiagnosis: Equatable {
     var sendsLocalNotification: Bool {
         title == "Bluetooth is off"
             || title == "Strap battery low"
+            // Fit check is deliberately NOT in showsImmediately, so it only notifies
+            // after persisting through the candidate delay — no blip-triggered alerts.
+            || title == "Fit check needed"
     }
 
     static func derive(live: AtriaHomeModel.CoreLiveState,

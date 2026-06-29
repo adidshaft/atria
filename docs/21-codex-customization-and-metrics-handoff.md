@@ -33,6 +33,31 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (fit-check notification — contact coaching)
+
+Device measurement showed at-rest RR contact oscillates ready<->poor_contact on
+8-10s gaps (docs/22), and the app already derives a "Fit check needed" connection
+diagnosis — but it never produced a notification. Wired it as a user-choosable,
+debounced local notification:
+
+- **`AtriaNotificationSettings.fitCheck`** (5th category) + `allows(kind: "fit_check")`
+  + a "Fit check" toggle in the notifications card.
+- **`AtriaConnectionDiagnosis.sendsLocalNotification`** now includes "Fit check needed",
+  but it is deliberately NOT in `showsImmediately` — so it only notifies after the
+  candidate persists past `connectionDiagnosisPersistenceDelay` (no blip alerts).
+- **`updateConnectionDiagnosisVisibility`** now schedules the notification when a
+  notifying diagnosis becomes visible *after* the delay (previously only the immediate
+  battery/bluetooth path scheduled).
+- **`LocalNotificationScheduler`**: new `fitCheck` identifier (active+removable+cancel
+  sets, delivery-logger kind), a "Fit check needed" case in
+  `actionableConnectionDiagnosisDecision` (kind `fit_check`, 6h cooldown), gated by the
+  user choice via the existing `allows(kind:)` check.
+
+Sim-verified the 5-category card light/dark (throwaway `--atria-notif-demo`, removed).
+Build + 84 static checks green (guards updated). On-device fit-check delivery needs a
+worn strap with sustained poor contact — not yet field-verified; logic + gating are
+deterministic.
+
 ## 2026-06-29 progress (top-chrome "weird buttons" — clean glass circles)
 
 Owner flagged the top-right header controls as "weird buttons." Cause: the trailing
