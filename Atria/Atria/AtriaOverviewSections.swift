@@ -1957,7 +1957,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepDurationZone: AtriaMetricZone? {
-        Metrics.sleepDurationZone(sleepHistory.latest?.durationHours, goalHours: sleepGoalHours)
+        // A nap is not a deficient night — don't grade a short daytime nap against
+        // the nightly sleep goal (that turned "24m last nap" into a red alarm).
+        guard sleepHistory.latest?.isNapEvidence != true else { return nil }
+        return Metrics.sleepDurationZone(sleepHistory.latest?.durationHours, goalHours: sleepGoalHours)
     }
 
     private var stepsZone: AtriaMetricZone? {
