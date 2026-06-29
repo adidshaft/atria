@@ -30,11 +30,30 @@ Date: 2026-06-27. Benchmarks Atria's data reading, calculations, UI data-feeding
 ## Open research questions (to resolve)
 
 - RR stream: validate the realtime-arming sequence (timing, withResponse vs withoutResponse, characteristic order) so RR flows steadily; confirm whether RR arrives via 0x2A37 RR-flag or 0x28 and under what contact/mode.
-- HRV input: confirm Atria's HRV is computed from the sleep window (last SWS / morning) like WHOOP, not arbitrary daytime RR.
-- Ectopic rejection: confirm RR is range-filtered (300-2000 ms) and ectopic-cleaned (+/-20% of local median) before RMSSD.
-- Baseline gating: confirm personal baselines require >=14 valid nights before driving Recovery / target zones / readiness, with population fallback until then.
+- **HRV input — CONFIRMED GAP (see 2026-06-29 audit below):** Atria's HRV baseline is NOT restricted to a sleep/morning window; any session ≥5 min with `localRMSSD` is accepted (Sessions.swift:2318), unlike resting HR which checks `.sleepCandidate` (Sessions.swift:2303). Fix is gated on the RR-stream question and needs a worn strap to verify.
+- Ectopic rejection — **CONFIRMED WIRED.** RR is range-filtered (300–2000 ms) and ectopic-cleaned (±20% of local median of ±2 neighbours), plus an HR-mismatch drop, before RMSSD/SDNN/pNN50 (HRV.swift:43,103,121-122,130,136); only `kept` (not raw) feeds the metrics. `kept/raw` confidence is computed (HRV.swift:136) and surfaced in the Vitals/Collection section (AtriaVitalsCollectionSections.swift:1963); on the Overview glance card it is mapped to "Personal baseline" rather than a raw "% kept" (AtriaOverviewSections.swift:1733-1738) — acceptable, minor.
+- Baseline gating — **CONFIRMED WIRED.** HRV/RHR/recovery/body-age estimates are gated on `baselineSamples >= PersonalBaseline.trustedMinimumSamples` (=14, Insights.swift:15) at AtriaAnalytics.swift:159,209,945,1020; until then they return honest `.learning` states with `N/14` detail (no fabricated numbers). UI surfaces "Building baseline" badges; the explicit `N/14` count shows on the disconnected overview + accessibility text but NOT on the connected dashboard metric cards (minor honesty/informativeness nit — candidate to surface the count there too).
 - Historical backfill: validate the historical RR layout against an external RR/IBI reference to unlock offline-time metrics.
 - Sleep staging + SpO2: manage expectations to the ~60-80% industry ceiling; do not over-claim.
+
+## 2026-06-29 — analytics gate audit (verifying workflow, adversarially checked)
+
+Traced five accuracy gates compute → store → UI, each finding re-checked by an independent skeptic agent that opened the cited `file:line` and tried to refute the "surfaced" claim.
+
+| Gate | Computed | Gated correctly | Surfaced (verified) |
+|---|---|---|---|
+| lnRMSSD z-score vs personal baseline | ✅ | ✅ (`hrvTrusted`, ln mean/SD, sd>0.1) | ✅ info sheet `Text(zone.targetSummary)` (AtriaMetricTargets.swift:344) |
+| Ectopic RR cleaning (300–2000 ms, ±20%) | ✅ | ✅ | ⚠️ partial — confidence in Vitals footnote only; Overview maps to "Personal baseline" |
+| Morning/sleep HRV window | ❌ **not applied** | ❌ | ❌ |
+| ≥14-night baseline gating | ✅ | ✅ | ⚠️ partial — "Building baseline" shown; `N/14` only off the connected cards |
+| ACWR + monotony | ✅ | ✅ (acute≥3, chronic≥14) | ✅ `hero.loadSignalSummaryText` (AtriaOverviewSections.swift:2178) |
+
+**Headline (high-value, confirmed by skeptic):** HRV samples are not restricted to a sleep/early-morning window before entering the personal baseline / recovery.
+- Evidence: `baselineLearningEvidence` accepts HRV on `localRMSSD != nil && duration >= 5*60` with no time-of-day/sleep gate (Sessions.swift:2318-2326), despite the misleading `"local_hrv_window"` label. Consumed via `baseline.learn(fromResting:hrv:at:)` at Sessions.swift:3903-3905 and 3934-3936. Contrast: resting HR uses the `.sleepCandidate` detection (Sessions.swift:2303-2306). The overnight window (`startHour >= 20 || startHour <= 3 || endHour <= 10`) already exists at Sessions.swift:2223/7611 but is never applied to HRV intake.
+- Consequence: daytime RMSSD can pollute the HRV baseline, diverging from the WHOOP-like sleep-derived HRV the headline metric implies.
+- **Why not fixed in this pass:** the fix changes baseline composition and recovery scores and cannot be visually confirmed on the BLE-less simulator. It also depends on the unresolved RR-stream question — a hard overnight-only gate could *starve* the HRV baseline (never reach 14 nights) if RR does not stream reliably during sleep. Must be device-verified with a worn strap.
+- **Proposed phased fix (RR-aware, do on device):** (1) tag each accepted HRV sample with its window origin (overnight via the existing 2223 predicate vs daytime) instead of dropping; (2) once device logs confirm RR flows overnight, prefer overnight samples for the baseline and fall back to daytime only while overnight coverage is thin; (3) add a deterministic `LabelCheck` (AtriaAnalytics.swift calibration harness ~line 1480+) asserting a daytime-only RMSSD session is rejected/deprioritised once overnight coverage exists, so the gate is regression-tested without a strap.
+- Minor follow-ups: dead `hrvNarrative` computed at AtriaHomeView.swift:2652-2654/2880-2882 but never rendered (either surface or delete); surface `N/14` on connected metric cards; consider a subtle "% kept" confidence affordance on the Overview HRV card.
 
 ## Sources
 
