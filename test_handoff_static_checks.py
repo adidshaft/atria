@@ -541,14 +541,15 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "@AppStorage(\"atriaAppearanceMode\") private var appearanceMode = \"system\"",
-            "appearanceButton(\"System\", mode: \"system\", icon: \"circle.lefthalf.filled\")",
-            "appearanceButton(\"Light\", mode: \"light\", icon: \"sun.max.fill\")",
-            "appearanceButton(\"Dark\", mode: \"dark\", icon: \"moon.fill\")",
+            # Appearance switcher is now a standard native iOS 26 segmented Picker.
+            "Picker(\"Appearance\", selection: $appearanceMode)",
+            ".pickerStyle(.segmented)",
+            "Text(\"System\").tag(\"system\")",
+            "Text(\"Light\").tag(\"light\")",
+            "Text(\"Dark\").tag(\"dark\")",
             "HStack(spacing: 8)",
             ".atriaInsetCard(tint: .purple)",
-            ".buttonStyle(AtriaSegmentButtonStyle(selected: isAppearanceModeSelected(mode), tint: .purple))",
             ".atriaCardAction(prominent: false, tint: .secondary)",
-            "private func isAppearanceModeSelected(_ mode: String) -> Bool",
         ]:
             assert_contains(self, settings, needle)
 

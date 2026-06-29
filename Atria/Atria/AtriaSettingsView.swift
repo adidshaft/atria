@@ -290,11 +290,14 @@ struct AtriaSettingsView: View {
     private var appearanceSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    appearanceButton("System", mode: "system", icon: "circle.lefthalf.filled")
-                    appearanceButton("Light", mode: "light", icon: "sun.max.fill")
-                    appearanceButton("Dark", mode: "dark", icon: "moon.fill")
+                // Standard native iOS 26 segmented control (text-only keeps every
+                // segment legible; the icon lives in the status row below).
+                Picker("Appearance", selection: $appearanceMode) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
                 }
+                .pickerStyle(.segmented)
 
                 HStack(spacing: 8) {
                     Image(systemName: appearanceMode == "dark" ? "moon.stars.fill" : (appearanceMode == "light" ? "sun.max.fill" : "circle.lefthalf.filled"))
@@ -315,25 +318,6 @@ struct AtriaSettingsView: View {
         } footer: {
             Text("Native theme controls.")
         }
-    }
-
-    private func appearanceButton(_ title: String, mode: String, icon: String) -> some View {
-        Button {
-            appearanceMode = mode
-        } label: {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-        }
-        .buttonStyle(AtriaSegmentButtonStyle(selected: isAppearanceModeSelected(mode), tint: .purple))
-        .accessibilityAddTraits(isAppearanceModeSelected(mode) ? .isSelected : [])
-    }
-
-    private func isAppearanceModeSelected(_ mode: String) -> Bool {
-        appearanceMode == mode
     }
 
     // MARK: Profile
