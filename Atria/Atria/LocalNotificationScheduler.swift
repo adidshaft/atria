@@ -12,6 +12,7 @@ enum LocalNotificationScheduler {
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
         static let bluetoothOff = "atria.bluetooth.off"
+        static let fitCheck = "atria.fitcheck.needed"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
@@ -19,7 +20,7 @@ enum LocalNotificationScheduler {
         static let legacyBluetoothOff = "atria.bluetooth.off"
         static let legacyDiagnostic = "atria.diagnostic.delivery"
 
-        static let active = [recovery, strain, battery, bluetoothOff]
+        static let active = [recovery, strain, battery, bluetoothOff, fitCheck]
         static let diagnosticOnly = [diagnostic]
         static let legacy = [legacyRecovery, legacyStrain, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
         static let removable = active + diagnosticOnly + legacy
@@ -114,7 +115,7 @@ enum LocalNotificationScheduler {
                                                                reason: reason) {
             identifiers = [decision.identifier]
         } else {
-            identifiers = [Identifier.battery, Identifier.bluetoothOff]
+            identifiers = [Identifier.battery, Identifier.bluetoothOff, Identifier.fitCheck]
         }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
@@ -387,6 +388,14 @@ enum LocalNotificationScheduler {
                                         reason: "visible_diagnosis_\(reason)",
                                         shouldSchedule: true,
                                         delay: 11)
+        case "Fit check needed":
+            return NotificationDecision(kind: "fit_check",
+                                        identifier: Identifier.fitCheck,
+                                        title: title,
+                                        body: body,
+                                        reason: "visible_diagnosis_\(reason)",
+                                        shouldSchedule: true,
+                                        delay: 9)
         default:
             return nil
         }
@@ -512,6 +521,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
         static let strain = "atria.strain.target"
         static let battery = "atria.battery.low"
         static let bluetoothOff = "atria.bluetooth.off"
+        static let fitCheck = "atria.fitcheck.needed"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
@@ -544,6 +554,7 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
         case Identifier.strain, Identifier.legacyStrain: return "strain"
         case Identifier.battery, Identifier.legacyBattery: return "battery"
         case Identifier.bluetoothOff, Identifier.legacyBluetoothOff: return "bluetooth_off"
+        case Identifier.fitCheck: return "fit_check"
         case Identifier.diagnostic, Identifier.legacyDiagnostic: return "diagnostic"
         default: return "unknown"
         }
