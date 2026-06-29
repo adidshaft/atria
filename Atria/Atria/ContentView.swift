@@ -80,10 +80,11 @@ struct AtriaDashboardBackdrop: View {
                 Color(red: 0.016, green: 0.020, blue: 0.030)
             ]
         }
+        // Gray-blue field so opaque white cards visibly float above it.
         return [
-            Color(red: 0.96, green: 0.97, blue: 0.99),
-            Color(red: 0.89, green: 0.93, blue: 0.98),
-            Color(red: 0.97, green: 0.96, blue: 0.94)
+            Color(red: 0.898, green: 0.918, blue: 0.957),
+            Color(red: 0.844, green: 0.884, blue: 0.945),
+            Color(red: 0.906, green: 0.914, blue: 0.902)
         ]
     }
 

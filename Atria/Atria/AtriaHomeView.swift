@@ -726,6 +726,11 @@ struct AtriaHomeView: View {
                 .padding(.bottom, shouldShowLiveAccessory ? 168 : 40)
                 .frame(maxWidth: .infinity)
             }
+            .scrollContentBackground(.hidden)
+            .background {
+                AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
+            }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .navigationTitle(title)
             .toolbar(.hidden, for: .navigationBar)

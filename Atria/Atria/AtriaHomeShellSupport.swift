@@ -61,15 +61,17 @@ struct AtriaBackdropLayer: View, Equatable {
                 Color(red: 0.016, green: 0.021, blue: 0.030)
             ]
         }
+        // Gray-blue field so opaque white cards visibly float above it.
         return [
-            Color(red: 0.95, green: 0.96, blue: 0.99),
-            Color(red: 0.90, green: 0.93, blue: 0.98),
-            Color(red: 0.96, green: 0.95, blue: 0.93)
+            Color(red: 0.852, green: 0.882, blue: 0.936),
+            Color(red: 0.792, green: 0.838, blue: 0.918),
+            Color(red: 0.866, green: 0.878, blue: 0.862)
         ]
     }
 
     private var accentOne: Color {
-        isDark ? Color.cyan.opacity(0.05) : Color.white.opacity(0.36)
+        // A faint cool glow, not bright white — white washed the field flat.
+        isDark ? Color.cyan.opacity(0.05) : Color.white.opacity(0.16)
     }
 
     private var accentTwo: Color {
