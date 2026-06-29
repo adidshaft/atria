@@ -33,6 +33,28 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (choice of notifications — user control)
+
+The local-notification engine (recovery / strain / strap battery / bluetooth-off,
+all on-device, no cloud) had **no user opt-out** — it fired every category. Added a
+"choice of notifications" preferences layer:
+
+- **`AtriaNotificationSettings`** (Codable, UserDefaults `atria.notificationSettings.v1`)
+  with a master `allowNotifications` + per-category toggles, and `allows(kind:)`
+  mapping the scheduler's decision kinds; `diagnostic` (debug probe) is never gated.
+- **Wired into `LocalNotificationScheduler`**: both the launch scheduling loop and
+  `scheduleActionableConnectionDiagnosis` now skip any kind the user disabled
+  (`notification_skip reason=user_disabled`). Reads settings from UserDefaults at
+  schedule time — no app-model threading.
+- **`AtriaNotificationSettingsCard`** in Settings → Alerts, self-contained (saves
+  straight to UserDefaults). Master toggle collapses/reveals the category grid.
+  Sim-verified light + dark via a throwaway `--atria-notif-demo` scaffold (removed).
+- Existing infra left intact and complementary: `AtriaHapticAlertSettings` (in-app
+  haptics) and the sleep/workout human-in-the-loop confirmation
+  (`confirmSleepCandidate`, `confirmWorkoutWindowForUI`, `autoConfirmStrongSleepCandidates`).
+
+Build + 84 static checks green (guards updated).
+
 ## 2026-06-29 progress (glance warning-zone honesty — "think user")
 
 Captured the **real connected device** (`devicectl device capture screenshot`, hardware

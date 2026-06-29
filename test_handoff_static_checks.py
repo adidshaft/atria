@@ -1672,7 +1672,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaHapticAlertSettingsCard(settings: haptics) { next in",
             "haptics = next",
-            "Text(\"Phone-side alerts only.\")",
+            "AtriaNotificationSettingsCard()",
+            "Text(\"Phone-side alerts and on-device notifications only. Nothing leaves your phone.\")",
         ]:
             assert_contains(self, settings, needle)
         for forbidden in [

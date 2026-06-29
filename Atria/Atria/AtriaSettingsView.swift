@@ -789,10 +789,11 @@ struct AtriaSettingsView: View {
             AtriaHapticAlertSettingsCard(settings: haptics) { next in
                 haptics = next
             }
+            AtriaNotificationSettingsCard()
         } header: {
             Text("Alerts")
         } footer: {
-            Text("Phone-side alerts only.")
+            Text("Phone-side alerts and on-device notifications only. Nothing leaves your phone.")
         }
     }
 

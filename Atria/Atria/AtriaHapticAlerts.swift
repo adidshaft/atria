@@ -40,6 +40,51 @@ struct AtriaHapticAlertSettings: Codable, Equatable {
     }
 }
 
+/// User choice for which LOCAL notifications Atria may post. All notifications are
+/// on-device only (UNUserNotificationCenter); there is no cloud/push. Read by
+/// LocalNotificationScheduler at schedule time so the user is always in control.
+struct AtriaNotificationSettings: Codable, Equatable {
+    var allowNotifications = true
+    var recoveryReady = true
+    var strainTarget = true
+    var strapBattery = true
+    var bluetoothOff = true
+
+    var enabledCount: Int {
+        guard allowNotifications else { return 0 }
+        return [recoveryReady, strainTarget, strapBattery, bluetoothOff].filter { $0 }.count
+    }
+
+    /// Whether a scheduler decision of the given `kind` is permitted by the user.
+    /// `diagnostic` is a developer-only delivery probe and is never user-gated.
+    func allows(kind: String) -> Bool {
+        if kind == "diagnostic" { return true }
+        guard allowNotifications else { return false }
+        switch kind {
+        case "recovery": return recoveryReady
+        case "strain": return strainTarget
+        case "battery": return strapBattery
+        case "bluetooth_off": return bluetoothOff
+        default: return true
+        }
+    }
+
+    private static let key = "atria.notificationSettings.v1"
+
+    static func load() -> AtriaNotificationSettings {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(AtriaNotificationSettings.self, from: data) else {
+            return AtriaNotificationSettings()
+        }
+        return decoded
+    }
+
+    func save() {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        UserDefaults.standard.set(data, forKey: Self.key)
+    }
+}
+
 @MainActor
 final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private static let heartRateZoneHapticCooldown: TimeInterval = 30
@@ -207,5 +252,65 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: 14, tint: .purple)
+    }
+}
+
+/// Self-contained "choice of notifications" card: persists straight to UserDefaults
+/// (the scheduler reads the same store at schedule time), so it needs no app-model wiring.
+struct AtriaNotificationSettingsCard: View {
+    @State private var settings = AtriaNotificationSettings.load()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "bell.badge.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 38, height: 38)
+                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notifications")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Choose which on-device notifications Atria may send. Nothing leaves your phone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            notificationToggle("Allow notifications", keyPath: \.allowNotifications, prominent: true)
+
+            if settings.allowNotifications {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    notificationToggle("Recovery", keyPath: \.recoveryReady)
+                    notificationToggle("Strain", keyPath: \.strainTarget)
+                    notificationToggle("Battery", keyPath: \.strapBattery)
+                    notificationToggle("Bluetooth", keyPath: \.bluetoothOff)
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: .blue)
+        .animation(.snappy(duration: 0.2), value: settings.allowNotifications)
+    }
+
+    private func notificationToggle(_ title: String,
+                                    keyPath: WritableKeyPath<AtriaNotificationSettings, Bool>,
+                                    prominent: Bool = false) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { settings[keyPath: keyPath] },
+            set: { enabled in
+                settings[keyPath: keyPath] = enabled
+                settings.save()
+            }
+        ))
+        .font((prominent ? Font.subheadline : Font.caption).weight(.semibold))
+        .toggleStyle(.switch)
+        .tint(.blue)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .atriaInsetCard(cornerRadius: 14, tint: .blue)
     }
 }
