@@ -1518,24 +1518,17 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
+            // Standard native iOS 26 segmented control.
+            Picker("Saving mode", selection: Binding(
+                get: { selected },
+                set: { onSelect($0) }
+            )) {
                 ForEach(AtriaBLEManager.CollectionProfile.allCases) { profile in
-                    Button {
-                        onSelect(profile)
-                    } label: {
-                        Text(profile.label)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .atriaGlassSelectable(selected: selected == profile)
-                    .accessibilityLabel("Saving mode \(profile.label)")
+                    Text(profile.label).tag(profile)
                 }
             }
-            .padding(6)
-            .atriaInsetCard(tint: .purple)
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Saving mode")
         }
         .padding(14)
         .atriaInsetCard(tint: .purple)
@@ -2912,27 +2905,17 @@ private struct AtriaProfileCard: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Profile", subtitle: "HRmax and age used for scoring")
 
-            HStack(spacing: 8) {
+            // Standard native iOS 26 segmented control.
+            Picker("Max heart-rate source", selection: Binding(
+                get: { profile.maxHRSource },
+                set: { newValue in onUpdateProfile { $0.maxHRSource = newValue } }
+            )) {
                 ForEach(AthleteProfile.HRMaxSource.allCases) { source in
-                    Button {
-                        if reduceMotion {
-                            onUpdateProfile { $0.maxHRSource = source }
-                        } else {
-                            withAnimation(.snappy(duration: 0.22)) {
-                                onUpdateProfile { $0.maxHRSource = source }
-                            }
-                        }
-                    } label: {
-                        Text(source.label)
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
-                    }
-                    .atriaGlassSelectable(selected: profile.maxHRSource == source)
+                    Text(source.label).tag(source)
                 }
             }
-            .padding(8)
-            .atriaInsetCard(tint: .purple)
+            .pickerStyle(.segmented)
+            .animation(.snappy(duration: 0.22), value: profile.maxHRSource)
 
             VStack(spacing: 12) {
                 profileStepperTiles
