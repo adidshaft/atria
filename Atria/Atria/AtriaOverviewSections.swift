@@ -2891,11 +2891,13 @@ private struct AtriaGlanceMetricMarker: View, Equatable {
     @ViewBuilder
     private var markerRing: some View {
         if progressFraction == nil {
+            // Building / indeterminate: a calm clean ring (no busy dashes). A short
+            // tinted cap hints "in progress" without spinning or dashing.
             Circle()
-                .stroke(Color.secondary.opacity(0.34),
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth,
-                                           lineCap: .round,
-                                           dash: [2.4, 6.2]))
+                .trim(from: 0, to: 0.16)
+                .stroke(tint.opacity(0.85),
+                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
         } else {
             Circle()
                 .trim(from: 0, to: ringEnd)
