@@ -489,6 +489,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private(set) var hrv: Int = 0                      // RMSSD in ms
     private(set) var rrSamples = 0
     @Published var hrvSnapshot: HRVSnapshot?
+
+    /// The live HRV snapshot **only** when it represents a morning/overnight reading
+    /// (4–11am, the same window as morning HRV capture). Recovery freezes to the
+    /// morning reading like WHOOP: a daytime HRV snapshot must not drift today's
+    /// recovery score, so outside the morning window this is nil and recovery falls
+    /// back to the saved overnight value. (Safe by construction — recovery always
+    /// reflects an overnight/morning reading, never daytime HRV.)
+    var recoveryHRVSnapshot: HRVSnapshot? {
+        let hour = Calendar.current.component(.hour, from: Date())
+        return ((4...11).contains(hour) || morningHRVForce) ? hrvSnapshot : nil
+    }
+
     private(set) var tachogram: [RRSample] = []
     @Published var hrvQuality = "waiting for beat-to-beat samples"
     @Published var rrContinuityState = "learning"
