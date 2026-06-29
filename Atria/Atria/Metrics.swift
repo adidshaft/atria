@@ -143,11 +143,9 @@ enum Metrics {
     }
 
     static func strainColor(_ s: Double) -> Color {
-        switch s {
-        case ..<8: return .blue
-        case 8..<14: return .teal
-        case 14..<18: return .orange
-        default: return .red
-        }
+        // Effort is one cool electric blue at every intensity — never warm or red, so
+        // a hard session can't be misread as poor recovery (recovery owns the
+        // green/amber/red axis). Magnitude is conveyed by the ring fill, not the hue.
+        electricStrain
     }
 }

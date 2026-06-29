@@ -1627,7 +1627,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(hero.strainValue),
                                   detail: "Day load",
                                   systemImage: metric.systemImage,
-                                  tint: strainZone?.tint ?? .orange,
+                                  tint: strainZone?.tint ?? Metrics.electricStrain,
                                   ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
                                   zone: strainZone)
         case .load:
