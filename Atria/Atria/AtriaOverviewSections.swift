@@ -1688,7 +1688,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: metricDisplayValue(hero.restingHeartRateText),
                                   detail: "Baseline",
                                   systemImage: metric.systemImage,
-                                  tint: restingHeartRateZone?.tint ?? .red,
+                                  tint: restingHeartRateZone?.tint ?? .pink,
                                   zone: restingHeartRateZone)
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",

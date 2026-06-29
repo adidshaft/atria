@@ -72,6 +72,11 @@ private struct AtriaCardBackground: View {
             .fill(baseFill)
             .overlay(tintWash)
             .overlay(strokeShape)
+            // Light-mode cards are opaque white on a near-white canvas — without a
+            // soft drop shadow they read as washed-out. A subtle elevation lifts them
+            // off the background. Dark mode separates by value, so no shadow there.
+            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+                    radius: 10, x: 0, y: 4)
     }
 
     private var baseFill: some ShapeStyle {
@@ -114,6 +119,11 @@ private struct AtriaRaisedCardBackground: View {
             .fill(baseFill)
             .overlay(tintWash)
             .overlay(strokeShape)
+            // Light-mode cards are opaque white on a near-white canvas — without a
+            // soft drop shadow they read as washed-out. A subtle elevation lifts them
+            // off the background. Dark mode separates by value, so no shadow there.
+            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+                    radius: 10, x: 0, y: 4)
     }
 
     private var baseFill: some ShapeStyle {
