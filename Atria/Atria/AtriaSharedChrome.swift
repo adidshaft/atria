@@ -5,34 +5,35 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     var tint: Color = .blue
     @Environment(\.colorScheme) private var colorScheme
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(selected ? Color.primary.opacity(colorScheme == .dark ? 0.98 : 0.96) : Color.secondary.opacity(colorScheme == .dark ? 0.88 : 0.92))
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(selectedFill)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(colorScheme == .dark ? Color.white.opacity(0.12) : Color.white.opacity(0.48), lineWidth: 1)
-                        }
-                }
-            }
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-    }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 18, style: .continuous) }
 
-    private var selectedFill: AnyShapeStyle {
-        if colorScheme == .dark {
-            return AnyShapeStyle(
-                Color(red: 0.112, green: 0.126, blue: 0.158).opacity(0.98)
-            )
+    func makeBody(configuration: Configuration) -> some View {
+        Group {
+            if selected {
+                // Selected: a real tinted Liquid Glass capsule, not an opaque fill.
+                configuration.label
+                    .foregroundStyle(Color.primary.opacity(colorScheme == .dark ? 0.98 : 0.96))
+                    .glassEffect(.regular.tint(tint.opacity(colorScheme == .dark ? 0.42 : 0.26)).interactive(),
+                                 in: shape)
+                    .overlay {
+                        shape.stroke(tint.opacity(colorScheme == .dark ? 0.55 : 0.45), lineWidth: 1)
+                    }
+            } else {
+                // Unselected: a calm, clearly-tappable chip — distinct from selected.
+                configuration.label
+                    .foregroundStyle(Color.secondary.opacity(colorScheme == .dark ? 0.88 : 0.92))
+                    .background(
+                        (colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.035)),
+                        in: shape
+                    )
+                    .overlay {
+                        shape.stroke(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.10),
+                                     lineWidth: 1)
+                    }
+            }
         }
-        return AnyShapeStyle(
-            LinearGradient(colors: [
-                Color.white.opacity(0.70),
-                tint.opacity(0.10)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
+        .scaleEffect(configuration.isPressed ? 0.97 : 1)
+        .animation(.snappy(duration: 0.14), value: selected)
     }
 }
 

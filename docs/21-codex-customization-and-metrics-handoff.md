@@ -33,6 +33,21 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (multi-select capsule glass-tint pass)
+
+Sim-verified (iPhone 15 Pro Max, 26.2), light **and** dark, via a throwaway DEBUG
+demo grid (`--atria-capsule-demo`, now removed) since the real journal tag grid
+only renders when a strap is connected.
+
+- **`AtriaSegmentButtonStyle` (AtriaSharedChrome.swift):** dropped the opaque
+  `selectedFill`. Selected is now a real tinted Liquid Glass capsule —
+  `.glassEffect(.regular.tint(tint.opacity(dark 0.42 / light 0.26)).interactive(), in:)`
+  with a matching `tint`-stroke. Unselected is a calm faint chip (white/black ~3-5%
+  fill + hairline stroke). Verified clear selected-vs-unselected contrast in both
+  appearances; capsules stay multi-select (not Pickers) per the mandate.
+- These are compact tag toggles, not fast-scrolling rows, so the per-capsule glass
+  pass is within the Liquid-Glass perf guidance.
+
 ## 2026-06-29 progress (light-mode contrast pass)
 
 Sim-verified (iPhone 15 Pro Max, 26.2), light **and** dark, overview + vitals +
