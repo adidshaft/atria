@@ -74,19 +74,14 @@ struct AtriaOverviewTabContent: View {
     }
 
     private var segmentPicker: some View {
-        HStack(spacing: 6) {
+        // Standard native iOS 26 segmented control (system Liquid Glass).
+        Picker("View", selection: $segment) {
             ForEach(AtriaTodaySegment.allCases) { item in
-                Button {
-                    withAnimation(.snappy(duration: 0.22)) { segment = item }
-                } label: {
-                    Text(item.label)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                .atriaGlassSelectable(selected: segment == item)
+                Text(item.label).tag(item)
             }
         }
+        .pickerStyle(.segmented)
+        .animation(.snappy(duration: 0.22), value: segment)
     }
 
     var body: some View {
@@ -1134,7 +1129,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                             Text("Done")
                                 .font(.caption.weight(.bold))
                         }
-                        .buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))
+                        .atriaCardAction(prominent: false, tint: .secondary)
                     }
                     .padding(.horizontal, 2)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -2029,7 +2024,7 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                             .font(.footnote.weight(.bold))
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(AtriaCardActionButtonStyle(tint: .secondary))
+                    .atriaCardAction(tint: .secondary)
                     .accessibilityHint("Shows the remove, resize, and target controls directly on Today widgets.")
                 }
                 .padding(16)
@@ -2092,7 +2087,7 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                     .labelStyle(.titleAndIcon)
                     .frame(minWidth: 96)
             }
-            .buttonStyle(AtriaCardActionButtonStyle(tint: tint))
+            .atriaCardAction(tint: tint)
         }
         .padding(12)
         .atriaInsetCard(tint: tint)
@@ -2412,7 +2407,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset recovery target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+                .atriaCardAction(tint: .green)
             }
         case .strain:
             VStack(alignment: .leading, spacing: 12) {
@@ -2434,7 +2429,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset strain band", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                .atriaCardAction(tint: .orange)
             }
         case .load:
             VStack(alignment: .leading, spacing: 12) {
@@ -2484,7 +2479,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset training-load target", systemImage: "chart.bar.xaxis")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                .atriaCardAction(tint: .orange)
                 Text("ACWR compares 7-day strain with 28-day strain; monotony flags repetitive load. This tunes guidance colors only.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -2503,7 +2498,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset sleep goal", systemImage: "bed.double.fill")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+                .atriaCardAction(tint: .cyan)
             }
         case .hrv:
             VStack(alignment: .leading, spacing: 12) {
@@ -2525,7 +2520,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset HRV target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
+                .atriaCardAction(tint: .pink)
             }
         case .rhr:
             VStack(alignment: .leading, spacing: 12) {
@@ -2547,7 +2542,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset RHR target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .red))
+                .atriaCardAction(tint: .red)
             }
         case .respiratoryRate:
             VStack(alignment: .leading, spacing: 12) {
@@ -2569,7 +2564,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset resp-rate target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
+                .atriaCardAction(tint: .teal)
             }
         case .bloodOxygen:
             VStack(alignment: .leading, spacing: 12) {
@@ -2584,7 +2579,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset oxygen research target", systemImage: "drop.degreesign")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
+                .atriaCardAction(tint: .blue)
                 Text("This tunes candidate-frame evidence only. Atria still does not show an SpO2 percentage until the protocol is validated.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -2610,7 +2605,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset temp target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
+                .atriaCardAction(tint: .teal)
             }
         case .bioAge:
             VStack(alignment: .leading, spacing: 12) {
@@ -2632,7 +2627,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset body-age target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
+                .atriaCardAction(tint: .purple)
             }
         case .vo2max:
             VStack(alignment: .leading, spacing: 12) {
@@ -2654,7 +2649,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset VO2 trend target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
+                .atriaCardAction(tint: .blue)
             }
         case .steps, .strapSteps:
             VStack(alignment: .leading, spacing: 12) {
@@ -2669,7 +2664,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset steps goal", systemImage: "figure.walk")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+                .atriaCardAction(tint: .green)
             }
         case .calories:
             VStack(alignment: .leading, spacing: 12) {
@@ -2684,7 +2679,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset calories goal", systemImage: "flame.fill")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                .atriaCardAction(tint: .orange)
             }
         case .sleepEfficiency:
             VStack(alignment: .leading, spacing: 12) {
@@ -2706,7 +2701,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 } label: {
                     Label("Reset efficiency target", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+                .atriaCardAction(tint: .cyan)
             }
         default:
             VStack(alignment: .leading, spacing: 8) {

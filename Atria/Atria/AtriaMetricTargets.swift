@@ -387,7 +387,7 @@ struct AtriaMetricZoneInfoSheet: View {
                         Label("Edit target", systemImage: "target")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(AtriaCardActionButtonStyle(prominent: true, tint: zone.tint))
+                    .atriaCardAction(prominent: true, tint: zone.tint)
                     .accessibilityHint("Opens the target controls for this metric.")
                 }
 

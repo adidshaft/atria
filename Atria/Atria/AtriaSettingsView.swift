@@ -396,7 +396,7 @@ struct AtriaSettingsView: View {
                     Label("Reset all targets", systemImage: "arrow.counterclockwise.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+                .atriaCardAction(tint: .green)
 
                 Divider()
 
@@ -425,7 +425,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset to recommended", systemImage: "arrow.counterclockwise")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+                .atriaCardAction(tint: .green)
 
                 Divider()
 
@@ -454,7 +454,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset strain band", systemImage: "figure.run")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                .atriaCardAction(tint: .orange)
 
                 Divider()
 
@@ -515,7 +515,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset training-load target", systemImage: "chart.bar.xaxis")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .orange))
+                .atriaCardAction(tint: .orange)
 
                 Text("Training Load uses ACWR and monotony from saved strain. These controls tune readiness colors and guidance, not the underlying history.")
                     .font(.caption)
@@ -549,7 +549,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset activity targets", systemImage: "figure.walk.motion")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .green))
+                .atriaCardAction(tint: .green)
 
                 Divider()
 
@@ -586,7 +586,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset sleep targets", systemImage: "bed.double.fill")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .cyan))
+                .atriaCardAction(tint: .cyan)
 
                 Divider()
 
@@ -631,7 +631,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset baseline targets", systemImage: "heart.text.square.fill")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .pink))
+                .atriaCardAction(tint: .pink)
 
                 Divider()
 
@@ -684,7 +684,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset research targets", systemImage: "waveform.path.ecg")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .teal))
+                .atriaCardAction(tint: .teal)
 
                 Text("Research targets tune sleep-only deviations and candidate-frame evidence. They do not turn these signals into validated SpO2 or absolute body-temperature readings.")
                     .font(.caption)
@@ -718,7 +718,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset body-age target", systemImage: "figure.stand")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .purple))
+                .atriaCardAction(tint: .purple)
 
                 Text("Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI -- not a medical assessment. These bands only tune younger/older color guidance.")
                     .font(.caption)
@@ -752,7 +752,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Reset VO2 trend target", systemImage: "lungs.fill")
                 }
-                .buttonStyle(AtriaCardActionButtonStyle(tint: .blue))
+                .atriaCardAction(tint: .blue)
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")

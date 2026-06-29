@@ -34,7 +34,7 @@ struct AtriaVitalsTabContent: View {
                         Text("Done")
                             .font(.caption.weight(.bold))
                     }
-                    .buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))
+                    .atriaCardAction(prominent: false, tint: .secondary)
                 }
                 .padding(.horizontal, 2)
                 .transition(.move(edge: .top).combined(with: .opacity))
