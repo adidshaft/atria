@@ -52,8 +52,14 @@ onboarding. Light mode read washed-out: cards dissolved into the near-white fiel
 - Verification gotcha logged: `simctl launch` on an already-running app does **not**
   reload a new binary — must `--terminate-running-process` (or uninstall) or you
   screenshot a stale instance.
-- Still open (item 2): the orange dashed/dotted "building" metric rings (visible on
-  Vitals Average/Peak) want a calmer native treatment.
+- **Calmer "building" indicators (item 2).** Two busy dashed rings replaced:
+  `AtriaGlanceMetricMarker`'s indeterminate ring (`dash: [2.4, 6.2]`) → a clean
+  short tinted cap arc (`.trim(0…0.16)`); and the `.learning` state glyph
+  (`AtriaStateBadge`, used on Vitals Average/Peak etc.) `circle.dashed` →
+  `circle.bottomhalf.filled` ("filling up"). Badge change sim-verified on Vitals;
+  the glance-marker arc compiles + guard updated but only renders on a connected
+  glance card (needs BLE) — visually unconfirmed there. Static guard for the old
+  dashed ring updated to the new tokens.
 
 ## 2026-06-29 progress (native Liquid Glass + guided onboarding pass)
 

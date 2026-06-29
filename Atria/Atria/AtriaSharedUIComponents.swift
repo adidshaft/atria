@@ -247,7 +247,8 @@ enum AtriaMetricState: Equatable {
     var systemImage: String {
         switch self {
         case .learning:
-            return "circle.dashed"
+            // Calm "building / filling up" glyph instead of a busy dashed ring.
+            return "circle.bottomhalf.filled"
         case .personalBaseline:
             return "person.crop.circle.badge.checkmark"
         case .validated:
