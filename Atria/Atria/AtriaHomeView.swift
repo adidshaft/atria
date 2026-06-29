@@ -1404,6 +1404,8 @@ private struct AtriaStandByOverlay: View {
                     Text(pulseLiveStore.state.heartRateText)
                         .font(.system(size: 118, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.3), value: pulseLiveStore.state.heartRate)
                         .foregroundStyle(.white)
                         .minimumScaleFactor(0.7)
 

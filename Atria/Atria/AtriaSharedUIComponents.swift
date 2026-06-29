@@ -393,6 +393,8 @@ struct AtriaMetricTile: View, Equatable {
                 Text(displayValue)
                     .font(.system(size: 29, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.3), value: displayValue)
                     .lineLimit(1)
                     .minimumScaleFactor(0.62)
                 if let unit {
