@@ -665,27 +665,14 @@ struct ProfileOnboardingView: View {
     }
 
     private var onboardingSourcePicker: some View {
-        HStack(spacing: 8) {
+        // Standard native iOS 26 segmented control.
+        Picker("Max heart-rate source", selection: $draft.maxHRSource) {
             ForEach(AthleteProfile.HRMaxSource.allCases) { source in
-                Button {
-                    if reduceMotion {
-                        draft.maxHRSource = source
-                    } else {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            draft.maxHRSource = source
-                        }
-                    }
-                } label: {
-                    Text(source.label)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                }
-                .atriaGlassSelectable(selected: draft.maxHRSource == source)
+                Text(source.label).tag(source)
             }
         }
-        .padding(8)
-        .atriaCard(emphasis: .soft)
+        .pickerStyle(.segmented)
+        .animation(.snappy(duration: 0.22), value: draft.maxHRSource)
     }
 
     private func onboardingStepperCard(title: String,
