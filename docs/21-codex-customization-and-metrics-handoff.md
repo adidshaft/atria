@@ -33,6 +33,21 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (top-chrome "weird buttons" — clean glass circles)
+
+Owner flagged the top-right header controls as "weird buttons." Cause: the trailing
+controls lived in a `GlassEffectContainer(spacing: 10)` while the icons were only
+`iconSpacing: 4` apart, so the strap-battery **text capsule** and the round icon
+**circles** all fell within the glass merge threshold and fused into one conjoined
+liquid-glass blob with pinched connector necks (confirmed on device + sim).
+
+Fix (AtriaHomeView.swift `AtriaHomeTopChrome`): pulled the battery indicator OUT of
+the container so a capsule no longer fuses into the circle cluster; lowered the
+container merge threshold to `spacing: 4` and raised `iconSpacing` to 8 so the
+buttons render as clean, DISTINCT glass circles. Sim-verified light + dark: the
+"Waiting"/battery pill and the help/history/settings circles are now cleanly
+separated. Build + 84 static checks green (home chrome guards updated).
+
 ## 2026-06-29 progress (choice of notifications — user control)
 
 The local-notification engine (recovery / strain / strap battery / bluetooth-off,

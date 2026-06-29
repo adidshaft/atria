@@ -3128,19 +3128,24 @@ private struct AtriaHomeTopChrome: View {
     let onTapStatusWhenNotConnected: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             AtriaTopStatusChip(statusStore: statusStore,
                                coreLiveStore: coreLiveStore,
                                pulseLiveStore: pulseLiveStore,
                                onTapWhenNotConnected: onTapStatusWhenNotConnected)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 8)
 
-            GlassEffectContainer(spacing: 10) {
+            // Strap battery is a text capsule — keep it OUT of the icon cluster so it
+            // doesn't fuse into the round buttons via the glass merge.
+            AtriaHeaderBatteryIndicator(liveStore: coreLiveStore,
+                                        phoneBatteryState: phoneBatteryState)
+
+            // Round toolbar buttons as clean, DISTINCT glass circles. The container's
+            // merge threshold (4) is below the icon gap (8), so they stay separate
+            // circles instead of fusing into one conjoined blob.
+            GlassEffectContainer(spacing: 4) {
                 HStack(spacing: AtriaHeaderControlMetrics.iconSpacing) {
-                    AtriaHeaderBatteryIndicator(liveStore: coreLiveStore,
-                                                phoneBatteryState: phoneBatteryState)
-
                     if showWorkout {
                         Button(action: onStartWorkout) {
                             AtriaToolbarIcon(symbol: "figure.run")
@@ -3185,7 +3190,7 @@ private struct AtriaHomeTopChrome: View {
 private enum AtriaHeaderControlMetrics {
     static let height: CGFloat = 44
     static let statusMinWidth: CGFloat = 96
-    static let iconSpacing: CGFloat = 4
+    static let iconSpacing: CGFloat = 8
 }
 
 private struct AtriaHeaderBatteryIndicator: View {

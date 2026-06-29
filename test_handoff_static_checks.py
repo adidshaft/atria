@@ -274,7 +274,7 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
-        assert_contains(self, home, "GlassEffectContainer(spacing: 10)")
+        assert_contains(self, home, "GlassEffectContainer(spacing: 4)")
         assert_contains(self, overview, "GlassEffectContainer(spacing: 10)")
         assert_contains(self, vitals, "GlassEffectContainer(spacing: 10)")
         assert_not_contains(self, settings, "GlassEffectContainer")
@@ -375,7 +375,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private enum AtriaHeaderControlMetrics",
             "static let height: CGFloat = 44",
             "static let statusMinWidth: CGFloat = 96",
-            "static let iconSpacing: CGFloat = 4",
+            "static let iconSpacing: CGFloat = 8",
             "minHeight: AtriaHeaderControlMetrics.height",
             "maxHeight: AtriaHeaderControlMetrics.height",
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
