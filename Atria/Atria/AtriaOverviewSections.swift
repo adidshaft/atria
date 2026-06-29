@@ -486,6 +486,97 @@ private struct AtriaOverviewTrailingHost: View {
     }
 }
 
+/// Surfaces a real, auto-detected sleep/nap candidate awaiting confirmation as a
+/// calm review prompt on the home screen. Shows nothing when there is no pending
+/// candidate (never fabricated). Reuses the existing confirm API; "Not me" dismisses
+/// the specific candidate locally by id so it doesn't reappear.
+private struct AtriaSleepReviewHost: View {
+    @ObservedObject var store: SessionStore
+    @AppStorage("atria.sleepReview.dismissedID") private var dismissedID: String = ""
+
+    private var pending: SleepHistorySnapshot.Night? {
+        let snapshot = store.sleepHistorySnapshot
+        guard snapshot.candidateCount > 0,
+              let latest = snapshot.latest,
+              latest.confirmed == false,
+              latest.id != dismissedID else { return nil }
+        return latest
+    }
+
+    var body: some View {
+        if let night = pending {
+            AtriaSleepReviewCard(night: night,
+                                 onConfirm: {
+                                     _ = store.confirmBestSleepCandidateForUI(rest: store.baseline.restingInt ?? 60,
+                                                                              source: "overview_sleep_review")
+                                 },
+                                 onDismiss: { dismissedID = night.id })
+        }
+    }
+}
+
+private struct AtriaSleepReviewCard: View {
+    let night: SleepHistorySnapshot.Night
+    let onConfirm: () -> Void
+    let onDismiss: () -> Void
+
+    private var isNap: Bool { night.isNapEvidence }
+    private var title: String { isNap ? "Nap detected" : "Sleep detected" }
+
+    private var detail: String {
+        if let start = night.start {
+            let when = start.formatted(date: .omitted, time: .shortened)
+            return "\(night.durationText) at \(when) · confirm to add it to your history."
+        }
+        return "\(night.durationText) · confirm to add it to your history."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: isNap ? "bed.double.fill" : "moon.zzz.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 38, height: 38)
+                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: .cyan))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                AtriaStateBadge(state: .research)
+            }
+
+            HStack(spacing: 8) {
+                Button(action: onConfirm) {
+                    Label(isNap ? "Confirm nap" : "Confirm sleep", systemImage: "checkmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(tint: .cyan)
+                .accessibilityHint("Saves this detected \(isNap ? "nap" : "sleep") to your local history.")
+
+                Button(action: onDismiss) {
+                    Label("Not me", systemImage: "xmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityHint("Dismisses this detection without saving it.")
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+    }
+}
+
 struct AtriaOverviewLeadingSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let heroStore: AtriaHomeModel.HeroStore
@@ -520,6 +611,10 @@ struct AtriaOverviewLeadingSection: View {
                                                  onOpenCollection: onOpenCollection,
                                                  onOpenInsights: onOpenInsights,
                                                  onStartWorkout: onStartWorkout)
+
+                // Human-in-the-loop: surface a real auto-detected sleep/nap awaiting
+                // confirmation right on the home screen instead of burying it in Vitals.
+                AtriaSleepReviewHost(store: store)
 
                 // Simple one-line "what to do today" guidance. No AI coach, no
                 // setup checklist, no strain-target maths — kept direct.

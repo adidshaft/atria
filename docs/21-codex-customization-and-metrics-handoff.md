@@ -33,6 +33,25 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (sleep/nap review prompt on home — human-in-the-loop)
+
+The auto-detected sleep/nap confirmation already existed but was buried in the Vitals
+sleep-history card (`shouldShowConfirmSleep` -> `confirmBestSleepCandidateForUI`).
+Surfaced it on the home screen as a calm, WHOOP-style review prompt:
+
+- `AtriaSleepReviewHost` (observes SessionStore) shows a card ONLY when there is a real
+  unconfirmed candidate (`sleepHistorySnapshot.candidateCount > 0`, `latest.confirmed == false`)
+  that hasn't been dismissed — never fabricated; renders nothing otherwise.
+- `AtriaSleepReviewCard`: "Sleep detected"/"Nap detected" with duration + start time,
+  **Confirm** (reuses `confirmBestSleepCandidateForUI`, source `overview_sleep_review`)
+  and **Not me** (dismisses that specific candidate locally via `@AppStorage` keyed to
+  `Night.id`, so it doesn't reappear; no store reject API needed).
+- Placed in the `.today` segment after the readiness host. `sleepHistorySnapshot` is a
+  cached `@Published` value, so reading it in the host body is cheap.
+- Sim-verified light + dark via a throwaway `--atria-sleep-review-demo` scaffold (a
+  constructed sample candidate, since the BLE-less sim has none); scaffold removed.
+  Build + 84 static checks green.
+
 ## 2026-06-29 progress (fit-check notification — contact coaching)
 
 Device measurement showed at-rest RR contact oscillates ready<->poor_contact on
