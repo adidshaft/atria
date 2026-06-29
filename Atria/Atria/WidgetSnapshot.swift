@@ -70,7 +70,7 @@ enum WidgetSnapshotPublisher {
         let validatedHRV = store.latestReferenceValidatedHRV
         let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
         let latestSleep = store.sleepHistorySnapshot.latest
-        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
+        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
                                           fallbackRMSSD: fallbackHRV,
                                           restingNow: rest,
                                           baseline: store.baseline,

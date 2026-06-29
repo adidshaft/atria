@@ -3269,7 +3269,11 @@ final class SessionStore: ObservableObject {
     }
 
     var latestLocalRMSSD: Int? {
-        sessions.first(where: { $0.localRMSSD != nil })?.localRMSSD
+        // Recovery freezes to the overnight/morning reading like WHOOP: prefer the
+        // most recent overnight-window session's HRV; only fall back to any session
+        // if no overnight HRV exists yet (so the baseline never starves).
+        sessions.first(where: { $0.isOvernightHRVWindow() && $0.localRMSSD != nil })?.localRMSSD
+            ?? sessions.first(where: { $0.localRMSSD != nil })?.localRMSSD
     }
 
     var confirmedWorkouts: [UserConfirmedWorkout] {

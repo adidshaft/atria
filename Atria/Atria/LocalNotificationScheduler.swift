@@ -205,7 +205,7 @@ enum LocalNotificationScheduler {
                                             ble: AtriaBLEManager) -> [NotificationDecision] {
         let validatedHRV = store.latestReferenceValidatedHRV
         let latestSleep = store.sleepHistorySnapshot.latest
-        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.hrvSnapshot,
+        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
                                           fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
                                           baseline: store.baseline,
