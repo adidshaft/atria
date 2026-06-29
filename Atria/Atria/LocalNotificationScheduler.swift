@@ -61,6 +61,11 @@ enum LocalNotificationScheduler {
             return
         }
 
+        guard AtriaNotificationSettings.load().allows(kind: decision.kind) else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled", decision.kind)
+            return
+        }
+
         configureDeliveryLogger()
         Task {
             let center = UNUserNotificationCenter.current()
@@ -170,8 +175,13 @@ enum LocalNotificationScheduler {
                 delay: 3
             ))
         }
+        let preferences = AtriaNotificationSettings.load()
         var scheduled = 0
         for decision in decisions where decision.shouldSchedule {
+            guard preferences.allows(kind: decision.kind) else {
+                AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled", decision.kind)
+                continue
+            }
             do {
                 try await add(decision: decision, center: center)
                 scheduled += 1
