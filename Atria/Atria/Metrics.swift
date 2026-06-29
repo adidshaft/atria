@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Industry-style headline metrics computed locally from strap data.
 ///
@@ -113,11 +114,31 @@ enum Metrics {
                                          respiratoryBaseline: respiratoryBaseline)
     }
 
+    /// WHOOP-style electric readiness palette. Vivid on dark (where WHOOP lives),
+    /// deepened on light so the same band stays legible — Atria supports both modes.
+    private static func adaptive(dark: (Double, Double, Double),
+                                 light: (Double, Double, Double)) -> Color {
+        Color(UIColor { trait in
+            let c = trait.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+
+    /// Electric green (#16EC06 on dark), the "in the green" readiness signal.
+    static let electricGreen = adaptive(dark: (0.086, 0.925, 0.024), light: (0.039, 0.60, 0.0))
+    /// Electric amber (#FFDE00 on dark), deepened to gold on light for contrast.
+    static let electricYellow = adaptive(dark: (1.0, 0.871, 0.0), light: (0.72, 0.52, 0.0))
+    /// Electric red (#FF0026 on dark).
+    static let electricRed = adaptive(dark: (1.0, 0.0, 0.149), light: (0.83, 0.0, 0.13))
+    /// Electric strain blue (#0093E7) — effort is always cool, never warm, so a hard
+    /// session can't be misread as poor recovery.
+    static let electricStrain = adaptive(dark: (0.0, 0.576, 0.906), light: (0.0, 0.46, 0.75))
+
     static func recoveryColor(_ pct: Int) -> Color {
         switch pct {
-        case 67...: return .green
-        case 34..<67: return .yellow
-        default: return .red
+        case 67...: return electricGreen
+        case 34..<67: return electricYellow
+        default: return electricRed
         }
     }
 
