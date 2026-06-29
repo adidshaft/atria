@@ -255,12 +255,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "func atriaCard(",
             "func atriaRaisedCard(",
             "struct AtriaSegmentButtonStyle: ButtonStyle",
-            "struct AtriaCardActionButtonStyle: ButtonStyle",
             "var tint: Color = .blue",
             "func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View",
             "self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))",
             "func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View",
-            "self.buttonStyle(AtriaCardActionButtonStyle(prominent: prominent, tint: tint))",
+            # Card actions are now standard native iOS 26 Liquid Glass
+            # (.glassProminent for primary, .glass for secondary).
+            "self.tint(tint).buttonStyle(.glassProminent)",
+            "self.tint(tint).buttonStyle(.glass)",
             "struct AtriaGlassIconButtonStyle: ButtonStyle",
             "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View",
             "self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))",
@@ -272,8 +274,6 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
-        assert_not_contains(self, content, "self.buttonStyle(.glassProminent).tint(tint)")
-        assert_not_contains(self, content, "self.buttonStyle(.glass)\n        }")
         assert_contains(self, home, "GlassEffectContainer(spacing: 10)")
         assert_contains(self, overview, "GlassEffectContainer(spacing: 10)")
         assert_contains(self, vitals, "GlassEffectContainer(spacing: 10)")
@@ -952,7 +952,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func glanceTargetControl(for metric: AtriaTodayMetric) -> some View",
             "private func glanceResizeControl(for metric: AtriaTodayMetric,\n                                     sizeOverrides: [String: AtriaGlanceGridSize]) -> some View",
             "Label(\"Editing widgets\", systemImage: \"square.grid.2x2\")",
-            ".buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
             ".overlay(alignment: .topTrailing)",
             ".overlay(alignment: .bottomTrailing)",
             ".overlay(alignment: .bottomLeading)",
@@ -978,7 +978,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaGlassIconAction(tint: metric.targetEditorTint, size: 36)",
             ".atriaGlassIconAction(tint: .red, size: 36)",
             ".frame(minWidth: 96)",
-            ".buttonStyle(AtriaCardActionButtonStyle(tint: tint))",
+            ".atriaCardAction(tint: tint)",
             ".accessibilityHint(\"Opens the target zone controls for this Today widget.\")",
             ".accessibilityHint(\"Removes this card from Today at a glance. Use the plus button to add it back.\")",
             ".accessibilityLabel(\"Add Today widget\")",
@@ -1087,7 +1087,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AppStorage(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
             "@State private var isEditingVitalsLayout = false",
             "Label(\"Editing Vitals\", systemImage: \"rectangle.3.group\")",
-            ".buttonStyle(AtriaCardActionButtonStyle(prominent: false, tint: .secondary))",
+            ".atriaCardAction(prominent: false, tint: .secondary)",
             "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
             "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
             "private static let dragPayloadPrefix = \"atria.vitals.section:\"",
@@ -5900,7 +5900,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, settings, needle)
         self.assertRegex(
             settings,
-            r"Reset body-age target[\s\S]*?\.buttonStyle\(AtriaCardActionButtonStyle\(tint: \.purple\)\)[\s\S]*?Divider\(\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
+            r"Reset body-age target[\s\S]*?\.atriaCardAction\(tint: \.purple\)[\s\S]*?Divider\(\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
         )
         assert_not_contains(self, settings, "7-night baseline")
 
