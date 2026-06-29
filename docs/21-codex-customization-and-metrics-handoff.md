@@ -33,6 +33,25 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (glance warning-zone honesty — "think user")
+
+Captured the **real connected device** (`devicectl device capture screenshot`, hardware
+UDID 00008130…) and found two false-alarm patterns on the live glance, then fixed both:
+
+- **Accumulation goals no longer red-alarm mid-day.** `TargetZones.steps` / `.activeCalories`
+  fired red (`exclamationmark.triangle.fill`) whenever below half the daily goal, so every
+  user saw a red alert on their step/calorie card for most of the day (observed: "810 steps"
+  at 5pm = red). Now they return a calm "goal met" zone only when the goal is reached, and
+  `nil` (no badge, neutral tint) while in progress — like Apple/WHOOP rings.
+- **A nap is no longer graded against the nightly sleep goal.** `sleepDurationZone` graded
+  the latest sleep's duration against the 8h goal even for nap evidence, turning "24m last
+  nap" into a red "under your sleep need." Now skips the zone when `latest.isNapEvidence`.
+
+Physiological zones that *should* warn (recovery, HRV, RHR, sleep efficiency, VO₂/bio-age
+trend, real night sleep duration) are unchanged. Build + 84 static checks green (guards
+updated). Not device-screenshot-verified post-fix (owner was using the phone); the change is
+deterministic — below-goal/nap → no zone → no warning badge.
+
 ## 2026-06-29 progress (Today-at-a-glance 2×0.5 compact row)
 
 Added a third glance widget size — a **full-width, half-height "2×0.5" compact
