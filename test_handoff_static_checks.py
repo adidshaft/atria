@@ -4031,7 +4031,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "func hasTrustedHRVBaseline(now: Date = Date()) -> Bool",
             "freshHRVSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)",
             "stats(freshSamples().map(\\.restingHR))",
-            "stats(freshSamples().compactMap(\\.lnRMSSD))",
+            # HRV baseline is sleep-window-preferred (WHOOP-like): overnight samples
+            # only once >=7 exist, else fall back to all fresh samples. Still local,
+            # never fabricated.
+            "func lnRMSSDStats(now: Date) -> (mean: Double, sd: Double, count: Int)?",
+            "if overnight.count >= Self.overnightHRVPreferenceMinimum",
+            "return stats(fresh.compactMap(\\.lnRMSSD))",
+            "static let overnightHRVPreferenceMinimum = 7",
         ]:
             assert_contains(self, insights, needle)
 
