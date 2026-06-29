@@ -64,8 +64,32 @@ physical device:
   scan is kicked off when the step appears. The user now *watches it work* before
   finishing, instead of reading static instructions.
 
-Open / not yet done: deeper card-chrome polish (the dashed "building" rings read
-busy), and the RR-stream-at-rest reliability work (still tracked in docs/22).
+**Buttons → standard native iOS 26 Liquid Glass.** Scoped by an adversarial
+multi-agent audit (it caught that `.glassProminent`/`.buttonBorderShape` appeared
+nowhere and had to be compile-probed first, that you cannot nest a `.buttonStyle`
+inside another ButtonStyle's `makeBody`, and that the icon/card styles already
+used real `.glassEffect`). After probing that `.glass`/`.glassProminent` compile
+on the iOS 26.1 SDK:
+
+- `atriaCardAction` now applies the **native** styles — `.glassProminent` (tinted)
+  for the primary action, `.glass` for secondary. All ~73 action-button sites
+  (44 via the modifier + 29 direct call sites rerouted through it) are native
+  glass; the custom `AtriaCardActionButtonStyle` was deleted.
+- Every single-select segmented control is now a native `Picker(.segmented)`
+  (system Liquid Glass): Today/Trends/Data, onboarding Age/Measured source, Vitals
+  max-HR source + saving-mode, and Settings appearance (text-only to keep segments
+  legible). The sex picker was already native.
+- Deleted dead code: `AtriaCardActionButtonStyle`, the three unused
+  `ProfileOnboarding*ButtonStyle` structs, and the appearance `appearanceButton`/
+  `isAppearanceModeSelected` helpers.
+- Kept custom (justified): `.atriaGlassSelectable` capsules for the genuinely
+  multi-select tag toggles (a native single-select Picker can't represent them),
+  and `AtriaGlassIconButtonStyle` (already real `.glassEffect` circular glass with
+  the correct `.contentShape`/press-scale).
+
+Open / not yet done: optional softening of the multi-select tag-toggle capsule
+fill toward glass; deeper card-chrome polish (the dashed "building" rings read
+busy); and the RR-stream-at-rest reliability work (still tracked in docs/22).
 
 ## 2026-06-27 progress
 
