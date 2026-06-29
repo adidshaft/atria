@@ -33,6 +33,28 @@ Code lives in `Atria/Atria/`. Key files: `AtriaHomeView.swift` (home shell + the
 `AtriaVitalsCollectionSections.swift` (Vitals + Data tabs), `Sessions.swift`
 (`SessionStore`, the derived-metrics home), `AtriaBLEManager.swift` (BLE + status).
 
+## 2026-06-29 progress (light-mode contrast pass)
+
+Sim-verified (iPhone 15 Pro Max, 26.2), light **and** dark, overview + vitals +
+onboarding. Light mode read washed-out: cards dissolved into the near-white field.
+
+- **Root cause (the real bug):** the `AtriaBackdropLayer` placed in the home
+  `ZStack` (behind the `TabView`) was *fully covered* by the `NavigationStack`/
+  `TabView`'s opaque content background — a red-gradient probe proved nothing of it
+  ever reached the screen. So every prior backdrop tweak was a no-op in light mode
+  (masked in dark, where dark gradient ≈ dark systemBackground). Fix: attach the
+  backdrop as the **ScrollView's own `.background`** (+ `scrollContentBackground(.hidden)`)
+  in `tabNavigation`, so the field renders behind the transparent scroll content.
+- **Native grouped hierarchy.** Light card / raisedCard surfaces are now opaque
+  pure white; inset surfaces a cool gray (recessed); the field gradient
+  (`AtriaBackdropLayer` + onboarding `AtriaDashboardBackdrop`) is a soft gray-blue
+  so the white cards visibly float. Dark-mode tokens untouched.
+- Verification gotcha logged: `simctl launch` on an already-running app does **not**
+  reload a new binary — must `--terminate-running-process` (or uninstall) or you
+  screenshot a stale instance.
+- Still open (item 2): the orange dashed/dotted "building" metric rings (visible on
+  Vitals Average/Peak) want a calmer native treatment.
+
 ## 2026-06-29 progress (native Liquid Glass + guided onboarding pass)
 
 On-device review (light mode, strap connected) showed the Overview header had
