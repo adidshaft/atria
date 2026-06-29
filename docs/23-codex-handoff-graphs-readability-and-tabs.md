@@ -32,12 +32,14 @@ native Liquid Glass feel.
 
 ## Part A — Graphs & readability (the main ask)
 
-### A1. Trend graphs (Swift Charts)
-Add real trend charts for the metrics users actually track over time:
-- **Recovery**, **HRV (lnRMSSD)**, **RHR**, **Sleep duration/performance**, **Strain/day-load**.
+### A1. Trend graphs (Swift Charts) — **inside tap-through detail views, NOT a tab**
+Charts live **inside each metric's detail view** (tap a glance card → detail with its
+own chart), the WHOOP pattern — see Part B for why this beats a graphs tab.
+- One chart per metric: **Recovery**, **HRV (lnRMSSD)**, **RHR**, **Sleep duration/performance**, **Strain/day-load**.
 - Ranges: **week / month / quarter** segmented (native `Picker(.segmented)`).
 - Color each point/band by zone using the **electric palette** (recovery green/amber/red; strain electric blue).
-- Show the **personal baseline band** (mean ± SD from `PersonalBaseline.lnRMSSDStats`) behind the HRV/RHR series so a point reads as "above/below my normal" — this is the WHOOP-style "is this good for *me*" framing.
+- Show the **personal baseline band** (mean ± SD from `PersonalBaseline.lnRMSSDStats`) behind the HRV/RHR series so a point reads as "above/below my normal" — the WHOOP-style "is this good for *me*" framing.
+- Also drop a 7-point **sparkline** on the glance tile itself (reuse `Sparkline`, downsampled once) so the trend is visible before the tap.
 - **Data source / wiring:** a daily recovery/HRV/RHR value must be **persisted to history** so it can be charted. Today recovery is computed live and not stored per-day. Add a small daily-rollup (one value/day, written once when the morning reading settles) to the `SessionStore`; do **not** recompute the series on every render (Hard Req: perf).
 
 ### A2. Recovery contributors (the "why")
@@ -68,37 +70,56 @@ performance % (got vs need) and a consistency bar.
 
 ---
 
-## Part B — A 4th bottom-bar tab? (recommendation + caveat)
+## Part B — 4th bottom-bar tab: **DECIDED — no. Keep 3 tabs.**
 
 Current tabs: **Overview · Vitals · Data** (`HomeTab.overview/.vitals/.collection`,
 `TabView` in `AtriaHomeView.swift:161`, native floating glass with
-`.tabBarMinimizeBehavior(.onScrollDown)`).
+`.tabBarMinimizeBehavior(.onScrollDown)`). **This stays. Do not add a 4th tab.**
 
-**Recommendation: yes — add a "Trends" (or "Insights") tab, *if* Part A's graphs
-grow past a couple of charts.** Rationale:
-- The graph/history depth is genuinely user-facing and currently buried under the
-  Overview's Today/**Trends**/Data sub-segment + a separate History view. Promoting
-  it gives the charts room and removes the confusing overlap (a "Trends"
-  sub-segment *and* a "Data" tab *and* a "Data" sub-segment exist today — untangle
-  this).
-- `Data` (backup/export/sensor signals) is genuinely a **power-user** surface;
-  leave it, but it shouldn't be where a normal user looks for their week.
-- 4 tabs is comfortable on iOS; keep the native floating-glass tab bar. Don't exceed 5.
+**Why no graphs tab:**
+- **WHOOP has no graphs tab.** Trends live *inside* each pillar's detail screen
+  (open Recovery → its trend; open Sleep → its trend). Atria copies that: tap a
+  glance card → detail view *with its own chart* (Part A1). Contextual + discoverable
+  by curiosity, and it's the authentic pattern.
+- Atria's IA is **already overlapping** — there's a "Data" *tab*, a "Data"
+  *sub-segment*, and a "Trends" *sub-segment*. Adding a 4th tab on top of that is
+  bloat. (Bonus task: untangle that overlap — the Overview Today/Trends/Data
+  sub-segment vs the tabs. Pick one mechanism.)
+- A graphs tab would be a secondary "museum," not a daily destination; a near-empty
+  tab is worse than none.
+- `Data` (backup/export/sensor signals) is power-user but it's part of Atria's
+  identity (local, no-sub, you own your data) — leave it as a tab.
 
-**Caveat / decision gate:** if Part A only ships 1–2 charts, **don't** add a tab for
-it — keep it as the Overview "Trends" sub-segment. A near-empty tab is worse than no
-tab. Decide based on content volume, not aspiration.
+**What replaces the 4th-tab ambition → the coaching hero (Part C1).** The genuinely
+missing high-value WHOOP feature is *actionable coaching*, and it belongs as the
+**first thing on Overview**, not behind a tab. See C1 — promote it to the top of this
+handoff's priority order.
 
-**Alternative 4th tab if you go coaching-first instead of charts-first:** a **"Coach"**
-tab (today's readiness verdict + recovery-scaled plan + journal). Pick *one* of
-Trends-tab or Coach-tab; don't add both. Recommended order: Trends first (serves the
-explicit "graphs" ask), Coach later.
+(If, much later, coaching + journal + a weekly assessment grow into a real surface, a
+single **"Coach"** tab could be justified — but only then, and never a graphs tab.)
 
 ---
 
 ## Part C — Higher-leverage user-facing features (from the research, ranked)
 
-1. **Actionable coaching** — answer "what do I do about a 31% recovery?" (ReadinessEngine: ACWR/monotony already exist; surface a verdict + a recommended strain target + 1–2 concrete actions). Highest differentiator.
+### C1. **"Today's Plan" coaching hero — TOP PRIORITY (this is what replaces the 4th tab)**
+The #1 differentiator and the single most user-friendly thing Atria can add. A hero
+card at the **top of Overview** (above "Today at a glance") that answers *"what do I
+do today?"* in one read:
+> **Recovery 31% — take it easy.** Target strain **8–10**. Prioritize sleep tonight (you're 1h12m in debt).
+
+- Rules-based, **no cloud/AI** — drive it from what already exists: `recoveryV2`
+  band, the recovery-scaled strain target (`heroStore.state.guidance.target`),
+  ACWR/monotony (ReadinessEngine), sleep debt.
+- Three tiers max: green ("you're primed — go after it, target strain 14–18"),
+  amber ("moderate — hold steady"), red ("take it easy / rest").
+- Honest: while baselines are "Building", say so ("learning your baseline — N more
+  nights") instead of inventing a verdict.
+- It's a card, not a tab — uses the existing card chrome + electric palette + (i)
+  sheet for the "why".
+
+### C2. The rest (ranked)
+1. ~~Actionable coaching~~ → done as C1 above.
 2. **Journal / behavior → recovery correlation** — log alcohol/caffeine/stress/late-meal, show mean-delta vs no-behavior with sample size. (`behaviorInsights` exists; deepen it. Be honest: it's a local mean-delta + n, **not** a cloud-ML "isolated contribution".)
 3. **Sleep coach** — sleep need (baseline + strain + debt), debt, consistency.
 4. **Recovery-scaled strain target / "today's plan"** — already partly specced; surface it on Overview and mid-workout (target arc, push/hold/ease).
