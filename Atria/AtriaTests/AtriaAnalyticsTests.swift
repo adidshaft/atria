@@ -409,7 +409,16 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(snapshot?.isReady == true)
     }
 
-    func testRecoveryRefusesThinAndStaleBaselines() {
+    func testRecoveryHonestButPresentForThinAndStaleBaselines() {
+        // docs/24 honesty rule (line 19): "No fabricated data. Estimates are
+        // labeled estimates. Confidence tiers stay honest." The primary-device
+        // audit (commit ac1a820f) deliberately moved recovery from blank-refusal
+        // toward HONEST-BUT-PRESENT: when only a raw restingHR/hrvEMA baseline
+        // exists (thin history, or a fully-stale baseline), recovery still scores
+        // but is clamped to the .unverified confidence tier. It never reaches
+        // .personalBaseline/.validated without a trusted, fresh baseline, so the
+        // confidence tier stays honest. Fail-closed still holds when there is NO
+        // resting baseline at all (see the third case below).
         let now = Date()
         let thinBaseline = PersonalBaseline(restingHR: 60,
                                             hrvEMA: 50,
@@ -423,9 +432,11 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                     baseline: thinBaseline,
                                                     sleepEfficiency: 0.90,
                                                     sleepDurationHours: 7.5)
-        XCTAssertNil(thin.percent)
-        XCTAssertEqual(thin.confidence, .learning)
-        XCTAssertFalse(thin.usesHRV)
+        // Thin (< trustedMinimumSamples fresh days) still scores off the raw
+        // restingHR EMA + provisional HRV, labeled honestly as unverified.
+        XCTAssertNotNil(thin.percent)
+        XCTAssertEqual(thin.confidence, .unverified)
+        XCTAssertTrue(thin.usesHRV)
 
         let staleDate = now.addingTimeInterval(-(PersonalBaseline.staleAfter + 86_400))
         let staleBaseline = PersonalBaseline(restingHR: 60,
@@ -440,8 +451,28 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                      baseline: staleBaseline,
                                                      sleepEfficiency: 0.90,
                                                      sleepDurationHours: 7.5)
-        XCTAssertNil(stale.percent)
-        XCTAssertEqual(stale.confidence, .learning)
+        // Every sample is older than staleAfter, so hasTrustedRestingBaseline is
+        // false and confidence can never be promoted past .unverified. The score
+        // still comes off the last-known personal EMA, clearly labeled unverified.
+        XCTAssertNotNil(stale.percent)
+        XCTAssertEqual(stale.confidence, .unverified)
+
+        // Fail-closed guardrail: with NO resting baseline at all there is nothing
+        // honest to anchor to, so recovery must refuse (blank + .learning).
+        let noRestingBaseline = PersonalBaseline(restingHR: nil,
+                                                 hrvEMA: 50,
+                                                 sessions: 3,
+                                                 updated: now,
+                                                 samples: [])
+        let refused = AtriaAnalytics.Recovery.estimate(hrvSnapshot: nil,
+                                                       fallbackRMSSD: 55,
+                                                       restingNow: 58,
+                                                       baseline: noRestingBaseline,
+                                                       sleepEfficiency: 0.90,
+                                                       sleepDurationHours: 7.5)
+        XCTAssertNil(refused.percent)
+        XCTAssertEqual(refused.confidence, .learning)
+        XCTAssertFalse(refused.usesHRV)
     }
 
     private static func journalDays(_ recoveries: [Int?], startingAt start: Date, calendar: Calendar) -> [AtriaBehaviorImpact.Day] {
@@ -1417,7 +1448,15 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(spike.acwrSignal, "bad")
         XCTAssertEqual(spike.readiness, "rundown")
 
-        let balancedHistory = [9.0, 10.0, 11.0, 9.5, 10.5, 11.0, 9.0]
+        // Foster training-monotony = mean / SD of the 7 acute days. The previous fixture
+        // ([9, 10, 11, 9.5, 10.5, 11, 9] + 21x10) has mean 10 and SD ~0.80, i.e. monotony
+        // ~12.5 (capped to 9.99) -- that reads as "bad" (>= 2.50), not the "balanced" week
+        // the test claims to model. A day-to-day varied week that still averages to the
+        // same acute/chronic load keeps ACWR == 1.0 ("good") while giving the SD room to
+        // drop monotony under the "good" threshold (< 2.00):
+        //   acute = [2, 18, 4, 16, 6, 14, 10], mean = 10, SD ~5.76 -> monotony ~1.74 (good)
+        //   chronic (all 28, remaining 21 days at strain 10) mean = 10 -> ratio = 1.0 (good)
+        let balancedHistory = [2.0, 18.0, 4.0, 16.0, 6.0, 14.0, 10.0]
             + Array(repeating: 10.0, count: 21)
         let balanced = AtriaAnalytics.TrainingLoad.summary(dailyStrains: balancedHistory)
         XCTAssertEqual(balanced.confidence, "local")
@@ -1537,7 +1576,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                     greenDelta: 1.5,
                                                                     yellowDelta: 3.0)
         XCTAssertEqual(respiratory?.level, .red)
-        XCTAssertTrue(respiratory?.disclaimer.contains("Research sleep-only estimate") == true)
+        // docs/24 COPY-1 pass (2026-07-02) removed the visible "Research ..." wording
+        // app-wide; respiratory-rate zones now disclose "Early sleep-only signal" instead
+        // of the old "Research sleep-only estimate" copy.
+        XCTAssertTrue(respiratory?.disclaimer.contains("Early sleep-only signal") == true)
     }
 
     func testHistoricalArchiveStatusFailsClosedUntilArchiveIsParseable() {
@@ -1549,7 +1591,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                reason: "invalid_jsonl_row_12")
         XCTAssertFalse(parseFailed.metricReady)
         XCTAssertEqual(parseFailed.valueText, "Repair")
-        XCTAssertEqual(parseFailed.metricGateText, "Metric gated")
+        // currentSessionUsableRows > 0 takes priority in metricGateText even when the
+        // archive fails to parse; valueText ("Repair") still fails closed for the
+        // headline status. See SessionStore.HistoricalArchiveStatus.metricGateText.
+        XCTAssertEqual(parseFailed.metricGateText, "Saved only")
         XCTAssertEqual(parseFailed.userFootnoteText, "Archive needs repair.")
 
         let gated = SessionStore.HistoricalArchiveStatus(exists: true,
@@ -1559,9 +1604,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                          currentSessionUsableRows: 8,
                                                          reason: "ok")
         XCTAssertFalse(gated.metricReady)
-        XCTAssertEqual(gated.valueText, "Gated")
-        XCTAssertEqual(gated.metricGateText, "Metric gated")
-        XCTAssertTrue(gated.userFootnoteText.contains("HRV, Recovery and Sleep stay gated"))
+        XCTAssertEqual(gated.valueText, "Saved")
+        XCTAssertEqual(gated.metricGateText, "Saved only")
+        XCTAssertTrue(gated.userFootnoteText.contains("checking whether they can affect HRV, Recovery and Sleep"))
 
         let ready = SessionStore.HistoricalArchiveStatus(exists: true,
                                                          parseOK: true,
@@ -1618,10 +1663,13 @@ final class AtriaAnalyticsTests: XCTestCase {
             XCTAssertEqual(diagnostics.gravityValidatedRows, 1)
             XCTAssertEqual(diagnostics.currentSessionUsableRows, 1)
             XCTAssertEqual(diagnostics.metricUsableRows, 0)
-            XCTAssertEqual(diagnostics.reason, "ok")
+            // A freshly appended row is served from the just-written diagnostics
+            // sidecar index (no rotated segments yet), so the reason is "index_ok"
+            // rather than a bare "ok". See HistoricalArchive.diagnostics().
+            XCTAssertEqual(diagnostics.reason, "index_ok")
 
             let status = SessionStore.HistoricalArchiveStatus(diagnostics: diagnostics)
-            XCTAssertEqual(status.valueText, "Gated")
+            XCTAssertEqual(status.valueText, "Saved")
             XCTAssertFalse(status.metricReady)
         }
     }
@@ -2403,7 +2451,24 @@ final class AtriaAnalyticsTests: XCTestCase {
                             points: points)
     }
 
+    /// On a physical device the test host app's own container can hold a real,
+    /// already-populated HistoricalArchive (thousands of rows from real strap use).
+    /// These fixture-based tests assume a pristine container and are not allowed to
+    /// fight (or worse, silently blend with) that real user data. Call this BEFORE
+    /// any mutation (deleting/appending) so a populated real archive causes a clean
+    /// skip instead of a false failure or a write into the user's own data.
+    private func skipIfRealHistoricalArchivePresent() throws {
+        let diagnostics = HistoricalArchive.diagnostics()
+        guard !diagnostics.exists || diagnostics.rows == 0 else {
+            throw XCTSkip("Requires clean container; real on-device historical archive present " +
+                          "(rows=\(diagnostics.rows), reason=\(diagnostics.reason)). " +
+                          "Skipping to avoid colliding with real user data.")
+        }
+    }
+
     private func withCleanHistoricalArchive(_ body: () throws -> Void) throws {
+        try skipIfRealHistoricalArchivePresent()
+
         let fileManager = FileManager.default
         let url = HistoricalArchive.fileURL
         let directory = url.deletingLastPathComponent()

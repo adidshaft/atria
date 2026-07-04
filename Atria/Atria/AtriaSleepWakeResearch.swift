@@ -347,9 +347,11 @@ enum AtriaSleepWakeResearch {
     private static func merge(_ staged: [(start: Date, end: Date, stage: SleepStageKind)]) -> [SleepStageSegment] {
         var merged: [(start: Date, end: Date, stage: SleepStageKind)] = []
         for item in staged {
-            if var last = merged.popLast(), last.stage == item.stage, item.start.timeIntervalSince(last.end) <= 1 {
-                last.end = item.end
-                merged.append(last)
+            // NOTE: must peek at `merged.last` (not `popLast()`) — popping before the
+            // stage/adjacency check unconditionally discards the previous run when the
+            // check fails, collapsing the whole segmentation down to just the final run.
+            if let last = merged.last, last.stage == item.stage, item.start.timeIntervalSince(last.end) <= 1 {
+                merged[merged.count - 1].end = item.end
             } else {
                 merged.append(item)
             }
