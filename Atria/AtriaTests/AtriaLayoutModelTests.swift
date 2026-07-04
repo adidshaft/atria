@@ -30,7 +30,7 @@ final class AtriaLayoutModelTests: XCTestCase {
                                                before: .hrv,
                                                in: order,
                                                hiddenCSV: hidden),
-                       "recovery,respiratoryRate,stress,hrv,sleep")
+                       "recovery,respiratoryRate,stress,hrv,sleep,strain,rhr,steps,load,sleepHistory,sleepEfficiency,calories,vo2max,trend,insights,bloodOxygen,bodyTemp,bioAge")
     }
 
     func testTodayMetricDragPayloadRejectsRawValues() {
