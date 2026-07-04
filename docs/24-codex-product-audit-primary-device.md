@@ -7568,3 +7568,47 @@ Overnight watch: strap live all night (thrash fix held; battery 76→71),
 sessions 158→162, sharing outbox still empty (BG task never granted a window —
 six installs reset scheduling; one undisturbed night before adding a
 foreground-fallback build trigger). Morning validation pending user wake.
+
+## 26. Product-owner day: perf, rings v2, accuracy, History restoration (2026-07-05)
+
+The user woke, used the app, and drove five directive waves. Every wave: Opus
+spec (where judgment was needed) → Sonnet implementation → my gate (checks 128
+OK / Release install / full unit suite) → on-device verification.
+
+- **Hang root cause** (28797998): onScrollGeometryChange wrote @State every
+  scroll frame → whole-screen re-eval ~60x/s. Quantized to 5% steps; later
+  extracted the shrink consumer into a child view (perf Fix A) and memoized
+  day-descending rollup sorts on revision (Fix B).
+- **Rings v2** (34b24745): Apple Activity proportions (stroke 19 / gap 3),
+  RADIAL clock-tick target marker (transform proven at 3 clock positions
+  before code), strain on the absolute 0-20 scale with tick at the user-set or
+  coach-recommended limit (~60% at target 12, screenshot-verified), one
+  identity hue per metric across ring+chip (zone state via dot; recovery keeps
+  hue-as-grade). Sentence-crop audit (~11 fixes), glass button unification,
+  Settings IA v2 (clear names, footers, frequency ordering).
+- **Accuracy wave** (f412b12a) — both morning defects root-caused by Opus:
+  HR-only fragmented nights failed the strong-candidate sessions==1 gate with
+  artifact-inflated stats → new degraded auto-confirm tier
+  (auto_confirmed_sleep_hr_only, median/p90 gates, ≥60% learned-window core
+  overlap; motion path strictly preferred). Today-rollup row was DELETED when
+  the frozen metric couldn't source → wear-day fallback by session END day.
+  Phantom workouts (user: "workout at weird times, never happened on OG
+  WHOOP") → contact-qualified evidence: micro-gap jump masking,
+  RR-agreement ceiling, contactCompromised gates; artifact-night fixture
+  proves NO candidate, real-workout fixture proves survival. VERIFIED LIVE
+  same day: sleeps 7→8 (auto), rollups 12 with today's row, workouts stable.
+- **History & Trends restoration** (80218298): root cause of "shows so
+  little" — the live Vitals tab rendered exactly TWO cards; the July-1
+  artifact designs (user: "even artifacts/simulator are better") were never
+  wired in. New AtriaHistorySection: hero chips, 14-day activity-rhythm strip,
+  tappable day rows, pinned-month full history (≤400 lazy rows), day-vs-14d-
+  median detail sheet with direction-aware deltas. Trends: 1Y + All ranges,
+  dashed prior-period ghost line with honest gating.
+- Essentials made default-visible at BOTH layout layers (d766bf1d + the live
+  deck 37778d6d — dual-system gotcha recorded in §25); HR Zones/Workouts/
+  Strain-vs-typical tiles shipped; foreground catch-up for the nightly
+  research bundle (c759193a).
+
+State: directive backlog EMPTY. Overnight #2 validates the degraded sleep
+tier + hardened workout gates on fresh data. Pending user decisions unchanged
+(sharing server + network-ban exemption, Face-Off publish, duty-cycle default).
