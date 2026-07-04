@@ -1,9 +1,11 @@
 import AppIntents
 import Foundation
+import SwiftUI
 
 enum AtriaIntentDestination: String, AppEnum, Codable {
     case today
     case vitals
+    case journal
     case collection
 
     static var typeDisplayName: LocalizedStringResource { "Atria destination" }
@@ -13,7 +15,8 @@ enum AtriaIntentDestination: String, AppEnum, Codable {
         [
             .today: "Today",
             .vitals: "Vitals",
-            .collection: "Data"
+            .journal: "Journal",
+            .collection: "Strap"
         ]
     }
 }
@@ -77,15 +80,55 @@ struct AtriaMetricsIntent: AppIntent {
     static let description = IntentDescription("Read the latest local recovery, strain, and HRV snapshot.")
     static let openAppWhenRun = false
 
-    func perform() async throws -> some IntentResult & ProvidesDialog {
+    func perform() async throws -> some IntentResult & ProvidesDialog & ShowsSnippetView & ReturnsValue<String> {
         guard let snapshot = AtriaIntentSnapshotStore.loadLatestSnapshot() else {
-            return .result(dialog: "Atria is still learning. Open the app once to refresh the local snapshot.")
+            let learning = "Atria is still learning. Open the app once to refresh the local snapshot."
+            return .result(value: learning,
+                           dialog: IntentDialog(stringLiteral: learning),
+                           view: AtriaMetricsSnippetView(snapshot: nil))
         }
 
         let recovery = snapshot.recoveryPercent.map { "\($0) percent" } ?? "learning"
         let hrv = snapshot.hrvRMSSD.map { "\($0) milliseconds" } ?? snapshot.hrvState
         let strain = String(format: "%.1f", snapshot.strain)
-        return .result(dialog: "Recovery is \(recovery), strain is \(strain), and HRV is \(hrv).")
+        let summary = "Recovery is \(recovery), strain is \(strain), and HRV is \(hrv)."
+        return .result(value: summary,
+                       dialog: IntentDialog(stringLiteral: summary),
+                       view: AtriaMetricsSnippetView(snapshot: snapshot))
+    }
+}
+
+/// Compact Siri/Shortcuts snippet card: the three headline numbers at a glance,
+/// rendered from the same app-group snapshot the widgets use.
+private struct AtriaMetricsSnippetView: View {
+    let snapshot: WidgetSnapshot?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            stat(label: "Recovery",
+                 value: snapshot?.recoveryPercent.map { "\($0)%" } ?? "--",
+                 tint: .cyan)
+            stat(label: "Strain",
+                 value: snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
+                 tint: .orange)
+            stat(label: "HRV",
+                 value: snapshot?.hrvRMSSD.map { "\($0)ms" } ?? "--",
+                 tint: .purple)
+        }
+        .padding(16)
+    }
+
+    private func stat(label: String, value: String, tint: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -184,6 +227,16 @@ struct AtriaAppShortcuts: AppShortcutsProvider {
         )
 
         AppShortcut(
+            intent: OpenAtriaIntent(destination: .journal),
+            phrases: [
+                "Open my journal in \(.applicationName)",
+                "Log my morning check-in in \(.applicationName)"
+            ],
+            shortTitle: "Morning check-in",
+            systemImageName: "square.and.pencil"
+        )
+
+        AppShortcut(
             intent: AtriaCaptureIntent(command: .start),
             phrases: [
                 "Start backup in \(.applicationName)",
@@ -236,6 +289,9 @@ enum AtriaIntentCommandStore {
     static func persistFocusMode(_ mode: AtriaFocusMode) {
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.configured)
+        // Workout focus pins the duty cycle to full capture; other modes clear
+        // the override (sleep hours are already full-rate via the sleep window).
+        defaults.set(mode == .workout, forKey: AtriaBLEManager.DutyCycleDefaults.focusFullCapture)
         switch mode {
         case .off:
             defaults.set(false, forKey: AtriaBLEManager.LongWearDefaults.enabled)
@@ -282,7 +338,8 @@ private extension AtriaIntentDestination {
         switch self {
         case .today: return "Today"
         case .vitals: return "Vitals"
-        case .collection: return "Data"
+        case .journal: return "Journal"
+        case .collection: return "Strap"
         }
     }
 }

@@ -29,11 +29,21 @@ enum AtriaSleepWakeResearch {
                          restingHR: Int,
                          imuStillnessRatio: Double?,
                          imuMovementIntensity: Double?,
-                         strapSteps: Int?) -> Result {
+                         strapSteps: Int?,
+                         windowStart: Date? = nil,
+                         hrStandardDeviation: Double? = nil,
+                         calendar: Calendar = .current) -> Result {
         guard duration >= 20 * 60 else {
             return Result(state: "learning", confidence: "none", reason: "short_window")
         }
         guard let imuStillnessRatio, let imuMovementIntensity else {
+            if duration >= 3 * 60 * 60,
+               averageHR <= restingHR + 12,
+               (hrStandardDeviation ?? .infinity) <= 9,
+               let windowStart,
+               hrOnlySleepStartReady(windowStart, calendar: calendar) {
+                return Result(state: "sleep_research", confidence: "hr_only", reason: "hr_pattern_no_imu")
+            }
             return Result(state: "learning", confidence: "none", reason: "imu_missing")
         }
         let lowMotion = imuStillnessRatio >= 0.72 && imuMovementIntensity <= 0.18
@@ -43,6 +53,11 @@ enum AtriaSleepWakeResearch {
             return Result(state: "sleep_research", confidence: "research", reason: "low_motion_low_hr")
         }
         return Result(state: "wake_research", confidence: "research", reason: "motion_or_hr_active")
+    }
+
+    private static func hrOnlySleepStartReady(_ start: Date, calendar: Calendar) -> Bool {
+        let hour = calendar.component(.hour, from: start)
+        return hour >= 20 || hour <= 3
     }
 
     static func stageSegments(samples: [HeartSample],
@@ -77,8 +92,29 @@ enum AtriaSleepWakeResearch {
             staged.append((feature.start, feature.end, stage))
         }
 
-        guard staged.count >= max(8, epochCount / 3) else { return [] }
-        return merge(staged)
+        guard staged.count >= max(8, epochCount / 3) else {
+            return fallbackStageSegments(samples: sorted,
+                                         start: start,
+                                         end: end,
+                                         restingHR: restingHR,
+                                         isNap: isNap,
+                                         motionValidated: motionValidated)
+        }
+        let merged = merge(staged)
+        let covered = merged.reduce(0) { $0 + max(0, $1.duration) }
+        let nonAwake = merged.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
+        if covered < duration * 0.85 || (!motionValidated && nonAwake <= 0) {
+            let fallback = fallbackStageSegments(samples: sorted,
+                                                 start: start,
+                                                 end: end,
+                                                 restingHR: restingHR,
+                                                 isNap: isNap,
+                                                 motionValidated: motionValidated)
+            if fallback.reduce(0, { $0 + max(0, $1.duration) }) > covered || nonAwake <= 0 {
+                return fallback
+            }
+        }
+        return merged
     }
 
     private static func epochFeatures(samples: [HeartSample],
@@ -137,6 +173,144 @@ enum AtriaSleepWakeResearch {
         }
         if delta <= 2 && trendUp <= 1.5 && variability <= 3.5 { return .deep }
         if delta <= 7 && trendUp <= 3.5 { return .sws }
+        return .light
+    }
+
+    private static func coarseStageSegments(samples: [HeartSample],
+                                            start: Date,
+                                            end: Date,
+                                            restingHR: Int,
+                                            isNap: Bool,
+                                            motionValidated: Bool) -> [SleepStageSegment] {
+        let duration = end.timeIntervalSince(start)
+        guard duration >= 20 * 60, !samples.isEmpty else { return [] }
+        let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
+        let epochCount = max(1, Int(ceil(duration / epoch)))
+        let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).compactMap { index in
+            let epochStart = start.addingTimeInterval(Double(index) * epoch)
+            let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
+            let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
+            let window: TimeInterval = isNap ? 12 * 60 : 20 * 60
+            let nearby = samples.filter { abs($0.t.timeIntervalSince(center)) <= window }
+            guard !nearby.isEmpty else { return nil }
+            let averageHR = average(nearby.map { Double($0.bpm) }) ?? 0
+            let variability = standardDeviation(nearby.map { Double($0.bpm) })
+            let progress = epochStart.timeIntervalSince(start) / max(1, duration)
+            let feature = EpochFeature(start: epochStart,
+                                       end: epochEnd,
+                                       averageHR: averageHR,
+                                       shortSmoothHR: averageHR,
+                                       longSmoothHR: averageHR,
+                                       differenceOfGaussians: 0,
+                                       localVariability: variability,
+                                       progress: progress,
+                                       motionStillnessPrior: motionValidated ? 1.0 : 0.55)
+            return (epochStart, epochEnd, stage(feature: feature,
+                                                restingHR: restingHR,
+                                                isNap: isNap,
+                                                motionValidated: motionValidated))
+        }
+        guard !staged.isEmpty else { return [] }
+        return merge(staged)
+    }
+
+    private static func fallbackStageSegments(samples: [HeartSample],
+                                              start: Date,
+                                              end: Date,
+                                              restingHR: Int,
+                                              isNap: Bool,
+                                              motionValidated: Bool) -> [SleepStageSegment] {
+        let coarse = coarseStageSegments(samples: samples,
+                                         start: start,
+                                         end: end,
+                                         restingHR: restingHR,
+                                         isNap: isNap,
+                                         motionValidated: motionValidated)
+        let duration = end.timeIntervalSince(start)
+        let covered = coarse.reduce(0) { $0 + max(0, $1.duration) }
+        let nonAwake = coarse.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
+        guard covered < duration * 0.85 || (!motionValidated && nonAwake <= 0) else {
+            return coarse
+        }
+        let full = fullCoverageHRStageSegments(samples: samples,
+                                               start: start,
+                                               end: end,
+                                               restingHR: restingHR,
+                                               isNap: isNap,
+                                               motionValidated: motionValidated)
+        return full.isEmpty ? coarse : full
+    }
+
+    private static func fullCoverageHRStageSegments(samples: [HeartSample],
+                                                    start: Date,
+                                                    end: Date,
+                                                    restingHR: Int,
+                                                    isNap: Bool,
+                                                    motionValidated: Bool) -> [SleepStageSegment] {
+        let duration = end.timeIntervalSince(start)
+        guard duration >= 20 * 60, !samples.isEmpty else { return [] }
+        let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
+        let epochCount = max(1, Int(ceil(duration / epoch)))
+        let allValues = samples.map { Double($0.bpm) }
+        let globalAverage = average(allValues) ?? Double(restingHR)
+        let globalVariability = standardDeviation(allValues)
+        let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).map { index in
+            let epochStart = start.addingTimeInterval(Double(index) * epoch)
+            let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
+            let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
+            let direct = samples.filter { $0.t >= epochStart && $0.t <= epochEnd }
+            let nearby = direct.isEmpty
+                ? samples.filter { abs($0.t.timeIntervalSince(center)) <= (isNap ? 20 * 60 : 45 * 60) }
+                : direct
+            let source = nearby.isEmpty ? samples : nearby
+            let averageHR = average(source.map { Double($0.bpm) }) ?? globalAverage
+            let variability = nearby.isEmpty ? globalVariability : standardDeviation(source.map { Double($0.bpm) })
+            let progress = epochStart.timeIntervalSince(start) / max(1, duration)
+            let stage = hrOnlyStage(averageHR: averageHR,
+                                    variability: variability,
+                                    progress: progress,
+                                    restingHR: restingHR,
+                                    isNap: isNap,
+                                    motionValidated: motionValidated)
+            return (epochStart, epochEnd, stage)
+        }
+        return merge(staged)
+    }
+
+    private static func hrOnlyStage(averageHR: Double,
+                                    variability: Double,
+                                    progress: Double,
+                                    restingHR: Int,
+                                    isNap: Bool,
+                                    motionValidated: Bool) -> SleepStageKind {
+        if motionValidated {
+            let feature = EpochFeature(start: Date(timeIntervalSince1970: 0),
+                                       end: Date(timeIntervalSince1970: 1),
+                                       averageHR: averageHR,
+                                       shortSmoothHR: averageHR,
+                                       longSmoothHR: averageHR,
+                                       differenceOfGaussians: 0,
+                                       localVariability: variability,
+                                       progress: progress,
+                                       motionStillnessPrior: 1.0)
+            return stage(feature: feature,
+                         restingHR: restingHR,
+                         isNap: isNap,
+                         motionValidated: true)
+        }
+        let delta = averageHR - Double(restingHR)
+        if delta >= 18 || ((progress < 0.06 || progress > 0.94) && delta >= 14) { return .awake }
+        if isNap {
+            if progress >= 0.25 && delta <= 11 && variability >= 3.0 { return .rem }
+            if delta <= 3 && variability <= 3.5 { return .deep }
+            if delta <= 7 { return .sws }
+            return .light
+        }
+        if progress >= 0.18 && progress <= 0.88 && delta >= 2 && delta <= 14 && variability >= 3.0 {
+            return .rem
+        }
+        if delta <= 3 && variability <= 3.5 { return .deep }
+        if delta <= 8 { return .sws }
         return .light
     }
 

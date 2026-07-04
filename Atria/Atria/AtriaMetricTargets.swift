@@ -44,7 +44,7 @@ struct AtriaMetricTarget: Equatable, Codable {
 
         var label: String {
             switch self {
-            case .researchDefault: return "Research default"
+            case .researchDefault: return "Early default"
             case .personalBaseline: return "Personal baseline"
             case .userEdited: return "User edited"
             }

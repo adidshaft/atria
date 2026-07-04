@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AtriaAICoachCard: View, Equatable {
     let context: AtriaCoachContext
+    let preparedPayload: AtriaCoachPayload?
     let settings: AtriaAICoachSettings
     let hasAPIKey: Bool
     let onSettingsChange: (AtriaAICoachSettings) -> Void
@@ -12,10 +13,14 @@ struct AtriaAICoachCard: View, Equatable {
                                                  detail: "Enable local mode for an offline summary, or review bring-your-own-key cloud mode when a provider client is available.",
                                                  disclosure: "Off by default.",
                                                  networkPolicy: .none)
+    @State private var payload: AtriaCoachPayload?
+    @State private var fabricationFlags: [String] = []
     @State private var apiKeyDraft = ""
+    @State private var showsPayloadAudit = false
 
     static func == (lhs: AtriaAICoachCard, rhs: AtriaAICoachCard) -> Bool {
         lhs.context == rhs.context
+            && lhs.preparedPayload == rhs.preparedPayload
             && lhs.settings == rhs.settings
             && lhs.hasAPIKey == rhs.hasAPIKey
     }
@@ -57,6 +62,23 @@ struct AtriaAICoachCard: View, Equatable {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let payload {
+                    Button {
+                        showsPayloadAudit = true
+                    } label: {
+                        Text(payload.receiptSummary)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.indigo)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens the exact data sent to the coach.")
+                }
+                if !fabricationFlags.isEmpty {
+                    Text("⚠ Contains figures not from your data")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.yellow)
+                }
             }
             .padding(10)
             .atriaInsetCard(cornerRadius: 14, tint: .indigo)
@@ -65,6 +87,13 @@ struct AtriaAICoachCard: View, Equatable {
         .atriaCard(emphasis: .soft)
         .task(id: refreshID) {
             await refreshAnswer()
+        }
+        .sheet(isPresented: $showsPayloadAudit) {
+            if let payload {
+                AtriaCoachPayloadAuditSheet(payload: payload)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -137,7 +166,7 @@ struct AtriaAICoachCard: View, Equatable {
     }
 
     private var refreshID: String {
-        "\(settings.mode.rawValue)-\(settings.cloudProvider.rawValue)-\(hasAPIKey)-\(context)"
+        "\(settings.mode.rawValue)-\(settings.cloudProvider.rawValue)-\(hasAPIKey)-\(context)-\(preparedPayload?.now ?? "legacy")-\(preparedPayload?.last7.count ?? 0)"
     }
 
     @MainActor
@@ -147,8 +176,70 @@ struct AtriaAICoachCard: View, Equatable {
                                       detail: "Enable local mode for an offline summary, or keep cloud mode off until a reviewed provider client is available.",
                                       disclosure: "Off by default.",
                                       networkPolicy: .none)
+            payload = nil
+            fabricationFlags = []
             return
         }
-        answer = await provider.answer(context: context)
+        let sentPayload = preparedPayload ?? AtriaCoachPayload.legacy(context: context)
+        payload = sentPayload
+        #if DEBUG
+        if Self.debugShowsPayloadAuditFixture(arguments: ProcessInfo.processInfo.arguments) {
+            showsPayloadAudit = true
+        }
+        if Self.debugShowsFlaggedReplyFixture(arguments: ProcessInfo.processInfo.arguments) {
+            answer = AtriaCoachAnswer(title: "Check this reply",
+                                      detail: "Your RHR was 49 bpm.",
+                                      disclosure: "\(sentPayload.receiptSummary). Debug fixture plants an invented number.",
+                                      networkPolicy: .offlineOnly)
+            fabricationFlags = AtriaCoachPayload.fabricationFlags(response: "\(answer.title) \(answer.detail)",
+                                                                  payload: sentPayload)
+            return
+        }
+        #endif
+        answer = await provider.answer(payload: sentPayload, context: context)
+        fabricationFlags = AtriaCoachPayload.fabricationFlags(response: "\(answer.title) \(answer.detail)",
+                                                              payload: sentPayload)
+    }
+
+    #if DEBUG
+    private static func debugShowsFlaggedReplyFixture(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex)
+            && arguments[valueIndex] == "ai-coach-flagged"
+    }
+
+    private static func debugShowsPayloadAuditFixture(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex)
+            && arguments[valueIndex] == "ai-coach-audit"
+    }
+    #endif
+}
+
+private struct AtriaCoachPayloadAuditSheet: View {
+    let payload: AtriaCoachPayload
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Sent context") {
+                    ForEach(Array(payload.auditLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.body.monospacedDigit())
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .navigationTitle("Coach context")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }

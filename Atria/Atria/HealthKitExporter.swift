@@ -143,10 +143,6 @@ final class HealthKitExporter {
         HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
     }
 
-    private var stepCountType: HKQuantityType {
-        HKQuantityType.quantityType(forIdentifier: .stepCount)!
-    }
-
     private var vo2MaxType: HKQuantityType {
         HKQuantityType.quantityType(forIdentifier: .vo2Max)!
     }
@@ -169,6 +165,185 @@ final class HealthKitExporter {
 
     private var sleepType: HKCategoryType {
         HKCategoryType.categoryType(forIdentifier: .sleepAnalysis)!
+    }
+
+    static let nutritionReadIdentifiers: [HKQuantityTypeIdentifier] = [
+        .dietaryEnergyConsumed,
+        .dietaryProtein,
+        .dietaryCarbohydrates,
+        .dietaryFatTotal,
+        .dietaryWater,
+        .dietaryCaffeine,
+        .numberOfAlcoholicBeverages,
+        .bodyMass
+    ]
+
+    private var nutritionReadTypes: Set<HKObjectType> {
+        Set(Self.nutritionReadIdentifiers.compactMap { HKQuantityType.quantityType(forIdentifier: $0) })
+    }
+
+    func requestNutritionReadAuthorizationIfEnabled(_ enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey)) {
+        guard enabled else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=disabled")
+            return
+        }
+        guard Self.hasHealthKitEntitlement() else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=missing_entitlement action=enable_healthkit_capability")
+            return
+        }
+        guard HKHealthStore.isHealthDataAvailable() else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=unavailable")
+            return
+        }
+        let readTypes = nutritionReadTypes
+        guard !readTypes.isEmpty else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=missing_types")
+            return
+        }
+        store.requestAuthorization(toShare: [], read: readTypes) { granted, error in
+            if let error {
+                AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=auth_error error=%@",
+                              String(describing: error))
+                return
+            }
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=%@ types=%d",
+                          granted ? "authorized_or_partially_authorized" : "denied",
+                          readTypes.count)
+        }
+    }
+
+    func fetchNutritionSummary(for day: Date,
+                               calendar: Calendar = .current,
+                               enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey),
+                               completion: @escaping (AtriaNutritionSummary?, Double?) -> Void) {
+        guard enabled else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=disabled")
+            completion(nil, nil)
+            return
+        }
+        guard Self.hasHealthKitEntitlement(), HKHealthStore.isHealthDataAvailable() else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=unavailable")
+            completion(nil, nil)
+            return
+        }
+
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var sums: [HKQuantityTypeIdentifier: Double] = [:]
+        var latestCaffeineDate: Date?
+        var latestBodyMassKg: Double?
+
+        for identifier in Self.nutritionReadIdentifiers where identifier != .bodyMass {
+            guard let type = HKQuantityType.quantityType(forIdentifier: identifier) else { continue }
+            group.enter()
+            let query = HKStatisticsQuery(quantityType: type,
+                                          quantitySamplePredicate: predicate,
+                                          options: .cumulativeSum) { _, statistics, error in
+                defer { group.leave() }
+                if let error {
+                    AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=query_error type=%@ error=%@",
+                                  identifier.rawValue,
+                                  String(describing: error))
+                    return
+                }
+                guard let quantity = statistics?.sumQuantity() else { return }
+                let value = Self.nutritionValue(quantity: quantity, identifier: identifier)
+                lock.lock()
+                sums[identifier] = value
+                lock.unlock()
+            }
+            store.execute(query)
+        }
+
+        if let bodyMassType = HKQuantityType.quantityType(forIdentifier: .bodyMass) {
+            group.enter()
+            let bodyMassPredicate = HKQuery.predicateForSamples(withStart: nil, end: end, options: .strictEndDate)
+            let query = HKSampleQuery(sampleType: bodyMassType,
+                                      predicate: bodyMassPredicate,
+                                      limit: 1,
+                                      sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
+                defer { group.leave() }
+                if let error {
+                    AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=body_mass_error error=%@",
+                                  String(describing: error))
+                    return
+                }
+                let bodyMassKg = (samples as? [HKQuantitySample])?
+                    .first?
+                    .quantity
+                    .doubleValue(for: .gramUnit(with: .kilo))
+                lock.lock()
+                latestBodyMassKg = bodyMassKg.flatMap { $0 > 0 ? $0 : nil }
+                lock.unlock()
+            }
+            store.execute(query)
+        }
+
+        if let caffeineType = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine) {
+            group.enter()
+            let query = HKSampleQuery(sampleType: caffeineType,
+                                      predicate: predicate,
+                                      limit: 1,
+                                      sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]) { _, samples, error in
+                defer { group.leave() }
+                if let error {
+                    AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=caffeine_sample_error error=%@",
+                                  String(describing: error))
+                    return
+                }
+                lock.lock()
+                latestCaffeineDate = (samples as? [HKQuantitySample])?.first?.endDate
+                lock.unlock()
+            }
+            store.execute(query)
+        }
+
+        group.notify(queue: .main) {
+            lock.lock()
+            let capturedSums = sums
+            let capturedLatestCaffeineDate = latestCaffeineDate
+            let capturedBodyMassKg = latestBodyMassKg
+            lock.unlock()
+            let summary = AtriaNutritionContext.summaryFromHealthKit(
+                kcal: capturedSums[.dietaryEnergyConsumed],
+                proteinG: capturedSums[.dietaryProtein],
+                carbsG: capturedSums[.dietaryCarbohydrates],
+                fatG: capturedSums[.dietaryFatTotal],
+                waterMl: capturedSums[.dietaryWater],
+                caffeineMg: capturedSums[.dietaryCaffeine],
+                latestCaffeineDate: capturedLatestCaffeineDate,
+                alcoholDrinks: capturedSums[.numberOfAlcoholicBeverages],
+                calendar: calendar)
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=%@ kcal=%@ protein_g=%@ caffeine_hour=%@ alcohol=%@ body_mass_kg=%@",
+                          summary == nil ? "empty" : "ok",
+                          summary?.kcal.map { String(format: "%.0f", $0) } ?? "none",
+                          summary?.proteinG.map { String(format: "%.0f", $0) } ?? "none",
+                          summary?.lastCaffeineHour.map(String.init) ?? "none",
+                          summary?.alcoholDrinks.map { String(format: "%.1f", $0) } ?? "none",
+                          capturedBodyMassKg.map { String(format: "%.1f", $0) } ?? "none")
+            completion(summary, capturedBodyMassKg)
+        }
+    }
+
+    private nonisolated static func nutritionValue(quantity: HKQuantity,
+                                                   identifier: HKQuantityTypeIdentifier) -> Double {
+        switch identifier {
+        case .dietaryEnergyConsumed:
+            return quantity.doubleValue(for: .kilocalorie())
+        case .dietaryWater:
+            return quantity.doubleValue(for: .literUnit(with: .milli))
+        case .dietaryCaffeine:
+            return quantity.doubleValue(for: .gramUnit(with: .milli))
+        case .dietaryProtein, .dietaryCarbohydrates, .dietaryFatTotal:
+            return quantity.doubleValue(for: .gram())
+        case .numberOfAlcoholicBeverages:
+            return quantity.doubleValue(for: .count())
+        default:
+            return 0
+        }
     }
 
     func export(sessions: [SavedSession],
@@ -263,7 +438,6 @@ final class HealthKitExporter {
                                           maxHR: maxHR,
                                           reason: "up_to_date")
             auditHeartRateReferenceAvailability(sessions: sessions)
-            auditAppleStepCountReadAvailability(reason: "up_to_date")
             auditSleepingWristTemperatureReadAvailability(reason: "up_to_date")
             auditCuffBloodPressureReadAvailability(reason: "up_to_date")
             return
@@ -304,7 +478,7 @@ final class HealthKitExporter {
         }
 
         let writeTypes = requiredWriteTypes(for: writablePlanned)
-        var readTypes: Set<HKObjectType> = [heartRateType, stepCountType, bloodPressureSystolicType, bloodPressureDiastolicType]
+        var readTypes: Set<HKObjectType> = [heartRateType, bloodPressureSystolicType, bloodPressureDiastolicType]
         if let sleepingWristTemperatureType {
             readTypes.insert(sleepingWristTemperatureType)
         }
@@ -344,7 +518,6 @@ final class HealthKitExporter {
                                     reason: "incremental",
                                     hrOnly: false)
             auditHeartRateReferenceAvailability(sessions: sessions)
-            auditAppleStepCountReadAvailability(reason: "authorization_cached")
             auditSleepingWristTemperatureReadAvailability(reason: "authorization_cached")
             auditCuffBloodPressureReadAvailability(reason: "authorization_cached")
             return
@@ -398,7 +571,6 @@ final class HealthKitExporter {
                                              reason: "incremental",
                                              hrOnly: false)
                 self.auditHeartRateReferenceAvailability(sessions: sessions)
-                self.auditAppleStepCountReadAvailability(reason: "authorization_granted")
                 self.auditSleepingWristTemperatureReadAvailability(reason: "authorization_granted")
                 self.auditCuffBloodPressureReadAvailability(reason: "authorization_granted")
             }
@@ -409,7 +581,6 @@ final class HealthKitExporter {
         guard arguments.contains("--strap-healthkit-reference-audit") else { return }
         AtriaDebugLog("ATRIADBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
         auditHeartRateReferenceAvailability(sessions: sessions)
-        auditAppleStepCountReadAvailability(reason: "launch_arg")
         auditSleepingWristTemperatureReadAvailability(reason: "launch_arg")
         auditCuffBloodPressureReadAvailability(reason: "launch_arg")
     }
@@ -1299,28 +1470,6 @@ final class HealthKitExporter {
         store.execute(query)
     }
 
-    private func auditAppleStepCountReadAvailability(reason: String) {
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: Date())
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date(), options: .strictStartDate)
-        let query = HKStatisticsQuery(quantityType: stepCountType,
-                                      quantitySamplePredicate: predicate,
-                                      options: .cumulativeSum) { _, statistics, error in
-            if let error {
-                AtriaDebugLog("ATRIADBG healthkit_step_read status=query_error reason=%@ apple_steps_today=0 source=healthkit_read write_steps=0 error=%@",
-                      reason,
-                      String(describing: error))
-                return
-            }
-            let steps = Int((statistics?.sumQuantity()?.doubleValue(for: .count()) ?? 0).rounded())
-            AtriaDebugLog("ATRIADBG healthkit_step_read status=%@ reason=%@ apple_steps_today=%d source=healthkit_read write_steps=0",
-                  steps > 0 ? "ok" : "empty",
-                  reason,
-                  steps)
-        }
-        store.execute(query)
-    }
-
     private func auditSleepingWristTemperatureReadAvailability(reason: String) {
         guard let sleepingWristTemperatureType else {
             AtriaDebugLog("ATRIADBG healthkit_sleeping_wrist_temp_read status=unavailable reason=%@ samples=0 source=healthkit_read write_temperature=0",
@@ -2013,6 +2162,19 @@ final class HealthKitExporter {
             "atria_workout_peak_hr": workout.peakHR,
             "atria_auto_gate_e_unchanged": true
         ]
+        if let activityType = workout.activityType {
+            metadata["atria_workout_activity_type"] = activityType
+        }
+        if let activitySubtype = workout.activitySubtype {
+            metadata["atria_workout_activity_subtype"] = activitySubtype
+        }
+        if let exerciseNames = workout.exerciseNames, !exerciseNames.isEmpty {
+            metadata["atria_workout_exercises"] = exerciseNames.joined(separator: ", ")
+            metadata["atria_workout_exercise_count"] = exerciseNames.count
+        }
+        if let reviewSource = workout.reviewSource {
+            metadata["atria_workout_review_source"] = reviewSource
+        }
         if let strain = workout.strain {
             metadata["atria_workout_strain"] = strain
         }
@@ -2025,10 +2187,37 @@ final class HealthKitExporter {
                 metadata["atria_workout_zone_\(zone)_seconds"] = seconds
             }
         }
-        return WorkoutExportPlan(activityType: .traditionalStrengthTraining,
+        return WorkoutExportPlan(activityType: healthKitActivityType(for: workout),
                                  start: workout.start,
                                  end: workout.end,
                                  metadata: metadata)
+    }
+
+    private func healthKitActivityType(for workout: UserConfirmedWorkout) -> HKWorkoutActivityType {
+        switch workout.activityType?.lowercased() {
+        case "strength":
+            return .traditionalStrengthTraining
+        case "functional":
+            return .functionalStrengthTraining
+        case "running":
+            return .running
+        case "walking":
+            return .walking
+        case "cycling":
+            return .cycling
+        case "hiit":
+            return .highIntensityIntervalTraining
+        case "yoga":
+            return .yoga
+        case "dance":
+            return .cardioDance
+        case "swimming":
+            return .swimming
+        case "rowing":
+            return .rowing
+        default:
+            return .other
+        }
     }
 
     private func confirmedWorkoutActiveEnergySample(for workout: UserConfirmedWorkout) -> HKQuantitySample? {
@@ -2043,11 +2232,18 @@ final class HealthKitExporter {
             "atria_metric_source": "keytel_hr_energy_estimate",
             "atria_auto_gate_e_unchanged": true
         ]
+        var enrichedMetadata = metadata
+        if let activityType = workout.activityType {
+            enrichedMetadata["atria_workout_activity_type"] = activityType
+        }
+        if let reviewSource = workout.reviewSource {
+            enrichedMetadata["atria_workout_review_source"] = reviewSource
+        }
         return HKQuantitySample(type: activeEnergyType,
                                 quantity: HKQuantity(unit: .kilocalorie(), doubleValue: kilocalories),
                                 start: workout.start,
                                 end: workout.end,
-                                metadata: metadata)
+                                metadata: enrichedMetadata)
     }
 
     private func confirmedSleepSamples(for sleep: UserConfirmedSleep) -> [HKCategorySample] {

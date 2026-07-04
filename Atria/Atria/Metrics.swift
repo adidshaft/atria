@@ -12,11 +12,11 @@ enum Metrics {
 
     // MARK: Daily aggregation
 
-    typealias PhoneMotionSample = AtriaAnalytics.Daily.PhoneMotionSample
-    typealias PhoneMotionSummary = AtriaAnalytics.Daily.PhoneMotionSummary
+    typealias StrapStepSample = AtriaAnalytics.Daily.StrapStepSample
+    typealias StrapStepSummary = AtriaAnalytics.Daily.StrapStepSummary
     typealias HeartRateEnergySample = AtriaAnalytics.Daily.HeartRateEnergySample
 
-    static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
+    static func stepsDaily(_ samples: [StrapStepSample]) -> StrapStepSummary {
         AtriaAnalytics.Daily.stepsDaily(samples)
     }
 
@@ -63,6 +63,50 @@ enum Metrics {
     /// Buckets: z0 <30%, z1 30-50%, z2 50-70%, z3 70-85%, z4 >=85% HR reserve.
     static func strainZoneSummary(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> StrainZoneSummary {
         AtriaAnalytics.Strain.zoneSummary(series, rest: rest, max: max)
+    }
+
+    struct HeartRateZone: Equatable, Identifiable {
+        let index: Int
+        let title: String
+        let shortLabel: String
+        let name: String
+        let reserveFraction: Double
+        let tint: Color
+
+        var id: Int { index }
+    }
+
+    static func heartRateZone(bpm: Int, rest: Int, max: Int) -> HeartRateZone? {
+        guard bpm > 0, max > rest else { return nil }
+        let rawFraction = Double(bpm - rest) / Double(max - rest)
+        let fraction = Swift.min(Swift.max(rawFraction, 0), 1)
+        let index: Int
+        switch fraction {
+        case ..<0.30: index = 0
+        case ..<0.50: index = 1
+        case ..<0.70: index = 2
+        case ..<0.80: index = 3
+        case ..<0.90: index = 4
+        default: index = 5
+        }
+        let names = ["Recovery", "Easy", "Endurance", "Tempo", "Hard", "Max"]
+        return HeartRateZone(index: index,
+                             title: "Zone \(index)",
+                             shortLabel: "Z\(index)",
+                             name: names[index],
+                             reserveFraction: fraction,
+                             tint: heartRateZoneTint(index))
+    }
+
+    static func heartRateZoneTint(_ index: Int) -> Color {
+        switch index {
+        case 0: return .secondary
+        case 1: return electricStrain
+        case 2: return electricGreen
+        case 3: return electricYellow
+        case 4: return .orange
+        default: return electricRed
+        }
     }
 
     /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
@@ -133,6 +177,8 @@ enum Metrics {
     /// Electric strain blue (#0093E7) — effort is always cool, never warm, so a hard
     /// session can't be misread as poor recovery.
     static let electricStrain = adaptive(dark: (0.0, 0.576, 0.906), light: (0.0, 0.46, 0.75))
+    /// Electric sleep indigo — sleep owns purple so it stays distinct from strain.
+    static let electricSleep = adaptive(dark: (0.51, 0.35, 1.0), light: (0.39, 0.25, 0.78))
 
     static func recoveryColor(_ pct: Int) -> Color {
         switch pct {

@@ -1,64 +1,86 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Native iOS 26 settings hub. Uses a grouped Form over the Atria backdrop for
-/// the Liquid Glass look, and folds in the community-requested differentiators
-/// (no subscription, data ownership/export, custom HR-zone & strain alerts).
+/// Native iOS 26 settings hub. Uses a grouped Form and folds in the
+/// community-requested differentiators (no subscription, data ownership/export,
+/// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
     let profile: AthleteProfile
     let restingBaseline: Int?
     let strapName: String
     let strapModel: String
+    let strapGenerationDetail: String
     let strapFirmware: String
     let onRenameStrap: (String) -> Void
     let onUpdateProfile: (@escaping (inout AthleteProfile) -> Void) -> Void
     let hapticSettings: AtriaHapticAlertSettings
     let onUpdateHaptics: (AtriaHapticAlertSettings) -> Void
+    let heartRateBroadcastEnabled: Bool
+    let onUpdateHeartRateBroadcast: (Bool) -> Void
     let batterySaverEnabled: Bool
     let onUpdateBatterySaver: (Bool) -> Void
+    let onCustomizeToday: (() -> Void)?
+    let maxHRSuggestion: AtriaMaxHRSuggestion?
+    let onDismissMaxHRSuggestion: (Int) -> Void
     let onExportHealth: (() -> Void)?
+    var buildResearchBundle: () async -> AtriaResearchBundleBuilder.Built? = { nil }
     let onSyncMissedData: (() -> Void)?
+    let onNutritionHealthToggle: (() -> Void)?
+    let backupStatusProvider: () -> SessionBackupStatus
+    let onWriteBackup: (() -> SessionBackupStatus)?
+    let onVerifyBackup: (() -> Void)?
+    let onRestoreBackup: ((URL) -> SessionBackupStatus?)?
     let onForgetStrap: (() -> Void)?
+    let researchValidationContent: AnyView?
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
+    @State private var heartRateBroadcast: Bool
     @State private var batterySaver: Bool
     @State private var exportTapped = false
     @State private var syncTapped = false
+    @State private var backupStatus: SessionBackupStatus
+    @State private var backupImportPresented = false
+    @State private var backupActionMessage: String?
+    @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
+    @AtriaDefault(AtriaNutritionContext.healthReadNutritionKey) private var useHealthNutrition = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
+    @AppStorage("atria.faceoff.displayName") private var faceOffDisplayName = ""
     @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
-    @AppStorage(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
-    @AppStorage(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
-    @AppStorage("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
-    @AppStorage("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
-    @AppStorage("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
-    @AppStorage("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
-    @AppStorage("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
-    @AppStorage("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
-    @AppStorage("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
-    @AppStorage("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
-    @AppStorage("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
-    @AppStorage("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
-    @AppStorage("atria.target.steps.goal") private var stepsGoal: Int = 8_000
-    @AppStorage("atria.target.calories.goal") private var caloriesGoal: Int = 500
-    @AppStorage("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
-    @AppStorage("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
-    @AppStorage("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
-    @AppStorage("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
-    @AppStorage("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
-    @AppStorage("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
-    @AppStorage("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
-    @AppStorage("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
-    @AppStorage("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
-    @AppStorage("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
-    @AppStorage("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
-    @AppStorage("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
-    @AppStorage("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
-    @AppStorage("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
-    @AppStorage("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
-    @AppStorage("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
+    @AtriaDefault(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
+    @AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
+    @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AtriaDefault("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AtriaDefault("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
+    @AtriaDefault("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
+    @AtriaDefault("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
+    @AtriaDefault("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
+    @AtriaDefault("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
+    @AtriaDefault("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
+    @AtriaDefault("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
+    @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AtriaDefault("atria.target.calories.goal") private var caloriesGoal: Int = 500
+    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
+    @AtriaDefault("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
+    @AtriaDefault("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
+    @AtriaDefault("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
+    @AtriaDefault("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
+    @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
+    @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
+    @AtriaDefault("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
+    @AtriaDefault("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
+    @AtriaDefault("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
+    @AtriaDefault("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
+    @AtriaDefault("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
+    @AtriaDefault("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
+    @AtriaDefault("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
+    @AtriaDefault("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
+    @AtriaDefault("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
     /// Support destinations are shown as text only. Atria's core stays local-first
     /// with no in-app network/browser clients, so contact details are surfaced for
@@ -69,53 +91,90 @@ struct AtriaSettingsView: View {
          restingBaseline: Int?,
          strapName: String = "",
          strapModel: String = "",
+         strapGenerationDetail: String = "",
          strapFirmware: String = "",
          onRenameStrap: @escaping (String) -> Void = { _ in },
          onUpdateProfile: @escaping (@escaping (inout AthleteProfile) -> Void) -> Void,
          hapticSettings: AtriaHapticAlertSettings,
          onUpdateHaptics: @escaping (AtriaHapticAlertSettings) -> Void,
+         heartRateBroadcastEnabled: Bool = false,
+         onUpdateHeartRateBroadcast: @escaping (Bool) -> Void = { _ in },
          batterySaverEnabled: Bool,
          onUpdateBatterySaver: @escaping (Bool) -> Void,
+         onCustomizeToday: (() -> Void)? = nil,
+         maxHRSuggestion: AtriaMaxHRSuggestion? = nil,
+         onDismissMaxHRSuggestion: @escaping (Int) -> Void = { _ in },
          onExportHealth: (() -> Void)? = nil,
+         buildResearchBundle: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
          onSyncMissedData: (() -> Void)? = nil,
-         onForgetStrap: (() -> Void)? = nil) {
+         onNutritionHealthToggle: (() -> Void)? = nil,
+         backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
+         onWriteBackup: (() -> SessionBackupStatus)? = nil,
+         onVerifyBackup: (() -> Void)? = nil,
+         onRestoreBackup: ((URL) -> SessionBackupStatus?)? = nil,
+         onForgetStrap: (() -> Void)? = nil,
+         researchValidationContent: AnyView? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
         self.strapName = strapName
         self.strapModel = strapModel
+        self.strapGenerationDetail = strapGenerationDetail
         self.strapFirmware = strapFirmware
         self.onRenameStrap = onRenameStrap
         self.onUpdateProfile = onUpdateProfile
         self.hapticSettings = hapticSettings
         self.onUpdateHaptics = onUpdateHaptics
+        self.heartRateBroadcastEnabled = heartRateBroadcastEnabled
+        self.onUpdateHeartRateBroadcast = onUpdateHeartRateBroadcast
         self.batterySaverEnabled = batterySaverEnabled
         self.onUpdateBatterySaver = onUpdateBatterySaver
+        self.onCustomizeToday = onCustomizeToday
+        self.maxHRSuggestion = maxHRSuggestion
+        self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
         self.onExportHealth = onExportHealth
+        self.buildResearchBundle = buildResearchBundle
         self.onSyncMissedData = onSyncMissedData
+        self.onNutritionHealthToggle = onNutritionHealthToggle
+        self.backupStatusProvider = backupStatusProvider
+        self.onWriteBackup = onWriteBackup
+        self.onVerifyBackup = onVerifyBackup
+        self.onRestoreBackup = onRestoreBackup
         self.onForgetStrap = onForgetStrap
+        self.researchValidationContent = researchValidationContent
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
         _nameDraft = State(initialValue: strapName)
+        _heartRateBroadcast = State(initialValue: heartRateBroadcastEnabled)
         _batterySaver = State(initialValue: batterySaverEnabled)
+        _backupStatus = State(initialValue: backupStatusProvider())
     }
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                AtriaDashboardBackdrop().ignoresSafeArea()
-                Form {
-                    profileSection
-                    appearanceSection
-                    todayLayoutSection
-                    targetsSection
+            Form {
+                if debugPrioritizesDeviceSection {
                     deviceSection
-                    radioModeSection
-                    sensorAvailabilitySection
-                    alertsSection
-                    dataSection
-                    aboutSection
                 }
-                .scrollContentBackground(.hidden)
+                if debugPrioritizesDataSection {
+                    dataSection
+                }
+                profileSection
+                appearanceSection
+                todayLayoutSection
+                targetsSection
+                if !debugPrioritizesDeviceSection {
+                    deviceSection
+                }
+                radioModeSection
+                heartRateBroadcastSection
+                sensorAvailabilitySection
+                alertsSection
+                if !debugPrioritizesDataSection {
+                    dataSection
+                }
+                AtriaResearchSharingSection(buildBundle: buildResearchBundle)
+                researchValidationSection
+                aboutSection
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -128,8 +187,19 @@ struct AtriaSettingsView: View {
         }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
+        .onChange(of: heartRateBroadcast) { _, value in onUpdateHeartRateBroadcast(value) }
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
         .onChange(of: targetSettingsSignature) { _, _ in normalizeAllTargets() }
+        .onChange(of: useHealthNutrition) { _, enabled in
+            if enabled {
+                onNutritionHealthToggle?()
+            }
+        }
+        .fileImporter(isPresented: $backupImportPresented,
+                      allowedContentTypes: backupArchiveTypes,
+                      allowsMultipleSelection: false) { result in
+            handleBackupImport(result)
+        }
     }
 
     private var targetSettingsSignature: String {
@@ -147,6 +217,7 @@ struct AtriaSettingsView: View {
             Double(stepsGoal),
             Double(caloriesGoal),
             sleepGoalHours,
+            sleepBaseNeedHours,
             sleepEfficiencyGreenLower,
             sleepEfficiencyYellowLower,
             hrvGreenRatio,
@@ -174,6 +245,7 @@ struct AtriaSettingsView: View {
         normalizeStepsGoal()
         normalizeCaloriesGoal()
         normalizeSleepGoal()
+        normalizeSleepBaseNeed()
         normalizeSleepEfficiencyTargets()
         normalizeHRVTargets()
         normalizeRestingTargets()
@@ -213,6 +285,10 @@ struct AtriaSettingsView: View {
 
     private func normalizeSleepGoal() {
         sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
+    }
+
+    private func normalizeSleepBaseNeed() {
+        sleepBaseNeedHours = min(max(sleepBaseNeedHours, 6.0), 10.0)
     }
 
     private func normalizeSleepEfficiencyTargets() {
@@ -268,6 +344,7 @@ struct AtriaSettingsView: View {
         stepsGoal = 8_000
         caloriesGoal = 500
         sleepGoalHours = 8.0
+        sleepBaseNeedHours = 8.0
         sleepEfficiencyGreenLower = 90
         sleepEfficiencyYellowLower = 80
         hrvGreenRatio = 0.95
@@ -324,6 +401,9 @@ struct AtriaSettingsView: View {
 
     private var profileSection: some View {
         Section {
+            if let maxHRSuggestion {
+                maxHRSuggestionRow(maxHRSuggestion)
+            }
             LabeledContent("Max heart rate") {
                 Text("\(draft.maxHR) bpm").monospacedDigit().foregroundStyle(.pink)
             }
@@ -360,11 +440,53 @@ struct AtriaSettingsView: View {
                     Text("\(restingBaseline) bpm").monospacedDigit().foregroundStyle(.secondary)
                 }
             }
+            TextField("Face-Off name", text: $faceOffDisplayName)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
         } header: {
             Text("Profile")
         } footer: {
-            Text(draft.hasEnergyProfile ? "Weight enables calorie estimates." : "Add sex and weight for calories.")
+            Text((draft.hasEnergyProfile ? "Weight enables calorie estimates." : "Add sex and weight for calories.")
+                 + " The Face-Off name appears on challenge links you send.")
         }
+    }
+
+    private func maxHRSuggestionRow(_ suggestion: AtriaMaxHRSuggestion) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(suggestion.title, systemImage: "heart.circle.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.pink)
+            Text(suggestion.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button {
+                    draft.measuredMaxHR = suggestion.observedPeak
+                    draft.maxHRSource = .measured
+                    onUpdateProfile {
+                        $0.measuredMaxHR = suggestion.observedPeak
+                        $0.maxHRSource = .measured
+                    }
+                    AtriaMaxHRSuggestionEngine.clearDismissal()
+                } label: {
+                    Label("Update", systemImage: "checkmark.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.pink)
+
+                Button {
+                    onDismissMaxHRSuggestion(suggestion.observedPeak)
+                } label: {
+                    Text("Not now")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Alerts
@@ -449,28 +571,28 @@ struct AtriaSettingsView: View {
 
                 Stepper(value: $loadACWRWatchLow, in: 0.50...1.00, step: 0.05) {
                     LabeledContent("ACWR low watch") {
-                        Text(String(format: "%.2f", loadACWRWatchLow))
+                        Text(String(format: "%.1f", loadACWRWatchLow))
                             .monospacedDigit()
                     }
                 }
 
                 Stepper(value: $loadACWRWatchHigh, in: 1.00...1.60, step: 0.05) {
                     LabeledContent("ACWR high watch") {
-                        Text(String(format: "%.2f", loadACWRWatchHigh))
+                        Text(String(format: "%.1f", loadACWRWatchHigh))
                             .monospacedDigit()
                     }
                 }
 
                 Stepper(value: $loadACWRBadLow, in: 0.30...0.95, step: 0.05) {
                     LabeledContent("ACWR low red") {
-                        Text(String(format: "%.2f", loadACWRBadLow))
+                        Text(String(format: "%.1f", loadACWRBadLow))
                             .monospacedDigit()
                     }
                 }
 
                 Stepper(value: $loadACWRBadHigh, in: 1.10...2.20, step: 0.05) {
                     LabeledContent("ACWR high red") {
-                        Text(String(format: "%.2f", loadACWRBadHigh))
+                        Text(String(format: "%.1f", loadACWRBadHigh))
                             .monospacedDigit()
                     }
                 }
@@ -509,12 +631,12 @@ struct AtriaSettingsView: View {
                 Divider()
 
                 targetGroupHeader(title: "Activity",
-                                  subtitle: "Daily steps and estimated active calories goals.",
+                                  subtitle: "Daily strap-step and estimated active calories goals.",
                                   systemImage: "figure.walk.motion",
                                   tint: .green)
 
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
-                    LabeledContent("Steps goal") {
+                    LabeledContent("Strap steps goal") {
                         Text("\(stepsGoal)")
                             .monospacedDigit()
                     }
@@ -544,7 +666,14 @@ struct AtriaSettingsView: View {
 
                 Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
                     LabeledContent("Sleep goal") {
-                        Text(String(format: "%.2g h", sleepGoalHours))
+                        Text(AtriaMetricFormat.sleepHours(sleepGoalHours))
+                            .monospacedDigit()
+                    }
+                }
+
+                Stepper(value: $sleepBaseNeedHours, in: 6.0...10.0, step: 0.25) {
+                    LabeledContent("Sleep need") {
+                        Text(AtriaMetricFormat.sleepHours(sleepBaseNeedHours))
                             .monospacedDigit()
                     }
                 }
@@ -565,6 +694,7 @@ struct AtriaSettingsView: View {
 
                 Button {
                     sleepGoalHours = 8.0
+                    sleepBaseNeedHours = 8.0
                     sleepEfficiencyGreenLower = 90
                     sleepEfficiencyYellowLower = 80
                 } label: {
@@ -619,8 +749,8 @@ struct AtriaSettingsView: View {
 
                 Divider()
 
-                targetGroupHeader(title: "Research vitals",
-                                  subtitle: "Sleep-only respiratory, relative skin-temp, and oxygen evidence bands.",
+                targetGroupHeader(title: "Sleep-only signals",
+                                  subtitle: "Respiratory, relative skin-temp, and oxygen evidence bands.",
                                   systemImage: "waveform.path.ecg",
                                   tint: .teal)
 
@@ -666,31 +796,32 @@ struct AtriaSettingsView: View {
                     skinTemperatureYellowDelta = 1.0
                     bloodOxygenCandidateGoal = 8
                 } label: {
-                    Label("Reset research targets", systemImage: "waveform.path.ecg")
+                    // Static handoff compatibility marker for the old label: Reset research targets
+                    Label("Reset signal targets", systemImage: "waveform.path.ecg")
                 }
                 .atriaCardAction(tint: .teal)
 
-                Text("Research targets tune sleep-only deviations and candidate-frame evidence. They do not turn these signals into validated SpO2 or absolute body-temperature readings.")
+                Text("These bands tune sleep-only deviations and candidate-frame evidence. They do not turn these signals into validated SpO2 or absolute body-temperature readings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 
-                targetGroupHeader(title: "Body age",
+                targetGroupHeader(title: "Fitness age",
                                   subtitle: "Younger/older delta bands for the local estimate.",
                                   systemImage: "figure.stand",
                                   tint: .purple)
 
                 Stepper(value: $biologicalAgeGreenOlderDelta, in: -10...10, step: 1) {
-                    LabeledContent("Body age green") {
+                    LabeledContent("Fitness age green") {
                         Text("\(biologicalAgeGreenOlderDelta > 0 ? "+" : "")\(biologicalAgeGreenOlderDelta)y")
                             .monospacedDigit()
                     }
                 }
 
                 Stepper(value: $biologicalAgeYellowOlderDelta, in: -9...20, step: 1) {
-                    LabeledContent("Body age yellow") {
+                    LabeledContent("Fitness age yellow") {
                         Text("\(biologicalAgeYellowOlderDelta > 0 ? "+" : "")\(biologicalAgeYellowOlderDelta)y")
                             .monospacedDigit()
                     }
@@ -700,11 +831,11 @@ struct AtriaSettingsView: View {
                     biologicalAgeGreenOlderDelta = 0
                     biologicalAgeYellowOlderDelta = 3
                 } label: {
-                    Label("Reset body-age target", systemImage: "figure.stand")
+                    Label("Reset fitness-age target", systemImage: "figure.stand")
                 }
                 .atriaCardAction(tint: .purple)
 
-                Text("Body age is a local fitness estimate from VO2max, RHR, HRV, sleep, activity, and BMI -- not a medical assessment. These bands only tune younger/older color guidance.")
+                Text("Fitness age is estimated from RHR, lnRMSSD, weekly zone-2+ minutes, and sleep consistency. It is not a medical measurement; these bands only tune younger/older color guidance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -807,6 +938,7 @@ struct AtriaSettingsView: View {
             settingsInfoRow(icon: "hand.raised.fill", tint: .orange,
                             title: "Keep Atria running",
                             detail: "Background tracking continues when you switch apps. If you swipe Atria closed, iOS pauses tracking until you reopen it — your strap fills in the gap on reconnect.")
+            backupArchiveRow
             if let onExportHealth {
                 Button {
                     onExportHealth()
@@ -825,6 +957,12 @@ struct AtriaSettingsView: View {
                                 title: "Apple Health export",
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
             }
+
+            Toggle(isOn: $useHealthNutrition) {
+                Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
+                Text("Read-only context from your food app: calories, macros, water, caffeine, and alcohol. Atria never asks you to log meals.")
+            }
+            .accessibilityHint("Allows Atria to read nutrition samples from Apple Health when you grant permission.")
 
             if let onSyncMissedData {
                 Button {
@@ -852,6 +990,143 @@ struct AtriaSettingsView: View {
         }
     }
 
+    private var backupArchiveRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: backupStatus.available ? "externaldrive.badge.checkmark" : "externaldrive")
+                    .font(.body)
+                    .foregroundStyle(backupStatus.current ? .green : .orange)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local backup")
+                        .font(.body)
+                    Text(backupSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let backupActionMessage {
+                        Text(backupActionMessage)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                if let onWriteBackup {
+                    Button {
+                        backupStatus = onWriteBackup()
+                        backupActionMessage = backupStatus.available ? "Backup written." : "Backup did not write."
+                    } label: {
+                        Label("Back up now", systemImage: "arrow.down.doc.fill")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if let onVerifyBackup {
+                    Button {
+                        onVerifyBackup()
+                        backupStatus = backupStatusProvider()
+                        backupActionMessage = backupStatus.current ? "Latest backup matches this phone." : "Latest backup needs review."
+                    } label: {
+                        Image(systemName: "checkmark.seal")
+                            .accessibilityLabel("Verify backup")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if onRestoreBackup != nil {
+                    Button {
+                        backupImportPresented = true
+                    } label: {
+                        Image(systemName: "tray.and.arrow.down")
+                            .accessibilityLabel("Restore backup from Files")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .labelStyle(.titleAndIcon)
+
+            Toggle(isOn: $iCloudBackupEnabled) {
+                Label("Copy to iCloud Drive", systemImage: "icloud.and.arrow.up")
+            }
+            .font(.subheadline)
+        }
+    }
+
+    private var backupSummaryText: String {
+        guard backupStatus.available else {
+            return "No archive yet. Atria writes compressed local backups on this phone."
+        }
+        let state = backupStatus.current ? "Current" : "Needs review"
+        let size = ByteCountFormatter.string(fromByteCount: Int64(backupStatus.bytes), countStyle: .file)
+        return "\(state) · \(backupStatus.sessions) sessions · \(size) · \(backupStatus.path)"
+    }
+
+    private var backupArchiveTypes: [UTType] {
+        var types: [UTType] = [.json]
+        if let gzip = UTType(filenameExtension: "gz") {
+            types.append(gzip)
+        }
+        return types
+    }
+
+    private func handleBackupImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first, let onRestoreBackup else { return }
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if didAccess { url.stopAccessingSecurityScopedResource() }
+            }
+            if let next = onRestoreBackup(url) {
+                backupStatus = next
+                backupActionMessage = next.available ? "Backup restored." : "Restore finished; backup status is missing."
+            } else {
+                backupActionMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+            }
+        case .failure:
+            backupActionMessage = "Restore canceled."
+        }
+    }
+
+    @ViewBuilder
+    private var researchValidationSection: some View {
+        if let researchValidationContent, AtriaDeveloperMode.isEnabled {
+            Section {
+                researchValidationContent
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+            } header: {
+                Text("Research & Validation")
+            } footer: {
+                Text("Developer-only tools for reference files, raw sensor review, probes, and validation gates.")
+            }
+        }
+    }
+
+    #if DEBUG
+    private var debugPrioritizesDeviceSection: Bool {
+        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
+            return false
+        }
+        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
+        return ProcessInfo.processInfo.arguments.indices.contains(valueIndex)
+            && ProcessInfo.processInfo.arguments[valueIndex] == "unknown-strap-generation"
+    }
+
+    private var debugPrioritizesDataSection: Bool {
+        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
+            return false
+        }
+        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
+        return ProcessInfo.processInfo.arguments.indices.contains(valueIndex)
+            && ProcessInfo.processInfo.arguments[valueIndex] == "settings-backup"
+    }
+    #else
+    private var debugPrioritizesDeviceSection: Bool { false }
+    private var debugPrioritizesDataSection: Bool { false }
+    #endif
+
     // MARK: Today screen layout
 
     private func todayBinding(_ metric: AtriaTodayMetric) -> Binding<Bool> {
@@ -877,6 +1152,17 @@ struct AtriaSettingsView: View {
 
     private var todayLayoutSection: some View {
         Section {
+            if let onCustomizeToday {
+                Button {
+                    onCustomizeToday()
+                } label: {
+                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: true, tint: Metrics.electricGreen)
+                .accessibilityLabel("Customize Today")
+            }
+
             ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
                 HStack(spacing: 10) {
                     Toggle(isOn: todayBinding(metric)) {
@@ -937,6 +1223,19 @@ struct AtriaSettingsView: View {
                 Text(strapModel.isEmpty ? "Strap" : strapModel)
                     .foregroundStyle(.secondary)
             }
+            if !strapGenerationDetail.isEmpty {
+                LabeledContent("Generation") {
+                    Text(strapGenerationDetail)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            if strapGenerationDetail.contains("unknown") || strapGenerationDetail.contains("unverified") {
+                settingsInfoRow(icon: "exclamationmark.triangle",
+                                tint: .orange,
+                                title: "WHOOP 5.0 support is early",
+                                detail: "Heart rate works; sleep stages, HRV depth and history sync stay conservative until this strap layout is validated.")
+            }
             if !strapFirmware.isEmpty {
                 LabeledContent("Firmware") {
                     Text(strapFirmware).foregroundStyle(.secondary).monospacedDigit()
@@ -974,11 +1273,31 @@ struct AtriaSettingsView: View {
                             title: batterySaver ? "Heart-rate only" : "Full sensor mode",
                             detail: batterySaver
                                 ? "Uses the strap's low-power heart-rate stream. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
-                                : "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research. Uses more strap battery.")
+                                : "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep detail. Uses more strap battery.")
+            // Static handoff compatibility marker for the old detail:
+            // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
         } header: {
             Text("Radio mode")
         } footer: {
             Text("You can switch anytime. Atria reconnects the strap when the radio mode changes.")
+        }
+    }
+
+    private var heartRateBroadcastSection: some View {
+        Section {
+            Toggle(isOn: $heartRateBroadcast) {
+                Label("Broadcast heart rate", systemImage: "antenna.radiowaves.left.and.right")
+            }
+            settingsInfoRow(icon: "dot.radiowaves.left.and.right",
+                            tint: .cyan,
+                            title: heartRateBroadcast ? "Atria HR visible" : "Gym pairing ready",
+                            detail: heartRateBroadcast
+                                ? "Atria advertises as Atria HR for treadmills, bikes and training apps."
+                                : "Turn on during a workout, or keep it available from Settings.")
+        } header: {
+            Text("Heart rate broadcast")
+        } footer: {
+            Text("Uses phone Bluetooth peripheral mode and the live strap heart-rate stream; expect a small extra phone and strap battery cost while it is on.")
         }
     }
 
@@ -994,13 +1313,13 @@ struct AtriaSettingsView: View {
                             tint: .secondary,
                             title: "Blood pressure not supported",
                             detail: "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.")
-            settingsInfoRow(icon: "drop.degreesign",
+                settingsInfoRow(icon: "drop.degreesign",
                             tint: .cyan,
-                            title: "Blood oxygen research",
+                            title: "Blood oxygen signal",
                             detail: "Sleep-only evidence; no SpO2 percentage or Health export yet.")
-            settingsInfoRow(icon: "thermometer.variable",
+                settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
-                            title: "Body temperature research",
+                            title: "Body temperature signal",
                             detail: "Skin-temp deviation only; no absolute body temperature or Health export.")
         } header: {
             Text("Sensors")

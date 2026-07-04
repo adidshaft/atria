@@ -57,9 +57,201 @@ struct AtriaCoachContext: Equatable {
     let sessionsCount: Int
 }
 
+struct AtriaCoachPayload: Codable, Equatable {
+    struct VitalRange: Codable, Equatable {
+        let low: Double?
+        let high: Double?
+    }
+
+    let today: DailyRollupStoreEntry?
+    let last7: [DailyRollupStoreEntry]
+    let now: String
+    let weekday: String
+    let units: String
+    let baselines: [String: VitalRange]
+
+    static let systemPrompt = "Answer ONLY from DATA. If a value is not in DATA, say you don't have it — never estimate, never use population numbers as if personal. Today is {now}."
+
+    var receiptSummary: String {
+        guard let today else { return "Based on: no daily rollup yet" }
+        var parts = [Self.formattedDay(today.day)]
+        if let recovery = today.recovery {
+            parts.append("Recovery \(recovery) %")
+        }
+        if let sleepSeconds = today.sleepSeconds {
+            parts.append("Sleep \(Self.formatSleep(sleepSeconds))")
+        }
+        if let lnRMSSD = today.lnRMSSD {
+            parts.append("HRV \(Int(exp(lnRMSSD).rounded()))")
+        }
+        if let rhr = today.rhr {
+            parts.append("RHR \(rhr)")
+        }
+        return "Based on: \(parts.joined(separator: " · "))"
+    }
+
+    var auditLines: [String] {
+        var lines = [
+            "Now: \(now)",
+            "Weekday: \(weekday)",
+            "Units: \(units)",
+            "Days sent: \(last7.count)"
+        ]
+        if let today {
+            lines.append("Today: \(Self.formattedDay(today.day))")
+            if let recovery = today.recovery { lines.append("Recovery: \(recovery) %") }
+            if let sleepSeconds = today.sleepSeconds { lines.append("Sleep: \(Self.formatSleep(sleepSeconds))") }
+            if let lnRMSSD = today.lnRMSSD { lines.append("HRV: \(Int(exp(lnRMSSD).rounded())) ms") }
+            if let rhr = today.rhr { lines.append("RHR: \(rhr) bpm") }
+            if let strain = today.strain { lines.append("Strain: \(String(format: "%.1f", strain))") }
+            if let nutrition = today.nutrition, let fuelSummary = nutrition.fuelSummary {
+                lines.append("Nutrition: \(fuelSummary)")
+            }
+        } else {
+            lines.append("Today: no daily rollup")
+        }
+        for key in baselines.keys.sorted() {
+            let range = baselines[key]
+            let low = range?.low.map { String(format: "%.1f", $0) } ?? "--"
+            let high = range?.high.map { String(format: "%.1f", $0) } ?? "--"
+            lines.append("Baseline \(key): \(low)...\(high)")
+        }
+        return lines
+    }
+
+    var serializedNumbers: [Double] {
+        var numbers: [Double] = []
+        if let data = try? JSONEncoder().encode(self),
+           let text = String(data: data, encoding: .utf8) {
+            numbers.append(contentsOf: Self.numberTokens(in: text).map(\.value))
+        }
+        if let today {
+            if let recovery = today.recovery { numbers.append(Double(recovery)) }
+            if let rhr = today.rhr { numbers.append(Double(rhr)) }
+            if let lnRMSSD = today.lnRMSSD { numbers.append(exp(lnRMSSD)) }
+            if let strain = today.strain { numbers.append(strain) }
+            if let sleepSeconds = today.sleepSeconds {
+                numbers.append(sleepSeconds / 3600)
+                numbers.append(sleepSeconds / 60)
+            }
+            if let nutrition = today.nutrition {
+                numbers.append(contentsOf: [
+                    nutrition.kcal,
+                    nutrition.proteinG,
+                    nutrition.carbsG,
+                    nutrition.fatG,
+                    nutrition.waterMl,
+                    nutrition.caffeineMg,
+                    nutrition.alcoholDrinks.map { Double($0) }
+                ].compactMap { $0 })
+            }
+        }
+        return numbers
+    }
+
+    static func legacy(context: AtriaCoachContext,
+                       now: Date = Date(),
+                       calendar: Calendar = .current) -> AtriaCoachPayload {
+        let day = calendar.startOfDay(for: now)
+        let recovery = integer(from: context.recoveryText)
+        let hrv = integer(from: context.hrvText)
+        let today = DailyRollupStoreEntry(day: day,
+                                          recovery: recovery,
+                                          lnRMSSD: hrv.map { log(Double(max($0, 1))) },
+                                          strain: context.strain,
+                                          calendar: calendar)
+        return AtriaCoachPayload(today: today,
+                                 last7: [today],
+                                 now: ISO8601DateFormatter().string(from: now),
+                                 weekday: DateFormatter.localizedString(from: now, dateStyle: .full, timeStyle: .none),
+                                 units: Locale.current.measurementSystem == .metric ? "metric" : "imperial",
+                                 baselines: [
+                                    "recovery": VitalRange(low: 0, high: 100),
+                                    "strain": VitalRange(low: 0, high: 21)
+                                 ])
+    }
+
+    static func fromRollups(rollups: [DailyRollupStoreEntry],
+                            fallback context: AtriaCoachContext,
+                            now: Date = Date(),
+                            calendar: Calendar = .current,
+                            timeZone: TimeZone = .current,
+                            units: String = Locale.current.measurementSystem == .metric ? "metric" : "imperial",
+                            baselines: [String: VitalRange]) -> AtriaCoachPayload {
+        let sorted = rollups.sorted { $0.day > $1.day }
+        let today = sorted.first ?? legacy(context: context, now: now, calendar: calendar).today
+        let last7: [DailyRollupStoreEntry]
+        if sorted.isEmpty, let today {
+            last7 = [today]
+        } else {
+            last7 = Array(sorted.prefix(7))
+        }
+        return AtriaCoachPayload(today: today,
+                                 last7: last7,
+                                 now: localISO8601(now, timeZone: timeZone),
+                                 weekday: weekdayString(now, calendar: calendar, timeZone: timeZone),
+                                 units: units,
+                                 baselines: baselines)
+    }
+
+    static func fabricationFlags(response: String, payload: AtriaCoachPayload) -> [String] {
+        let allowed = payload.serializedNumbers.map { round($0 * 10) / 10 }
+        return numberTokens(in: response).compactMap { token in
+            guard !allowed.contains(where: { abs($0 - token.value) <= 1.0 }) else { return nil }
+            return token.raw
+        }
+    }
+
+    private static func integer(from text: String) -> Int? {
+        numberTokens(in: text).first.map { Int($0.value.rounded()) }
+    }
+
+    private static func numberTokens(in text: String) -> [(raw: String, value: Double)] {
+        let pattern = #"([0-9]+(?:\.[0-9]+)?)\s?(%|percent|bpm|ms|kcal|steps?|kg|lbs?|h(?:ours?)?|min(?:utes?)?)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        let nsText = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).compactMap { match in
+            guard match.numberOfRanges >= 3,
+                  let value = Double(nsText.substring(with: match.range(at: 1))) else {
+                return nil
+            }
+            return (nsText.substring(with: match.range(at: 0)), value)
+        }
+    }
+
+    private static func formattedDay(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter.string(from: date)
+    }
+
+    private static func localISO8601(_ date: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+        formatter.timeZone = timeZone
+        return formatter.string(from: date)
+    }
+
+    private static func weekdayString(_ date: Date, calendar: Calendar, timeZone: TimeZone = .current) -> String {
+        var calendar = calendar
+        calendar.timeZone = timeZone
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.setLocalizedDateFormatFromTemplate("EEEE")
+        return formatter.string(from: date)
+    }
+
+    private static func formatSleep(_ seconds: TimeInterval) -> String {
+        let totalMinutes = max(0, Int((seconds / 60).rounded()))
+        return "\(totalMinutes / 60):\(String(format: "%02d", totalMinutes % 60))"
+    }
+}
+
 protocol AtriaCoachProvider {
     var networkPolicy: AtriaCoachNetworkPolicy { get }
-    func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer
+    func answer(payload: AtriaCoachPayload, context: AtriaCoachContext) async -> AtriaCoachAnswer
 }
 
 enum AtriaCoachNetworkPolicy: String, Equatable {
@@ -78,12 +270,12 @@ struct AtriaCoachAnswer: Equatable {
 struct AtriaLocalCoachProvider: AtriaCoachProvider {
     let networkPolicy: AtriaCoachNetworkPolicy = .offlineOnly
 
-    func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer {
+    func answer(payload: AtriaCoachPayload, context: AtriaCoachContext) async -> AtriaCoachAnswer {
         let target = context.guidance.target.map { String(format: "%.1f", $0) } ?? "learning"
         return AtriaCoachAnswer(
             title: context.guidance.headline,
             detail: "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), stress \(context.stressText). \(context.guidance.detail)",
-            disclosure: "Local mode uses only on-device Atria metrics. No data leaves this iPhone.",
+            disclosure: "\(payload.receiptSummary). Local mode uses only on-device Atria metrics. No data leaves this iPhone.",
             networkPolicy: networkPolicy
         )
     }
@@ -94,7 +286,7 @@ struct AtriaCloudCoachProvider: AtriaCoachProvider {
     let hasAPIKey: Bool
     let networkPolicy: AtriaCoachNetworkPolicy = .cloudDisabled
 
-    func answer(context: AtriaCoachContext) async -> AtriaCoachAnswer {
+    func answer(payload: AtriaCoachPayload, context: AtriaCoachContext) async -> AtriaCoachAnswer {
         guard hasAPIKey else {
             return AtriaCoachAnswer(
                 title: "Cloud coach disabled",
@@ -103,12 +295,156 @@ struct AtriaCloudCoachProvider: AtriaCoachProvider {
                 networkPolicy: networkPolicy
             )
         }
+        let preview = AtriaCoachProviderRequestBuilder.requestPreview(provider: provider,
+                                                                      payload: payload)
         return AtriaCoachAnswer(
-            title: "\(provider.title) provider client pending",
-            detail: "The provider seam and secure key storage are ready. Network requests stay disabled until a reviewed provider client is added.",
-            disclosure: "No cloud request was sent from this build.",
+            title: "\(provider.title) request preview ready",
+            detail: "\(preview.summary). \(preview.promptLine). Network requests stay disabled until a reviewed provider client is added.",
+            disclosure: "No cloud request was sent. \(preview.payloadLine)",
             networkPolicy: networkPolicy
         )
+    }
+}
+
+enum AtriaCoachProviderRequestBuilder {
+    struct RequestPreview: Equatable {
+        let summary: String
+        let promptLine: String
+        let payloadLine: String
+    }
+
+    static func systemPrompt(for payload: AtriaCoachPayload) -> String {
+        AtriaCoachPayload.systemPrompt.replacingOccurrences(of: "{now}", with: payload.now)
+    }
+
+    static func payloadJSON(_ payload: AtriaCoachPayload) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(payload)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func requestBody(provider: AtriaAICoachSettings.CloudProvider,
+                            model: String,
+                            payload: AtriaCoachPayload,
+                            maxTokens: Int = 600) throws -> Data {
+        switch provider {
+        case .openAI:
+            return try openAIResponsesBody(model: model, payload: payload, maxTokens: maxTokens)
+        case .claude:
+            return try claudeMessagesBody(model: model, payload: payload, maxTokens: maxTokens)
+        }
+    }
+
+    static func requestPreview(provider: AtriaAICoachSettings.CloudProvider,
+                               payload: AtriaCoachPayload,
+                               maxTokens: Int = 600) -> RequestPreview {
+        let model = defaultModel(for: provider)
+        let bodyBytes = (try? requestBody(provider: provider,
+                                          model: model,
+                                          payload: payload,
+                                          maxTokens: maxTokens).count) ?? 0
+        let prompt = systemPrompt(for: payload)
+        return RequestPreview(summary: "\(provider.title) body prepared for \(model), \(bodyBytes) bytes, \(maxTokens) token cap",
+                              promptLine: "Prompt pinned: \(prompt)",
+                              payloadLine: payload.receiptSummary)
+    }
+
+    static func defaultModel(for provider: AtriaAICoachSettings.CloudProvider) -> String {
+        switch provider {
+        case .openAI: return "gpt-4.1-mini"
+        case .claude: return "claude-3-5-haiku-latest"
+        }
+    }
+
+    private static func openAIResponsesBody(model: String,
+                                            payload: AtriaCoachPayload,
+                                            maxTokens: Int) throws -> Data {
+        let body = OpenAIResponsesBody(model: model,
+                                       instructions: systemPrompt(for: payload),
+                                       input: [
+                                        OpenAIInput(role: "user",
+                                                    content: [
+                                                        OpenAIContent(type: "input_text",
+                                                                      text: try userMessageText(payload: payload))
+                                                    ])
+                                       ],
+                                       maxOutputTokens: maxTokens)
+        return try encode(body)
+    }
+
+    private static func claudeMessagesBody(model: String,
+                                           payload: AtriaCoachPayload,
+                                           maxTokens: Int) throws -> Data {
+        let body = ClaudeMessagesBody(model: model,
+                                      maxTokens: maxTokens,
+                                      system: systemPrompt(for: payload),
+                                      messages: [
+                                        ClaudeMessage(role: "user",
+                                                      content: [
+                                                        ClaudeContent(type: "text",
+                                                                      text: try userMessageText(payload: payload))
+                                                      ])
+                                      ])
+        return try encode(body)
+    }
+
+    private static func userMessageText(payload: AtriaCoachPayload) throws -> String {
+        "DATA:\n\(try payloadJSON(payload))"
+    }
+
+    private static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(value)
+    }
+
+    private struct OpenAIResponsesBody: Encodable {
+        let model: String
+        let instructions: String
+        let input: [OpenAIInput]
+        let maxOutputTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case model
+            case instructions
+            case input
+            case maxOutputTokens = "max_output_tokens"
+        }
+    }
+
+    private struct OpenAIInput: Encodable {
+        let role: String
+        let content: [OpenAIContent]
+    }
+
+    private struct OpenAIContent: Encodable {
+        let type: String
+        let text: String
+    }
+
+    private struct ClaudeMessagesBody: Encodable {
+        let model: String
+        let maxTokens: Int
+        let system: String
+        let messages: [ClaudeMessage]
+
+        enum CodingKeys: String, CodingKey {
+            case model
+            case maxTokens = "max_tokens"
+            case system
+            case messages
+        }
+    }
+
+    private struct ClaudeMessage: Encodable {
+        let role: String
+        let content: [ClaudeContent]
+    }
+
+    private struct ClaudeContent: Encodable {
+        let type: String
+        let text: String
     }
 }
 

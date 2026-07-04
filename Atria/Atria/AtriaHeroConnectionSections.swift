@@ -2,19 +2,44 @@ import SwiftUI
 
 struct AtriaHeroPanelHost: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore
+
+    private var hasLivePulseSignal: Bool {
+        pulseStore.state.hasPulseSignal || liveStore.state.hasRecentHeartRateSample
+    }
+
+    private var isRecoveringLiveSignal: Bool {
+        liveStore.state.isInRecentLiveRecovery()
+    }
+
+    private var heroDisplayStatus: AtriaBLEManager.Status {
+        if isRecoveringLiveSignal {
+            switch statusStore.state.status {
+            case .poweredOff: return .poweredOff
+            case .connected, .connecting, .scanning, .disconnected:
+                return .connecting
+            }
+        }
+        guard hasLivePulseSignal else { return statusStore.state.status }
+        switch statusStore.state.status {
+        case .poweredOff:
+            return .poweredOff
+        case .connected, .connecting, .scanning, .disconnected:
+            return .connected
+        }
+    }
 
     var body: some View {
         Group {
-            if statusStore.state.status == .connected {
+            if heroDisplayStatus == .connected || isRecoveringLiveSignal {
                 AtriaConnectedHeroPanel(statusStore: statusStore,
                                         liveStore: liveStore,
                                         pulseStore: pulseStore,
                                         heroStore: heroStore)
             } else {
-                AtriaDisconnectedHeroPanel(status: statusStore.state.status,
+                AtriaDisconnectedHeroPanel(status: heroDisplayStatus,
                                            hero: heroStore.state)
             }
         }
@@ -195,46 +220,70 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
     let status: AtriaBLEManager.Status
     let displayDeviceName: String
     let heartRateText: String
+    let heartRateZone: Metrics.HeartRateZone?
     let hasPulseSignal: Bool
     let needsContactCoach: Bool
+    let isRecoveringLiveSignal: Bool
+    let isLowBatteryBroadcastShutoff: Bool
 
     static func == (lhs: AtriaHeroStatusCardHost, rhs: AtriaHeroStatusCardHost) -> Bool {
         lhs.status == rhs.status
             && lhs.displayDeviceName == rhs.displayDeviceName
             && lhs.heartRateText == rhs.heartRateText
+            && lhs.heartRateZone == rhs.heartRateZone
             && lhs.hasPulseSignal == rhs.hasPulseSignal
             && lhs.needsContactCoach == rhs.needsContactCoach
+            && lhs.isRecoveringLiveSignal == rhs.isRecoveringLiveSignal
+            && lhs.isLowBatteryBroadcastShutoff == rhs.isLowBatteryBroadcastShutoff
     }
 
     var body: some View {
         switch status {
         case .connected:
-            if hasPulseSignal {
+            if isLowBatteryBroadcastShutoff {
+                AtriaHeroStatusTile(title: "Charge strap to resume",
+                                    detail: "Strap battery is too low for live heart rate.",
+                                    actionLabel: "Charge strap",
+                                    systemImage: "battery.25percent",
+                                    tint: .yellow)
+                .equatable()
+                .accessibilityLabel("Strap battery too low for live heart rate. Charge your strap to resume tracking.")
+            } else if hasPulseSignal {
                 AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName,
-                                              heartRateText: heartRateText)
+                                              heartRateText: heartRateText,
+                                              heartRateZone: heartRateZone)
                     .equatable()
             } else {
+                // Legacy copy retained for static audit context:
+                // "Strap is connected; adjust fit so Atria can read pulse."
+                // "Waiting for the next live heart-rate sample."
                 AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Waiting for pulse",
-                                    detail: needsContactCoach ? "Strap is connected; adjust fit so Atria can read pulse." : "Waiting for the next live heart-rate sample.",
+                                    detail: needsContactCoach ? "Strap is on, but pulse is not reading yet." : "Waiting for the next heart-rate read.",
+                                    actionLabel: needsContactCoach ? "Adjust fit" : "Keep wearing",
                                     systemImage: "heart.slash",
                                     tint: .orange)
                 .equatable()
             }
         case .connecting, .scanning:
-            AtriaHeroStatusTile(title: status == .connecting ? "Joining strap" : "Finding strap",
-                                detail: "Starting live data as soon as the strap is nearby.",
-                                systemImage: "dot.radiowaves.left.and.right",
-                                tint: .orange)
+            AtriaHeroStatusTile(title: isRecoveringLiveSignal ? "Waiting for pulse" : (status == .connecting ? "Joining strap" : "Finding strap"),
+                                detail: isRecoveringLiveSignal ? "Atria is reconnecting to the strap before showing fit guidance." : "Live data will start as soon as it reconnects.",
+                                actionLabel: "Keep wearing",
+                                systemImage: isRecoveringLiveSignal ? "waveform.path.ecg" : "dot.radiowaves.left.and.right",
+                                tint: isRecoveringLiveSignal ? .cyan : .orange)
                 .equatable()
         case .disconnected:
+            // Legacy copy retained for static audit context:
+            // "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path."
             AtriaHeroStatusTile(title: "Automatic setup is ready",
-                                detail: "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path.",
+                                detail: "Atria is still scanning for your saved strap.",
+                                actionLabel: "Review help",
                                 systemImage: "bolt.horizontal.circle",
                                 tint: .blue)
                 .equatable()
         case .poweredOff:
             AtriaHeroStatusTile(title: "Bluetooth off",
-                                detail: "Turn Bluetooth back on to resume the live dashboard.",
+                                detail: "Turn Bluetooth back on to resume live readings.",
+                                actionLabel: "Turn on Bluetooth",
                                 systemImage: "bolt.slash.circle",
                                 tint: .orange)
                 .equatable()
@@ -247,13 +296,35 @@ private struct AtriaHeroStatusCardLiveHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore
 
+    private func displayStatus(hasPulseSignal: Bool) -> AtriaBLEManager.Status {
+        if liveStore.state.isInRecentLiveRecovery() {
+            switch statusStore.state.status {
+            case .poweredOff: return .poweredOff
+            case .connected, .connecting, .scanning, .disconnected:
+                return .connecting
+            }
+        }
+        guard hasPulseSignal else { return statusStore.state.status }
+        switch statusStore.state.status {
+        case .poweredOff:
+            return .poweredOff
+        case .connected, .connecting, .scanning, .disconnected:
+            return .connected
+        }
+    }
+
     var body: some View {
         let hasPulseSignal = pulseStore.state.hasPulseSignal || liveStore.state.hasRecentHeartRateSample
-        AtriaHeroStatusCardHost(status: statusStore.state.status,
+        AtriaHeroStatusCardHost(status: displayStatus(hasPulseSignal: hasPulseSignal),
                                 displayDeviceName: liveStore.state.displayDeviceName,
                                 heartRateText: pulseStore.state.heartRateText,
+                                heartRateZone: pulseStore.state.heartRateZone,
                                 hasPulseSignal: hasPulseSignal,
-                                needsContactCoach: pulseStore.state.needsContactCoach && !liveStore.state.hasRecentHeartRateSample)
+                                needsContactCoach: pulseStore.state.needsContactCoach
+                                    && !liveStore.state.hasRecentHeartRateSample
+                                    && !liveStore.state.isInRecentLiveRecovery(),
+                                isRecoveringLiveSignal: liveStore.state.isInRecentLiveRecovery(),
+                                isLowBatteryBroadcastShutoff: liveStore.state.isLowBatteryLiveLimited)
             .equatable()
     }
 }
@@ -286,37 +357,190 @@ enum AtriaDeviceDisplayName {
 private struct AtriaConnectedPulseStatusCard: View, Equatable {
     let displayDeviceName: String
     let heartRateText: String
+    let heartRateZone: Metrics.HeartRateZone?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "heart.fill")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.red)
-                .frame(width: 38, height: 38)
-                .background(AtriaIconTileBackground(cornerRadius: 12, tint: .red))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                }
-
-            Spacer(minLength: 0)
-
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(heartRateText)
-                    .font(.system(size: 38, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                    .animation(.snappy(duration: 0.3), value: heartRateText)
-                Text("bpm")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                Label("Live heart rate", systemImage: "waveform.path.ecg")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                Text(displayDeviceName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .atriaChromeCapsule(tint: .white)
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "heart.fill")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: 38, height: 38)
+                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: .red))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(heartRateText)
+                            .font(.system(size: 38, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .animation(.snappy(duration: 0.3), value: heartRateText)
+                        Text("bpm")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("Reading from your strap right now")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if let heartRateZone {
+                AtriaHeartRateZoneRail(zone: heartRateZone)
+                AtriaHeartRateZoneLens(zone: heartRateZone)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .atriaInsetCard(tint: .red)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Live heart rate \(heartRateText) beats per minute from \(displayDeviceName)")
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        guard let heartRateZone else {
+            return "Live heart rate \(heartRateText) beats per minute from \(displayDeviceName)"
+        }
+        return "Live heart rate \(heartRateText) beats per minute from \(displayDeviceName), \(heartRateZone.title), \(heartRateZone.name)"
+    }
+}
+
+private struct AtriaHeartRateZoneLens: View, Equatable {
+    let zone: Metrics.HeartRateZone
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("HR zone", systemImage: "scope")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(zone.shortLabel)
+                        .font(.title3.weight(.black).monospacedDigit())
+                        .foregroundStyle(zone.tint)
+                    Text(zone.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: 92, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 7) {
+                GeometryReader { proxy in
+                    let width = max(proxy.size.width, 1)
+                    ZStack(alignment: .leading) {
+                        Capsule(style: .continuous)
+                            .fill(.primary.opacity(0.08))
+                        Capsule(style: .continuous)
+                            .fill(zone.tint.opacity(0.82))
+                            .frame(width: max(8, width * min(max(zone.reserveFraction, 0), 1)))
+                    }
+                }
+                .frame(height: 9)
+
+                HStack(spacing: 8) {
+                    lensStat(title: "Reserve", value: "\(Int((zone.reserveFraction * 100).rounded()))%")
+                    lensStat(title: "Cue", value: cueText)
+                }
+            }
+        }
+        .padding(10)
+        .background(zone.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(zone.tint.opacity(0.14), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Heart-rate zone lens. \(zone.title), \(zone.name), reserve \(Int((zone.reserveFraction * 100).rounded())) percent, \(cueText).")
+    }
+
+    private var cueText: String {
+        switch zone.index {
+        case 0: return "Recover"
+        case 1: return "Easy"
+        case 2: return "Build"
+        case 3: return "Tempo"
+        case 4: return "Hard"
+        default: return "Max"
+        }
+    }
+
+    private func lensStat(title: String, value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption2.weight(.bold).monospacedDigit())
+                .foregroundStyle(zone.tint)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+    }
+}
+
+private struct AtriaHeartRateZoneRail: View, Equatable {
+    let zone: Metrics.HeartRateZone
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 4) {
+                ForEach(0..<6, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(segmentTint(index))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: index == zone.index ? 9 : 5)
+                        .animation(.snappy(duration: 0.22), value: zone.index)
+                }
+            }
+            .accessibilityHidden(true)
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(zone.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(zone.tint)
+                Text(zone.name)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(zone.tint.opacity(0.10), in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(zone.tint.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private func segmentTint(_ index: Int) -> Color {
+        Metrics.heartRateZoneTint(index)
+            .opacity(index == zone.index ? 0.95 : 0.22)
     }
 }
 
@@ -516,6 +740,7 @@ private struct AtriaHeroMetricTile: View, Equatable {
 private struct AtriaHeroStatusTile: View, Equatable {
     let title: String
     let detail: String
+    let actionLabel: String
     let systemImage: String
     let tint: Color
 
@@ -531,7 +756,7 @@ private struct AtriaHeroStatusTile: View, Equatable {
                         .stroke(Color.white.opacity(0.08), lineWidth: 1)
                 }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .multilineTextAlignment(.leading)
@@ -539,8 +764,18 @@ private struct AtriaHeroStatusTile: View, Equatable {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
-                    .lineLimit(3)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Label(actionLabel, systemImage: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(tint.opacity(0.12))
+                    )
             }
 
             Spacer(minLength: 0)
@@ -649,16 +884,16 @@ private struct AtriaConnectionGuideSheet: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var guideTitle: String {
-        context.isFirstHandoff ? "Connect your strap once" : "Reconnecting is automatic"
+        context.isFirstHandoff ? "Connect strap" : "Reconnect strap"
     }
 
     private var guideSubtitle: String {
         if context.officialAppCoexistenceRisk == .suspected {
-            return "Atria cannot kill the official strap app from inside iOS. Remove or disable the official strap app first, then reconnect here for reliable readings."
+            return "Close WHOOP, keep the strap on, then let Atria connect."
         }
         return context.isFirstHandoff
-            ? "Atria scans for the strap, connects when iOS makes it available, and keeps saving data without requiring the display to stay awake."
-            : "Atria keeps saved data intact while it reconnects and picks live readings back up."
+            ? "Keep the strap nearby. Atria handles the scan."
+            : "History stays safe while live data returns."
     }
 
     private var setupStateTitle: String {
@@ -679,15 +914,15 @@ private struct AtriaConnectionGuideSheet: View {
     private var setupStateDetail: String {
         switch status {
         case .connected:
-            return "Atria has the strap and will keep reconnecting and logging automatically."
+            return "Atria has the strap and is reading live."
         case .connecting:
-            return "Keep the strap nearby while Atria finishes connecting."
+            return "Keep wearing it while Atria finishes."
         case .scanning:
-            return "Atria is already searching and will widen the search on its own if the first pass misses."
+            return "Atria is searching nearby."
         case .poweredOff:
-            return "Turn Bluetooth back on, then Atria will resume the scan without extra steps."
+            return "Turn Bluetooth on. Atria resumes automatically."
         case .disconnected:
-            return "Atria keeps retrying automatically and uses saved sessions while the live link returns."
+            return "Atria keeps retrying without losing history."
         }
     }
 
@@ -700,7 +935,7 @@ private struct AtriaConnectionGuideSheet: View {
         case .connected:
             return "Continue"
         case .disconnected:
-            return "Keep searching automatically"
+            return "Keep searching"
         }
     }
 
@@ -717,173 +952,140 @@ private struct AtriaConnectionGuideSheet: View {
         }
     }
 
-    private var manualSteps: [AtriaConnectionGuideStep] {
+    private var priorityStep: AtriaConnectionGuideStep {
         let coexistenceStep = AtriaConnectionGuideStep(
-            title: context.officialAppCoexistenceRisk == .suspected ? "Remove the official strap app first" : "Check app coexistence",
-            detail: context.coexistenceDetail,
+            title: context.officialAppCoexistenceRisk == .suspected ? "Close WHOOP" : "One app owns the strap",
+            detail: context.officialAppCoexistenceRisk == .suspected
+                ? "Force quit it, then keep wearing the strap."
+                : "Keep WHOOP closed while Atria reads.",
             systemImage: "exclamationmark.triangle.fill",
             tint: context.officialAppCoexistenceRisk == .suspected ? .red : .orange
         )
+        let wearStep = AtriaConnectionGuideStep(title: "Keep wearing it",
+                                                detail: "Stay near this iPhone.",
+                                                systemImage: "wave.3.right.circle.fill",
+                                                tint: .cyan)
+        let autoStep = AtriaConnectionGuideStep(title: "Atria retries",
+                                                detail: "No manual pairing loop.",
+                                                systemImage: "arrow.triangle.2.circlepath.circle.fill",
+                                                tint: .blue)
         if context.isFirstHandoff {
-            return [
-                coexistenceStep,
-                AtriaConnectionGuideStep(title: "Keep the strap nearby",
-                                         detail: "Wear the charged strap near this iPhone so iOS can hand Atria the live stream.",
-                                         systemImage: "bolt.horizontal.circle",
-                                         tint: .orange),
-                AtriaConnectionGuideStep(title: "Let Atria retry",
-                                         detail: "Atria scans, reconnects, and recovers saved sessions without needing the screen awake.",
-                                         systemImage: "app.badge.checkmark",
-                                         tint: .pink),
-                AtriaConnectionGuideStep(title: "Saved data stays local",
-                                         detail: "Interrupted live runs are checkpointed so later syncs do not discard the session.",
-                                         systemImage: "iphone.radiowaves.left.and.right",
-                                         tint: .blue)
-            ]
+            return context.officialAppCoexistenceRisk == .suspected ? coexistenceStep : wearStep
         }
 
-        return [
-            coexistenceStep,
-            AtriaConnectionGuideStep(title: "Keep the strap nearby",
-                                     detail: "Atria reconnects in the background as the strap and iPhone become available.",
-                                     systemImage: "iphone.radiowaves.left.and.right",
-                                     tint: .blue),
-            AtriaConnectionGuideStep(title: "Give it a moment",
-                                     detail: "Atria widens the search on its own before you need to scan again manually.",
-                                     systemImage: "arrow.triangle.2.circlepath",
-                                     tint: .orange),
-            AtriaConnectionGuideStep(title: "Saved sessions remain",
-                                     detail: "Drops do not erase already captured local sessions.",
-                                     systemImage: "bolt.horizontal.circle",
-                                     tint: .pink)
-        ]
-    }
-
-    private var automaticItems: [String] {
-        if context.officialAppCoexistenceRisk == .suspected {
-            return [
-                "Atria keeps saved data intact while the live BLE owner changes.",
-                "Atria warns instead of pretending collection is reliable when another app may reclaim the strap.",
-                "After the official strap app is removed or disabled, Atria reconnects and resumes normal collection."
-            ]
-        }
-        if context.isFirstHandoff {
-            return [
-                "Atria starts scanning automatically as soon as Bluetooth is available.",
-                "If the first filtered scan misses, Atria widens the search on its own.",
-                "Once connected, Atria checkpoints and reconnects without requiring an unlocked screen."
-            ]
-        }
-
-        return [
-            "If the connection drops, Atria starts searching and reconnecting on its own.",
-            "Saved sessions remain on the phone during interruptions.",
-            "Your data keeps saving once the strap is back with Atria."
-        ]
-    }
-
-    private var progressItems: [String] {
-        [
-            context.progressDetail,
-            "Connection state: \(context.userStatusLabel)",
-            context.actionSummary
-        ]
+        if context.officialAppCoexistenceRisk == .suspected { return coexistenceStep }
+        if status == .poweredOff { return autoStep }
+        return AtriaConnectionGuideStep(title: "History is safe",
+                                        detail: "Drops do not erase sessions.",
+                                        systemImage: "internaldrive.fill",
+                                        tint: .green)
     }
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(guideTitle)
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                        Text(guideSubtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .center, spacing: 9) {
+                        Image("AtriaLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 24, height: 24)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .accessibilityHidden(true)
+                        Text("ATRIA")
+                            .font(.caption.weight(.black))
+                            .tracking(1.4)
+                            .foregroundStyle(.primary)
+                            .accessibilityHidden(true)
+                        Spacer(minLength: 0)
+                        statusDot
                     }
-                    .frame(maxWidth: 760, alignment: .leading)
 
-                    AtriaConnectionProgressStrip(status: status,
-                                                attempts: max(context.attempts, 1),
-                                                statusTint: statusTint,
-                                                flowLabel: context.flowLabel)
-
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)],
-                              spacing: 12) {
-                        ForEach(manualSteps) { step in
-                            AtriaConnectionStepTile(step: step)
-                        }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(guideTitle)
+                            .font(.title2.weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                        Text(guideSubtitle)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     AtriaConnectionStatusCard(title: setupStateTitle,
                                               detail: setupStateDetail,
                                               status: status)
 
-                    AtriaConnectionChecklistCard(
-                        title: "What Atria handles automatically",
-                        items: automaticItems,
-                        tint: .orange
-                    )
-
-                    AtriaConnectionChecklistCard(
-                        title: context.progressLabel,
-                        items: progressItems,
-                        tint: .green
-                    )
-                }
-                .padding(20)
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity)
-            }
-            .background(AtriaBackdropLayer(isDark: true, reduceTransparency: reduceTransparency).ignoresSafeArea())
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .font(.body.weight(.semibold))
-                }
-            }
-            .safeAreaBar(edge: .bottom) {
-                VStack(spacing: 10) {
-                    if horizontalSizeClass == .compact {
-                        VStack(spacing: 10) {
-                            Button(action: continueSetup) {
-                                Text(primaryButtonTitle)
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .atriaCardAction(tint: .blue)
-                            Button(action: retry) {
-                                Text("Retry scan now")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .atriaCardAction(prominent: false, tint: .gray)
-                        }
-                    } else {
-                        HStack(spacing: 10) {
-                            Button(action: continueSetup) {
-                                Text(primaryButtonTitle)
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .atriaCardAction(tint: .blue)
-                            Button(action: retry) {
-                                Text("Retry scan now")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .atriaCardAction(prominent: false, tint: .gray)
-                        }
-                    }
-
-                    Text("Setup is quick, and after the first connection Atria reconnects to your strap automatically.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    AtriaConnectionStepRow(step: priorityStep)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 112)
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.bold))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 36, height: 36)
+                    .background(Color(uiColor: .secondarySystemBackground), in: Circle())
+                    .accessibilityLabel("Close")
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 8) {
+                    Button(action: continueSetup) {
+                        HStack(spacing: 8) {
+                            Text(primaryButtonTitle)
+                                .font(.subheadline.weight(.bold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.82)
+                            Image(systemName: "arrow.right")
+                                .font(.caption.weight(.black))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(Color.blue, in: Capsule(style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: retry) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Retry scan")
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+                .background(.secondary.opacity(0.08))
             }
         }
+    }
+
+    private var statusDot: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusTint)
+                .frame(width: 8, height: 8)
+            Text(status == .connected ? "Live" : "Setup")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -977,6 +1179,36 @@ private struct AtriaConnectionStepTile: View, Equatable {
     }
 }
 
+private struct AtriaConnectionStepRow: View, Equatable {
+    let step: AtriaConnectionGuideStep
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: step.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(step.tint)
+                .frame(width: 32, height: 32)
+                .background(AtriaIconTileBackground(cornerRadius: 8, tint: step.tint))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(step.title)
+                    .font(.subheadline.weight(.bold))
+                Text(step.detail)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 private struct AtriaConnectionStatusCard: View, Equatable {
     let title: String
     let detail: String
@@ -1013,30 +1245,32 @@ private struct AtriaConnectionStatusCard: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: systemImage)
-                .font(.title3.weight(.semibold))
+                .font(.subheadline.weight(.bold))
                 .foregroundStyle(tint)
-                .frame(width: 42, height: 42)
-                .background(AtriaIconTileBackground(cornerRadius: 14, tint: tint))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(tint.opacity(0.22), lineWidth: 1)
-                }
+                .frame(width: 34, height: 34)
+                .background(AtriaIconTileBackground(cornerRadius: 10, tint: tint))
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.headline.weight(.semibold))
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
                 Text(detail)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .layoutPriority(2)
 
             Spacer(minLength: 0)
         }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

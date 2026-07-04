@@ -20,6 +20,10 @@ struct WidgetSnapshot: Codable {
     let batteryLevel: Int?
     let batteryChargeStatus: String?
     let batteryChargeText: String?
+    let layoutGlanceMetrics: [String]?
+    let layoutRingCenterMetric: String?
+    let layoutLegendStatStyle: String?
+    let layoutAccent: String?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -60,6 +64,10 @@ enum WidgetSnapshotPublisher {
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             publish(store: store, ble: ble, reason: "delayed")
         }
+        Task {
+            await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: 120)
+            publish(store: store, ble: ble, reason: "session_load")
+        }
     }
 
     @discardableResult
@@ -96,8 +104,9 @@ enum WidgetSnapshotPublisher {
         } else {
             hrvState = recovery.confidence == .validated ? "validated" : "personal_baseline"
         }
+        let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
-        let snapshot = WidgetSnapshot(schema: 2,
+        let snapshot = WidgetSnapshot(schema: 3,
                                       createdAt: Date(),
                                       recoveryPercent: recovery.percent,
                                       recoveryConfidence: recovery.confidence.rawValue,
@@ -107,11 +116,15 @@ enum WidgetSnapshotPublisher {
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
-                                      steps: ble.phoneStepsToday > 0 ? ble.phoneStepsToday : nil,
+                                      steps: store.imuAuditSummary.strapStepCount > 0 ? store.imuAuditSummary.strapStepCount : nil,
                                       heartRate: ble.heartRate > 0 ? ble.heartRate : nil,
                                       batteryLevel: ble.batteryLevel >= 0 ? ble.batteryLevel : nil,
                                       batteryChargeStatus: ble.batteryChargeStatus.rawValue,
                                       batteryChargeText: ble.batteryChargeStatus.label,
+                                      layoutGlanceMetrics: layout.glanceMetrics,
+                                      layoutRingCenterMetric: layout.ringCenterMetric.rawValue,
+                                      layoutLegendStatStyle: layout.legendStatStyle.rawValue,
+                                      layoutAccent: layout.accent.rawValue,
                                       storage: widgetDiagnostics.storage,
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
@@ -149,7 +162,7 @@ enum WidgetSnapshotPublisher {
                           snapshot.complicationTargetPresent ? 1 : 0,
                           readinessAction)
 #if canImport(WidgetKit)
-            if widgetDiagnostics.appGroupEnabled {
+            if widgetDiagnostics.appGroupEnabled, shouldReloadTimelines(for: snapshot) {
                 WidgetCenter.shared.reloadAllTimelines()
             }
 #endif
@@ -157,6 +170,38 @@ enum WidgetSnapshotPublisher {
             AtriaDebugLog("ATRIADBG widget_snapshot status=error reason=encode_failed")
         }
         return snapshot
+    }
+
+    // WidgetKit throttles reloads (~40-70/day); reloading on every publish burns
+    // that budget and leaves the widget stale when it matters. Reload only when a
+    // user-visible field changed, or 15+ minutes passed since the last reload.
+    private static var lastReloadFingerprint: String?
+    private static var lastReloadDate: Date?
+
+    private static func shouldReloadTimelines(for snapshot: WidgetSnapshot, now: Date = Date()) -> Bool {
+        var parts: [String] = []
+        parts.append(snapshot.recoveryPercent.map(String.init) ?? "learning")
+        parts.append(snapshot.recoveryConfidence)
+        parts.append(String(format: "%.1f", snapshot.strain))
+        parts.append(snapshot.restingHR.map(String.init) ?? "-")
+        parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
+        // Steps and heart rate are bucketed like battery: they tick continuously,
+        // and an unbucketed value would defeat this throttle while walking.
+        parts.append(snapshot.steps.map { String(($0 / 100) * 100) } ?? "-")
+        parts.append(snapshot.heartRate.map { String(($0 / 5) * 5) } ?? "-")
+        let batteryBucket: String = snapshot.batteryLevel.map { String(($0 / 10) * 10) } ?? "-"
+        parts.append(batteryBucket)
+        parts.append(snapshot.batteryChargeStatus ?? "-")
+        parts.append(snapshot.layoutGlanceMetrics?.joined(separator: ",") ?? "-")
+        parts.append(snapshot.layoutRingCenterMetric ?? "-")
+        parts.append(snapshot.layoutLegendStatStyle ?? "-")
+        parts.append(snapshot.layoutAccent ?? "-")
+        let fingerprint = parts.joined(separator: "|")
+        let staleEnough = lastReloadDate.map { now.timeIntervalSince($0) >= 15 * 60 } ?? true
+        guard fingerprint != lastReloadFingerprint || staleEnough else { return false }
+        lastReloadFingerprint = fingerprint
+        lastReloadDate = now
+        return true
     }
 
     private static func dayStrain(store: SessionStore, ble: AtriaBLEManager, rest: Int) -> Double {
@@ -167,6 +212,14 @@ enum WidgetSnapshotPublisher {
                           max: store.profile.maxHR)
         } ?? 0
         return Metrics.strain(fromTRIMP: saved + live)
+    }
+
+    private static func currentHomeLayoutConfig() -> AtriaHomeLayoutConfig {
+        guard let data = UserDefaults.standard.string(forKey: AtriaHomeLayoutConfig.storageKey)?.data(using: .utf8),
+              let config = try? AtriaHomeLayoutConfig.decoded(from: data) else {
+            return .default.validated()
+        }
+        return config
     }
 
     private static func formatInt(_ value: Int?) -> String {
@@ -207,7 +260,6 @@ enum WidgetSnapshotPublisher {
             }
             let supportsAccessory =
                 (bundle.object(forInfoDictionaryKey: "AtriaWidgetSupportsAccessoryFamilies") as? Bool) == true
-                || (bundle.object(forInfoDictionaryKey: "AtriaWidgetSupportsAccessoryFamilies") as? Bool) == true
             return BundledExtensionInfo(extensionPoint: identifier,
                                         supportsAccessoryFamilies: supportsAccessory)
         }

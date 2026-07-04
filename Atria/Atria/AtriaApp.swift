@@ -7,6 +7,19 @@ struct AtriaApp: App {
     private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
     private static let processingTaskIdentifier = "com.adidshaft.atria.processing"
 
+    private enum SceneDefaults {
+        static let phase = "atria.scene.phase"
+        static let reason = "atria.scene.reason"
+        static let updatedAt = "atria.scene.updatedAt"
+        static let lastActiveAt = "atria.scene.lastActiveAt"
+        static let lastInactiveAt = "atria.scene.lastInactiveAt"
+        static let lastBackgroundAt = "atria.scene.lastBackgroundAt"
+        static let fastLaunchAt = "atria.scene.fastLaunchAt"
+        static let applicationState = "atria.scene.applicationState"
+        static let lastDidBecomeActiveAt = "atria.scene.lastDidBecomeActiveAt"
+        static let lastWillEnterForegroundAt = "atria.scene.lastWillEnterForegroundAt"
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var ble: AtriaBLEManager
     @StateObject private var store: SessionStore
@@ -30,6 +43,7 @@ struct AtriaApp: App {
                 .onAppear {
                     guard !didScheduleLaunchWork else { return }
                     didScheduleLaunchWork = true
+                    recordScenePhase("appear", reason: "content_on_appear")
                     let launchArguments = ProcessInfo.processInfo.arguments
                     let hasRequestedDeferredLaunchWork = hasRequestedDeferredLaunchWork(arguments: launchArguments)
                     let shouldRunDeferredWork = shouldRunDeferredLaunchWork(arguments: launchArguments)
@@ -53,6 +67,7 @@ struct AtriaApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:
+                        recordScenePhase("background", reason: "scene_background")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         ble.handleSceneBackgroundTransition(reason: "scene_background",
@@ -60,6 +75,7 @@ struct AtriaApp: App {
                                                             maxHR: store.profile.maxHR)
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
+                        recordScenePhase("inactive", reason: "scene_inactive")
                         // Inactive is often a short transient state during gestures,
                         // alerts, and multitasking transitions. Keep the BLE manager in
                         // its current mode here; true backgrounding is handled by the
@@ -74,11 +90,13 @@ struct AtriaApp: App {
                             store.requestPersistenceFlush(reason: "scene_inactive_deferred")
                         }
                     case .active:
+                        recordScenePhase("active", reason: "scene_active")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                                        maxHR: store.profile.maxHR)
                     @unknown default:
+                        recordScenePhase("unknown", reason: "scene_unknown")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         ble.flushLifecycleRealtimeState(reason: "scene_unknown")
@@ -90,6 +108,16 @@ struct AtriaApp: App {
                     inactiveFlushTask = nil
                     ble.flushLifecycleRealtimeState(reason: "app_will_terminate")
                     store.flushScheduledPersistence(reason: "app_will_terminate")
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                    recordScenePhase(scenePhaseLabel(scenePhase), reason: "ui_will_enter_foreground")
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                    recordScenePhase("active", reason: "ui_did_become_active")
+                    inactiveFlushTask?.cancel()
+                    inactiveFlushTask = nil
+                    ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                                    maxHR: store.profile.maxHR)
                 }
         }
     }
@@ -122,6 +150,9 @@ struct AtriaApp: App {
                 try? await Task.sleep(for: .seconds(185))
             }
             store.performBackgroundMaintenance(reason: reason)
+            // Refresh the shared widget snapshot so the morning recovery number
+            // is on the Lock Screen before the app is ever opened.
+            WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
@@ -188,10 +219,83 @@ struct AtriaApp: App {
 
     @MainActor
     private func handleFastLaunchWork(arguments: [String]) {
+        let isInteractiveForeground = isInteractiveForegroundLaunch()
+        let fastLaunchReason = isInteractiveForeground ? "fast_launch_active" : "fast_launch_background"
+        recordScenePhase(isInteractiveForeground ? "active" : scenePhaseLabel(scenePhase), reason: fastLaunchReason)
         logLaunchTiming(event: "fast_launch_begin")
-        ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
-                                       maxHR: store.profile.maxHR)
+        if isInteractiveForeground {
+            ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                            maxHR: store.profile.maxHR)
+        } else {
+            ble.applyPersistentLongWearModeIfNeeded(rest: store.baseline.restingInt ?? 60,
+                                                    maxHR: store.profile.maxHR)
+        }
+        store.reconcileCanonicalSessionsFromBackupIfNeeded(reason: "fast_launch")
+        LocalNotificationScheduler.scheduleFastLaunchHealthDeviationDebugFixtureIfRequested(arguments: arguments)
+        LocalNotificationScheduler.scheduleFastLaunchWeeklyReportDebugFixtureIfRequested(arguments: arguments)
+        LocalNotificationScheduler.scheduleFastLaunchMorningSummaryDebugFixtureIfRequested(arguments: arguments)
+        store.generateWeeklyReportProductionFixtureFromLaunchIfRequested(arguments: arguments)
         logLaunchTiming(event: "fast_launch_complete")
+    }
+
+    private func isInteractiveForegroundLaunch() -> Bool {
+        UIApplication.shared.applicationState == .active || scenePhase == .active
+    }
+
+    private func scenePhaseLabel(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private func recordScenePhase(_ phase: String, reason: String) {
+        let now = Date().timeIntervalSince1970
+        let defaults = UserDefaults.standard
+        defaults.set(phase, forKey: SceneDefaults.phase)
+        defaults.set(reason, forKey: SceneDefaults.reason)
+        defaults.set(applicationStateLabel(UIApplication.shared.applicationState),
+                     forKey: SceneDefaults.applicationState)
+        defaults.set(now, forKey: SceneDefaults.updatedAt)
+        switch phase {
+        case "active":
+            defaults.set(now, forKey: SceneDefaults.lastActiveAt)
+        case "inactive":
+            defaults.set(now, forKey: SceneDefaults.lastInactiveAt)
+        case "background":
+            defaults.set(now, forKey: SceneDefaults.lastBackgroundAt)
+        default:
+            break
+        }
+        if reason == "fast_launch" {
+            defaults.set(now, forKey: SceneDefaults.fastLaunchAt)
+        }
+        if reason == "ui_did_become_active" {
+            defaults.set(now, forKey: SceneDefaults.lastDidBecomeActiveAt)
+        } else if reason == "ui_will_enter_foreground" {
+            defaults.set(now, forKey: SceneDefaults.lastWillEnterForegroundAt)
+        }
+        defaults.synchronize()
+        AtriaDebugLog("ATRIADBG scene_phase phase=%@ reason=%@", phase, reason)
+    }
+
+    private func applicationStateLabel(_ state: UIApplication.State) -> String {
+        switch state {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
     }
 
     @MainActor
@@ -221,14 +325,19 @@ struct AtriaApp: App {
             || arguments.contains("--atria-schedule-sleep-validation")
             || arguments.contains("--atria-verify-workout-label")
             || arguments.contains("--atria-schedule-workout-validation")
+            || arguments.contains("--atria-log-trends")
             || arguments.contains("--atria-log-trend-summaries")
+            || arguments.contains("--atria-backup-sessions")
             || arguments.contains("--atria-write-session-backup")
+            || arguments.contains("--atria-verify-backup")
             || arguments.contains("--atria-verify-session-backup")
+            || arguments.contains("--atria-restore-backup")
             || arguments.contains("--atria-log-gate-status")
             || arguments.contains("--atria-export-rr-reference-package")
             || arguments.contains("--atria-export-rr-reference-ui-package")
             || arguments.contains("--atria-export-hr-reference-package")
             || arguments.contains("--atria-export-hr-reference-ui-package")
+            || arguments.contains("--atria-export-raw-package")
             || arguments.contains("--atria-validate-rr-reference")
             || arguments.contains("--atria-validate-hr-reference")
             || arguments.contains("--atria-clear-reference-inputs")
@@ -238,11 +347,23 @@ struct AtriaApp: App {
             || arguments.contains("--atria-analytics-calibration-audit")
             || arguments.contains("--atria-confirm-best-workout-candidate")
             || arguments.contains("--atria-confirm-best-sleep-candidate")
+            || arguments.contains("--atria-schedule-notifications")
+            || arguments.contains("--atria-test-health-deviation-notification")
+            || arguments.contains("--atria-test-weekly-report-notification")
+            || arguments.contains("--atria-test-weekly-report-production-maintenance")
+            || arguments.contains("--atria-test-morning-summary-notification")
+            || arguments.contains("--atria-test-morning-summary-toggle-off")
+            || arguments.contains("--atria-test-notification")
         guard requestedLaunchDiagnostics else {
             logLaunchTiming(event: "deferred_launch_complete")
             return
         }
 
+        if arguments.contains("--atria-export-raw-package") {
+            store.scheduleRawDataPackageFromLaunchIfRequested(arguments: arguments)
+        }
+
+        store.queueSessionBackupAfterDeferredLoadFromLaunchIfRequested(arguments: arguments)
         Task { @MainActor in
             await store.waitForDeferredSessionLoadIfNeeded()
             store.logBaselineMaturityFromLaunchIfRequested(arguments: arguments)
@@ -255,8 +376,7 @@ struct AtriaApp: App {
             store.scheduleSleepValidationFromLaunchIfRequested(arguments: arguments)
             store.scheduleWorkoutValidationFromLaunchIfRequested(arguments: arguments)
             store.logTrendSummariesFromLaunchIfRequested(arguments: arguments)
-            store.writeSessionBackupFromLaunchIfRequested(arguments: arguments)
-            store.verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
+            store.restoreLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
             store.logGateStatusFromLaunchIfRequested(arguments: arguments)
             logAnalyticsCalibrationAuditIfRequested(arguments: arguments)
             scheduleLaunchExportsIfRequested(store: store, arguments: arguments)
@@ -319,6 +439,7 @@ struct AtriaApp: App {
         let needsRRUI = arguments.contains("--atria-export-rr-reference-ui-package")
         let needsHR = arguments.contains("--atria-export-hr-reference-package")
         let needsHRUI = arguments.contains("--atria-export-hr-reference-ui-package")
+        let needsRawExport = arguments.contains("--atria-export-raw-package")
         let needsRRValidation = arguments.contains("--atria-validate-rr-reference")
         let needsHRValidation = arguments.contains("--atria-validate-hr-reference")
         let needsReferenceClear = arguments.contains("--atria-clear-reference-inputs")
@@ -327,12 +448,13 @@ struct AtriaApp: App {
         let needsHealthKitResetRebuild = arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
         let needsWorkoutConfirm = arguments.contains("--atria-confirm-best-workout-candidate")
         let needsSleepConfirm = arguments.contains("--atria-confirm-best-sleep-candidate")
-        guard needsRR || needsRRUI || needsHR || needsHRUI || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
-        AtriaDebugLog("ATRIADBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+        guard needsRR || needsRRUI || needsHR || needsHRUI || needsRawExport || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
+        AtriaDebugLog("ATRIADBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d raw_export=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                       needsRR ? 1 : 0,
                       needsRRUI ? 1 : 0,
                       needsHR ? 1 : 0,
                       needsHRUI ? 1 : 0,
+                      needsRawExport ? 1 : 0,
                       needsRRValidation ? 1 : 0,
                       needsHRValidation ? 1 : 0,
                       needsReferenceClear ? 1 : 0,
@@ -352,6 +474,10 @@ struct AtriaApp: App {
             if needsRRUI {
                 _ = store.exportRRReferencePackageForUI()
             }
+            let rawExportURL = store.exportRawDataPackageFromLaunchIfRequested(arguments: arguments)
+            if needsRawExport, rawExportURL == nil {
+                scheduleRawExportRetryIfNeeded(store: store, arguments: arguments)
+            }
             store.validateHRReferenceFromLaunchIfRequested(arguments: arguments)
             store.validateRRReferenceFromLaunchIfRequested(arguments: arguments)
             store.resetAndRebuildHealthKitHeartRateFromLaunchIfRequested(arguments: arguments)
@@ -363,11 +489,12 @@ struct AtriaApp: App {
                                                     arguments: arguments,
                                                     needsHealthKit: needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild,
                                                     needsResetRebuild: needsHealthKitResetRebuild)
-            AtriaDebugLog("ATRIADBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
+            AtriaDebugLog("ATRIADBG launch_exports status=completed rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d raw_export=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                           needsRR ? 1 : 0,
                           needsRRUI ? 1 : 0,
                           needsHR ? 1 : 0,
                           needsHRUI ? 1 : 0,
+                          needsRawExport ? 1 : 0,
                           needsRRValidation ? 1 : 0,
                           needsHRValidation ? 1 : 0,
                           needsReferenceClear ? 1 : 0,
@@ -376,6 +503,18 @@ struct AtriaApp: App {
                           needsHealthKitResetRebuild ? 1 : 0,
                           needsWorkoutConfirm ? 1 : 0,
                           needsSleepConfirm ? 1 : 0)
+        }
+    }
+
+    @MainActor
+    private func scheduleRawExportRetryIfNeeded(store: SessionStore, arguments: [String]) {
+        guard arguments.contains("--atria-export-raw-package") else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            AtriaDebugLog("ATRIADBG raw_export_launch_retry status=attempt")
+            let exportURL = store.exportRawDataPackageFromLaunchIfRequested(arguments: arguments)
+            AtriaDebugLog("ATRIADBG raw_export_launch_retry status=%@",
+                          exportURL == nil ? "failed" : "ok")
         }
     }
 

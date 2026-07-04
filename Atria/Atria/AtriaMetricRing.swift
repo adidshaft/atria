@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A premium progress ring for a single metric. Gradient stroke + subtle glow
-/// when there is a value; a calm dashed ring while the metric is still learning.
+/// when there is a value; a quiet partial cap while the metric is still learning.
 /// Center text is always scale-safe (never clipped).
 struct AtriaMetricRing: View, Equatable {
     let label: String
@@ -12,10 +12,16 @@ struct AtriaMetricRing: View, Equatable {
     let tint: Color
     let size: CGFloat
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Fill actually drawn; sweeps toward `clamped` so the ring animates in
+    /// instead of popping to its final value.
+    @State private var animatedFraction: Double = 0
+
     static func == (lhs: AtriaMetricRing, rhs: AtriaMetricRing) -> Bool {
         lhs.label == rhs.label
             && lhs.value == rhs.value
             && lhs.fraction == rhs.fraction
+            && lhs.tint == rhs.tint
             && lhs.size == rhs.size
     }
 
@@ -30,7 +36,7 @@ struct AtriaMetricRing: View, Equatable {
 
                 if fraction != nil && clamped >= 0.01 {
                     Circle()
-                        .trim(from: 0, to: clamped)
+                        .trim(from: 0, to: animatedFraction)
                         .stroke(
                             AngularGradient(
                                 gradient: Gradient(colors: [tint.opacity(0.55), tint]),
@@ -41,17 +47,38 @@ struct AtriaMetricRing: View, Equatable {
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
+                        .onAppear {
+                            if reduceMotion {
+                                animatedFraction = clamped
+                            } else {
+                                withAnimation(.spring(response: 0.9, dampingFraction: 0.85)) {
+                                    animatedFraction = clamped
+                                }
+                            }
+                        }
+                        .onChange(of: clamped) { _, newValue in
+                            if reduceMotion {
+                                animatedFraction = newValue
+                            } else {
+                                withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
+                                    animatedFraction = newValue
+                                }
+                            }
+                        }
                 } else {
-                    // Learning: neutral grey dashes across every metric, so colour
-                    // (the filled gradient) only ever means "real data is in".
+                    // Learning: a short cap gives the card life without implying
+                    // the metric has a real scored value yet.
                     Circle()
-                        .stroke(Color.secondary.opacity(0.35),
-                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, dash: [3, 7]))
+                        .trim(from: 0.06, to: 0.22)
+                        .stroke(tint.opacity(0.48),
+                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
                 }
 
                 Text(value)
                     .font(.system(size: size * 0.27, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
                     .foregroundStyle(fraction == nil ? Color.secondary : Color.primary)

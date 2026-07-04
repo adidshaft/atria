@@ -5,6 +5,13 @@ struct AtriaBackdropLayer: View, Equatable {
     let reduceTransparency: Bool
 
     var body: some View {
+        backdropStack
+            // Static per (isDark, reduceTransparency): flatten the stacked
+            // gradients into a single texture so glass blurs sample one layer.
+            .drawingGroup()
+    }
+
+    private var backdropStack: some View {
         ZStack {
             if reduceTransparency {
                 reducedTransparencyFill
@@ -48,25 +55,11 @@ struct AtriaBackdropLayer: View, Equatable {
     }
 
     private var reducedTransparencyFill: Color {
-        isDark
-            ? Color(red: 0.018, green: 0.023, blue: 0.032)
-            : Color(red: 0.950, green: 0.960, blue: 0.990)
+        AtriaDesignTokens.Surface.reducedTransparencyBackground(isDark: isDark)
     }
 
     private var gradientColors: [Color] {
-        if isDark {
-            return [
-                Color(red: 0.018, green: 0.023, blue: 0.032),
-                Color(red: 0.024, green: 0.031, blue: 0.043),
-                Color(red: 0.016, green: 0.021, blue: 0.030)
-            ]
-        }
-        // Gray-blue field so opaque white cards visibly float above it.
-        return [
-            Color(red: 0.852, green: 0.882, blue: 0.936),
-            Color(red: 0.792, green: 0.838, blue: 0.918),
-            Color(red: 0.866, green: 0.878, blue: 0.862)
-        ]
+        AtriaDesignTokens.Surface.appBackground(isDark: isDark)
     }
 
     private var accentOne: Color {

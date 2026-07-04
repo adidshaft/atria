@@ -3,6 +3,23 @@ import Foundation
 import SwiftUI
 import UIKit
 
+struct AtriaStrainTargetHapticLatch {
+    private var firedDay: Date?
+
+    mutating func shouldFire(strain: Double,
+                             target: Double?,
+                             now: Date = Date(),
+                             calendar: Calendar = .current) -> Bool {
+        guard let target, strain >= target else { return false }
+        let day = calendar.startOfDay(for: now)
+        if let firedDay, calendar.isDate(firedDay, inSameDayAs: day) {
+            return false
+        }
+        firedDay = day
+        return true
+    }
+}
+
 struct AtriaHapticAlertSettings: Codable, Equatable {
     var incomingCalls = true
     var heartRateZones = true
@@ -47,13 +64,35 @@ struct AtriaNotificationSettings: Codable, Equatable {
     var allowNotifications = true
     var recoveryReady = true
     var strainTarget = true
+    var sleepReview = true
+    var workoutReview = true
+    var morningSummary = true
+    var weeklyReport = true
+    var healthDeviation = true
     var strapBattery = true
     var bluetoothOff = true
     var fitCheck = true
 
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allowNotifications = try container.decodeIfPresent(Bool.self, forKey: .allowNotifications) ?? true
+        recoveryReady = try container.decodeIfPresent(Bool.self, forKey: .recoveryReady) ?? true
+        strainTarget = try container.decodeIfPresent(Bool.self, forKey: .strainTarget) ?? true
+        sleepReview = try container.decodeIfPresent(Bool.self, forKey: .sleepReview) ?? true
+        workoutReview = try container.decodeIfPresent(Bool.self, forKey: .workoutReview) ?? true
+        morningSummary = try container.decodeIfPresent(Bool.self, forKey: .morningSummary) ?? true
+        weeklyReport = try container.decodeIfPresent(Bool.self, forKey: .weeklyReport) ?? true
+        healthDeviation = try container.decodeIfPresent(Bool.self, forKey: .healthDeviation) ?? true
+        strapBattery = try container.decodeIfPresent(Bool.self, forKey: .strapBattery) ?? true
+        bluetoothOff = try container.decodeIfPresent(Bool.self, forKey: .bluetoothOff) ?? true
+        fitCheck = try container.decodeIfPresent(Bool.self, forKey: .fitCheck) ?? true
+    }
+
     var enabledCount: Int {
         guard allowNotifications else { return 0 }
-        return [recoveryReady, strainTarget, strapBattery, bluetoothOff, fitCheck].filter { $0 }.count
+        return [recoveryReady, strainTarget, sleepReview, workoutReview, morningSummary, weeklyReport, healthDeviation, strapBattery, bluetoothOff, fitCheck].filter { $0 }.count
     }
 
     /// Whether a scheduler decision of the given `kind` is permitted by the user.
@@ -64,6 +103,11 @@ struct AtriaNotificationSettings: Codable, Equatable {
         switch kind {
         case "recovery": return recoveryReady
         case "strain": return strainTarget
+        case "sleep_review": return sleepReview
+        case "workout_review": return workoutReview
+        case "morning_summary": return morningSummary
+        case "weekly_report": return weeklyReport
+        case "health_deviation": return healthDeviation
         case "battery": return strapBattery
         case "bluetooth_off": return bluetoothOff
         case "fit_check": return fitCheck
@@ -90,6 +134,10 @@ struct AtriaNotificationSettings: Codable, Equatable {
 @MainActor
 final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private static let heartRateZoneHapticCooldown: TimeInterval = 30
+    static let debugStrainTargetStatusKey = "atria.debug.strainTargetHaptic.status"
+    static let debugStrainTargetCountKey = "atria.debug.strainTargetHaptic.count"
+    static let debugStrainTargetStrainKey = "atria.debug.strainTargetHaptic.strain"
+    static let debugStrainTargetTargetKey = "atria.debug.strainTargetHaptic.target"
 
     struct Snapshot {
         let status: AtriaBLEManager.Status
@@ -110,7 +158,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private var lastZoneHapticAt: Date?
     private var lastBatteryLow = false
     private var recoveryWasReady = false
-    private var strainWasAtTarget = false
+    private var strainTargetLatch = AtriaStrainTargetHapticLatch()
 
     override init() {
         super.init()
@@ -189,10 +237,17 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private func updateStrainTarget(strain: Double,
                                     target: Double?,
                                     settings: AtriaHapticAlertSettings) {
-        let atTarget = target.map { strain >= $0 } ?? false
-        defer { strainWasAtTarget = atTarget }
-        guard settings.strainTarget, activeCollection, atTarget, !strainWasAtTarget else { return }
+        guard settings.strainTarget,
+              activeCollection,
+              strainTargetLatch.shouldFire(strain: strain, target: target) else {
+            return
+        }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        let fireCount = UserDefaults.standard.integer(forKey: Self.debugStrainTargetCountKey) + 1
+        UserDefaults.standard.set("fired", forKey: Self.debugStrainTargetStatusKey)
+        UserDefaults.standard.set(fireCount, forKey: Self.debugStrainTargetCountKey)
+        UserDefaults.standard.set(strain, forKey: Self.debugStrainTargetStrainKey)
+        UserDefaults.standard.set(target ?? 0, forKey: Self.debugStrainTargetTargetKey)
         AtriaDebugLog("ATRIADBG haptic_alert kind=strain_target strain=%.1f target=%.1f phone_side=1 strap_write=0",
               strain,
               target ?? 0)
@@ -274,22 +329,27 @@ struct AtriaNotificationSettingsCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Notifications")
                         .font(.subheadline.weight(.semibold))
-                    Text("Choose which on-device notifications Atria may send. Nothing leaves your phone.")
+                    Text("Choose the coaching nudges Atria can send on this phone. Nothing leaves your device.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            notificationToggle("Allow notifications", keyPath: \.allowNotifications, prominent: true)
+            notificationToggle("Allow coach notifications", keyPath: \.allowNotifications, prominent: true)
 
             if settings.allowNotifications {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    notificationToggle("Recovery", keyPath: \.recoveryReady)
-                    notificationToggle("Strain", keyPath: \.strainTarget)
-                    notificationToggle("Battery", keyPath: \.strapBattery)
-                    notificationToggle("Bluetooth", keyPath: \.bluetoothOff)
-                    notificationToggle("Fit check", keyPath: \.fitCheck)
+                    notificationToggle("Recovery check-ins", keyPath: \.recoveryReady)
+                    notificationToggle("Strain milestones", keyPath: \.strainTarget)
+                    notificationToggle("Sleep review", keyPath: \.sleepReview)
+                    notificationToggle("Workout review", keyPath: \.workoutReview)
+                    notificationToggle("Morning summary", keyPath: \.morningSummary)
+                    notificationToggle("Weekly report", keyPath: \.weeklyReport)
+                    notificationToggle("Health monitor", keyPath: \.healthDeviation)
+                    notificationToggle("Strap battery", keyPath: \.strapBattery)
+                    notificationToggle("Bluetooth help", keyPath: \.bluetoothOff)
+                    notificationToggle("Fit check reminders", keyPath: \.fitCheck)
                 }
                 .transition(.opacity)
             }
