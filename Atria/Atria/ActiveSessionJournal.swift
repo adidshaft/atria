@@ -22,6 +22,8 @@ struct ActiveSessionJournalRecord: Codable {
     var lowPowerMode: Bool?
     var powerMode: String?
     var cadenceMultiplier: Double?
+    var strengthSets: [LoggedSet]?
+    var excludedIntervals: [ExcludedInterval]?
 
     struct Sample: Codable {
         let t: Date
@@ -59,6 +61,8 @@ private struct ActiveSessionJournalSegment: Codable {
     var lowPowerMode: Bool?
     var powerMode: String?
     var cadenceMultiplier: Double?
+    var strengthSets: [LoggedSet]?
+    var excludedIntervals: [ExcludedInterval]?
 }
 
 enum ActiveSessionJournal {
@@ -236,7 +240,9 @@ enum ActiveSessionJournal {
             thermalState: record.thermalState,
             lowPowerMode: record.lowPowerMode,
             powerMode: record.powerMode,
-            cadenceMultiplier: record.cadenceMultiplier
+            cadenceMultiplier: record.cadenceMultiplier,
+            strengthSets: record.strengthSets,
+            excludedIntervals: record.excludedIntervals
         )
         let data = try JSONEncoder().encode(segment)
         try data.write(to: segmentURL(sequence: nextSequence), options: [.atomic])
@@ -282,7 +288,9 @@ enum ActiveSessionJournal {
             thermalState: first.thermalState,
             lowPowerMode: first.lowPowerMode,
             powerMode: first.powerMode,
-            cadenceMultiplier: first.cadenceMultiplier
+            cadenceMultiplier: first.cadenceMultiplier,
+            strengthSets: first.strengthSets,
+            excludedIntervals: first.excludedIntervals
         )
         for segment in segments where segment.id == record.id {
             record.label = segment.label
@@ -316,8 +324,21 @@ enum ActiveSessionJournal {
             record.lowPowerMode = segment.lowPowerMode
             record.powerMode = segment.powerMode
             record.cadenceMultiplier = segment.cadenceMultiplier
+            record.strengthSets = segment.strengthSets
+            record.excludedIntervals = segment.excludedIntervals
         }
         return record
+    }
+
+    static func mirrorStrengthState(strengthSets: [LoggedSet],
+                                    excludedIntervals: [ExcludedInterval]) throws {
+        guard var record = load() else { return }
+        record.updatedAt = Date()
+        record.strengthSets = strengthSets.isEmpty ? nil : strengthSets
+        record.excludedIntervals = excludedIntervals.isEmpty ? nil : excludedIntervals
+        try save(record,
+                 previousSampleCount: record.samples.count,
+                 previousRRCount: record.rrSamples?.count ?? 0)
     }
 
     private static func recordAppends(to existing: ActiveSessionJournalRecord,

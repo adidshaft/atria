@@ -27,9 +27,18 @@ enum AtriaResearchProbe {
         let temperatureWordCandidates: [Candidate]
         let modelGeneration: ModelGeneration
         let modelEvidence: String
+        let layoutHead: String
 
         var hasAnyCandidate: Bool {
             !oxygenByteCandidates.isEmpty || !temperatureWordCandidates.isEmpty || modelGeneration != .unknown
+        }
+
+        var hasExplicitGeneration: Bool {
+            modelGeneration != .unknown
+        }
+
+        func allowsGenerationSpecificDecode(strapAllowsGenerationSpecificDecode: Bool) -> Bool {
+            hasExplicitGeneration && strapAllowsGenerationSpecificDecode
         }
 
         var oxygenOffsetSummary: String {
@@ -58,7 +67,8 @@ enum AtriaResearchProbe {
                        oxygenByteCandidates: oxygen,
                        temperatureWordCandidates: temperature,
                        modelGeneration: model.generation,
-                       modelEvidence: model.evidence)
+                       modelEvidence: model.evidence,
+                       layoutHead: payload.prefix(12).map { String(format: "%02x", $0) }.joined())
     }
 
     private static func oxygenCandidates(in payload: [UInt8]) -> [Candidate] {
@@ -100,6 +110,17 @@ enum AtriaResearchProbe {
             }
             if normalized.contains("WHOOP 3") || normalized.contains("WHOOP3") {
                 return (.strap3, run)
+            }
+        }
+        // Community firmware codenames corroborate a generation but are NOT ground
+        // truth: log a hint, never assign the model from one. Allowlist only.
+        let codenameHints: [(token: String, model: String)] = [("HARVARD", "strap4")]
+        for run in redactedRuns {
+            let normalized = run.uppercased()
+            for hint in codenameHints where normalized.contains(hint.token) {
+                AtriaDebugLog("ATRIADBG model_gate status=codename_hint model=%@ evidence=%@",
+                              hint.model,
+                              hint.token)
             }
         }
         return (.unknown, redactedRuns.prefix(4).joined(separator: "|"))

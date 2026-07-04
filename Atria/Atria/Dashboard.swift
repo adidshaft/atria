@@ -8,7 +8,20 @@ enum Coach {
     /// Recovery → recommended strain target (0–21). Higher recovery earns a
     /// higher target; low recovery caps it low.
     static func optimalStrain(recovery: Int) -> Double {
-        6.0 + Double(recovery) / 100.0 * 13.0      // ~6 at 0% … ~19 at 100%
+        baseStrainTarget(recovery: recovery)
+    }
+
+    static func baseStrainTarget(recovery: Int) -> Double {
+        let clamped = min(max(Double(recovery), 0), 100)
+        if clamped <= 33 { return 9 }
+        if clamped >= 67 { return 17 }
+        return 9 + ((clamped - 33) / 34) * 8
+    }
+
+    static func liveStrainTarget(recovery: Int, accumulatedStrain strain: Double) -> Double {
+        let base = baseStrainTarget(recovery: recovery)
+        let decay = min(max(strain, 0), 16) * 0.10
+        return max(4, base - decay)
     }
 
     struct Guidance: Equatable {
@@ -36,7 +49,7 @@ enum Coach {
                             state: "learning",
                             reason: "recovery_unavailable")
         }
-        let target = optimalStrain(recovery: r)
+        let target = liveStrainTarget(recovery: r, accumulatedStrain: strain)
         if r < 34 {
             return Guidance(headline: "Prioritize recovery",
                             detail: "Recovery is low; keep strain light and let your body rebuild.",
@@ -69,9 +82,9 @@ enum Coach {
                       strain: Double,
                       load: TrainingLoadSummary? = nil) -> Guidance {
         guard let percent = estimate.percent else {
-            let blocker = estimate.detail.isEmpty ? "learning" : estimate.detail
+            let detail = estimate.detail.isEmpty ? "more data" : estimate.detail.replacingOccurrences(of: "_", with: " ")
             return Guidance(headline: "Guidance learning",
-                            detail: "Waiting for enough recovery data: \(blocker).",
+                            detail: "Waiting for enough recovery data: \(detail).",
                             color: .secondary,
                             target: nil,
                             state: "learning",

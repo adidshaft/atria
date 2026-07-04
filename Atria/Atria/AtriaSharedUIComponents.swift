@@ -1,25 +1,151 @@
 import SwiftUI
 
+enum AtriaMetricFormat {
+    static func hrv(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return "\(Int(value.rounded())) ms"
+    }
+
+    static func restingHeartRate(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return "\(Int(value.rounded())) bpm"
+    }
+
+    static func strain(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return String(format: "%.1f", min(max(value, 0), 21))
+    }
+
+    static func recovery(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return "\(Int(value.rounded()))%"
+    }
+
+    static func sleepDuration(seconds: TimeInterval?) -> String {
+        guard let seconds else { return "--" }
+        let totalMinutes = max(0, Int((seconds / 60).rounded()))
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if hours > 0 {
+            return minutes > 0 ? "\(hours) h \(minutes) m" : "\(hours) h"
+        }
+        return "\(minutes) m"
+    }
+
+    static func sleepHours(_ hours: Double?) -> String {
+        guard let hours else { return "--" }
+        return sleepDuration(seconds: max(0, hours) * 3_600)
+    }
+
+    static func value(_ value: Double?, metric: AtriaMetricUnit) -> String {
+        switch metric {
+        case .recovery:
+            return recovery(value)
+        case .hrv:
+            return hrv(value)
+        case .restingHeartRate:
+            return restingHeartRate(value)
+        case .strain:
+            return strain(value)
+        case .sleep:
+            return sleepHours(value)
+        }
+    }
+
+    static func change(_ value: Double, metric: AtriaMetricUnit) -> String {
+        let prefix = value > 0 ? "+" : ""
+        switch metric {
+        case .recovery:
+            return "\(prefix)\(Int(value.rounded()))%"
+        case .hrv:
+            return "\(prefix)\(Int(value.rounded())) ms"
+        case .restingHeartRate:
+            return "\(prefix)\(Int(value.rounded())) bpm"
+        case .strain:
+            return "\(prefix)\(String(format: "%.1f", value))"
+        case .sleep:
+            return "\(prefix)\(sleepHours(abs(value)))"
+        }
+    }
+
+    static func range(low: Double, high: Double, metric: AtriaMetricUnit) -> String {
+        switch metric {
+        case .recovery:
+            return "\(Int(low.rounded()))-\(Int(high.rounded()))%"
+        case .hrv:
+            return "\(Int(low.rounded()))-\(Int(high.rounded())) ms"
+        case .restingHeartRate:
+            return "\(Int(low.rounded()))-\(Int(high.rounded())) bpm"
+        case .strain:
+            return "\(strain(low))-\(strain(high))"
+        case .sleep:
+            return "\(sleepHours(low))-\(sleepHours(high))"
+        }
+    }
+}
+
+enum AtriaMetricUnit {
+    case recovery
+    case hrv
+    case restingHeartRate
+    case strain
+    case sleep
+}
+
+struct AtriaCalibratingLabel: View, Equatable {
+    let day: Int
+    var tint: Color = .orange
+
+    private var clampedDay: Int {
+        min(max(day, 1), 4)
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            ZStack {
+                Circle()
+                    .stroke(tint.opacity(0.25), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: Double(clampedDay) / 4)
+                    .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Calibrating")
+                    .font(.caption.weight(.bold))
+                Text("Day \(clampedDay) of 4")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .foregroundStyle(tint)
+        .accessibilityLabel("Calibrating. Day \(clampedDay) of 4.")
+    }
+}
+
 struct AtriaLoadingPanel: View, Equatable {
     let title: String
     let subtitle: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ProgressView()
-                .tint(.secondary)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline.weight(.semibold))
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .frame(width: 144, height: 18)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .frame(height: 58)
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .frame(height: 38)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .frame(height: 38)
             }
-            Spacer(minLength: 0)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
+        .redacted(reason: .placeholder)
+        .accessibilityLabel(title)
     }
 }
 
@@ -95,7 +221,7 @@ struct AtriaRecoveryMeter: View, Equatable {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
 
-            Text(estimate.percent.map { "\($0)%" } ?? "Learning")
+            Text(estimate.percent.map { AtriaMetricFormat.recovery(Double($0)) } ?? "Learning")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .monospacedDigit()
 
@@ -108,7 +234,7 @@ struct AtriaRecoveryMeter: View, Equatable {
                         .frame(width: max(18, 120 * fillFraction), height: 8)
                 }
 
-            Text(estimate.confidence.rawValue)
+            Text(Self.confidenceText(for: estimate.confidence))
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(estimate.confidence == .validated ? .green : .orange)
 
@@ -121,6 +247,19 @@ struct AtriaRecoveryMeter: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .atriaInsetCard(tint: .green)
+    }
+
+    private static func confidenceText(for confidence: Metrics.RecoveryEstimate.Confidence) -> String {
+        switch confidence {
+        case .learning:
+            return "Building"
+        case .unverified:
+            return "Still improving"
+        case .personalBaseline:
+            return "Personal baseline"
+        case .validated:
+            return "Checked"
+        }
     }
 }
 
@@ -143,7 +282,7 @@ struct AtriaStrainMeter: View, Equatable {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
 
-            Text(String(format: "%.1f", strain))
+            Text(AtriaMetricFormat.strain(strain))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .monospacedDigit()
 
@@ -183,10 +322,11 @@ struct AtriaSummaryRow: View, Equatable {
                 .foregroundStyle(.secondary)
                 .frame(width: 86, alignment: .leading)
             Text(value)
-                .font(.subheadline)
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.primary)
+                .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
@@ -275,7 +415,7 @@ enum AtriaMetricState: Equatable {
         case .personalBaseline:
             return "Personal baseline"
         case .validated:
-            return "Validated"
+            return "Checked"
         case .noContact:
             return "No signal"
         case .conflict:
@@ -285,7 +425,7 @@ enum AtriaMetricState: Equatable {
         case .estimate:
             return "Estimate"
         case .research:
-            return "Research"
+            return "Early"
         case .live:
             return "Live"
         }
@@ -323,6 +463,7 @@ struct AtriaMetricTile: View, Equatable {
     var sparklineValues: [Int]? = nil
     var zone: AtriaMetricZone? = nil
     var targetMetric: AtriaTodayMetric? = nil
+    var calibratingDay: Int? = nil
     @State private var showingZoneInfo = false
     @State private var editingTargetMetric: AtriaTodayMetric?
 
@@ -336,19 +477,21 @@ struct AtriaMetricTile: View, Equatable {
             && lhs.sparklineValues == rhs.sparklineValues
             && lhs.zone == rhs.zone
             && lhs.targetMetric == rhs.targetMetric
+            && lhs.calibratingDay == rhs.calibratingDay
     }
 
     private var displayValue: String {
+        if calibratingDay != nil { return "" }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.localizedCaseInsensitiveContains("learning")
             || trimmed.localizedCaseInsensitiveContains("prepar") {
-            return "--"
+            return ""
         }
-        return trimmed.isEmpty ? "--" : value
+        return trimmed.isEmpty ? "" : value
     }
 
     private var accessibilityText: String {
-        var parts = ["\(label) \(displayValue)"]
+        var parts = [calibratingDay.map { "\(label) calibrating day \(min(max($0, 1), 4)) of 4" } ?? "\(label) \(displayValue)"]
         if let unit {
             parts[0] += " \(unit)"
         }
@@ -390,14 +533,18 @@ struct AtriaMetricTile: View, Equatable {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(displayValue)
-                    .font(.system(size: 29, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                    .animation(.snappy(duration: 0.3), value: displayValue)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.62)
-                if let unit {
+                if let calibratingDay {
+                    AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                } else {
+                    Text(displayValue)
+                        .font(.system(size: 29, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.3), value: displayValue)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.62)
+                }
+                if calibratingDay == nil, let unit {
                     Text(unit)
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
@@ -440,7 +587,7 @@ struct AtriaMetricTile: View, Equatable {
     @ViewBuilder
     private var footer: some View {
         if let sparklineValues {
-            Sparkline(values: sparklineValues)
+            Sparkline(values: sparklineValues, tint: tint)
                 .frame(height: Self.footerHeight)
         } else if let footnote,
                   !footnote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

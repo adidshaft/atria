@@ -25,6 +25,10 @@ struct AtriaWidgetSnapshot: Codable {
     let batteryLevel: Int?
     let batteryChargeStatus: String?
     let batteryChargeText: String?
+    let layoutGlanceMetrics: [String]?
+    let layoutRingCenterMetric: String?
+    let layoutLegendStatStyle: String?
+    let layoutAccent: String?
     let storage: String
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
@@ -152,12 +156,12 @@ struct AtriaWidgetEntryView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    widgetMetricLink(.strain, tint: .orange)
-                    widgetMetricLink(.bpm, tint: .red)
+                    widgetMetricLink(widgetMetrics[0])
+                    widgetMetricLink(widgetMetrics[1])
                 }
                 HStack(spacing: 8) {
-                    widgetMetricLink(.hrv, tint: .pink)
-                    widgetMetricLink(.steps, tint: .blue)
+                    widgetMetricLink(widgetMetrics[2])
+                    widgetMetricLink(widgetMetrics[3])
                 }
             }
         }
@@ -194,10 +198,9 @@ struct AtriaWidgetEntryView: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                widgetMetricLink(.strain, tint: .orange)
-                widgetMetricLink(.bpm, tint: .red)
-                widgetMetricLink(.hrv, tint: .pink)
-                widgetMetricLink(.steps, tint: .blue)
+                ForEach(widgetMetrics) { metric in
+                    widgetMetricLink(metric)
+                }
             }
 
             Spacer(minLength: 0)
@@ -259,12 +262,16 @@ struct AtriaWidgetEntryView: View {
         }
     }
 
-    private func widgetMetricLink(_ metric: AtriaWidgetMetric, tint: Color) -> some View {
+    private var widgetMetrics: [AtriaWidgetMetric] {
+        AtriaWidgetMetric.ordered(from: entry.snapshot?.layoutGlanceMetrics)
+    }
+
+    private func widgetMetricLink(_ metric: AtriaWidgetMetric) -> some View {
         Link(destination: metric.deepLinkURL) {
             widgetMetricTile(metric.title,
                              value: metric.value(entry.snapshot),
                              icon: metric.icon,
-                             tint: tint)
+                             tint: metric.tint)
         }
         .accessibilityLabel("\(metric.title) \(metric.value(entry.snapshot))")
     }
@@ -631,7 +638,7 @@ private struct AtriaLiveActivityLockScreenView: View {
             }
 
             Button(intent: AtriaControlCaptureIntent(command: .stop)) {
-                Label("Stop capture", systemImage: "stop.circle")
+                Label("Stop recording", systemImage: "stop.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -660,8 +667,39 @@ private func elapsedText(since start: Date) -> String {
 
 // MARK: - Single-metric widgets (Home Screen + Lock Screen)
 
-enum AtriaWidgetMetric {
+enum AtriaWidgetMetric: String, Identifiable {
     case steps, strain, hrv, bpm
+
+    var id: String { rawValue }
+
+    static let fallbackOrder: [AtriaWidgetMetric] = [.strain, .bpm, .hrv, .steps]
+
+    static func ordered(from layoutGlanceMetrics: [String]?) -> [AtriaWidgetMetric] {
+        var ordered: [AtriaWidgetMetric] = []
+        for key in layoutGlanceMetrics ?? [] {
+            guard let metric = widgetMetric(for: key), !ordered.contains(metric) else { continue }
+            ordered.append(metric)
+        }
+        for metric in fallbackOrder where !ordered.contains(metric) {
+            ordered.append(metric)
+        }
+        return Array(ordered.prefix(4))
+    }
+
+    private static func widgetMetric(for key: String) -> AtriaWidgetMetric? {
+        switch key {
+        case "strain", "load":
+            return .strain
+        case "hrv":
+            return .hrv
+        case "steps":
+            return .steps
+        case "heartRate", "bpm", "rhr", "respiratoryRate":
+            return .bpm
+        default:
+            return nil
+        }
+    }
 
     var deepLinkURL: URL {
         switch self {
@@ -674,7 +712,7 @@ enum AtriaWidgetMetric {
 
     var title: String {
         switch self {
-        case .steps: return "Steps"
+        case .steps: return "Strap steps"
         case .strain: return "Strain"
         case .hrv: return "HRV"
         case .bpm: return "BPM"
@@ -701,7 +739,7 @@ enum AtriaWidgetMetric {
 
     var unit: String {
         switch self {
-        case .steps: return "today"
+        case .steps: return "strap"
         case .strain: return "day load"
         case .hrv: return "ms"
         case .bpm: return "live"
@@ -880,8 +918,8 @@ struct AtriaStepsWidget: Widget {
         StaticConfiguration(kind: "AtriaStepsWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .steps, entry: entry)
         }
-        .configurationDisplayName("Atria Steps")
-        .description("Today's steps on your Home Screen or Lock Screen.")
+        .configurationDisplayName("Atria Strap Steps")
+        .description("Strap-derived steps on your Home Screen or Lock Screen.")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }

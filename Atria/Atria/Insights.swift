@@ -10,7 +10,11 @@ struct PersonalBaseline: Codable {
     var updated: Date?
     var samples: [BaselineSample] = []
 
-    private static let alpha = 0.25   // weight on the newest session
+    private static let alpha = 0.1    // weight on the newest session
+    /// One anomalous night must not yank "your normal": per-sample EMA movement
+    /// is bounded in addition to the alpha weighting.
+    private static let maxRestingStepBPM = 2.0
+    private static let maxHRVStepMS = 6.0
     private static let maxSamples = 90
     static let trustedMinimumSamples = 14
     static let staleAfter: TimeInterval = 21 * 24 * 60 * 60
@@ -60,12 +64,16 @@ struct PersonalBaseline: Codable {
 
     mutating func learn(fromResting resting: Int, hrv: Int, at observedAt: Date = Date(), overnight: Bool = false) {
         if resting > 0 {
-            restingHR = restingHR.map { $0 * (1 - Self.alpha) + Double(resting) * Self.alpha }
-                ?? Double(resting)
+            restingHR = restingHR.map { current in
+                let step = Self.alpha * (Double(resting) - current)
+                return current + min(max(step, -Self.maxRestingStepBPM), Self.maxRestingStepBPM)
+            } ?? Double(resting)
         }
         if hrv > 0 {
-            hrvEMA = hrvEMA.map { $0 * (1 - Self.alpha) + Double(hrv) * Self.alpha }
-                ?? Double(hrv)
+            hrvEMA = hrvEMA.map { current in
+                let step = Self.alpha * (Double(hrv) - current)
+                return current + min(max(step, -Self.maxHRVStepMS), Self.maxHRVStepMS)
+            } ?? Double(hrv)
         }
         sessions += 1
         updated = observedAt
@@ -75,7 +83,11 @@ struct PersonalBaseline: Codable {
                                           rmssd: hrv > 0 ? Double(hrv) : nil,
                                           overnight: overnight))
             if samples.count > Self.maxSamples {
-                samples.removeFirst(samples.count - Self.maxSamples)
+                // Day-aware trim: a raw FIFO cut can evict whole old days for a
+                // wearer logging many sessions per day, starving the distinct-day
+                // trust gate. Thin dense days (keep the newest few per day) before
+                // cutting oldest-first.
+                samples = Self.trimmedSamples(samples)
             }
         }
     }
@@ -92,12 +104,43 @@ struct PersonalBaseline: Codable {
         }
     }
 
+    // Trust counts distinct DAYS, not raw samples: several sessions in one day
+    // must not fast-track a "trusted" baseline.
     func freshRestingSampleCount(now: Date = Date()) -> Int {
-        freshSamples(now: now).count
+        Self.distinctDayCount(freshSamples(now: now))
     }
 
     func freshHRVSampleCount(now: Date = Date()) -> Int {
-        freshSamples(now: now).compactMap(\.lnRMSSD).count
+        Self.distinctDayCount(freshSamples(now: now).filter { $0.lnRMSSD != nil })
+    }
+
+    private static func distinctDayCount(_ samples: [BaselineSample],
+                                         calendar: Calendar = .current) -> Int {
+        Set(samples.map { calendar.startOfDay(for: $0.date) }).count
+    }
+
+    /// Keep at most `maxSamplesPerDay` newest samples per calendar day, then cap
+    /// to `maxSamples` oldest-first. 4/day × 22+ days fits inside the 90 cap, so
+    /// the distinct-day trust gate can always be satisfied by a real history.
+    private static let maxSamplesPerDay = 4
+
+    private static func trimmedSamples(_ samples: [BaselineSample],
+                                       calendar: Calendar = .current) -> [BaselineSample] {
+        var perDayCounts: [Date: Int] = [:]
+        var thinned: [BaselineSample] = []
+        thinned.reserveCapacity(samples.count)
+        for sample in samples.reversed() {
+            let day = calendar.startOfDay(for: sample.date)
+            let count = perDayCounts[day, default: 0]
+            guard count < Self.maxSamplesPerDay else { continue }
+            perDayCounts[day] = count + 1
+            thinned.append(sample)
+        }
+        var result = Array(thinned.reversed())
+        if result.count > Self.maxSamples {
+            result.removeFirst(result.count - Self.maxSamples)
+        }
+        return result
     }
 
     /// Fresh HRV samples that came from an overnight/sleep window.
@@ -136,7 +179,21 @@ struct PersonalBaseline: Codable {
         if overnight.count >= Self.overnightHRVPreferenceMinimum {
             return stats(overnight)
         }
-        return stats(fresh.compactMap(\.lnRMSSD))
+        // Ramp toward the overnight-only baseline instead of switching at a cliff:
+        // w = overnightCount / 7 blends the overnight stats with the all-fresh stats
+        // so mean/sd are continuous as the 7th overnight sample arrives.
+        guard overnight.count >= 1,
+              let overnightStats = stats(overnight),
+              let allStats = stats(fresh.compactMap(\.lnRMSSD)),
+              allStats.count > overnightStats.count
+        else {
+            return stats(fresh.compactMap(\.lnRMSSD))
+        }
+        let w = min(Double(overnight.count) / Double(Self.overnightHRVPreferenceMinimum), 1)
+        let mean = w * overnightStats.mean + (1 - w) * allStats.mean
+        let variance = w * (overnightStats.sd * overnightStats.sd + pow(overnightStats.mean - mean, 2))
+            + (1 - w) * (allStats.sd * allStats.sd + pow(allStats.mean - mean, 2))
+        return (mean, sqrt(variance), allStats.count)
     }
 
     /// Feedback vs the learned norm: negative = below baseline (more recovered).
@@ -210,6 +267,7 @@ struct AthleteProfile: Codable, Equatable {
     var hasCompletedOnboarding: Bool
 
     private static let key = "athleteProfile"
+    static let onboardingCompletionKey = "atria.onboarding.completed.v1"
     enum CodingKeys: String, CodingKey {
         case age, measuredMaxHR, maxHRSource, biologicalSex, weightKg, heightCm, updated, hasCompletedOnboarding
     }
@@ -269,6 +327,7 @@ struct AthleteProfile: Codable, Equatable {
     }
 
     static func load() -> AthleteProfile {
+        let completedFlag = UserDefaults.standard.bool(forKey: onboardingCompletionKey)
         guard let data = UserDefaults.standard.data(forKey: key),
               let p = try? JSONDecoder().decode(AthleteProfile.self, from: data)
         else {
@@ -279,9 +338,12 @@ struct AthleteProfile: Codable, Equatable {
                                   weightKg: 0,
                                   heightCm: 0,
                                   updated: nil,
-                                  hasCompletedOnboarding: false)
+                                  hasCompletedOnboarding: completedFlag)
         }
-        return p
+        guard completedFlag, !p.hasCompletedOnboarding else { return p }
+        var bridged = p
+        bridged.hasCompletedOnboarding = true
+        return bridged
     }
 
     func save() {
@@ -289,6 +351,7 @@ struct AthleteProfile: Codable, Equatable {
             UserDefaults.standard.set(data, forKey: Self.key)
         }
         UserDefaults.standard.set(maxHR, forKey: "maxHR")
+        UserDefaults.standard.set(hasCompletedOnboarding, forKey: Self.onboardingCompletionKey)
     }
 
     mutating func clamp() {
@@ -302,6 +365,7 @@ struct AthleteProfile: Codable, Equatable {
     mutating func completeOnboarding() {
         clamp()
         hasCompletedOnboarding = true
+        UserDefaults.standard.set(true, forKey: Self.onboardingCompletionKey)
     }
 }
 

@@ -2,11 +2,26 @@ import SwiftUI
 
 struct AtriaManualSleepSheet: View {
     let onSave: (Date, Date, Bool) -> Void
+    private let reviewDetectedTypeText: String?
     @Environment(\.dismiss) private var dismiss
     @State private var isNap = false
     @State private var typeWasManuallyEdited = false
     @State private var start = Date().addingTimeInterval(-8 * 60 * 60)
     @State private var end = Date()
+
+    init(initialStart: Date? = nil,
+         initialEnd: Date? = nil,
+         initialIsNap: Bool? = nil,
+         onSave: @escaping (Date, Date, Bool) -> Void) {
+        self.onSave = onSave
+        self.reviewDetectedTypeText = initialIsNap.map { $0 ? "Nap" : "Sleep" }
+        let resolvedEnd = initialEnd ?? Date()
+        let resolvedStart = initialStart ?? resolvedEnd.addingTimeInterval(-8 * 60 * 60)
+        _start = State(initialValue: resolvedStart)
+        _end = State(initialValue: max(resolvedEnd, resolvedStart.addingTimeInterval(60)))
+        _isNap = State(initialValue: initialIsNap ?? false)
+        _typeWasManuallyEdited = State(initialValue: initialIsNap != nil)
+    }
 
     private var durationText: String {
         SleepHistorySnapshot.formatDuration(max(0, end.timeIntervalSince(start)))
@@ -43,6 +58,13 @@ struct AtriaManualSleepSheet: View {
 
     private var typeSuggestionText: String {
         let suggested = inferredIsNap ? "Nap" : "Sleep"
+        if let reviewDetectedTypeText {
+            let current = isNap ? "Nap" : "Sleep"
+            if typeWasManuallyEdited, current != reviewDetectedTypeText {
+                return "Detected as \(reviewDetectedTypeText). Saving as \(current); adjust the window if needed."
+            }
+            return "Detected as \(reviewDetectedTypeText). Change type or window before saving."
+        }
         if typeWasManuallyEdited {
             return "Suggested by the window: \(suggested). Your manual choice is kept."
         }
@@ -78,7 +100,7 @@ struct AtriaManualSleepSheet: View {
                 }
                 .padding(20)
             }
-            .navigationTitle("Add \(isNap ? "Nap" : "Sleep")")
+            .navigationTitle("\(reviewDetectedTypeText == nil ? "Add" : "Review") \(isNap ? "Nap" : "Sleep")")
             .onAppear(perform: applyInferredTypeIfNeeded)
             .onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }
             .onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }

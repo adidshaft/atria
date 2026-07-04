@@ -3,27 +3,271 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
-    private static let actionableBatteryThreshold = 20
+    private static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
+    private static let batteryWarningDrainCycleScheduledKey = "atria.notification.battery.warningDrainCycleScheduled"
+    private static let batteryShutoffDrainCycleScheduledKey = "atria.notification.battery.shutoffDrainCycleScheduled"
+    private static let batteryDrainCycleClearedAtKey = "atria.notification.battery.drainCycleClearedAt"
+    private static let sleepReviewLastCandidateIDKey = "atria.notification.sleepReview.lastCandidateID"
+    private static let sleepReviewCandidateScheduledAtPrefix = "atria.notification.sleepReview.scheduledAt."
+    private static let sleepReviewCandidateScheduleCountPrefix = "atria.notification.sleepReview.scheduleCount."
+    private static let sleepReviewReminderCooldown: TimeInterval = 4 * 60 * 60
+    private static let sleepReviewMaximumSchedulesPerCandidate = 2
+    private static let sleepReviewDismissedIDKey = "atria.sleepReview.dismissedID"
+    private static let workoutReviewLastCandidateIDKey = "atria.notification.workoutReview.lastCandidateID"
+    private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
+    private static let healthDeviationLastScheduledKey = "atria.notification.healthDeviation.lastScheduledAt"
+    private static let healthDeviationCooldown: TimeInterval = 48 * 60 * 60
 
     private enum Identifier {
+        static let morningSummaryPrefix = "atria.morningSummary."
+        static let weeklyReportPrefix = "atria.weeklyReport."
+        static let eveningJournalPrefix = "atria.eveningJournal."
+        static let healthDeviation = "atria.health.deviation"
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
+        static let sleepReview = "atria.sleep.review"
+        static let sleepLogged = "atria.sleep.logged"
+        static let workoutReview = "atria.workout.review"
         static let battery = "atria.battery.low"
         static let bluetoothOff = "atria.bluetooth.off"
         static let fitCheck = "atria.fitcheck.needed"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
+        static let legacySleepReview = "atria.sleep.review"
+        static let legacyWorkoutReview = "atria.workout.review"
         static let legacyBattery = "atria.battery.low"
         static let legacyBluetoothOff = "atria.bluetooth.off"
         static let legacyDiagnostic = "atria.diagnostic.delivery"
 
-        static let active = [recovery, strain, battery, bluetoothOff, fitCheck]
+        static let active = [recovery, strain, sleepReview, sleepLogged, workoutReview, battery, bluetoothOff, fitCheck, healthDeviation]
         static let diagnosticOnly = [diagnostic]
-        static let legacy = [legacyRecovery, legacyStrain, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
+        static let legacy = [legacyRecovery, legacyStrain, legacySleepReview, legacyWorkoutReview, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
         static let removable = active + diagnosticOnly + legacy
+    }
+
+    static func scheduleHealthDeviationIfNeeded(rollups: [DailyRollupStoreEntry],
+                                                now: Date = Date(),
+                                                calendar: Calendar = .current) {
+        guard AtriaNotificationSettings.load().allows(kind: "health_deviation") else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=health_deviation reason=user_disabled")
+            return
+        }
+        guard let decision = healthDeviationDecision(rollups: rollups, now: now, calendar: calendar) else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation")
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let last = defaults.double(forKey: healthDeviationLastScheduledKey)
+        if last > 0, now.timeIntervalSince(Date(timeIntervalSince1970: last)) < healthDeviationCooldown {
+            AtriaDebugLog("ATRIADBG notification_skip kind=health_deviation reason=cooldown")
+            return
+        }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=health_deviation",
+                              status)
+                return
+            }
+
+            center.removePendingNotificationRequests(withIdentifiers: [Identifier.healthDeviation])
+            do {
+                try await add(decision: decision, center: center)
+                defaults.set(now.timeIntervalSince1970, forKey: healthDeviationLastScheduledKey)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=health_deviation error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
+    static func scheduleMorningSummary(recovery: Int,
+                                       sleepText: String,
+                                       hrvText: String,
+                                       now: Date = Date(),
+                                       calendar: Calendar = .current) {
+        guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
+            AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_summary")
+            return
+        }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=morning_summary",
+                              status)
+                return
+            }
+
+            let identifier = Identifier.morningSummaryPrefix + localDayIdentifier(for: now, calendar: calendar)
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            // Adaptive timing (docs/24 §14.2): deliver no earlier than YOUR
+            // learned wake + 15 min; metrics landing later fire immediately.
+            let windowEnd = UserDefaults.standard.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+            var morningDelay: TimeInterval = 1
+            if windowEnd > 0 {
+                let wakePlus15 = ((windowEnd + 1440 - 60) % 1440) + 15
+                let nowComponents = calendar.dateComponents([.hour, .minute], from: now)
+                let nowMinutes = (nowComponents.hour ?? 0) * 60 + (nowComponents.minute ?? 0)
+                if nowMinutes < wakePlus15, wakePlus15 - nowMinutes < 6 * 60 {
+                    morningDelay = TimeInterval((wakePlus15 - nowMinutes) * 60)
+                }
+            }
+            let decision = NotificationDecision(kind: "morning_summary",
+                                                identifier: identifier,
+                                                title: "Morning summary",
+                                                body: "Recovery \(recovery)% \u{00B7} Slept \(sleepText) \u{00B7} HRV \(hrvText)",
+                                                reason: "morning_summary_ready",
+                                                shouldSchedule: true,
+                                                delay: morningDelay,
+                                                categoryIdentifier: "atria.morningSummary",
+                                                userInfo: ["deepLink": "atria://overview"])
+            do {
+                try await add(decision: decision, center: center)
+                await logMorningSummaryPendingProof(identifier: identifier, center: center)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=morning_summary error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
+    /// Evening journal check-in (Journal P4 hook): one gentle nudge at ~21:30
+    /// local, deep-linking to the Journal tab. Only scheduled for people who
+    /// actually use the journal (activity within the last 7 days) — an unused
+    /// feature never notifies.
+    static func scheduleEveningJournalCheckIn(lastJournalActivity: Date?,
+                                              now: Date = Date(),
+                                              calendar: Calendar = .current) {
+        guard AtriaNotificationSettings.load().allows(kind: "evening_checkin") else {
+            AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=evening_checkin")
+            return
+        }
+        guard let lastJournalActivity,
+              now.timeIntervalSince(lastJournalActivity) <= 7 * 24 * 60 * 60 else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=evening_checkin reason=journal_inactive")
+            return
+        }
+        // Scene foregrounds fire this many times a day; schedule (and consume
+        // budget) at most once per target day.
+        let scheduledDayKey = "atria.notification.eveningJournal.scheduledDay"
+
+        // Adaptive wind-down (docs/24 §14.2): the duty-cycle sleep window start
+        // is the learned median bedtime minus 1 h; nudge 15 min after it (~45 min
+        // before typical bedtime). Falls back to 21:30 until the window is
+        // learned from >=3 confirmed sleeps.
+        let windowStartMinutes = UserDefaults.standard.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin)
+        let nudgeMinutes = windowStartMinutes > 0 ? (windowStartMinutes + 15) % 1440 : 21 * 60 + 30
+        var target = calendar.date(bySettingHour: nudgeMinutes / 60,
+                                   minute: nudgeMinutes % 60,
+                                   second: 0,
+                                   of: now) ?? now
+        if target.timeIntervalSince(now) < 60 {
+            target = calendar.date(byAdding: .day, value: 1, to: target) ?? target
+        }
+        let delay = target.timeIntervalSince(now)
+        let targetDay = localDayIdentifier(for: target, calendar: calendar)
+        guard UserDefaults.standard.string(forKey: scheduledDayKey) != targetDay else { return }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=evening_checkin",
+                              status)
+                return
+            }
+
+            let identifier = Identifier.eveningJournalPrefix + targetDay
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            let decision = NotificationDecision(kind: "evening_checkin",
+                                                identifier: identifier,
+                                                title: "Evening check-in",
+                                                body: "30 seconds now sharpens tomorrow's recovery insights.",
+                                                reason: "evening_journal_checkin",
+                                                shouldSchedule: true,
+                                                delay: delay,
+                                                categoryIdentifier: "atria.eveningJournal",
+                                                userInfo: ["deepLink": "atria://journal"])
+            do {
+                try await add(decision: decision, center: center)
+                UserDefaults.standard.set(targetDay, forKey: scheduledDayKey)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=evening_checkin error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
+    static func scheduleWeeklyReport(_ report: WeeklyReport) {
+        guard AtriaNotificationSettings.load().allows(kind: "weekly_report") else {
+            AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=weekly_report")
+            return
+        }
+
+        guard let recovery = report.recoveryAvg else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=weekly_report reason=no_recovery_average")
+            return
+        }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=weekly_report",
+                              status)
+                return
+            }
+
+            let identifier = Identifier.weeklyReportPrefix + "\(report.isoYear)-W\(report.isoWeek)"
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            let recoveryDelta = report.recoveryDeltaVsPriorWeek.map { delta in
+                delta >= 0 ? "+\(delta)%" : "\(delta)%"
+            } ?? "\(recovery)%"
+            let consistency = report.sleepConsistencyPct.map { "Sleep consistency \($0)%" } ?? "Sleep consistency building"
+            let decision = NotificationDecision(kind: "weekly_report",
+                                                identifier: identifier,
+                                                title: "Your week on Atria",
+                                                body: "Recovery \(recoveryDelta) · \(consistency)",
+                                                reason: "weekly_report_\(report.isoYear)_W\(report.isoWeek)",
+                                                shouldSchedule: true,
+                                                delay: 1,
+                                                categoryIdentifier: "atria.weeklyReport",
+                                                userInfo: ["deepLink": "atria://overview"])
+            do {
+                try await add(decision: decision, center: center)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=weekly_report error=%@",
+                              String(describing: error))
+            }
+        }
     }
 
     static func scheduleFromLaunchIfRequested(store: SessionStore,
@@ -32,7 +276,10 @@ enum LocalNotificationScheduler {
         configureDeliveryLogger()
         let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
         let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
-        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest
+        let debugHealthDeviationRequest = arguments.contains("--atria-test-health-deviation-notification")
+        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest && !debugHealthDeviationRequest
+        let includeSleepReviewDecisions = productionCadence || debugMetricRequest
+        let includeWorkoutReviewDecisions = productionCadence || debugMetricRequest
         let delay = launchDelay(arguments: arguments)
         AtriaDebugLog("ATRIADBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
               productionCadence ? "production" : "debug",
@@ -42,14 +289,119 @@ enum LocalNotificationScheduler {
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
+            if debugHealthDeviationRequest {
+                scheduleHealthDeviationDebugFixture()
+            }
             await schedule(store: store,
                            ble: ble,
                            includeMetricDecisions: debugMetricRequest,
+                           includeSleepReviewDecisions: includeSleepReviewDecisions,
+                           includeWorkoutReviewDecisions: includeWorkoutReviewDecisions,
                            includeActionableConnectionDecisions: productionCadence || debugMetricRequest,
                            includeDiagnostic: debugDiagnosticRequest,
                            productionCadence: productionCadence)
         }
     }
+
+    static func scheduleFastLaunchHealthDeviationDebugFixtureIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-test-health-deviation-notification") else { return }
+        configureDeliveryLogger()
+        scheduleHealthDeviationDebugFixture()
+    }
+
+    static func scheduleFastLaunchWeeklyReportDebugFixtureIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-test-weekly-report-notification") else { return }
+        configureDeliveryLogger()
+        scheduleWeeklyReportDebugFixture()
+    }
+
+    static func scheduleFastLaunchMorningSummaryDebugFixtureIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-test-morning-summary-notification")
+                || arguments.contains("--atria-test-morning-summary-toggle-off") else { return }
+        configureDeliveryLogger()
+        scheduleMorningSummaryDebugFixture(toggleOff: arguments.contains("--atria-test-morning-summary-toggle-off"))
+    }
+
+#if DEBUG
+    private static func scheduleMorningSummaryDebugFixture(now: Date = Date(),
+                                                          calendar: Calendar = .current,
+                                                          toggleOff: Bool) {
+        let previousSettings = AtriaNotificationSettings.load()
+        if toggleOff {
+            var disabled = previousSettings
+            disabled.morningSummary = false
+            disabled.save()
+        }
+
+        AtriaDebugLog("ATRIADBG notification_fixture kind=morning_summary status=scheduled_input toggle_off=%d recovery=64 sleep=7h42m hrv=58ms",
+                      toggleOff ? 1 : 0)
+        scheduleMorningSummary(recovery: 64,
+                               sleepText: "7 h 42 m",
+                               hrvText: "58 ms",
+                               now: now,
+                               calendar: calendar)
+
+        if toggleOff {
+            previousSettings.save()
+        }
+    }
+
+    private static func scheduleHealthDeviationDebugFixture(now: Date = Date(),
+                                                           calendar: Calendar = .current) {
+        UserDefaults.standard.removeObject(forKey: healthDeviationLastScheduledKey)
+        let today = calendar.startOfDay(for: now)
+        let stat = DailyRollupVitals.Stat(mean: 16.0, sd: 0.4, n: 14)
+        let vitals = DailyRollupVitals(rhr: nil, hrv: nil, resp: stat)
+        let rollups = [
+            DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -3, to: today)!,
+                                  respiratoryRate: 16.1,
+                                  vitals: vitals,
+                                  calendar: calendar),
+            DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -2, to: today)!,
+                                  respiratoryRate: 16.0,
+                                  vitals: vitals,
+                                  calendar: calendar),
+            DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -1, to: today)!,
+                                  respiratoryRate: 17.0,
+                                  vitals: vitals,
+                                  calendar: calendar),
+            DailyRollupStoreEntry(day: today,
+                                  respiratoryRate: 17.1,
+                                  vitals: vitals,
+                                  calendar: calendar)
+        ]
+        AtriaDebugLog("ATRIADBG notification_fixture kind=health_deviation status=scheduled_input vital=respiratory_rate days=2 direction=above")
+        scheduleHealthDeviationIfNeeded(rollups: rollups, now: now, calendar: calendar)
+    }
+
+    private static func scheduleWeeklyReportDebugFixture(now: Date = Date(),
+                                                        calendar: Calendar = .current) {
+        let today = calendar.startOfDay(for: now)
+        let rollups = (0..<14).map { offset in
+            DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -offset, to: today) ?? today,
+                                  recovery: offset < 7 ? 69 - (offset % 3) : 64 - (offset % 2),
+                                  sleepSeconds: 7.5 * 3_600,
+                                  bedtimeMinutes: 23 * 60 + (offset % 2) * 10,
+                                  strain: offset == 1 ? 12.4 : 7.0 + Double(offset % 3),
+                                  calendar: calendar)
+        }
+        let report = WeeklyReport(rollups: rollups, now: now, calendar: calendar)
+        AtriaDebugLog("ATRIADBG weekly_report_generation status=generated source=debug_fixture isoYear=%d isoWeek=%d recovery_avg=%d sleep_consistency=%d notification_requested=1",
+                      report.isoYear,
+                      report.isoWeek,
+                      report.recoveryAvg ?? -1,
+                      report.sleepConsistencyPct ?? -1)
+        AtriaDebugLog("ATRIADBG notification_fixture kind=weekly_report status=scheduled_input isoYear=%d isoWeek=%d recovery_avg=%d",
+                      report.isoYear,
+                      report.isoWeek,
+                      report.recoveryAvg ?? -1)
+        scheduleWeeklyReport(report)
+    }
+#else
+    private static func scheduleMorningSummaryDebugFixture(toggleOff: Bool) {}
+    private static func scheduleHealthDeviationDebugFixture() {}
+    private static func scheduleWeeklyReportDebugFixture() {}
+#endif
 
     static func scheduleActionableConnectionDiagnosis(title: String,
                                                       body: String,
@@ -89,6 +441,12 @@ enum LocalNotificationScheduler {
             }
 
             let defaults = UserDefaults.standard
+            if decision.kind == "battery",
+               batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
+                AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
+                              decision.title)
+                return
+            }
             let cooldownKey = actionableDiagnosisLastScheduledPrefix + decision.identifier
             let last = defaults.double(forKey: cooldownKey)
             if last > 0, now.timeIntervalSince(Date(timeIntervalSince1970: last)) < actionableDiagnosisCooldown {
@@ -99,6 +457,9 @@ enum LocalNotificationScheduler {
             do {
                 try await add(decision: decision, center: center)
                 defaults.set(now.timeIntervalSince1970, forKey: cooldownKey)
+                if decision.kind == "battery" {
+                    markBatteryDrainCycleScheduled(title: decision.title, defaults: defaults)
+                }
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=%@ error=%@",
                               decision.kind,
@@ -124,6 +485,39 @@ enum LocalNotificationScheduler {
                       identifiers.joined(separator: ","))
     }
 
+    static func refreshActionableConnectionMaintenance(ble: AtriaBLEManager, reason: String) {
+        _ = makeActionableConnectionDecisions(ble: ble)
+        AtriaDebugLog("ATRIADBG notification_battery_maintenance status=evaluated reason=%@",
+                      reason)
+    }
+
+    static func scheduleSleepLogged(_ sleep: UserConfirmedSleep) {
+        guard AtriaNotificationSettings.load().allows(kind: "sleep_logged") else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=sleep_logged reason=user_disabled")
+            return
+        }
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=sleep_logged",
+                              status)
+                return
+            }
+            do {
+                try await add(decision: sleepLoggedDecision(for: sleep), center: center)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=sleep_logged error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
     private static func configureDeliveryLogger() {
         UNUserNotificationCenter.current().delegate = NotificationDeliveryLogger.shared
     }
@@ -131,6 +525,8 @@ enum LocalNotificationScheduler {
     private static func schedule(store: SessionStore,
                                  ble: AtriaBLEManager,
                                  includeMetricDecisions: Bool,
+                                 includeSleepReviewDecisions: Bool,
+                                 includeWorkoutReviewDecisions: Bool,
                                  includeActionableConnectionDecisions: Bool,
                                  includeDiagnostic: Bool,
                                  productionCadence: Bool) async {
@@ -162,6 +558,12 @@ enum LocalNotificationScheduler {
         if includeMetricDecisions {
             decisions.append(contentsOf: makeMetricDecisions(store: store, ble: ble))
         }
+        if includeSleepReviewDecisions {
+            decisions.append(makeSleepReviewDecision(store: store))
+        }
+        if includeWorkoutReviewDecisions {
+            decisions.append(makeWorkoutReviewDecision(store: store, ble: ble))
+        }
         if includeActionableConnectionDecisions {
             decisions.append(contentsOf: makeActionableConnectionDecisions(ble: ble))
         }
@@ -178,14 +580,24 @@ enum LocalNotificationScheduler {
         }
         let preferences = AtriaNotificationSettings.load()
         var scheduled = 0
+        let defaults = UserDefaults.standard
         for decision in decisions where decision.shouldSchedule {
             guard preferences.allows(kind: decision.kind) else {
                 AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled", decision.kind)
                 continue
             }
+            if decision.kind == "battery",
+               batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
+                AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
+                              decision.title)
+                continue
+            }
             do {
                 try await add(decision: decision, center: center)
                 scheduled += 1
+                if decision.kind == "battery" {
+                    markBatteryDrainCycleScheduled(title: decision.title, defaults: defaults)
+                }
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=%@ error=%@",
                       decision.kind,
@@ -220,7 +632,8 @@ enum LocalNotificationScheduler {
                 kind: "recovery",
                 identifier: Identifier.recovery,
                 title: "Recovery ready",
-                body: "Recovery \(percent)% (\(recovery.confidence.rawValue)): \(recovery.detail)",
+                body: recoveryNotificationBody(percent: percent,
+                                               detail: recovery.detail),
                 reason: "percent_\(percent)_confidence_\(recovery.confidence.rawValue)",
                 shouldSchedule: true,
                 delay: 5
@@ -265,7 +678,7 @@ enum LocalNotificationScheduler {
                 kind: "strain",
                 identifier: Identifier.strain,
                 title: "Strain target reached",
-                body: String(format: "Day strain %.1f reached today's %.1f target.", strain, target),
+                body: String(format: "Nice work. You reached today's strain target with %.1f strain against a %.1f goal.", strain, target),
                 reason: String(format: "strain_%.1f_target_%.1f", strain, target),
                 shouldSchedule: true,
                 delay: 7
@@ -283,6 +696,51 @@ enum LocalNotificationScheduler {
         }
 
         return [recoveryDecision, strainDecision]
+    }
+
+    private static func healthDeviationDecision(rollups: [DailyRollupStoreEntry],
+                                                now: Date,
+                                                calendar: Calendar) -> NotificationDecision? {
+        let recent = rollups
+            .sorted { $0.day > $1.day }
+            .prefix(7)
+        guard recent.count >= 2 else { return nil }
+        let latestTwo = Array(recent.prefix(2))
+
+        let candidates: [(kind: String, value: (DailyRollupStoreEntry) -> Double?, stat: (DailyRollupVitals) -> DailyRollupVitals.Stat?)] = [
+            ("resting heart rate", { $0.rhr.map(Double.init) }, { $0.rhr }),
+            ("HRV", { $0.lnRMSSD.map(exp) }, { $0.hrv }),
+            ("respiratory rate", { $0.respiratoryRate }, { $0.resp }),
+        ]
+
+        for candidate in candidates {
+            let deviations = latestTwo.compactMap { entry -> Int? in
+                guard let value = candidate.value(entry),
+                      let stat = entry.vitals.flatMap(candidate.stat),
+                      stat.n >= 3,
+                      stat.sd > 0 else { return nil }
+                let z = (value - stat.mean) / stat.sd
+                guard abs(z) >= 2 else { return nil }
+                return z > 0 ? 1 : -1
+            }
+            guard deviations.count == 2,
+                  let first = deviations.first,
+                  deviations.allSatisfy({ $0 == first }) else {
+                continue
+            }
+            let direction = first > 0 ? "above" : "below"
+            return NotificationDecision(kind: "health_deviation",
+                                        identifier: Identifier.healthDeviation,
+                                        title: "Health Monitor",
+                                        body: "Your \(candidate.kind) has been \(direction) your typical range for 2 days. Worth keeping an eye on.",
+                                        reason: "two_day_\(candidate.kind.replacingOccurrences(of: " ", with: "_"))_\(direction)_typical",
+                                        shouldSchedule: true,
+                                        delay: 1,
+                                        categoryIdentifier: "atria.healthDeviation",
+                                        userInfo: ["deepLink": "atria://vitals"])
+        }
+
+        return nil
     }
 
     private static func makeActionableConnectionDecisions(ble: AtriaBLEManager) -> [NotificationDecision] {
@@ -314,6 +772,10 @@ enum LocalNotificationScheduler {
         let battery = batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)
         let effectiveChargeStatus = battery.chargeStatus
         let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full
+        if battery.usable,
+           batteryIsCharging || battery.level > Self.actionableBatteryThreshold {
+            clearBatteryDrainCycleState(reason: batteryIsCharging ? "charging" : "above_threshold")
+        }
         AtriaDebugLog("ATRIADBG notification_battery_decision level=%d source=%@ age_s=%.0f usable=%d threshold=%d charge=%@ drop_recent=%d",
               battery.level,
               battery.source,
@@ -368,11 +830,248 @@ enum LocalNotificationScheduler {
         return [batteryDecision, bluetoothDecision]
     }
 
+    private static func makeSleepReviewDecision(store: SessionStore) -> NotificationDecision {
+        let snapshot = store.sleepHistorySnapshot
+        let defaults = UserDefaults.standard
+        let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
+                                                                  source: "notification_sleep_review")
+
+        let reviewableSnapshotNight = snapshot.latest?.confirmed == false ? snapshot.latest : nil
+        guard let latest = latestReviewNight ?? reviewableSnapshotNight,
+              latest.confirmed == false else {
+            let reason = sleepReviewUnavailableReason(snapshot: snapshot, store: store)
+            defaults.removeObject(forKey: sleepReviewLastCandidateIDKey)
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: reason,
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        guard latest.id != defaults.string(forKey: sleepReviewDismissedIDKey) else {
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: "candidate_dismissed_locally",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        if latest.id == defaults.string(forKey: sleepReviewLastCandidateIDKey) {
+            let count = defaults.integer(forKey: sleepReviewCandidateScheduleCountPrefix + latest.id)
+            let lastScheduledAt = defaults.double(forKey: sleepReviewCandidateScheduledAtPrefix + latest.id)
+            let elapsed = lastScheduledAt > 0 ? Date().timeIntervalSince(Date(timeIntervalSince1970: lastScheduledAt)) : sleepReviewReminderCooldown
+            guard count < sleepReviewMaximumSchedulesPerCandidate else {
+                return NotificationDecision(
+                    kind: "sleep_review",
+                    identifier: Identifier.sleepReview,
+                    title: "",
+                    body: "",
+                    reason: "candidate_reminder_limit_reached",
+                    shouldSchedule: false,
+                    delay: 0
+                )
+            }
+            guard elapsed >= sleepReviewReminderCooldown else {
+                return NotificationDecision(
+                    kind: "sleep_review",
+                    identifier: Identifier.sleepReview,
+                    title: "",
+                    body: "",
+                    reason: "candidate_reminder_cooldown",
+                    shouldSchedule: false,
+                    delay: 0
+                )
+            }
+        }
+
+        let title = sleepReviewNotificationTitle(for: latest)
+        let body = sleepReviewNotificationBody(for: latest)
+
+        return NotificationDecision(
+            kind: "sleep_review",
+            identifier: Identifier.sleepReview,
+            title: title,
+            body: body,
+            reason: "candidate_\(latest.id)",
+            shouldSchedule: true,
+            delay: 6
+        )
+    }
+
+    private static func sleepReviewNotificationTitle(for night: SleepHistorySnapshot.Night) -> String {
+        night.isNapEvidence ? "Review your nap" : "Review last night"
+    }
+
+    private static func sleepReviewNotificationBody(for night: SleepHistorySnapshot.Night) -> String {
+        let action = night.isNapEvidence
+            ? "Confirm, adjust, or keep it separate."
+            : "Confirm or adjust the timing."
+        if let start = night.start, let end = night.end {
+            let startText = start.formatted(date: .omitted, time: .shortened)
+            let endText = end.formatted(date: .omitted, time: .shortened)
+            return "\(night.durationText), \(startText)-\(endText). \(action)"
+        }
+        if let end = night.end {
+            let endText = end.formatted(date: .omitted, time: .shortened)
+            return "\(night.durationText), ending \(endText). \(action)"
+        }
+        return "\(night.durationText). \(action)"
+    }
+
+    private static func sleepLoggedDecision(for sleep: UserConfirmedSleep) -> NotificationDecision {
+        NotificationDecision(kind: "sleep_logged",
+                             identifier: Identifier.sleepLogged,
+                             title: "Sleep logged",
+                             body: "\(SleepHistorySnapshot.formatDuration(sleep.duration)) · \(sleep.start.formatted(date: .omitted, time: .shortened))-\(sleep.end.formatted(date: .omitted, time: .shortened)). Edit in Atria.",
+                             reason: "auto_confirmed_\(sleep.id)",
+                             shouldSchedule: true,
+                             delay: 3)
+    }
+
+    private static func makeWorkoutReviewDecision(store: SessionStore, ble: AtriaBLEManager) -> NotificationDecision {
+        let defaults = UserDefaults.standard
+        guard !reviewNotificationsProtectedByLiveCapture(ble: ble) else {
+            defaults.removeObject(forKey: workoutReviewLastCandidateIDKey)
+            return NotificationDecision(
+                kind: "workout_review",
+                identifier: Identifier.workoutReview,
+                title: "",
+                body: "",
+                reason: "live_capture_protected_range_loss_backfill",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        let rest = store.baseline.restingInt ?? 60
+        guard let candidate = store.latestWorkoutReviewCandidate(rest: rest,
+                                                                 maxHR: store.profile.maxHR,
+                                                                 source: "notification") else {
+            defaults.removeObject(forKey: workoutReviewLastCandidateIDKey)
+            return NotificationDecision(
+                kind: "workout_review",
+                identifier: Identifier.workoutReview,
+                title: "",
+                body: "",
+                reason: "no_reviewable_workout_candidate",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        guard candidate.id != defaults.string(forKey: workoutReviewDismissedIDKey) else {
+            return NotificationDecision(
+                kind: "workout_review",
+                identifier: Identifier.workoutReview,
+                title: "",
+                body: "",
+                reason: "candidate_dismissed_locally",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        guard candidate.id != defaults.string(forKey: workoutReviewLastCandidateIDKey) else {
+            return NotificationDecision(
+                kind: "workout_review",
+                identifier: Identifier.workoutReview,
+                title: "",
+                body: "",
+                reason: "candidate_already_notified",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        guard workoutReviewCandidateIsPushWorthy(candidate) else {
+            return NotificationDecision(
+                kind: "workout_review",
+                identifier: Identifier.workoutReview,
+                title: "",
+                body: "",
+                reason: "candidate_visible_in_app_not_push_worthy",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+
+        return NotificationDecision(
+            kind: "workout_review",
+            identifier: Identifier.workoutReview,
+            title: workoutReviewNotificationTitle(for: candidate),
+            body: workoutReviewNotificationBody(for: candidate),
+            reason: "candidate_\(candidate.id)",
+            shouldSchedule: true,
+            delay: 6
+        )
+    }
+
+    private static func workoutReviewNotificationTitle(for candidate: WorkoutReviewCandidate) -> String {
+        candidate.kind == .workout ? "Workout found" : "Effort found"
+    }
+
+    private static func workoutReviewNotificationBody(for candidate: WorkoutReviewCandidate) -> String {
+        let startText = candidate.start.formatted(date: .omitted, time: .shortened)
+        let endText = candidate.end.formatted(date: .omitted, time: .shortened)
+        let reviewHint = workoutReviewReviewHint(for: candidate)
+        let action = candidate.kind == .workout
+            ? "Confirm type or dismiss."
+            : "Label it if it was training."
+        return "Strap heart-rate window \(candidate.durationMinutes)m, \(startText)-\(endText). \(reviewHint) \(action)"
+    }
+
+    private static func workoutReviewReviewHint(for candidate: WorkoutReviewCandidate) -> String {
+        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 {
+            return "Looks complete."
+        }
+        if candidate.streamCoveragePercent >= 60 {
+            return "Adjust if the timing is off."
+        }
+        return "Review the window before saving."
+    }
+
+    private static func workoutReviewCandidateIsPushWorthy(_ candidate: WorkoutReviewCandidate) -> Bool {
+        candidate.isReviewPromptWorthy
+    }
+
+    private static func reviewNotificationsProtectedByLiveCapture(ble: AtriaBLEManager) -> Bool {
+        ble.status == .connected
+            && ble.rangeLossBackfillPending
+            && ble.sessionSampleCount > 0
+    }
+
+    private static func sleepReviewUnavailableReason(snapshot: SleepHistorySnapshot,
+                                                     store: SessionStore) -> String {
+        let rest = store.baseline.restingInt ?? 60
+        let evidence = store.sleepEvidenceStatusFast(rest: rest)
+        if evidence.candidates > 0 {
+            if evidence.readyCandidates > 0 {
+                return "sleep_candidate_waiting_history_snapshot"
+            }
+            return "sleep_candidate_pending_validation_\(evidence.blocker)"
+        }
+        if evidence.fallbackAvailable {
+            return "sleep_candidate_pending_validation_\(evidence.blocker)"
+        }
+        if snapshot.candidateCount > 0 {
+            return "sleep_candidate_not_reviewable"
+        }
+        return "no_unconfirmed_sleep_candidate"
+    }
+
     private static func actionableConnectionDiagnosisDecision(title: String,
                                                               body: String,
                                                               reason: String) -> NotificationDecision? {
         switch title {
-        case "Strap battery low":
+        case "Strap battery low", "Strap battery too low":
             return NotificationDecision(kind: "battery",
                                         identifier: Identifier.battery,
                                         title: title,
@@ -401,6 +1100,44 @@ enum LocalNotificationScheduler {
         }
     }
 
+    private static func batteryDrainCycleKey(title: String) -> String? {
+        switch title {
+        case "Strap battery low":
+            return batteryWarningDrainCycleScheduledKey
+        case "Strap battery too low":
+            return batteryShutoffDrainCycleScheduledKey
+        default:
+            return nil
+        }
+    }
+
+    private static func batteryDrainCycleAlreadyScheduled(title: String,
+                                                          defaults: UserDefaults = .standard) -> Bool {
+        guard let key = batteryDrainCycleKey(title: title) else { return false }
+        return defaults.bool(forKey: key)
+    }
+
+    private static func markBatteryDrainCycleScheduled(title: String,
+                                                       defaults: UserDefaults = .standard) {
+        guard let key = batteryDrainCycleKey(title: title) else { return }
+        defaults.set(true, forKey: key)
+        AtriaDebugLog("ATRIADBG notification_battery_drain_cycle status=marked title=%@", title)
+    }
+
+    private static func clearBatteryDrainCycleState(reason: String,
+                                                    defaults: UserDefaults = .standard,
+                                                    now: Date = Date()) {
+        let hadDrainCycle = defaults.bool(forKey: batteryWarningDrainCycleScheduledKey) ||
+            defaults.bool(forKey: batteryShutoffDrainCycleScheduledKey)
+        defaults.set(false, forKey: batteryWarningDrainCycleScheduledKey)
+        defaults.set(false, forKey: batteryShutoffDrainCycleScheduledKey)
+        defaults.set(now.timeIntervalSince1970, forKey: batteryDrainCycleClearedAtKey)
+        defaults.removeObject(forKey: actionableDiagnosisLastScheduledPrefix + Identifier.battery)
+        AtriaDebugLog("ATRIADBG notification_battery_drain_cycle status=cleared reason=%@ had_cycle=%d",
+                      reason,
+                      hadDrainCycle ? 1 : 0)
+    }
+
     private static func batterySnapshot(liveLevel: Int,
         liveChargeStatus: AtriaBLEManager.BatteryChargeStatus) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool, recentDrop: Bool) {
         let drop = AtriaBLEManager.cachedBatteryDrop()
@@ -417,18 +1154,131 @@ enum LocalNotificationScheduler {
         return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, cached.chargeStatus, false, false)
     }
 
+    private static func recoveryNotificationBody(percent: Int,
+                                                 detail: String) -> String {
+        "Recovery is \(percent)% today. \(detail) Use it to choose whether to push, hold, or recover."
+    }
+
+    // Attention budget + ledger (docs/24 §14.2): user-facing kinds are capped
+    // per local day so the app never feels naggy, and every scheduled/skipped
+    // decision leaves a receipt the user (and debugging) can audit.
+    static let attentionBudgetPerDay = 6
+    private static let budgetExemptKinds: Set<String> = ["diagnostic", "battery", "bluetooth_off"]
+    private static let budgetCountKeyPrefix = "atria.notification.budget."
+    private static let ledgerKey = "atria.notification.ledger.v1"
+    private static let ledgerCapacity = 60
+
+    private static func recordLedgerEntry(kind: String, action: String, detail: String) {
+        let defaults = UserDefaults.standard
+        var ledger = defaults.stringArray(forKey: ledgerKey) ?? []
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        ledger.append("\(stamp)|\(kind)|\(action)|\(detail)")
+        if ledger.count > ledgerCapacity {
+            ledger.removeFirst(ledger.count - ledgerCapacity)
+        }
+        defaults.set(ledger, forKey: ledgerKey)
+    }
+
+    static func consumeAttentionBudget(kind: String,
+                                       now: Date = Date(),
+                                       defaults: UserDefaults = .standard) -> Bool {
+        guard !budgetExemptKinds.contains(kind) else { return true }
+        let day = localDayIdentifier(for: now, calendar: .current)
+        let key = budgetCountKeyPrefix + day
+        let used = defaults.integer(forKey: key)
+        guard used < attentionBudgetPerDay else {
+            AtriaDebugLog("ATRIADBG notification_budget status=exhausted kind=%@ used=%d cap=%d",
+                          kind,
+                          used,
+                          attentionBudgetPerDay)
+            recordLedgerEntry(kind: kind, action: "suppressed_budget", detail: "\(used)/\(attentionBudgetPerDay)")
+            return false
+        }
+        defaults.set(used + 1, forKey: key)
+        // Keep the defaults tidy: drop the counter from two days ago.
+        if let staleDay = Calendar.current.date(byAdding: .day, value: -2, to: now) {
+            defaults.removeObject(forKey: budgetCountKeyPrefix + localDayIdentifier(for: staleDay, calendar: .current))
+        }
+        return true
+    }
+
+    /// Learned quiet hours = actual sleep span (the duty-cycle window minus its
+    /// 1 h padding on each side). Non-exempt notifications landing inside it are
+    /// deferred to wake; device-health alerts still get through.
+    static func quietHoursAdjustedDelay(kind: String,
+                                        delay: TimeInterval,
+                                        now: Date = Date(),
+                                        calendar: Calendar = .current,
+                                        defaults: UserDefaults = .standard) -> TimeInterval {
+        guard !budgetExemptKinds.contains(kind) else { return delay }
+        let windowStart = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin)
+        let windowEnd = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+        guard windowStart > 0 || windowEnd > 0 else { return delay }
+        let quietStart = (windowStart + 60) % 1440
+        let quietEnd = (windowEnd + 1440 - 60) % 1440
+        let delivery = now.addingTimeInterval(delay)
+        let components = calendar.dateComponents([.hour, .minute], from: delivery)
+        let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        let insideQuiet: Bool
+        if quietStart <= quietEnd {
+            insideQuiet = minutes >= quietStart && minutes < quietEnd
+        } else {
+            insideQuiet = minutes >= quietStart || minutes < quietEnd
+        }
+        guard insideQuiet else { return delay }
+        let minutesUntilWake = (quietEnd - minutes + 1440) % 1440
+        let adjusted = delay + TimeInterval(minutesUntilWake * 60)
+        AtriaDebugLog("ATRIADBG notification_quiet_hours kind=%@ deferred_min=%d wake_min=%d",
+                      kind,
+                      minutesUntilWake,
+                      quietEnd)
+        recordLedgerEntry(kind: kind, action: "deferred_quiet_hours", detail: "\(minutesUntilWake)m")
+        return adjusted
+    }
+
     private static func add(decision: NotificationDecision,
                             center: UNUserNotificationCenter) async throws {
+        guard consumeAttentionBudget(kind: decision.kind) else { return }
+        var decision = decision
+        decision = NotificationDecision(kind: decision.kind,
+                                        identifier: decision.identifier,
+                                        title: decision.title,
+                                        body: decision.body,
+                                        reason: decision.reason,
+                                        shouldSchedule: decision.shouldSchedule,
+                                        delay: quietHoursAdjustedDelay(kind: decision.kind, delay: decision.delay),
+                                        categoryIdentifier: decision.categoryIdentifier,
+                                        userInfo: decision.userInfo)
+        recordLedgerEntry(kind: decision.kind, action: "scheduled", detail: decision.identifier)
         let content = UNMutableNotificationContent()
         content.title = decision.title
         content.body = decision.body
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: decision.delay,
                                                         repeats: false)
+        if let categoryIdentifier = decision.categoryIdentifier {
+            content.categoryIdentifier = categoryIdentifier
+        }
+        for (key, value) in decision.userInfo {
+            content.userInfo[key] = value
+        }
         let request = UNNotificationRequest(identifier: decision.identifier,
                                             content: content,
                                             trigger: trigger)
         try await center.add(request)
+        if decision.kind == "sleep_review",
+           let candidateID = decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first {
+            let id = String(candidateID)
+            let defaults = UserDefaults.standard
+            defaults.set(id, forKey: sleepReviewLastCandidateIDKey)
+            defaults.set(Date().timeIntervalSince1970, forKey: sleepReviewCandidateScheduledAtPrefix + id)
+            let countKey = sleepReviewCandidateScheduleCountPrefix + id
+            defaults.set(defaults.integer(forKey: countKey) + 1, forKey: countKey)
+        }
+        if decision.kind == "workout_review",
+           let candidateID = decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first {
+            UserDefaults.standard.set(String(candidateID), forKey: workoutReviewLastCandidateIDKey)
+        }
         AtriaDebugLog("ATRIADBG notification_scheduled kind=%@ id=%@ title=%@ delay_s=%.1f reason=%@",
               decision.kind,
               decision.identifier,
@@ -460,18 +1310,39 @@ enum LocalNotificationScheduler {
         let requests = await pendingRequests(center: center)
         let recovery = requests.filter { [Identifier.recovery, Identifier.legacyRecovery].contains($0.identifier) }.count
         let strain = requests.filter { [Identifier.strain, Identifier.legacyStrain].contains($0.identifier) }.count
+        let sleepReview = requests.filter { [Identifier.sleepReview, Identifier.legacySleepReview].contains($0.identifier) }.count
+        let workoutReview = requests.filter { [Identifier.workoutReview, Identifier.legacyWorkoutReview].contains($0.identifier) }.count
         let battery = requests.filter { [Identifier.battery, Identifier.legacyBattery].contains($0.identifier) }.count
         let bluetoothOff = requests.filter { [Identifier.bluetoothOff, Identifier.legacyBluetoothOff].contains($0.identifier) }.count
         let diagnostic = requests.filter { [Identifier.diagnostic, Identifier.legacyDiagnostic].contains($0.identifier) }.count
-        let known = recovery + strain + battery + bluetoothOff + diagnostic
-        AtriaDebugLog("ATRIADBG notification_pending total=%d recovery=%d strain=%d battery=%d bluetooth_off=%d diagnostic=%d unknown=%d",
+        let morningSummary = requests.filter { $0.identifier.hasPrefix(Identifier.morningSummaryPrefix) }.count
+        let healthDeviation = requests.filter { $0.identifier == Identifier.healthDeviation }.count
+        let known = recovery + strain + sleepReview + workoutReview + battery + bluetoothOff + diagnostic + morningSummary + healthDeviation
+        AtriaDebugLog("ATRIADBG notification_pending total=%d recovery=%d strain=%d sleep_review=%d workout_review=%d battery=%d bluetooth_off=%d diagnostic=%d morning_summary=%d health_deviation=%d unknown=%d",
               requests.count,
               recovery,
               strain,
+              sleepReview,
+              workoutReview,
               battery,
               bluetoothOff,
               diagnostic,
+              morningSummary,
+              healthDeviation,
               max(0, requests.count - known))
+    }
+
+    private static func logMorningSummaryPendingProof(identifier: String,
+                                                      center: UNUserNotificationCenter) async {
+        let request = await pendingRequests(center: center)
+            .first { $0.identifier == identifier }
+        let deepLink = request?.content.userInfo["deepLink"] as? String ?? "missing"
+        let category = request?.content.categoryIdentifier ?? "missing"
+        AtriaDebugLog("ATRIADBG notification_pending_detail kind=morning_summary id=%@ present=%d category=%@ deepLink=%@",
+                      identifier,
+                      request == nil ? 0 : 1,
+                      category,
+                      deepLink)
     }
 
     private static func pendingRequests(center: UNUserNotificationCenter) async -> [UNNotificationRequest] {
@@ -502,6 +1373,14 @@ enum LocalNotificationScheduler {
         }
     }
 
+    private static func localDayIdentifier(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d",
+                      components.year ?? 0,
+                      components.month ?? 0,
+                      components.day ?? 0)
+    }
+
     private struct NotificationDecision {
         let kind: String
         let identifier: String
@@ -510,21 +1389,29 @@ enum LocalNotificationScheduler {
         let reason: String
         let shouldSchedule: Bool
         let delay: TimeInterval
+        var categoryIdentifier: String?
+        var userInfo: [String: String] = [:]
     }
 }
 
-private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelegate {
+final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationDeliveryLogger()
+    static let deepLinkNotification = Notification.Name("atria.notification.deepLink")
 
     private enum Identifier {
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
+        static let sleepReview = "atria.sleep.review"
+        static let workoutReview = "atria.workout.review"
         static let battery = "atria.battery.low"
         static let bluetoothOff = "atria.bluetooth.off"
+        static let healthDeviation = "atria.health.deviation"
         static let fitCheck = "atria.fitcheck.needed"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
+        static let legacySleepReview = "atria.sleep.review"
+        static let legacyWorkoutReview = "atria.workout.review"
         static let legacyBattery = "atria.battery.low"
         static let legacyBluetoothOff = "atria.bluetooth.off"
         static let legacyDiagnostic = "atria.diagnostic.delivery"
@@ -542,18 +1429,31 @@ private final class NotificationDeliveryLogger: NSObject, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         let request = response.notification.request
+        let deepLink = request.content.userInfo["deepLink"] as? String
         AtriaDebugLog("ATRIADBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)
+        if let deepLink,
+           let url = URL(string: deepLink) {
+            AtriaDebugLog("ATRIADBG notification_deeplink status=posted kind=%@ url=%@",
+                          kind(for: request.identifier),
+                          deepLink)
+            await MainActor.run {
+                NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)
+            }
+        }
     }
 
     private func kind(for identifier: String) -> String {
         switch identifier {
         case Identifier.recovery, Identifier.legacyRecovery: return "recovery"
         case Identifier.strain, Identifier.legacyStrain: return "strain"
+        case Identifier.sleepReview, Identifier.legacySleepReview: return "sleep_review"
+        case Identifier.workoutReview, Identifier.legacyWorkoutReview: return "workout_review"
         case Identifier.battery, Identifier.legacyBattery: return "battery"
         case Identifier.bluetoothOff, Identifier.legacyBluetoothOff: return "bluetooth_off"
+        case Identifier.healthDeviation: return "health_deviation"
         case Identifier.fitCheck: return "fit_check"
         case Identifier.diagnostic, Identifier.legacyDiagnostic: return "diagnostic"
         default: return "unknown"

@@ -9,6 +9,35 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Atria</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AtriaGraphite</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AtriaIconGraphite</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<true/>
+			</dict>
+			<key>AtriaMint</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AtriaIconMint</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<true/>
+			</dict>
+		</dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
 	<key>CFBundleName</key>
 	<string>Atria</string>
 	<key>CFBundleURLTypes</key>
@@ -26,17 +55,22 @@
 	<array>
 		<string>whoop</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Atria can use the camera only when you choose to place a photo behind a share card.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>This app reads Health only to confirm locally captured Atria data appears in Apple Health.</string>
+	<string>Atria reads Health only to confirm locally captured Atria data appears in Apple Health and, when you enable it, to use nutrition samples from your food app as recovery context.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you explicitly enable export.</string>
-	<key>NSMotionUsageDescription</key>
-	<string>Atria samples this iPhone's motion only to label local diagnostic evidence; wrist and sleep metrics still require validated strap motion.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Atria can read the photo you choose only to place it behind a share card.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Atria can save the share card image to Photos only when you tap Save.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
 		<string>processing</string>
 	</array>
 </dict>

@@ -8,7 +8,7 @@ enum AtriaAnalytics {
             guard let recentStartIndex = samples.firstIndex(where: { $0.t >= now.addingTimeInterval(-lookback) }) else {
                 return nil
             }
-            let recent = samples[recentStartIndex...]
+            let recent = samples[recentStartIndex...].prefix { $0.t <= now }
             guard recent.count >= 20,
                   let first = recent.first?.t,
                   let last = recent.last?.t else { return nil }
@@ -297,18 +297,14 @@ enum AtriaAnalytics {
             case .green:
                 recommendation = "Sleep duration met your goal. Keep bed and wake times consistent."
             case .yellow:
-                recommendation = String(format: "A little under your sleep goal -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+                recommendation = "A little under your sleep goal -- aim for about \(AtriaMetricFormat.sleepHours(remaining)) more and keep bed and wake times consistent."
             case .red:
-                recommendation = String(format: "Under your sleep need -- aim for about %.1fh more and keep bed and wake times consistent.", remaining)
+                recommendation = "Under your sleep need -- aim for about \(AtriaMetricFormat.sleepHours(remaining)) more and keep bed and wake times consistent."
             }
             return AtriaMetricZone(level: level,
                                    title: "Sleep duration target",
-                                   current: String(format: "%.1fh sleep vs %.1fh goal.", hours, safeGoal),
-                                   targetSummary: String(format: "User goal · Green >= %.1fh, yellow %.1f-%.1fh, red below %.1fh.",
-                                                         safeGoal,
-                                                         safeGoal * 0.85,
-                                                         safeGoal - 0.1,
-                                                         safeGoal * 0.85),
+                                   current: "\(AtriaMetricFormat.sleepHours(hours)) sleep vs \(AtriaMetricFormat.sleepHours(safeGoal)) goal.",
+                                   targetSummary: "User goal · Green >= \(AtriaMetricFormat.sleepHours(safeGoal)), yellow \(AtriaMetricFormat.sleepHours(safeGoal * 0.85))-\(AtriaMetricFormat.sleepHours(safeGoal - 0.1)), red below \(AtriaMetricFormat.sleepHours(safeGoal * 0.85)).",
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -399,15 +395,15 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Body age is on the younger side for your profile. Keep the fitness, sleep, HRV, and recovery habits consistent."
+                recommendation = "Fitness age is on the younger side for your profile. Keep the RHR, HRV, zone-2, and sleep-consistency habits steady."
             case .yellow:
-                recommendation = "Body age is slightly older than your profile. Consistent cardio, sleep, HRV, and recovery habits move this estimate most."
+                recommendation = "Fitness age is slightly older than your profile. Zone-2 minutes, sleep timing, RHR, and HRV move this estimate most."
             case .red:
-                recommendation = "Body age is older than your profile. Prioritize consistent cardio, sleep regularity, recovery, and easier days when strain is high."
+                recommendation = "Fitness age is older than your profile. Prioritize steady aerobic minutes, sleep regularity, and easier days when strain is high."
             }
 
             return AtriaMetricZone(level: level,
-                                   title: "Body age target",
+                                   title: "Fitness age target",
                                    current: "\(summary.valueText), \(summary.detailText).",
                                    targetSummary: "Estimate · Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
                                    recommendation: recommendation,
@@ -440,9 +436,9 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Respiratory rate baseline",
                                    current: String(format: "%.1f/min, %+.1f vs %.1f baseline.", breathsPerMinute, delta, baseline),
-                                   targetSummary: String(format: "Research baseline · Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
+                                   targetSummary: String(format: "Early baseline · Green within +/-%.1f/min, yellow within +/-%.1f/min, red farther from %.1f/min.", safeGreenDelta, safeYellowDelta, baseline),
                                    recommendation: recommendation,
-                                   disclaimer: "Research sleep-only estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
+                                   disclaimer: "Early sleep-only signal. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
 
         static func skinTemperatureDeviation(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
@@ -465,9 +461,9 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Skin temperature baseline",
                                    current: String(format: "%+.1f delta C vs sleep baseline.", delta),
-                                   targetSummary: String(format: "Research baseline · Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
+                                   targetSummary: String(format: "Early baseline · Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
                                    recommendation: recommendation,
-                                   disclaimer: "Research relative sleep-only deviation; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
+                                   disclaimer: "Early relative sleep-only signal; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
 
         static func bloodOxygenResearch(candidateFrames: Int,
@@ -479,30 +475,30 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Blood oxygen research has enough candidate frames to inspect. Atria still does not show an SpO2 percentage until the protocol is validated."
+                recommendation = "Blood oxygen has enough candidate frames to inspect. Atria still does not show an SpO2 percentage until quality checks pass."
             case .yellow:
-                recommendation = "Blood oxygen research has partial candidate evidence. Keep collecting sleep data before trusting this signal."
+                recommendation = "Blood oxygen has partial candidate evidence. Keep collecting sleep data before trusting this signal."
             case .red:
-                recommendation = "Blood oxygen research has too little candidate evidence. Wear the strap overnight and treat this as protocol research only."
+                recommendation = "Blood oxygen has too little candidate evidence. Wear the strap overnight and treat this as an early signal only."
             }
             return AtriaMetricZone(level: level,
-                                   title: "Blood oxygen research evidence",
+                                   title: "Blood oxygen signal evidence",
                                    current: "\(candidateFrames) candidate frames; not an SpO2 reading.",
-                                   targetSummary: "Research evidence · Green >= \(safeGoal) candidate frames, yellow \(yellowFloor)-\(safeGoal - 1), red below \(yellowFloor).",
+                                   targetSummary: "Signal evidence · Green >= \(safeGoal) candidate frames, yellow \(yellowFloor)-\(safeGoal - 1), red below \(yellowFloor).",
                                    recommendation: recommendation,
-                                   disclaimer: "Research signal only; no SpO2 percentage, diagnosis, alarm, or Health export. \(AtriaMetricZone.nonMedicalDisclaimer)")
+                                   disclaimer: "Early signal only; no SpO2 percentage, diagnosis, alarm, or Health export. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
     }
 
     enum Daily {
-        struct PhoneMotionSample: Equatable {
+        struct StrapStepSample: Equatable {
             let steps: Int
             let distanceMeters: Double?
             let floorsAscended: Int?
             let floorsDescended: Int?
         }
 
-        struct PhoneMotionSummary: Equatable {
+        struct StrapStepSummary: Equatable {
             let steps: Int
             let distanceMeters: Double?
             let floorsAscended: Int?
@@ -516,7 +512,7 @@ enum AtriaAnalytics {
             let bpm: Int
         }
 
-        static func stepsDaily(_ samples: [PhoneMotionSample]) -> PhoneMotionSummary {
+        static func stepsDaily(_ samples: [StrapStepSample]) -> StrapStepSummary {
             var steps = 0
             var distance = 0.0
             var hasDistance = false
@@ -541,10 +537,10 @@ enum AtriaAnalytics {
                 }
             }
 
-            return PhoneMotionSummary(steps: steps,
-                                      distanceMeters: hasDistance ? distance : nil,
-                                      floorsAscended: hasFloorsAscended ? floorsAscended : nil,
-                                      floorsDescended: hasFloorsDescended ? floorsDescended : nil)
+            return StrapStepSummary(steps: steps,
+                                    distanceMeters: hasDistance ? distance : nil,
+                                    floorsAscended: hasFloorsAscended ? floorsAscended : nil,
+                                    floorsDescended: hasFloorsDescended ? floorsDescended : nil)
         }
 
         static func dayCalories(_ samples: [HeartRateEnergySample],
@@ -816,7 +812,9 @@ enum AtriaAnalytics {
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
                 guard dt > 0 else { continue }
-                if dt >= 5 {
+                // Match trimp()/maxHeartRateZoneSeconds: a gap is >=5 minutes, not
+                // >=5 seconds — low-rate long-wear streams are usable, not dropped.
+                if dt >= 5 * 60 {
                     dropped += dt
                     continue
                 }
@@ -871,10 +869,52 @@ enum AtriaAnalytics {
                 case validated
             }
 
+            struct Contributor: Equatable, Identifiable {
+                enum Kind: String, Equatable {
+                    case hrv
+                    case restingHeartRate
+                    case sleep
+                    case respiration
+                }
+
+                let kind: Kind
+                let zScore: Double
+                let weight: Double
+                let detail: String
+                let displayValue: String
+                let direction: Int
+
+                var id: String { kind.rawValue }
+                var weightedContribution: Double { zScore * weight }
+
+                init(kind: Kind,
+                     zScore: Double,
+                     weight: Double,
+                     detail: String,
+                     displayValue: String? = nil,
+                     direction: Int? = nil) {
+                    self.kind = kind
+                    self.zScore = zScore
+                    self.weight = weight
+                    self.detail = detail
+                    self.displayValue = displayValue ?? String(format: "%+.1fσ", zScore)
+                    if let direction {
+                        self.direction = min(max(direction, -1), 1)
+                    } else if zScore > 0.12 {
+                        self.direction = 1
+                    } else if zScore < -0.12 {
+                        self.direction = -1
+                    } else {
+                        self.direction = 0
+                    }
+                }
+            }
+
             let percent: Int?
             let confidence: Confidence
             let usesHRV: Bool
             let detail: String
+            let contributors: [Contributor]
         }
 
         /// HR-only recovery: at/below baseline reads high; elevated resting reads low.
@@ -909,58 +949,182 @@ enum AtriaAnalytics {
                              respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> Estimate {
             guard let restingNow else {
                 return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false, detail: "learning: need resting HR")
+                                usesHRV: false, detail: "learning: need resting HR", contributors: [])
             }
 
-            guard baseline.hasTrustedRestingBaseline(),
-                  let restingStats = baseline.restingStats else {
+            guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
+                                              durationHours: sleepDurationHours) else {
+                // Sleep missing but HRV/RHR baselines trusted: renormalize the
+                // weights and score at reduced confidence instead of refusing —
+                // one night of missed sleep capture must not blank recovery.
+                if let renormalized = sleepMissingEstimate(hrvSnapshot: hrvSnapshot,
+                                                           fallbackRMSSD: fallbackRMSSD,
+                                                           restingNow: restingNow,
+                                                           baseline: baseline,
+                                                           respiratoryRate: respiratoryRate,
+                                                           respiratoryBaseline: respiratoryBaseline) {
+                    return renormalized
+                }
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: true,
+                                detail: "learning: need saved sleep",
+                                contributors: [])
+            }
+            let hasTrustedRestingBaseline = baseline.hasTrustedRestingBaseline()
+            let restingStats: (mean: Double, sd: Double, count: Int)
+            if hasTrustedRestingBaseline, let stats = baseline.restingStats {
+                restingStats = stats
+            } else if let restingBaseline = baseline.restingHR, restingBaseline > 0 {
+                restingStats = (mean: restingBaseline,
+                                sd: max(baseline.restingStats?.sd ?? 0, 5),
+                                count: baseline.freshRestingSampleCount())
+            } else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning RHR baseline \(baseline.freshRestingSampleCount())/\(PersonalBaseline.trustedMinimumSamples)")
+                                detail: "learning RHR baseline \(baseline.freshRestingSampleCount())/\(PersonalBaseline.trustedMinimumSamples)",
+                                contributors: [])
             }
 
-            let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd)
+            let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
             let rmssdNow = hrvSnapshot?.isReady == true
                 ? hrvSnapshot?.rmssd
-                : fallbackRMSSD.map(Double.init)
+                : (fallbackRMSSD.map(Double.init) ?? baseline.hrvEMA)
             guard let rmssdNow, rmssdNow > 0 else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
-                                detail: "learning: need a steady HRV window")
+                                detail: "learning: need a steady HRV window",
+                                contributors: [])
             }
 
-            guard baseline.hasTrustedHRVBaseline(),
-                  let hrvStats = baseline.lnRMSSDStats,
-                  hrvStats.count >= PersonalBaseline.trustedMinimumSamples else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false,
-                                detail: "learning HRV baseline \(baseline.freshHRVSampleCount())/\(PersonalBaseline.trustedMinimumSamples)")
-            }
-
-            let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd)
-            guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
-                                              durationHours: sleepDurationHours) else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: true,
-                                detail: "learning: need saved sleep")
+            let hrvStats = baseline.lnRMSSDStats
+            let hasTrustedHRVBaseline = baseline.hasTrustedHRVBaseline()
+                && (hrvStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
+            let hrvZ: Double
+            let confidence: Estimate.Confidence
+            let hrvDetail: String
+            if hasTrustedHRVBaseline, let hrvStats {
+                hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
+                if hasTrustedRestingBaseline {
+                    confidence = hrvReferenceValidated ? .validated : .personalBaseline
+                } else {
+                    confidence = .unverified
+                }
+                hrvDetail = String(format: "HRV %.1fσ", hrvZ)
+            } else if let hrvEMA = baseline.hrvEMA, hrvEMA > 0 {
+                hrvZ = 0.25 * max(-2.5, min(2.5, log(rmssdNow / hrvEMA)))
+                confidence = .unverified
+                hrvDetail = String(format: "HRV provisional %.1fσ", hrvZ)
+            } else {
+                hrvZ = 0
+                confidence = .unverified
+                hrvDetail = "HRV provisional baseline"
             }
 
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
+            let contributors = [
+                Estimate.Contributor(kind: .hrv,
+                                     zScore: hrvZ,
+                                     weight: 0.60,
+                                     detail: hrvDetail,
+                                     displayValue: String(format: "HRV %+.1fσ", hrvZ)),
+                Estimate.Contributor(kind: .restingHeartRate,
+                                     zScore: -restingZ,
+                                     weight: 0.20,
+                                     detail: String(format: "RHR %.1fσ", -restingZ),
+                                     displayValue: String(format: "Resting HR %+.1fσ", -restingZ)),
+                Estimate.Contributor(kind: .sleep,
+                                     zScore: sleepZ,
+                                     weight: 0.15,
+                                     detail: String(format: "Sleep %.1fσ", sleepZ),
+                                     displayValue: sleepDurationHours.map { "\(AtriaMetricFormat.sleepHours($0)) ✓" } ?? String(format: "Sleep %+.1fσ", sleepZ)),
+                Estimate.Contributor(kind: .respiration,
+                                     zScore: respirationZ,
+                                     weight: 0.05,
+                                     detail: respirationZ == 0
+                                        ? "Resp neutral"
+                                        : String(format: "Resp %.1fσ", respirationZ),
+                                     displayValue: respirationZ == 0 ? "Respiration typical" : String(format: "Respiration %+.1fσ", respirationZ))
+            ]
             let blendedZ = 0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ
             let percent = logisticRecoveryPercent(z: blendedZ)
-            let confidence: Estimate.Confidence = hrvReferenceValidated ? .validated : .personalBaseline
             let respirationDetail = respirationZ == 0
                 ? "Resp neutral"
                 : String(format: "Resp z %.1f", respirationZ)
             return Estimate(percent: percent, confidence: confidence,
                             usesHRV: true,
-                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail))
+                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail),
+                            contributors: contributors)
+        }
+
+        /// Sleep-missing path: requires BOTH trusted baselines, then blends
+        /// HRV/RHR/respiration with weights renormalized over the missing 0.15
+        /// sleep share (0.60/0.85, 0.20/0.85, 0.05/0.85). Confidence is capped
+        /// at .unverified so the UI shows the reduced-evidence state honestly.
+        private static func sleepMissingEstimate(hrvSnapshot: HRVSnapshot?,
+                                                 fallbackRMSSD: Int?,
+                                                 restingNow: Int,
+                                                 baseline: PersonalBaseline,
+                                                 respiratoryRate: Double?,
+                                                 respiratoryBaseline: (mean: Double, sd: Double, count: Int)?) -> Estimate? {
+            guard baseline.hasTrustedRestingBaseline(),
+                  baseline.hasTrustedHRVBaseline(),
+                  let restingStats = baseline.restingStats,
+                  let hrvStats = baseline.lnRMSSDStats,
+                  hrvStats.count >= PersonalBaseline.trustedMinimumSamples else { return nil }
+            let rmssdNow = hrvSnapshot?.isReady == true
+                ? hrvSnapshot?.rmssd
+                : (fallbackRMSSD.map(Double.init) ?? baseline.hrvEMA)
+            guard let rmssdNow, rmssdNow > 0 else { return nil }
+
+            let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
+            let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
+            let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
+                                                    baseline: respiratoryBaseline)
+            let blendedZ = (0.60 * hrvZ - 0.20 * restingZ + 0.05 * respirationZ) / 0.85
+            let percent = logisticRecoveryPercent(z: blendedZ)
+            let contributors = [
+                Estimate.Contributor(kind: .hrv,
+                                     zScore: hrvZ,
+                                     weight: 0.60 / 0.85,
+                                     detail: String(format: "HRV %.1fσ", hrvZ),
+                                     displayValue: String(format: "HRV %+.1fσ", hrvZ)),
+                Estimate.Contributor(kind: .restingHeartRate,
+                                     zScore: -restingZ,
+                                     weight: 0.20 / 0.85,
+                                     detail: String(format: "RHR %.1fσ", -restingZ),
+                                     displayValue: String(format: "Resting HR %+.1fσ", -restingZ)),
+                Estimate.Contributor(kind: .sleep,
+                                     zScore: 0,
+                                     weight: 0,
+                                     detail: "Sleep missing",
+                                     displayValue: "Sleep not captured"),
+                Estimate.Contributor(kind: .respiration,
+                                     zScore: respirationZ,
+                                     weight: 0.05 / 0.85,
+                                     detail: respirationZ == 0 ? "Resp neutral" : String(format: "Resp %.1fσ", respirationZ),
+                                     displayValue: respirationZ == 0 ? "Respiration typical" : String(format: "Respiration %+.1fσ", respirationZ))
+            ]
+            return Estimate(percent: percent,
+                            confidence: .unverified,
+                            usesHRV: true,
+                            detail: String(format: "sleep missing · renormalized · lnRMSSD z %.1f · RHR z %.1f", hrvZ, restingZ),
+                            contributors: contributors)
         }
 
         private static func zScore(_ value: Double, mean: Double, sd: Double) -> Double {
             guard sd > 0.1 else { return 0 }
             return (value - mean) / sd
+        }
+
+        /// Floors the SD instead of returning a hard 0: a genuinely consistent user
+        /// (legit lnRMSSD sd < 0.1) must still get a real z, not a recovery score
+        /// pinned to the logistic midpoint. The clamp bounds the one-time jump for
+        /// users whose z was previously zeroed.
+        private static func zScore(_ value: Double, mean: Double, sd: Double, minSD: Double) -> Double {
+            let effective = max(sd, minSD)
+            guard effective > 0 else { return 0 }
+            return min(max((value - mean) / effective, -2.5), 2.5)
         }
 
         private static func logisticRecoveryPercent(z: Double) -> Int {
@@ -1044,7 +1208,13 @@ enum AtriaAnalytics {
             guard rests.count >= 2, let oldestRest = rests.first else {
                 return ("Learning", "Needs 2 cached RHR points.", nil)
             }
-            let previousEstimate = boundedEstimate(rest: oldestRest, maxHR: maxHR)
+            // Compare against the older-half mean, not the single oldest point —
+            // one noisy cached RHR reading must not decide the trend direction.
+            let half = max(1, rests.count / 2)
+            let olderMean = half == 1
+                ? Double(oldestRest)
+                : Double(rests.prefix(half).reduce(0, +)) / Double(half)
+            let previousEstimate = boundedEstimate(rest: olderMean, maxHR: maxHR)
             let delta = currentEstimate - previousEstimate
             if abs(delta) < 0.2 {
                 return ("Stable", "vs \(rests.count)-point RHR trend.", delta)
@@ -1053,7 +1223,14 @@ enum AtriaAnalytics {
         }
 
         private static func boundedEstimate(rest: Int, maxHR: Int) -> Double {
-            let rawEstimate = 15.3 * Double(maxHR) / Double(rest)
+            boundedEstimate(rest: Double(rest), maxHR: maxHR)
+        }
+
+        // Double-rest variant so an averaged RHR is not quantized to a whole bpm —
+        // 0.5 bpm moves the estimate by ~0.4, more than the "Stable" threshold.
+        private static func boundedEstimate(rest: Double, maxHR: Int) -> Double {
+            guard rest > 0 else { return 20 }
+            let rawEstimate = 15.3 * Double(maxHR) / rest
             return min(max(rawEstimate, 20), 80)
         }
 
@@ -1635,7 +1812,7 @@ enum AtriaAnalytics {
                                   ageEquivalent: BiologicalAge.hrvAgeEquivalent(70),
                                   chronologicalAge: 38,
                                   weight: 0.20,
-                                  detail: "RMSSD 70"),
+                                  detail: "HRV 70"),
             BiologicalAge.factor(id: "sleep",
                                   label: "Sleep",
                                   ageEquivalent: BiologicalAge.sleepAgeEquivalent(durationHours: 7.5,

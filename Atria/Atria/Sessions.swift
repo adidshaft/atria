@@ -41,8 +41,8 @@ struct SavedSession: Codable, Identifiable {
     var motionShortMax: Double? = nil
     var motionShortOverOneCount: Int? = nil
     /// Research-gated features decoded from strap `0x33` candidate IMU frames.
-    /// Raw frames are not stored. These fields stay unvalidated until gravity and
-    /// phone-motion comparisons prove the layout on-device.
+    /// Raw frames are not stored. These fields stay unvalidated until the strap
+    /// IMU layout is proven on-device.
     var imuSampleCount: Int? = nil
     var imuFrameCount: Int? = nil
     var imuSampleRateHz: Double? = nil
@@ -67,25 +67,6 @@ struct SavedSession: Codable, Identifiable {
     /// are present. It is an estimate only, never a measured calorie value.
     var activeCalories: Double? = nil
     var caloriesConfidence: String? = nil
-    /// Phone accelerometer audit captured by the cabled Atria app. This can
-    /// corroborate that the debug rig was still, but it is not wrist/strap IMU
-    /// and must not validate sleep motion by itself.
-    var phoneMotionSource: String? = nil
-    var phoneMotionValidated: Bool? = nil
-    var phoneMotionSamples: Int? = nil
-    var phoneMotionMeanDeltaG: Double? = nil
-    var phoneMotionMaxDeltaG: Double? = nil
-    var phoneMotionOverStillThreshold: Int? = nil
-    var phoneMotionStillThresholdG: Double? = nil
-    /// Phone pedometer evidence captured locally while the cabled app is
-    /// running. This can explain ambulatory activity, but it is phone-side
-    /// adjunct evidence and never validates wrist motion or workout export.
-    var phoneStepSource: String? = nil
-    var phoneStepValidated: Bool? = nil
-    var phoneStepCount: Int? = nil
-    var phoneStepDistanceMeters: Double? = nil
-    var phoneStepFloorsAscended: Int? = nil
-    var phoneStepFloorsDescended: Int? = nil
     /// Audit-only HR sample attribution for this saved session. These fields
     /// explain coverage gaps; they do not relax workout or HRV gates.
     var hrRaw2A37: Int? = nil
@@ -97,6 +78,15 @@ struct SavedSession: Codable, Identifiable {
     var hrAcceptedGaps: Int? = nil
     var hrMaxRawGap: Double? = nil
     var hrMaxAcceptedGap: Double? = nil
+    /// Strength sets logged during this session. Optional so old archives keep
+    /// decoding while the live logger is being rolled in.
+    var strengthSets: [LoggedSet]? = nil
+    /// Optional session category. `breathwork` preserves HR evidence but is
+    /// intentionally excluded from strain/TRIMP.
+    var kind: String? = nil
+    /// Workout pause spans. Strain/TRIMP and calories must ignore these windows,
+    /// while raw HR remains preserved for audit/replay.
+    var excludedIntervals: [ExcludedInterval]? = nil
 
     struct Point: Codable { let t: Double; let bpm: Int }
     struct RRPoint: Codable { let t: Double; let ms: Int }
@@ -107,20 +97,155 @@ struct SavedSession: Codable, Identifiable {
     var avg: Int { bpms.isEmpty ? 0 : bpms.reduce(0,+) / bpms.count }
     var peak: Int { bpms.max() ?? 0 }
     var resting: Int { bpms.min() ?? 0 }
+    var isBreathwork: Bool { kind == "breathwork" || label.localizedCaseInsensitiveContains("breathwork") }
     var referenceValidatedHRV: Int? {
         hrvReferenceValidated == true ? hrv : nil
     }
     var localRMSSD: Int? {
-        guard let hrv, hrv > 0 else { return nil }
-        return hrv
+        if let hrv, hrv > 0 { return hrv }
+        return segmentedLocalRMSSD()
+    }
+
+    var localHRVWindowCount: Int {
+        qualifiedLnRMSSDWindows().count
+    }
+
+    func localRMSSD(in start: Date, end: Date) -> Int? {
+        let lnRMSSDs = qualifiedLnRMSSDWindows(in: start, end: end)
+        guard lnRMSSDs.count >= 3 else { return nil }
+        let rmssd = Int(exp(Self.median(lnRMSSDs)).rounded())
+        return rmssd > 0 ? rmssd : nil
+    }
+
+    func localHRVWindowCount(in start: Date, end: Date) -> Int {
+        qualifiedLnRMSSDWindows(in: start, end: end).count
+    }
+
+    private func segmentedLocalRMSSD() -> Int? {
+        let lnRMSSDs = qualifiedLnRMSSDWindows()
+        guard lnRMSSDs.count >= 3 else { return nil }
+        let median = Self.median(lnRMSSDs)
+        let rmssd = Int(exp(median).rounded())
+        return rmssd > 0 ? rmssd : nil
+    }
+
+    private func qualifiedLnRMSSDWindows(in absoluteStart: Date? = nil,
+                                         end absoluteEnd: Date? = nil) -> [Double] {
+        guard let rrPoints, rrPoints.count >= 240 else { return [] }
+        let sorted = rrPoints
+            .compactMap { point -> (t: Double, ms: Double)? in
+                let absoluteTime = start.addingTimeInterval(max(0, point.t))
+                if let absoluteStart, absoluteTime < absoluteStart { return nil }
+                if let absoluteEnd, absoluteTime > absoluteEnd { return nil }
+                return (t: point.t, ms: Double(point.ms))
+            }
+            .filter { (300...2000).contains($0.ms) }
+            .sorted { $0.t < $1.t }
+        guard sorted.count >= 240 else { return [] }
+
+        var segments: [[(t: Double, ms: Double)]] = []
+        var current: [(t: Double, ms: Double)] = []
+        for point in sorted {
+            if let last = current.last, point.t - last.t > HRVSnapshot.maxReadyRRGapSeconds {
+                if current.count >= 2 { segments.append(current) }
+                current.removeAll(keepingCapacity: true)
+            }
+            current.append(point)
+        }
+        if current.count >= 2 { segments.append(current) }
+
+        var lnRMSSDs: [Double] = []
+        for segment in segments where (segment.last?.t ?? 0) - (segment.first?.t ?? 0) >= 300 {
+            var windowEnd = (segment.first?.t ?? 0) + 300
+            let finalEnd = segment.last?.t ?? 0
+            while windowEnd <= finalEnd {
+                let windowStart = windowEnd - 300
+                let window = segment.filter { $0.t >= windowStart && $0.t <= windowEnd }
+                if let lnRMSSD = Self.qualifiedLnRMSSD(window) {
+                    lnRMSSDs.append(lnRMSSD)
+                }
+                windowEnd += 300
+            }
+        }
+        return lnRMSSDs
+    }
+
+    private static func qualifiedLnRMSSD(_ samples: [(t: Double, ms: Double)]) -> Double? {
+        guard samples.count >= 240 else { return nil }
+        let kept = samples.enumerated().compactMap { index, sample -> Double? in
+            guard (300...2000).contains(sample.ms) else { return nil }
+            let lower = max(samples.startIndex, index - 2)
+            let upper = min(samples.index(before: samples.endIndex), index + 2)
+            let local = samples[lower...upper].map(\.ms).filter { (300...2000).contains($0) }.sorted()
+            if local.count >= 3 {
+                let middle = local.count / 2
+                let median = local.count.isMultiple(of: 2)
+                    ? (local[middle - 1] + local[middle]) / 2
+                    : local[middle]
+                guard median > 0, abs(sample.ms - median) / median <= 0.20 else { return nil }
+            }
+            return sample.ms
+        }
+        guard kept.count >= 240,
+              Double(kept.count) / Double(samples.count) >= 0.75 else { return nil }
+        let diffs = zip(kept.dropFirst(), kept).map { $0 - $1 }
+        guard !diffs.isEmpty else { return nil }
+        let rmssd = sqrt(diffs.map { $0 * $0 }.reduce(0, +) / Double(diffs.count))
+        return rmssd > 0 ? log(rmssd) : nil
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
     }
     func sleepRespiratoryRate(rest: Int, maxHR: Int, calendar: Calendar = .current) -> Double? {
-        guard let respiratoryRate, respiratoryRate > 0 else { return nil }
-        if sleepWakeResearchState == "sleep_research" { return respiratoryRate }
-        if detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate {
+        let isSleepEvidence = sleepWakeResearchState == "sleep_research"
+            || isOvernightHRVWindow(calendar: calendar)
+            || detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)?.kind == .sleepCandidate
+        guard isSleepEvidence else { return nil }
+        if let respiratoryRate, respiratoryRate > 0 {
             return respiratoryRate
         }
-        return nil
+        return derivedSleepRespiratoryRateFromRR()
+    }
+
+    private func derivedSleepRespiratoryRateFromRR() -> Double? {
+        guard let rrPoints, rrPoints.count >= 20 else { return nil }
+        let samples = rrPoints
+            .map { (t: start.addingTimeInterval($0.t), ms: Double($0.ms)) }
+            .filter { (300...2000).contains($0.ms) }
+            .sorted { $0.t < $1.t }
+        guard samples.count >= 20 else { return nil }
+        let estimates = respiratoryRateEstimatesAcrossRRSession(samples)
+        guard !estimates.isEmpty else { return nil }
+        return Self.median(estimates)
+    }
+
+    private func respiratoryRateEstimatesAcrossRRSession(_ samples: [(t: Date, ms: Double)]) -> [Double] {
+        guard let first = samples.first?.t,
+              let last = samples.last?.t,
+              last.timeIntervalSince(first) >= 45 else {
+            return []
+        }
+        let maxWindows = 48
+        let span = last.timeIntervalSince(first)
+        let step = max(30, span / Double(maxWindows))
+        var estimates: [Double] = []
+        var evaluationTime = first.addingTimeInterval(90)
+        while evaluationTime <= last {
+            if let estimate = AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: evaluationTime) {
+                estimates.append(estimate)
+            }
+            evaluationTime = evaluationTime.addingTimeInterval(step)
+        }
+        if let estimate = AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: last) {
+            estimates.append(estimate)
+        }
+        return estimates
     }
     var referenceValidatedSDNN: Double? {
         guard hrvReferenceValidated == true else { return nil }
@@ -151,27 +276,6 @@ struct SavedSession: Codable, Identifiable {
     var motionShortMeanValue: Double? { motionShortMean }
     var motionShortMinValue: Double? { motionShortMin }
     var motionShortMaxValue: Double? { motionShortMax }
-    var phoneMotionSourceValue: String {
-        let trimmed = (phoneMotionSource ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unavailable" : trimmed
-    }
-    var phoneMotionValidatedValue: Bool { phoneMotionValidated == true }
-    var phoneMotionSamplesValue: Int { phoneMotionSamples ?? 0 }
-    var phoneMotionOverStillThresholdValue: Int { phoneMotionOverStillThreshold ?? 0 }
-    var phoneStepSourceValue: String {
-        let trimmed = (phoneStepSource ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unavailable" : trimmed
-    }
-    var phoneStepValidatedValue: Bool { phoneStepValidated == true }
-    var phoneStepCountValue: Int { phoneStepCount ?? 0 }
-    var hasPhoneStepWorkoutEvidence: Bool {
-        duration >= 10 * 60 && phoneStepCountValue >= max(250, Int(duration / 60 * 15))
-    }
-    var phoneStepEvidenceClause: String? {
-        guard phoneStepCountValue > 0 else { return nil }
-        let distanceClause = phoneStepDistanceMeters.map { String(format: ", %.0fm", $0) } ?? ""
-        return "phone steps \(phoneStepCountValue)\(distanceClause); Strap HR/RR remains primary, phone motion is adjunct only"
-    }
     var hrRaw2A37Value: Int { hrRaw2A37 ?? 0 }
     var hrAcceptedValue: Int { hrAccepted ?? 0 }
     var hrZeroValue: Int { hrZero ?? 0 }
@@ -205,12 +309,19 @@ struct SavedSession: Codable, Identifiable {
 
     /// Banister TRIMP for this session (input to the strain score).
     func trimp(rest: Int, max: Int) -> Double {
-        Metrics.trimp(points.map { (t: $0.t, bpm: $0.bpm) }, rest: rest, max: max)
+        guard !isBreathwork else { return 0 }
+        let activePoints = AtriaStrengthLog.pointsExcludingIntervals(points,
+                                                                     sessionStart: start,
+                                                                     excludedIntervals: excludedIntervals)
+        return Metrics.trimp(activePoints.map { (t: $0.t, bpm: $0.bpm) }, rest: rest, max: max)
     }
 
     /// Seconds spent in each HR zone, given a max-HR setting.
     func timeInZone(maxHR: Int) -> [HRZone: Double] {
-        let summary = AtriaAnalytics.Strain.maxHeartRateZoneSeconds(points.map { (t: $0.t, bpm: $0.bpm) },
+        let activePoints = AtriaStrengthLog.pointsExcludingIntervals(points,
+                                                                     sessionStart: start,
+                                                                     excludedIntervals: excludedIntervals)
+        let summary = AtriaAnalytics.Strain.maxHeartRateZoneSeconds(activePoints.map { (t: $0.t, bpm: $0.bpm) },
                                                                     maxHR: maxHR)
         guard !summary.isEmpty else { return [:] }
         var out: [HRZone: Double] = [:]
@@ -223,10 +334,45 @@ struct SavedSession: Codable, Identifiable {
         return out
     }
 
+    func activeCalories(rest: Int, profile: AthleteProfile) -> Double? {
+        let samples = points.map { point in
+            HRSample(t: start.addingTimeInterval(max(0, point.t)), bpm: point.bpm)
+        }
+        let activeSamples = AtriaStrengthLog.samplesExcludingIntervals(samples,
+                                                                       excludedIntervals: excludedIntervals)
+        return Metrics.activeCalories(activeSamples, rest: rest, profile: profile)
+    }
+
     var durationText: String {
         let s = Int(duration)
         return s >= 60 ? "\(s/60)m \(s%60)s" : "\(s)s"
     }
+}
+
+private enum SessionBackupDebugDefaults {
+    static let restoreStatus = "atria.debug.sessionBackup.restore.status"
+    static let restorePath = "atria.debug.sessionBackup.restore.path"
+    static let restoreSafetyPath = "atria.debug.sessionBackup.restore.safetyPath"
+    static let restoreSchema = "atria.debug.sessionBackup.restore.schema"
+    static let restoreSessions = "atria.debug.sessionBackup.restore.sessions"
+    static let restoreRollups = "atria.debug.sessionBackup.restore.rollups"
+    static let restoreConfirmedSleeps = "atria.debug.sessionBackup.restore.confirmedSleeps"
+    static let restoreDigest = "atria.debug.sessionBackup.restore.digest"
+    static let restoreReason = "atria.debug.sessionBackup.restore.reason"
+    static let restoreSummary = "atria.debug.sessionBackup.restore.summary"
+
+    static let allRestoreKeys = [
+        restoreStatus,
+        restorePath,
+        restoreSafetyPath,
+        restoreSchema,
+        restoreSessions,
+        restoreRollups,
+        restoreConfirmedSleeps,
+        restoreDigest,
+        restoreReason,
+        restoreSummary
+    ]
 }
 
 struct ActivityDetection: Identifiable, Equatable {
@@ -255,6 +401,17 @@ struct ActivityDetection: Identifiable, Equatable {
 }
 
 struct WorkoutReadiness {
+    private static let reviewMinimumObservedDuration: TimeInterval = 15 * 60
+    private static let reviewMinimumCoveragePercent = 40
+    private static let reviewMinimumPeakOverRest = 45
+    private static let reviewMinimumP95OverRest = 35
+    private static let reviewMinimumModerateStrengthPeakOverRest = 35
+    private static let reviewMinimumModerateStrengthP95OverRest = 30
+    private static let reviewMinimumElevatedSeconds: TimeInterval = 4 * 60
+    private static let reviewMinimumElevatedBout: TimeInterval = 90
+    private static let reviewMinimumBorderlineSeconds: TimeInterval = 5 * 60
+    private static let reviewMinimumBorderlineBout: TimeInterval = 90
+
     let duration: TimeInterval
     let observedDuration: TimeInterval
     let avgHR: Int
@@ -294,8 +451,8 @@ struct WorkoutReadiness {
 
     var nearMiss: Bool {
         guard !ready else { return false }
-        let enoughObservedData = observedDuration >= 10 * 60
-        let enoughSparseCoverageToInspect = streamCoveragePercent >= 20
+        let enoughObservedData = observedDuration >= 15 * 60
+        let enoughSparseCoverageToInspect = streamCoveragePercent >= Self.reviewMinimumCoveragePercent
         let closeToThreshold = thresholdGapBPM <= 5 || elevatedSeconds > 0
         return enoughObservedData && enoughSparseCoverageToInspect && closeToThreshold
     }
@@ -320,14 +477,28 @@ struct WorkoutReadiness {
 
     var strengthCandidate: Bool {
         guard !ready else { return false }
-        guard observedDuration >= 10 * 60, streamCoveragePercent >= 20 else { return false }
+        guard observedDuration >= Self.reviewMinimumObservedDuration,
+              streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         let closeToWorkoutBand = thresholdGapBPM <= 5 || elevatedSeconds > 0
-        let hasBorderlineEvidence = borderlineElevatedSeconds >= 30 || borderlineLongestBout >= 10
+        let hasStrengthEffort = peakOverRest >= Self.reviewMinimumPeakOverRest
+            || p95HR - max(0, peakHR - peakOverRest) >= Self.reviewMinimumP95OverRest
+        let hasBorderlineEvidence = borderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds
+            || borderlineLongestBout >= Self.reviewMinimumBorderlineBout
+            || (hasStrengthEffort && thresholdGapBPM <= 10)
         return closeToWorkoutBand && hasBorderlineEvidence
     }
 
+    var moderateStrengthReviewCandidate: Bool {
+        guard !ready else { return false }
+        guard observedDuration >= Self.reviewMinimumObservedDuration,
+              streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
+        let p95OverRest = p95HR - max(0, peakHR - peakOverRest)
+        return peakOverRest >= Self.reviewMinimumModerateStrengthPeakOverRest
+            && p95OverRest >= Self.reviewMinimumModerateStrengthP95OverRest
+    }
+
     var strengthCandidateReason: String {
-        guard strengthCandidate else { return "none" }
+        guard strengthCandidate || moderateStrengthReviewCandidate else { return "none" }
         var reasons = ["diagnostic_only"]
         if streamBlocked {
             reasons.append("stream_gaps_prevent_count")
@@ -344,7 +515,30 @@ struct WorkoutReadiness {
         if longestElevatedBout < requiredElevatedBout {
             reasons.append("continuous_bout_insufficient")
         }
+        if moderateStrengthReviewCandidate && !strengthCandidate {
+            reasons.append("moderate_strength_review")
+        }
         return reasons.joined(separator: "+")
+    }
+
+    var reviewWorthyCandidate: Bool {
+        guard !ready else { return true }
+        guard observedDuration >= Self.reviewMinimumObservedDuration,
+              streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
+        if nearMiss {
+            return elevatedSeconds >= Self.reviewMinimumElevatedSeconds
+                || longestElevatedBout >= Self.reviewMinimumElevatedBout
+                || strengthCandidate
+        }
+        if strengthCandidate {
+            return borderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds
+                && borderlineLongestBout >= Self.reviewMinimumBorderlineBout
+                || thresholdGapBPM <= 10
+        }
+        if moderateStrengthReviewCandidate {
+            return true
+        }
+        return false
     }
 
     var hrDistributionBelowWorkoutBand: Bool {
@@ -354,7 +548,7 @@ struct WorkoutReadiness {
 
     var nextAction: String {
         if ready { return "count_workout" }
-        if strengthCandidate {
+        if strengthCandidate || moderateStrengthReviewCandidate {
             return "observe_strength_signal_without_counting_and_validate_hr_reference"
         }
         let hasStreamGap = streamBlocked
@@ -416,6 +610,39 @@ struct DailyRollup {
     let avgRespiratoryRate: Double?
 }
 
+struct SavedDailyMetric: Codable, Identifiable, Equatable {
+    let day: Date
+    let recoveryPercent: Int?
+    let recoveryConfidence: String
+    let hrv: Int?
+    let restingHR: Int?
+    let respiratoryRate: Double?
+    let sleepDuration: TimeInterval?
+    let sleepSpan: TimeInterval?
+    let sleepStart: Date?
+    let sleepEnd: Date?
+    let sleepSource: String?
+    let sleepStageSegments: [SleepStageSegment]
+    let sleepConsistencyPercent: Int?
+    let strain: Double?
+
+    var id: Date { day }
+}
+
+struct DailyMetricSparklineCache: Equatable {
+    let recovery: [Int]?
+    let hrv: [Int]?
+    let restingHeartRate: [Int]?
+    let sleep: [Int]?
+    let strain: [Int]?
+
+    static let empty = DailyMetricSparklineCache(recovery: nil,
+                                                 hrv: nil,
+                                                 restingHeartRate: nil,
+                                                 sleep: nil,
+                                                 strain: nil)
+}
+
 struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     let id: String
     let createdAt: Date
@@ -434,6 +661,10 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     let streamCoveragePercent: Int
     let observedDuration: TimeInterval
     let reason: String
+    var activityType: String? = nil
+    var activitySubtype: String? = nil
+    var exerciseNames: [String]? = nil
+    var reviewSource: String? = nil
     var strain: Double? = nil
     var activeEnergyKilocalories: Double? = nil
     var activeEnergyConfidence: String? = nil
@@ -472,8 +703,8 @@ enum SleepStageEvidence: String, Codable, Equatable {
         switch self {
         case .none: return "Stages not ready"
         case .manualEstimate: return "Manual estimate"
-        case .sensorResearch: return "Research stages"
-        case .validated: return "Validated stages"
+        case .sensorResearch: return "Estimated stages"
+        case .validated: return "Checked stages"
         }
     }
 }
@@ -501,6 +732,8 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let avgHR: Int
     let peakHR: Int
     let restingHR: Int
+    let hrv: Int?
+    let hrvWindowCount: Int?
     let duration: TimeInterval
     let span: TimeInterval
     let reason: String
@@ -509,11 +742,26 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let stageSegments: [SleepStageSegment]?
 }
 
+struct AutoSleepLoggedBanner: Identifiable, Equatable {
+    let id: String
+    let start: Date
+    let end: Date
+    let duration: TimeInterval
+    let sleepID: String
+
+    var title: String { "Sleep logged" }
+
+    var message: String {
+        "\(SleepHistorySnapshot.formatDuration(duration)) · \(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened)). Edit"
+    }
+}
+
 struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
     enum Tag: String, Codable, CaseIterable, Identifiable {
         case sleep
         case alcohol
         case caffeine
+        case protein
         case training
         case stress
 
@@ -524,8 +772,20 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .sleep: return "Sleep"
             case .alcohol: return "Alcohol"
             case .caffeine: return "Caffeine"
+            case .protein: return "Protein target"
             case .training: return "Training"
             case .stress: return "Stress"
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .sleep: return "moon.zzz.fill"
+            case .alcohol: return "wineglass"
+            case .caffeine: return "cup.and.saucer.fill"
+            case .protein: return "fork.knife"
+            case .training: return "figure.run"
+            case .stress: return "bolt.heart.fill"
             }
         }
     }
@@ -534,6 +794,36 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
     let day: Date
     let createdAt: Date
     var tags: [Tag]
+    var healthAutoTags: [Tag]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case day
+        case createdAt
+        case tags
+        case healthAutoTags
+    }
+
+    init(id: String,
+         day: Date,
+         createdAt: Date,
+         tags: [Tag],
+         healthAutoTags: [Tag] = []) {
+        self.id = id
+        self.day = day
+        self.createdAt = createdAt
+        self.tags = tags
+        self.healthAutoTags = healthAutoTags
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        day = try container.decode(Date.self, forKey: .day)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        tags = try container.decodeIfPresent([Tag].self, forKey: .tags) ?? []
+        healthAutoTags = try container.decodeIfPresent([Tag].self, forKey: .healthAutoTags) ?? []
+    }
 }
 
 struct BehaviorCorrelationSummary: Equatable {
@@ -555,6 +845,44 @@ struct BehaviorCorrelationSummary: Equatable {
             return "\(days) tagged days"
         }
         return "\(days) tagged days · local correlation"
+    }
+
+    var impactMetricText: String {
+        if recoveryDelta != nil { return "Recovery" }
+        if hrvDelta != nil { return "HRV" }
+        return "Logs"
+    }
+
+    var impactValueText: String {
+        if let recoveryDelta {
+            return String(format: "%+.0f%%", recoveryDelta)
+        }
+        if let hrvDelta {
+            return String(format: "%+.0f ms", hrvDelta)
+        }
+        return "\(days)d"
+    }
+
+    var impactDelta: Double? {
+        recoveryDelta ?? hrvDelta
+    }
+
+    var impactMagnitude: Double {
+        abs(impactDelta ?? 0)
+    }
+
+    var impactProgress: Double {
+        min(max(impactMagnitude / 10, 0), 1)
+    }
+
+    var impactDirectionSymbol: String {
+        guard let impactDelta, impactDelta != 0 else { return "circle.dotted" }
+        return impactDelta > 0 ? "arrow.right" : "arrow.left"
+    }
+
+    var impactToneText: String {
+        guard let impactDelta, impactDelta != 0 else { return "Learning" }
+        return impactDelta > 0 ? "Linked up" : "Linked down"
     }
 }
 
@@ -647,7 +975,7 @@ struct IMUAuditSummary: Equatable {
                 if candidateFrames > 0 {
                     return "\(candidateFrames) candidates · baseline needed"
                 }
-                return "Sleep research"
+                return "Sleep signal"
             }
             return "vs sleep baseline"
         }
@@ -657,7 +985,7 @@ struct IMUAuditSummary: Equatable {
                 if candidateFrames > 0 {
                     return "\(candidateFrames) candidate frames; relative baseline building, no absolute temperature."
                 }
-                return "Sleep-only research; no absolute temperature."
+                return "Sleep-only signal; no absolute temperature."
             }
             return "Relative sleep-only deviation from \(baselineSessions) prior local sessions; no absolute temperature."
         }
@@ -727,7 +1055,7 @@ struct IMUAuditSummary: Equatable {
     }
 
     var agreementText: String {
-        agreement.map { "\(Int(($0 * 100).rounded()))% phone" } ?? "phone pending"
+        strapStepCount > 0 ? "Strap IMU" : "Strap pending"
     }
 
     var sleepWakeText: String {
@@ -1198,6 +1526,8 @@ struct SavedWorkoutAttemptStatus: Equatable {
     let source: String
     let label: String
     let chunks: Int
+    let start: Date?
+    let end: Date?
     let status: String
     let reason: String
     let primaryBlocker: String
@@ -1238,9 +1568,9 @@ struct SavedWorkoutAttemptStatus: Equatable {
 
     var strengthCandidate: Bool {
         guard !ready else { return false }
-        guard observedDuration >= 10 * 60, streamCoveragePercent >= 20 else { return false }
+        guard observedDuration >= 15 * 60, streamCoveragePercent >= 60 else { return false }
         let closeToWorkoutBand = thresholdGapBPM <= 5 || elevatedSeconds > 0
-        let hasBorderlineEvidence = borderlineElevatedSeconds >= 30 || borderlineLongestBout >= 10
+        let hasBorderlineEvidence = borderlineElevatedSeconds >= 5 * 60 || borderlineLongestBout >= 90
         return closeToWorkoutBand && hasBorderlineEvidence
     }
 
@@ -1349,6 +1679,8 @@ struct SavedWorkoutAttemptStatus: Equatable {
     static let empty = SavedWorkoutAttemptStatus(source: "none",
                                                  label: "none",
                                                  chunks: 0,
+                                                 start: nil,
+                                                 end: nil,
                                                  status: "learning",
                                                  reason: "no_saved_session",
                                                  primaryBlocker: "no_saved_session",
@@ -1391,6 +1723,43 @@ struct BaselineLearningEvidence {
     let reason: String
 }
 
+struct WorkoutReviewCandidate: Equatable {
+    let id: String
+    let start: Date
+    let end: Date
+    let kind: ActivityDetection.Kind
+    let confidence: ActivityDetection.Confidence
+    let duration: TimeInterval
+    let avgHR: Int
+    let peakHR: Int
+    let streamCoveragePercent: Int
+    let observedDuration: TimeInterval
+    let droppedGapSeconds: TimeInterval
+    let maxSampleGap: TimeInterval
+    let gapCount: Int
+    let reason: String
+
+    var durationMinutes: Int {
+        max(1, Int((duration / 60).rounded()))
+    }
+
+    var observedMinutes: Int {
+        max(0, Int((observedDuration / 60).rounded()))
+    }
+
+    var missingMinutes: Int {
+        max(0, Int(((duration - observedDuration) / 60).rounded()))
+    }
+
+    var title: String {
+        kind == .workout ? "Workout ready to review" : "Effort ready to review"
+    }
+
+    var isReviewPromptWorthy: Bool {
+        kind == .workout || confidence != .low || observedDuration >= 15 * 60
+    }
+}
+
 struct AggregateSleepCandidate {
     static let minimumFragmentDuration: TimeInterval = 5 * 60
     static let napMinimumDuration: TimeInterval = 20 * 60
@@ -1410,6 +1779,7 @@ struct AggregateSleepCandidate {
     let samples: Int
     let avgHR: Int
     let peakHR: Int
+    let hrStandardDeviation: Double
     let restingHR: Int
     let confidence: ActivityDetection.Confidence
     let reason: String
@@ -1506,6 +1876,7 @@ struct TrendSummary: Identifiable, Equatable {
         case seven = 7
         case thirty = 30
         case ninety = 90
+        case oneEighty = 180
     }
 
     let id: Int
@@ -1552,7 +1923,7 @@ struct TrainingLoadSummary: Equatable {
                                               detail: "Atria needs more local strain history for load ratio.")
 
     var ratioText: String {
-        ratio.map { String(format: "%.2f", $0) } ?? "Learning"
+        ratio.map { String(format: "%.1f", $0) } ?? "Learning"
     }
 
     var targetBandText: String {
@@ -1663,14 +2034,14 @@ struct BiologicalAgeSummary: Equatable {
     let blockers: [String]
     let footnote: String
 
-    static let footnoteText = "Estimated from your fitness, heart-rate, HRV and sleep data -- an estimate, not a medical assessment."
+    static let footnoteText = AtriaFitnessAge.footnoteText
 
     static func building(chronologicalAge: Int, blockers: [String]) -> BiologicalAgeSummary {
         BiologicalAgeSummary(biologicalAge: nil,
                              chronologicalAge: chronologicalAge,
                              ageDelta: nil,
-                             agingPaceText: "Learning",
-                             agingPaceDetail: "Needs your local body-age baseline first.",
+                             agingPaceText: "Calibrating",
+                             agingPaceDetail: "Needs 28 days before showing a fitness-age estimate.",
                              factors: [],
                              blockers: blockers,
                              footnote: footnoteText)
@@ -1689,8 +2060,8 @@ struct BiologicalAgeSummary: Equatable {
     }
 
     var narrative: String {
-        guard isReady else { return "Building your body-age baseline" }
-        return "Physiological age estimate, local only"
+        guard isReady else { return "Calibrating 28-day baseline" }
+        return "Four-input fitness estimate"
     }
 
     var blockerText: String {
@@ -1825,6 +2196,17 @@ private struct HRSavedReferenceSession {
 }
 
 private struct WorkoutReplaySummary {
+    private static let reviewMinimumObservedDuration: TimeInterval = 15 * 60
+    private static let reviewMinimumCoveragePercent = 40
+    private static let reviewMinimumPeakOverRest = 45
+    private static let reviewMinimumP95OverRest = 35
+    private static let reviewMinimumModerateStrengthPeakOverRest = 35
+    private static let reviewMinimumModerateStrengthP95OverRest = 30
+    private static let reviewMinimumElevatedSeconds: TimeInterval = 4 * 60
+    private static let reviewMinimumElevatedBout: TimeInterval = 90
+    private static let reviewMinimumBorderlineSeconds: TimeInterval = 5 * 60
+    private static let reviewMinimumBorderlineBout: TimeInterval = 90
+
     let rawSessions: Int
     let canonicalSessions: Int
     let sessionsEvaluated: Int
@@ -1900,8 +2282,8 @@ private struct WorkoutReplaySummary {
 
     var nearMiss: Bool {
         guard bestStatus != "ready" else { return false }
-        let enoughObservedData = bestObservedDuration >= 10 * 60
-        let enoughSparseCoverageToInspect = bestStreamCoveragePercent >= 20
+        let enoughObservedData = bestObservedDuration >= 15 * 60
+        let enoughSparseCoverageToInspect = bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent
         let closeToThreshold = bestThresholdGapBPM <= 5 || bestElevatedSeconds > 0
         return enoughObservedData && enoughSparseCoverageToInspect && closeToThreshold
     }
@@ -1926,14 +2308,27 @@ private struct WorkoutReplaySummary {
 
     var strengthCandidate: Bool {
         guard bestStatus != "ready" else { return false }
-        guard bestObservedDuration >= 10 * 60, bestStreamCoveragePercent >= 20 else { return false }
+        guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
+              bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         let closeToWorkoutBand = bestThresholdGapBPM <= 5 || bestElevatedSeconds > 0
-        let hasBorderlineEvidence = bestBorderlineElevatedSeconds >= 30 || bestBorderlineLongestBout >= 10
+        let hasStrengthEffort = bestPeakHR - restHR >= Self.reviewMinimumPeakOverRest
+            || bestP95HR - restHR >= Self.reviewMinimumP95OverRest
+        let hasBorderlineEvidence = bestBorderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds
+            || bestBorderlineLongestBout >= Self.reviewMinimumBorderlineBout
+            || (hasStrengthEffort && bestThresholdGapBPM <= 10)
         return closeToWorkoutBand && hasBorderlineEvidence
     }
 
+    var moderateStrengthReviewCandidate: Bool {
+        guard bestStatus != "ready" else { return false }
+        guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
+              bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
+        return bestPeakHR - restHR >= Self.reviewMinimumModerateStrengthPeakOverRest
+            && bestP95HR - restHR >= Self.reviewMinimumModerateStrengthP95OverRest
+    }
+
     var strengthCandidateReason: String {
-        guard strengthCandidate else { return "none" }
+        guard strengthCandidate || moderateStrengthReviewCandidate else { return "none" }
         var reasons = ["diagnostic_only"]
         if bestHasBlockingStreamGap {
             reasons.append("stream_gaps_prevent_count")
@@ -1950,12 +2345,35 @@ private struct WorkoutReplaySummary {
         if bestLongestBout < bestRequiredBout {
             reasons.append("continuous_bout_insufficient")
         }
+        if moderateStrengthReviewCandidate && !strengthCandidate {
+            reasons.append("moderate_strength_review")
+        }
         return reasons.joined(separator: "+")
+    }
+
+    var bestReviewWorthyCandidate: Bool {
+        guard bestStatus != "ready" else { return true }
+        guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
+              bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
+        if nearMiss {
+            return bestElevatedSeconds >= Self.reviewMinimumElevatedSeconds
+                || bestLongestBout >= Self.reviewMinimumElevatedBout
+                || strengthCandidate
+        }
+        if strengthCandidate {
+            return bestBorderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds
+                && bestBorderlineLongestBout >= Self.reviewMinimumBorderlineBout
+                || bestThresholdGapBPM <= 10
+        }
+        if moderateStrengthReviewCandidate {
+            return true
+        }
+        return false
     }
 
     var bestNextAction: String {
         if bestStatus == "ready" { return "count_workout" }
-        if strengthCandidate {
+        if strengthCandidate || moderateStrengthReviewCandidate {
             return "observe_strength_signal_without_counting_and_validate_hr_reference"
         }
         let hasStreamGap = bestHasBlockingStreamGap
@@ -2113,6 +2531,23 @@ struct SessionBackupEnvelope: Codable {
     let sessions: [SavedSession]
     let baseline: PersonalBaseline
     let profile: AthleteProfile
+    var dailyMetrics: [SavedDailyMetric]? = nil
+    var dailyRollups: [DailyRollupStoreEntry]? = nil
+    var confirmedSleeps: [UserConfirmedSleep]? = nil
+    var rawExport: SessionBackupRawExport? = nil
+}
+
+struct SessionBackupRawExport: Codable, Equatable {
+    let schemaVersion: Int
+    let schemaHeader: String
+    let schemaDocument: String
+    let hrRows: [String]
+    let rrRows: [String]
+    let hrSamples: Int
+    let rrSamples: Int
+    let sleeps: Int
+    let workouts: Int
+    let rollups: Int
 }
 
 struct SessionBackupStatus: Equatable {
@@ -2139,6 +2574,8 @@ private struct SessionBackupContentFingerprint: Codable {
     let sessions: [SavedSession]
     let baseline: PersonalBaseline
     let profile: AthleteProfile
+    let dailyRollups: [DailyRollupStoreEntry]?
+    let confirmedSleeps: [UserConfirmedSleep]?
 }
 
 extension SavedSession {
@@ -2225,32 +2662,22 @@ extension SavedSession {
         if duration >= 10 * 60 {
             let readiness = workoutReadiness(rest: rest, maxHR: maxHR)
             if readiness.ready {
-                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
-                let reason = "sustained elevated HR\(stepClause)"
+                let reason = "sustained elevated HR"
                 return ActivityDetection(id: id, kind: .workout, confidence: .medium,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak, reason: reason)
             }
             if readiness.nearMiss {
-                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
-                                         reason: "HR-only workout-like signal\(stepClause); \(readiness.nearMissReason); not counted as workout")
+                                         reason: "HR-only workout-like signal; \(readiness.nearMissReason); not counted as workout")
             }
             if readiness.strengthCandidate {
-                let stepClause = phoneStepEvidenceClause.map { "; \($0)" } ?? ""
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
-                                         reason: "Strength-like HR signal\(stepClause); \(readiness.strengthCandidateReason); not counted as workout")
-            }
-            if hasPhoneStepWorkoutEvidence {
-                let stepClause = phoneStepEvidenceClause ?? "phone step evidence"
-                return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
-                                         start: start, end: end, duration: duration,
-                                         avgHR: avg, peakHR: peak,
-                                         reason: "\(stepClause); HR workout gate not met; not counted as workout")
+                                         reason: "Strength-like HR signal; \(readiness.strengthCandidateReason); not counted as workout")
             }
             if duration >= AggregateSleepCandidate.strictMinimumDuration && overnight && lowHR {
                 let motionClause = motionHintCountValue > 0
@@ -2423,6 +2850,16 @@ extension SavedSession {
         return sorted[index]
     }
 
+    private static func medianInt(_ values: [Int]) -> Int {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return Int((Double(sorted[middle - 1] + sorted[middle]) / 2.0).rounded())
+        }
+        return sorted[middle]
+    }
+
     private static func workoutStreamCoveragePercent(observed: TimeInterval, duration: TimeInterval) -> Int {
         guard duration > 0 else { return 0 }
         let percent = (observed / duration) * 100
@@ -2466,6 +2903,8 @@ extension SavedSession {
 /// Loads/saves sessions to a JSON file in the app's Documents directory.
 @MainActor
 final class SessionStore: ObservableObject {
+    static let iCloudBackupEnabledKey = "atria.backup.iCloudDrive.enabled"
+
     struct HomeDashboardDiagnostics {
         let rest: Int
         let rrPackage: RRPackageStatus
@@ -2483,6 +2922,8 @@ final class SessionStore: ObservableObject {
         let hasSavedToday: Bool
         let sessionsCount: Int
     }
+
+    private nonisolated static let behaviorCorrelationWindowDays = 90
 
     struct HistoricalArchiveStatus: Equatable {
         let exists: Bool
@@ -2525,6 +2966,7 @@ final class SessionStore: ObservableObject {
         var valueText: String {
             if !exists { return "None" }
             if !parseOK { return "Repair" }
+            if isBoundedArchiveProbe { return "Checking" }
             if rows <= 0 { return "Empty" }
             if metricReady { return "Ready" }
             return "Saved"
@@ -2533,38 +2975,41 @@ final class SessionStore: ObservableObject {
         var detailText: String {
             if !exists { return "Waiting for reconnect" }
             if !parseOK { return reason.replacingOccurrences(of: "_", with: " ") }
-            if rows <= 0 { return "No backfill rows yet" }
+            if isBoundedArchiveProbe { return "Archive index is rebuilding safely" }
+            if rows <= 0 { return "No missed readings yet" }
             if metricReady { return "\(metricUsableRows)/\(rows) metric rows" }
-            if currentSessionUsableRows > 0 { return "Continuity repair" }
-            return "Saved · metrics gated"
+            if currentSessionUsableRows > 0 { return "Gap repaired" }
+            return "Saved · checking quality"
         }
 
         var userFootnoteText: String {
             if !exists { return "Reconnect fills gaps." }
             if !parseOK { return "Archive needs repair." }
+            if isBoundedArchiveProbe { return "Atria is checking a large archive without blocking launch." }
             if rows <= 0 { return "Waiting for missed data." }
             if metricReady { return "\(metricUsableRows)/\(rows) rows metric-ready." }
             if currentSessionUsableRows > 0 {
-                return "\(currentSessionUsableRows)/\(rows) backfill rows saved for continuity repair. HRV, Recovery and Sleep stay gated until historical RR is validated."
+                return "\(currentSessionUsableRows)/\(rows) missed readings saved. Atria is checking whether they can affect HRV, Recovery and Sleep."
             }
-            return "\(rows) backfill rows archived locally. HRV, Recovery and Sleep stay gated until historical RR is validated."
+            return "\(rows) missed readings saved locally. Atria is checking whether they can affect metrics."
         }
 
         var actionText: String {
             if !exists { return "Wear normally; Atria will pull missed rows after reconnect." }
             if !parseOK { return "Keep the archive saved and repair parsing before using it for metrics." }
+            if isBoundedArchiveProbe { return "Keep wearing normally; Atria will rebuild the archive index off the hot path." }
             if rows <= 0 { return "No action yet; wait for a reconnect with missed strap data." }
-            if metricReady { return "Backfilled rows can contribute to metrics." }
+            if metricReady { return "Missed readings can contribute to metrics." }
             if currentSessionUsableRows > 0 {
-                return "Continuity is repaired; validate historical RR against a reference before promoting HRV, Recovery or Sleep."
+                return "The gap is repaired; metrics will use it after quality checks pass."
             }
-            return "Archive is saved; validate historical RR against a reference before promoting metrics."
+            return "The archive is saved; metrics will use it after quality checks pass."
         }
 
         var metricGateText: String {
             if metricReady { return "Metric-ready" }
-            if currentSessionUsableRows > 0 { return "Continuity only" }
-            if hasArchiveRows { return "Metrics gated" }
+            if currentSessionUsableRows > 0 { return "Saved only" }
+            if hasArchiveRows { return "Checking" }
             if !parseOK { return "Repair needed" }
             return "Waiting"
         }
@@ -2576,6 +3021,10 @@ final class SessionStore: ObservableObject {
         var hasArchiveRows: Bool {
             exists && parseOK && rows > 0
         }
+
+        private var isBoundedArchiveProbe: Bool {
+            reason.hasPrefix("large_archive_index_missing_probe")
+        }
     }
 
     private struct DeferredLoadPreparation {
@@ -2583,7 +3032,6 @@ final class SessionStore: ObservableObject {
         let canonicalSessions: [SavedSession]
         let baseline: PersonalBaseline
         let didRebuildBaseline: Bool
-        let backupStatus: SessionBackupStatus
         let prunedShortLongWearFragments: Int
     }
 
@@ -2599,6 +3047,13 @@ final class SessionStore: ObservableObject {
             recomputeCollectionResearchSummaries()
         }
     }
+    #if DEBUG
+    private var didSeedDebugStrengthWorkoutProof = false
+    private static let debugStrengthWorkoutProofStatusKey = "atria.debug.cd12StrengthProof.status"
+    private static let debugStrengthWorkoutProofReasonKey = "atria.debug.cd12StrengthProof.reason"
+    private static let debugStrengthWorkoutProofSessionIDKey = "atria.debug.cd12StrengthProof.sessionID"
+    private static let debugStrengthWorkoutProofWorkoutIDKey = "atria.debug.cd12StrengthProof.workoutID"
+    #endif
     /// Phase-0 derived cache: the 14-point resting-HR trend, recomputed ONLY when
     /// sessions change instead of being re-sorted inside the glance on every
     /// render/BLE tick. Views read this directly (O(1)).
@@ -2609,6 +3064,30 @@ final class SessionStore: ObservableObject {
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
     @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
+    /// Cached next-morning behavior impacts: logged vs not logged, Welch-gated.
+    @Published private(set) var behaviorImpactSummariesCache: [BehaviorImpactSummary] = []
+    /// Typed journal answers (Journal phase 2); file-backed, loads lazily.
+    let journalAnswers = AtriaJournalAnswerStore()
+    /// Bumped when a typed answer is recorded so journal views refresh.
+    @Published private(set) var journalAnswersRevision = 0
+    /// Insight-engine v2 results (threshold splits, rank correlations); computed
+    /// off-actor inside recomputeBehaviorInsights, read-only in views.
+    @Published private(set) var journalInsightsCache: [JournalInsight] = []
+    /// Guards against out-of-order recompute completions (concurrent utility-queue
+    /// jobs are unordered; only the newest generation may publish).
+    private var behaviorInsightsGeneration = 0
+
+    func recordJournalAnswer(questionID: String, value: AtriaJournalValue, day: Date = Date()) {
+        journalAnswers.record(questionID: questionID, day: day, value: value)
+        journalAnswersRevision &+= 1
+        recomputeBehaviorInsights()
+    }
+
+    func removeJournalAnswer(questionID: String, day: Date = Date()) {
+        journalAnswers.removeAnswer(questionID: questionID, day: day)
+        journalAnswersRevision &+= 1
+        recomputeBehaviorInsights()
+    }
     /// Developer/research summaries for Data cards. Recomputed with session or
     /// marker changes so SwiftUI renders read O(1) values.
     @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
@@ -2619,6 +3098,15 @@ final class SessionStore: ObservableObject {
     /// Sleep history is derived beside the expensive daily rollups and then read
     /// directly by Vitals, so the tab never runs sleep clustering while rendering.
     @Published private(set) var sleepHistorySnapshot = SleepHistorySnapshot.empty
+    /// Persisted one-value-per-day readiness history used by chart detail sheets.
+    /// Derived off the render path and saved locally so the UI never rebuilds it.
+    @Published private(set) var dailyMetricHistory: [SavedDailyMetric] = [] {
+        didSet {
+            dailyMetricSparklines = Self.makeDailyMetricSparklines(from: dailyMetricHistory)
+        }
+    }
+    @Published private(set) var cachedMaxHRSuggestion: AtriaMaxHRSuggestion?
+    @Published private(set) var dailyMetricSparklines = DailyMetricSparklineCache.empty
     /// Overview trends are prepared outside SwiftUI render paths; the chart reads
     /// this O(1) array instead of filtering/sorting sessions or computing TRIMP.
     @Published private(set) var overviewTrendPoints: [AtriaTrendPoint] = []
@@ -2628,14 +3116,24 @@ final class SessionStore: ObservableObject {
     /// Historical archive status is read by Data as an O(1) fail-closed snapshot;
     /// disk diagnostics refresh on startup/Data appearance, never in SwiftUI body.
     @Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty
+    @Published private(set) var autoSleepLoggedBanner: AutoSleepLoggedBanner?
     @Published private(set) var baseline = PersonalBaseline.load()
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
+    @Published private(set) var dailyRollupHistory: [DailyRollupStoreEntry] = []
     private let healthKitExporter = HealthKitExporter()
+    private let dailyRollupStore = DailyRollupStore()
+    private let weeklyReportStore = WeeklyReportStore()
+    private let weeklyPlanStore = WeeklyPlanStore()
+    private static let morningSummaryLastScheduledDayKey = "atria.notification.morningSummary.lastScheduledDay"
+    private static let nutritionEveningRefreshLastDayKey = "atria.health.nutrition.eveningRefreshLastDay"
+    private static let maxHRSuggestionLastRollupMonthKey = "atria.maxHRSuggestion.lastRollupMonth"
     private let persistenceQueue = DispatchQueue(label: "com.adidshaft.atria.session-store.persistence",
                                                  qos: .utility)
     private var pendingSessionSaveWorkItem: DispatchWorkItem?
+    private var pendingDailyMetricSaveWorkItem: DispatchWorkItem?
     private static let checkpointPersistenceDelay: TimeInterval = 2.25
+    private static let workoutReviewSettleDelay: TimeInterval = 10 * 60
     private var sessionPersistenceRevision = 0
     private var lastCompletedSessionPersistenceRevision = 0
     private var pendingSessionPersistenceRevision = 0
@@ -2650,12 +3148,16 @@ final class SessionStore: ObservableObject {
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var hasCompletedDeferredSessionLoad = false
+    private var pendingDeferredSessionBackupArguments: [String]?
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
     private var trainingLoadSummaryRevision = 0
     private var historicalArchiveStatusObserver: NSObjectProtocol?
     private var pendingHistoricalArchiveStatusRefresh: Task<Void, Never>?
+    private var pendingSleepReadinessRetry: Task<Void, Never>?
     private static let currentCollectionStatusCacheTTL: TimeInterval = 3
+    private static let sleepReadinessRetryDelays: [TimeInterval] = [45, 180]
+    private static let sleepValidationRetryDelays: [TimeInterval] = [12, 30]
 
     /// CHEAP: 14-point resting-HR trend from raw `sessions` (current inside the
     /// didSet, bounded to 45 days). Safe to run on every mutation.
@@ -2727,6 +3229,189 @@ final class SessionStore: ObservableObject {
         guard revision == historySnapshotRevision else { return }
         historySnapshot = history
         sleepHistorySnapshot = sleep
+        let savedDailyMetrics = Self.makeSavedDailyMetrics(rollups: history.rollups,
+                                                           sleep: sleep,
+                                                           baseline: baseline,
+                                                           calendar: .current)
+        let mergedDailyMetrics = Self.mergeDailyMetricHistory(existing: dailyMetricHistory,
+                                                              computed: savedDailyMetrics,
+                                                              sessions: sessions,
+                                                              sleep: sleep,
+                                                              baseline: baseline,
+                                                              maxHR: profile.maxHR,
+                                                              now: Date(),
+                                                              calendar: .current)
+        if mergedDailyMetrics != dailyMetricHistory {
+            dailyMetricHistory = mergedDailyMetrics
+            scheduleDailyMetricPersist(reason: "history_snapshot_refresh")
+        }
+        persistDailyRollups(from: mergedDailyMetrics)
+    }
+
+    private func persistDailyRollups(from metrics: [SavedDailyMetric]) {
+        let entries = Self.makeDailyRollupStoreEntries(metrics: metrics,
+                                                       sessions: sessions,
+                                                       rest: baseline.restingInt ?? 60,
+                                                       maxHR: profile.maxHR,
+                                                       calendar: .current)
+        let respiratoryRows = entries.filter { $0.respiratoryRate != nil }.count
+        let rrSessionCandidates = sessions.filter {
+            ($0.rrPoints?.isEmpty == false)
+                && $0.sleepRespiratoryRate(rest: baseline.restingInt ?? 60,
+                                           maxHR: profile.maxHR,
+                                           calendar: .current) != nil
+        }.count
+        AtriaDebugLog("ATRIADBG daily_rollup_persist_summary entries=%d respiratory_rows=%d rr_session_candidates=%d sessions=%d",
+                      entries.count,
+                      respiratoryRows,
+                      rrSessionCandidates,
+                      sessions.count)
+        for entry in entries {
+            dailyRollupStore.upsert(entry)
+        }
+        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        refreshMaxHRSuggestion(reason: "daily_rollup", force: false)
+        refreshNutritionRollupFromHealthIfEnabled(for: Date(), reason: "daily_rollup")
+        scheduleEveningNutritionRefreshIfNeeded()
+        scheduleMorningSummaryIfNeeded(metrics: metrics)
+        Task { @MainActor in
+            LocalNotificationScheduler.scheduleHealthDeviationIfNeeded(rollups: entries)
+        }
+    }
+
+    private func refreshNutritionRollupFromHealthIfEnabled(for day: Date,
+                                                           reason: String,
+                                                           calendar: Calendar = .current) {
+        guard UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey) else {
+            return
+        }
+        healthKitExporter.fetchNutritionSummary(for: day, calendar: calendar) { [weak self] summary, healthBodyMassKg in
+            guard let self,
+                  let summary,
+                  summary.hasData else { return }
+            Task { @MainActor in
+                self.upsertNutritionRollup(summary,
+                                           day: day,
+                                           reason: reason,
+                                           healthBodyMassKg: healthBodyMassKg,
+                                           calendar: calendar)
+            }
+        }
+    }
+
+    private func upsertNutritionRollup(_ summary: AtriaNutritionSummary,
+                                       day: Date,
+                                       reason: String,
+                                       healthBodyMassKg: Double?,
+                                       calendar: Calendar = .current) {
+        let normalizedDay = calendar.startOfDay(for: day)
+        let existing = dailyRollupStore.rollup(for: normalizedDay)
+        let merged = DailyRollupStoreEntry(day: existing?.day ?? normalizedDay,
+                                           tzOffsetMinutes: existing?.tzOffsetMinutes,
+                                           recovery: existing?.recovery,
+                                           lnRMSSD: existing?.lnRMSSD,
+                                           rhr: existing?.rhr,
+                                           sleepSeconds: existing?.sleepSeconds,
+                                           sleepPerformance: existing?.sleepPerformance,
+                                           bedtimeMinutes: existing?.bedtimeMinutes,
+                                           strain: existing?.strain,
+                                           respiratoryRate: existing?.respiratoryRate,
+                                           vitals: existing?.vitals,
+                                           nutrition: summary,
+                                           calendar: calendar)
+        dailyRollupStore.upsert(merged)
+        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        let proteinBodyMassKg = healthBodyMassKg ?? (profile.weightKg > 0 ? profile.weightKg : nil)
+        applyNutritionAutoTags(summary.autoJournalTags(bodyMassKg: proteinBodyMassKg),
+                               day: normalizedDay,
+                               calendar: calendar)
+        AtriaDebugLog("ATRIADBG daily_rollup_nutrition_merge status=ok reason=%@ day=%@ has_fuel=%d body_mass_source=%@",
+                      reason,
+                      Self.localDayIdentifier(for: normalizedDay, calendar: calendar),
+                      summary.fuelSummary == nil ? 0 : 1,
+                      healthBodyMassKg == nil ? "profile_or_missing" : "health")
+    }
+
+    private func scheduleEveningNutritionRefreshIfNeeded(now: Date = Date(),
+                                                         calendar: Calendar = .current) {
+        guard UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey) else {
+            return
+        }
+        let minutes = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+        guard minutes >= 21 * 60 else {
+            return
+        }
+        let today = calendar.startOfDay(for: now)
+        let dayID = Self.localDayIdentifier(for: today, calendar: calendar)
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.nutritionEveningRefreshLastDayKey) != dayID else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_evening_refresh status=skipped reason=already_refreshed day=%@",
+                          dayID)
+            return
+        }
+        defaults.set(dayID, forKey: Self.nutritionEveningRefreshLastDayKey)
+        AtriaDebugLog("ATRIADBG healthkit_nutrition_evening_refresh status=requested day=%@",
+                      dayID)
+        refreshNutritionRollupFromHealthIfEnabled(for: today,
+                                                  reason: "evening_21h",
+                                                  calendar: calendar)
+    }
+
+    private func scheduleMorningSummaryIfNeeded(metrics: [SavedDailyMetric],
+                                                now: Date = Date(),
+                                                calendar: Calendar = .current) {
+        let minutes = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+        guard (4 * 60...(11 * 60 + 30)).contains(minutes) else {
+            AtriaDebugLog("ATRIADBG morning_summary_skip reason=outside_window local_minutes=%d", minutes)
+            return
+        }
+
+        let today = calendar.startOfDay(for: now)
+        let dayID = Self.localDayIdentifier(for: today, calendar: calendar)
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.morningSummaryLastScheduledDayKey) != dayID else {
+            AtriaDebugLog("ATRIADBG morning_summary_skip reason=already_scheduled day=%@", dayID)
+            return
+        }
+
+        guard let metric = metrics.first(where: { calendar.isDate($0.day, inSameDayAs: today) }),
+              let recovery = metric.recoveryPercent,
+              let hrv = metric.hrv,
+              let sleepDuration = metric.sleepDuration else {
+            AtriaDebugLog("ATRIADBG morning_summary_skip reason=missing_metric day=%@", dayID)
+            return
+        }
+
+        let sleepText = AtriaMetricFormat.sleepDuration(seconds: sleepDuration)
+        let hrvText = "\(hrv) ms"
+        guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
+            LocalNotificationScheduler.scheduleMorningSummary(recovery: recovery,
+                                                              sleepText: sleepText,
+                                                              hrvText: hrvText,
+                                                              now: now,
+                                                              calendar: calendar)
+            return
+        }
+
+        LocalNotificationScheduler.scheduleMorningSummary(recovery: recovery,
+                                                          sleepText: sleepText,
+                                                          hrvText: hrvText,
+                                                          now: now,
+                                                          calendar: calendar)
+        defaults.set(dayID, forKey: Self.morningSummaryLastScheduledDayKey)
+        AtriaDebugLog("ATRIADBG morning_summary_request status=scheduled day=%@ recovery=%d hrv=%d sleep_s=%.0f",
+                      dayID,
+                      recovery,
+                      hrv,
+                      sleepDuration)
+    }
+
+    private static func localDayIdentifier(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d",
+                      components.year ?? 0,
+                      components.month ?? 0,
+                      components.day ?? 0)
     }
 
     private func refreshOverviewTrendPointsCache(deferred: Bool = true) {
@@ -2769,6 +3454,19 @@ final class SessionStore: ObservableObject {
             let status = HistoricalArchiveStatus(diagnostics: diagnostics)
             DispatchQueue.main.async { [weak self] in
                 self?.historicalArchiveStatus = status
+                if status.metricReady {
+                    let defaults = UserDefaults.standard
+                    if defaults.bool(forKey: "atria.offlineSync.rangeLossBackfillPending") {
+                        defaults.set(false, forKey: "atria.offlineSync.rangeLossBackfillPending")
+                        defaults.set(Date().timeIntervalSince1970, forKey: "atria.offlineSync.rangeLossBackfillStartedAt")
+                        defaults.set("archive_metric_ready", forKey: "atria.offlineSync.lastStatus")
+                        defaults.set(reason, forKey: "atria.offlineSync.lastReason")
+                        AtriaDebugLog("ATRIADBG offline_sync status=range_loss_backfill_cleared reason=%@ source=historical_archive_status metric_rows=%d current_rows=%d",
+                                      reason,
+                                      diagnostics.metricUsableRows,
+                                      diagnostics.currentSessionUsableRows)
+                    }
+                }
                 AtriaDebugLog("ATRIADBG historical_archive_status reason=%@ exists=%d parse_ok=%d rows=%d metric_usable=%d current_usable=%d metric_ready=%d fail_closed=%d status=%@ gate=%@ detail=%@",
                               reason,
                               diagnostics.exists ? 1 : 0,
@@ -2888,11 +3586,14 @@ final class SessionStore: ObservableObject {
         let confirmedWorkoutsByDay = Dictionary(grouping: confirmedWorkouts) { workout in
             calendar.startOfDay(for: workout.start)
         }
-        let aggregateSleeps = Dictionary(uniqueKeysWithValues: Self.aggregateSleepCandidates(in: sessions,
-                                                                                              rest: rest,
-                                                                                              maxHR: maxHR,
-                                                                                              calendar: calendar).map { ($0.day, $0) })
-        return grouped.map { day, daySessions in
+        let aggregateSleeps = Self.preferredSleepCandidatesByDay(Self.aggregateSleepCandidates(in: sessions,
+                                                                                               rest: rest,
+                                                                                               maxHR: maxHR,
+                                                                                               calendar: calendar,
+                                                                                               historicalMotionPolicy: .boundedRecent))
+        let rollupDays = Set(grouped.keys).union(aggregateSleeps.keys)
+        return rollupDays.map { day in
+            let daySessions = grouped[day] ?? []
             let dayDetections = detectionsByDay[day] ?? []
             let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
             let aggregateSleep = aggregateSleeps[day]
@@ -3026,6 +3727,68 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    private nonisolated static func preferredSleepCandidatesByDay(_ candidates: [AggregateSleepCandidate]) -> [Date: AggregateSleepCandidate] {
+        let grouped = Dictionary(grouping: candidates, by: \.day)
+        return Dictionary(uniqueKeysWithValues: grouped.compactMap { day, dayCandidates in
+            guard let preferred = preferredDailySleepCandidate(from: dayCandidates) else { return nil }
+            return (day, preferred)
+        })
+    }
+
+    private nonisolated static func preferredSleepCandidateForReview(from candidates: [AggregateSleepCandidate]) -> AggregateSleepCandidate? {
+        let grouped = Dictionary(grouping: candidates, by: \.day)
+        for day in grouped.keys.sorted(by: >) {
+            guard let preferred = preferredDailySleepCandidate(from: grouped[day] ?? []) else { continue }
+            return preferred
+        }
+        return nil
+    }
+
+    private nonisolated static func preferredDailySleepCandidate(from candidates: [AggregateSleepCandidate]) -> AggregateSleepCandidate? {
+        candidates.sorted { lhs, rhs in
+            if sleepCandidateMainSleepRank(lhs) != sleepCandidateMainSleepRank(rhs) {
+                return sleepCandidateMainSleepRank(lhs) > sleepCandidateMainSleepRank(rhs)
+            }
+            if sleepCandidateConfidenceRank(lhs) != sleepCandidateConfidenceRank(rhs) {
+                return sleepCandidateConfidenceRank(lhs) > sleepCandidateConfidenceRank(rhs)
+            }
+            if lhs.duration != rhs.duration { return lhs.duration > rhs.duration }
+            if lhs.span != rhs.span { return lhs.span > rhs.span }
+            return lhs.start < rhs.start
+        }
+        .first
+    }
+
+    private nonisolated static func sleepCandidateMainSleepRank(_ candidate: AggregateSleepCandidate) -> Int {
+        guard candidate.kind != "nap_candidate" else { return 1 }
+        if candidate.duration >= AggregateSleepCandidate.strictMinimumDuration {
+            return 4
+        }
+        if candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+            && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan {
+            return 3
+        }
+        return 2
+    }
+
+    private nonisolated static func sleepCandidateConfidenceRank(_ candidate: AggregateSleepCandidate) -> Int {
+        if candidate.motionEvidenceValidated { return 3 }
+        if isStrapOnlyMainSleepReviewCandidate(candidate) { return 2 }
+        switch candidate.confidence {
+        case .high: return 2
+        case .medium: return 1
+        case .low: return 0
+        }
+    }
+
+    private nonisolated static func isStrapOnlyMainSleepReviewCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+        candidate.kind != "nap_candidate"
+            && !candidate.motionEvidenceValidated
+            && (candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
+                || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+                    && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan))
+    }
+
     private nonisolated static func averageIntSnapshot(_ values: [Int]) -> Int? {
         guard !values.isEmpty else { return nil }
         return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
@@ -3073,6 +3836,273 @@ final class SessionStore: ObservableObject {
             out.append("Strain spike")
         }
         return out
+    }
+
+    private nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
+                                                          sleep: SleepHistorySnapshot,
+                                                          baseline: PersonalBaseline,
+                                                          calendar: Calendar = .current) -> [SavedDailyMetric] {
+        let sleepByDay = Dictionary(uniqueKeysWithValues: sleep.nights.map { (calendar.startOfDay(for: $0.day), $0) })
+        return rollups
+            .sorted { $0.day > $1.day }
+            .map { rollup in
+                let day = calendar.startOfDay(for: rollup.day)
+                let night = sleepByDay[day]
+                let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
+                                                  fallbackRMSSD: rollup.avgHRV,
+                                                  restingNow: rollup.restingHR,
+                                                  baseline: baseline,
+                                                  hrvReferenceValidated: false,
+                                                  sleepEfficiency: night?.sleepEfficiency,
+                                                  sleepDurationHours: night?.durationHours,
+                                                  respiratoryRate: rollup.avgRespiratoryRate,
+                                                  respiratoryBaseline: sleep.respiratoryBaselineStats)
+                return SavedDailyMetric(day: day,
+                                        recoveryPercent: recovery.percent,
+                                        recoveryConfidence: recovery.confidence.rawValue,
+                                        hrv: rollup.avgHRV,
+                                        restingHR: rollup.restingHR,
+                                        respiratoryRate: rollup.avgRespiratoryRate,
+                                        sleepDuration: rollup.sleepDuration,
+                                        sleepSpan: rollup.sleepSpan,
+                                        sleepStart: rollup.sleepStart,
+                                        sleepEnd: rollup.sleepEnd,
+                                        sleepSource: rollup.sleepSource,
+                                        sleepStageSegments: night?.displayStageSegments ?? rollup.sleepStageSegments,
+                                        sleepConsistencyPercent: sleep.sleepConsistencyPercent,
+                                        strain: rollup.strain > 0 ? rollup.strain : nil)
+            }
+    }
+
+    private nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
+                                                            computed: [SavedDailyMetric],
+                                                            sessions: [SavedSession],
+                                                            sleep: SleepHistorySnapshot,
+                                                            baseline: PersonalBaseline,
+                                                            maxHR: Int,
+                                                            now: Date,
+                                                            calendar: Calendar = .current) -> [SavedDailyMetric] {
+        let today = calendar.startOfDay(for: now)
+        var merged = Dictionary(uniqueKeysWithValues: computed.map { (calendar.startOfDay(for: $0.day), $0) })
+
+        for metric in existing where merged[calendar.startOfDay(for: metric.day)] == nil {
+            merged[calendar.startOfDay(for: metric.day)] = metric
+        }
+
+        if let frozenToday = existing.first(where: { calendar.isDate($0.day, inSameDayAs: today) }) {
+            // Once today's morning reading settles, preserve that frozen readiness
+            // snapshot for the rest of the day instead of recomputing on refresh.
+            merged[today] = frozenToday
+        } else if let settledMorning = makeMorningFrozenDailyMetric(for: today,
+                                                                    computed: computed,
+                                                                    sessions: sessions,
+                                                                    sleep: sleep,
+                                                                    baseline: baseline,
+                                                                    maxHR: maxHR,
+                                                                    now: now,
+                                                                    calendar: calendar) {
+            merged[today] = settledMorning
+        } else {
+            // Never write today's chart point before the overnight/morning reading
+            // exists; otherwise the detail charts drift from the WHOOP-like freeze.
+            merged.removeValue(forKey: today)
+        }
+
+        return merged.values.sorted { $0.day > $1.day }
+    }
+
+    private nonisolated static func makeDailyRollupStoreEntries(metrics: [SavedDailyMetric],
+                                                                sessions: [SavedSession] = [],
+                                                                rest: Int = 60,
+                                                                maxHR: Int = 190,
+                                                                calendar: Calendar = .current) -> [DailyRollupStoreEntry] {
+        let sorted = metrics.sorted { $0.day < $1.day }
+        let baseNeedHours = configuredSleepBaseNeedHours()
+        let sessionsByMorningDay = Dictionary(grouping: sessions) {
+            morningMetricDay(for: $0, calendar: calendar)
+        }
+        func resolvedRespiratoryRate(for metric: SavedDailyMetric) -> Double? {
+            if let respiratoryRate = metric.respiratoryRate, respiratoryRate > 0 {
+                return respiratoryRate
+            }
+            let day = calendar.startOfDay(for: metric.day)
+            let sessionRates = (sessionsByMorningDay[day] ?? []).compactMap {
+                $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR, calendar: calendar)
+            }
+            return averageDoubleSnapshot(sessionRates)
+        }
+        return sorted.enumerated().map { index, metric in
+            let priorAndCurrent = Array(sorted[max(0, index - 27)...index])
+            let yesterdayStrain = index > 0 ? sorted[index - 1].strain : nil
+            let priorSleepNights = sorted[..<index].suffix(7).compactMap { prior -> (needed: Double, slept: Double)? in
+                guard let duration = prior.sleepDuration, duration > 0 else { return nil }
+                return (needed: baseNeedHours, slept: duration / 3_600)
+            }
+            let hrvMilliseconds = metric.hrv.flatMap { $0 > 0 ? Double($0) : nil }
+            let resolvedRespRate = resolvedRespiratoryRate(for: metric)
+            return DailyRollupStoreEntry(day: metric.day,
+                                         recovery: metric.recoveryPercent,
+                                         lnRMSSD: hrvMilliseconds.map(log),
+                                         rhr: metric.restingHR,
+                                         sleepSeconds: metric.sleepDuration,
+                                         sleepPerformance: dailyRollupSleepPerformance(sleepDuration: metric.sleepDuration,
+                                                                                       baseNeedHours: baseNeedHours,
+                                                                                       yesterdayStrain: yesterdayStrain,
+                                                                                       priorNights: priorSleepNights),
+                                         bedtimeMinutes: metric.sleepStart.map { bedtimeMinutes(from: $0, calendar: calendar) },
+                                         strain: metric.strain,
+                                         respiratoryRate: resolvedRespRate,
+                                         vitals: DailyRollupVitals(
+                                            rhr: welfordStat(priorAndCurrent.compactMap { $0.restingHR.map(Double.init) }),
+                                            hrv: welfordStat(priorAndCurrent.compactMap { $0.hrv.map(Double.init) }),
+                                            resp: welfordStat(priorAndCurrent.compactMap { resolvedRespiratoryRate(for: $0) })
+                                         ),
+                                         calendar: calendar)
+        }
+    }
+
+    nonisolated static func dailyRollupSleepPerformance(sleepDuration: TimeInterval?,
+                                                        baseNeedHours: Double,
+                                                        yesterdayStrain: Double?,
+                                                        priorNights: [(needed: Double, slept: Double)]) -> Int? {
+        guard let sleepDuration, sleepDuration > 0 else { return nil }
+        let debt = AtriaSleepBudget.sleepDebt(nights: priorNights)
+        let need = AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
+                                              yesterdayStrain: yesterdayStrain,
+                                              debtHours: debt,
+                                              sameDayNapHours: 0)
+        return AtriaSleepBudget.performancePercent(slept: sleepDuration / 3_600, needed: need)
+    }
+
+    private nonisolated static func configuredSleepBaseNeedHours(userDefaults: UserDefaults = .standard) -> Double {
+        let stored = userDefaults.object(forKey: "atria.sleep.baseNeedHours") as? Double
+        return min(max(stored ?? 8.0, 6.0), 10.0)
+    }
+
+    private nonisolated static func welfordStat(_ values: [Double]) -> DailyRollupVitals.Stat? {
+        guard values.count >= 3 else { return nil }
+        var count = 0
+        var mean = 0.0
+        var m2 = 0.0
+        for value in values {
+            count += 1
+            let delta = value - mean
+            mean += delta / Double(count)
+            m2 += delta * (value - mean)
+        }
+        return DailyRollupVitals.Stat(mean: mean,
+                                      sd: sqrt(m2 / Double(max(count - 1, 1))),
+                                      n: count)
+    }
+
+    private nonisolated static func bedtimeMinutes(from date: Date, calendar: Calendar = .current) -> Int {
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        return minutes < 12 * 60 ? minutes + 24 * 60 : minutes
+    }
+
+    private nonisolated static func makeMorningFrozenDailyMetric(for day: Date,
+                                                                 computed: [SavedDailyMetric],
+                                                                 sessions: [SavedSession],
+                                                                 sleep: SleepHistorySnapshot,
+                                                                 baseline: PersonalBaseline,
+                                                                 maxHR: Int,
+                                                                 now: Date,
+                                                                 calendar: Calendar = .current) -> SavedDailyMetric? {
+        let hour = calendar.component(.hour, from: now)
+        guard hour >= 4 else { return nil }
+
+        let overnightSleep = sleep.nights.first {
+            !$0.isNapEvidence && calendar.isDate(morningMetricDay(for: $0, calendar: calendar), inSameDayAs: day)
+        }
+        let overnightSession = sessions.first {
+            guard $0.isOvernightHRVWindow(calendar: calendar) else { return false }
+            return calendar.isDate(morningMetricDay(for: $0, calendar: calendar), inSameDayAs: day)
+        }
+        let computedToday = computed.first { calendar.isDate($0.day, inSameDayAs: day) }
+
+        let hrv = overnightSleep?.hrv ?? overnightSession?.localRMSSD ?? computedToday?.hrv
+        let restingHR = overnightSleep?.restingHR ?? overnightSession?.sleepCandidateRestingHR ?? overnightSession?.restingStable ?? computedToday?.restingHR
+        let respiratoryRate = overnightSleep?.respiratoryRate
+            ?? overnightSession?.sleepRespiratoryRate(rest: baseline.restingInt ?? overnightSession?.restingStable ?? 60,
+                                                      maxHR: maxHR,
+                                                      calendar: calendar)
+            ?? computedToday?.respiratoryRate
+        let sleepDuration = overnightSleep?.duration ?? computedToday?.sleepDuration
+        let sleepSpan = overnightSleep.flatMap { night -> TimeInterval? in
+            guard let start = night.start, let end = night.end, end > start else { return nil }
+            return end.timeIntervalSince(start)
+        } ?? computedToday?.sleepSpan
+        let sleepStart = overnightSleep?.start ?? computedToday?.sleepStart
+        let sleepEnd = overnightSleep?.end ?? computedToday?.sleepEnd
+        let sleepSource = overnightSleep?.source ?? computedToday?.sleepSource
+        let sleepSegments = overnightSleep?.displayStageSegments ?? computedToday?.sleepStageSegments ?? []
+        let sleepConsistencyPercent = computedToday?.sleepConsistencyPercent ?? sleep.sleepConsistencyPercent
+        let strain = computedToday?.strain
+
+        guard hrv != nil || restingHR != nil || sleepDuration != nil else {
+            return nil
+        }
+
+        let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
+                                          fallbackRMSSD: hrv,
+                                          restingNow: restingHR,
+                                          baseline: baseline,
+                                          hrvReferenceValidated: false,
+                                          sleepEfficiency: overnightSleep?.sleepEfficiency,
+                                          sleepDurationHours: sleepDuration.map { $0 / 3_600 },
+                                          respiratoryRate: respiratoryRate,
+                                          respiratoryBaseline: sleep.respiratoryBaselineStats)
+
+        return SavedDailyMetric(day: day,
+                                recoveryPercent: recovery.percent,
+                                recoveryConfidence: recovery.confidence.rawValue,
+                                hrv: hrv,
+                                restingHR: restingHR,
+                                respiratoryRate: respiratoryRate,
+                                sleepDuration: sleepDuration,
+                                sleepSpan: sleepSpan,
+                                sleepStart: sleepStart,
+                                sleepEnd: sleepEnd,
+                                sleepSource: sleepSource,
+                                sleepStageSegments: sleepSegments,
+                                sleepConsistencyPercent: sleepConsistencyPercent,
+                                strain: strain)
+    }
+
+    private nonisolated static func morningMetricDay(for night: SleepHistorySnapshot.Night,
+                                                     calendar: Calendar = .current) -> Date {
+        if let end = night.end {
+            return calendar.startOfDay(for: end)
+        }
+        if let start = night.start, night.duration > 0 {
+            return calendar.startOfDay(for: start.addingTimeInterval(night.duration))
+        }
+        return calendar.startOfDay(for: night.day)
+    }
+
+    private nonisolated static func morningMetricDay(for session: SavedSession,
+                                                     calendar: Calendar = .current) -> Date {
+        calendar.startOfDay(for: session.start.addingTimeInterval(max(session.duration, 0)))
+    }
+
+    private nonisolated static func makeDailyMetricSparklines(from history: [SavedDailyMetric]) -> DailyMetricSparklineCache {
+        let recent = Array(history.prefix(7).reversed())
+
+        func compact<T>(_ values: [T]) -> [T]? {
+            values.count >= 2 ? values : nil
+        }
+
+        return DailyMetricSparklineCache(
+            recovery: compact(recent.compactMap(\.recoveryPercent)),
+            hrv: compact(recent.compactMap(\.hrv)),
+            restingHeartRate: compact(recent.compactMap(\.restingHR)),
+            sleep: compact(recent.compactMap { metric in
+                guard let duration = metric.sleepDuration, duration > 0 else { return nil }
+                return Int((duration / 3_600).rounded())
+            }),
+            strain: compact(recent.compactMap { $0.strain.map { Int(($0 * 10).rounded()) } })
+        )
     }
 
     private nonisolated static func isHighOutlierSnapshot(_ value: Double, in values: [Double]) -> Bool {
@@ -3144,6 +4174,13 @@ final class SessionStore: ObservableObject {
         let maxHR = profile.maxHR
         let sourceSessions = cachedCanonicalSessions
         let journalEntries = cachedBehaviorJournalEntries
+        let metricDays = dailyMetricHistory.map {
+            AtriaBehaviorImpact.Day(day: $0.day, recoveryPercent: $0.recoveryPercent)
+        }
+        journalAnswers.loadIfNeeded()
+        let typedAnswers = journalAnswers.answers
+        behaviorInsightsGeneration &+= 1
+        let generation = behaviorInsightsGeneration
         DispatchQueue.global(qos: .utility).async {
             let summaries = Self.sortedBehaviorCorrelationSummaries(
                 Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,
@@ -3151,11 +4188,19 @@ final class SessionStore: ObservableObject {
                                                       rest: rest,
                                                       maxHR: maxHR)
             )
+            let impacts = AtriaBehaviorImpact.summaries(days: metricDays,
+                                                        journalEntries: journalEntries)
             let insights = Self.deriveInsights(from: summaries)
+            let journalInsights = AtriaJournalInsights.insights(
+                questionAnswers: Self.groupJournalAnswersByQuestion(typedAnswers),
+                labels: Self.journalQuestionLabels,
+                days: metricDays)
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, generation == self.behaviorInsightsGeneration else { return }
                 self.behaviorCorrelationSummariesCache = summaries
+                self.behaviorImpactSummariesCache = impacts
                 self.behaviorInsights = insights
+                self.journalInsightsCache = journalInsights
             }
         }
     }
@@ -3189,6 +4234,28 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Typed answers keyed by question for the v2 insight engine (pure mapping;
+    /// safe off-actor).
+    nonisolated static func groupJournalAnswersByQuestion(_ answers: [AtriaJournalAnswer]) -> [String: [AtriaJournalInsights.AnswerDay]] {
+        var grouped: [String: [AtriaJournalInsights.AnswerDay]] = [:]
+        for answer in answers {
+            let value: AtriaJournalInsights.Value
+            switch answer.value {
+            case .yes: value = .boolean(true)
+            case .no: value = .boolean(false)
+            case .timeOfDay(let minutes): value = .timeOfDayMinutes(minutes)
+            case .quantity(let count): value = .quantity(Double(count))
+            case .scale(let level): value = .scale1to5(level)
+            }
+            grouped[answer.questionID, default: []].append(AtriaJournalInsights.AnswerDay(day: answer.day, value: value))
+        }
+        return grouped
+    }
+
+    nonisolated static var journalQuestionLabels: [String: String] {
+        Dictionary(uniqueKeysWithValues: AtriaJournalTypedQuestion.allCases.map { ($0.rawValue, $0.insightLabel) })
+    }
+
     private enum ConfirmedWorkoutDefaults {
         static let key = "atria.confirmedWorkouts.v1"
     }
@@ -3199,6 +4266,7 @@ final class SessionStore: ObservableObject {
 
     private enum BehaviorJournalDefaults {
         static let key = "atria.behaviorJournal.v1"
+        static let autoTagRemovalsKey = "atria.journal.autoTagRemovals.v1"
     }
 
     private enum ResearchManeuverDefaults {
@@ -3227,6 +4295,14 @@ final class SessionStore: ObservableObject {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("sessions.json")
     }()
+    private let coldSessionsURL: URL = {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("sessions-cold.json")
+    }()
+    private let dailyMetricsURL: URL = {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("daily-metrics.json")
+    }()
 
     init() {
         self.cachedConfirmedWorkouts = Self.readConfirmedWorkouts()
@@ -3239,6 +4315,8 @@ final class SessionStore: ObservableObject {
         self.cachedHomeDashboardDiagnostics = nil
         self.cachedHomeSavedAggregate = nil
         self.cachedCurrentCollectionStatus = nil
+        self.cachedMaxHRSuggestion = nil
+        self.dailyRollupHistory = dailyRollupStore.rollups(last: 400)
         self.historicalArchiveStatusObserver = NotificationCenter.default.addObserver(forName: HistoricalArchive.didUpdateNotification,
                                                                                       object: nil,
                                                                                       queue: .main) { [weak self] _ in
@@ -3247,7 +4325,9 @@ final class SessionStore: ObservableObject {
             }
         }
         loadPersistedSessionsDeferred()
+        loadPersistedDailyMetrics()
         refreshSessionDerivedCaches()
+        refreshMaxHRSuggestion(reason: "init", force: true)
         recomputeCollectionResearchSummaries()
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
                                                     confirmedSleeps: cachedConfirmedSleeps)
@@ -3255,6 +4335,16 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        #if DEBUG
+        if Self.shouldSeedDebugStrengthWorkoutProof(arguments: ProcessInfo.processInfo.arguments) {
+            UserDefaults.standard.set("scheduled", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("session_store_init", forKey: Self.debugStrengthWorkoutProofReasonKey)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(700))
+                self?.seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
+            }
+        }
+        #endif
     }
 
     deinit {
@@ -3262,6 +4352,7 @@ final class SessionStore: ObservableObject {
             NotificationCenter.default.removeObserver(historicalArchiveStatusObserver)
         }
         pendingHistoricalArchiveStatusRefresh?.cancel()
+        pendingSleepReadinessRetry?.cancel()
     }
 
     var latestReferenceValidatedHRV: Int? {
@@ -3297,6 +4388,7 @@ final class SessionStore: ObservableObject {
         cachedCanonicalSessions = Self.makeCanonicalSessions(from: sessions)
         cachedHomeSavedAggregate = nil
         cachedCurrentCollectionStatus = nil
+        refreshMaxHRSuggestion(reason: "session_cache", force: false)
     }
 
     private func refreshSessionDerivedCachesAfterUpsert(_ session: SavedSession) {
@@ -3305,10 +4397,37 @@ final class SessionStore: ObservableObject {
                                                              preferredSession: preferredSession)
         cachedHomeSavedAggregate = nil
         cachedCurrentCollectionStatus = nil
+        refreshMaxHRSuggestion(reason: "session_upsert", force: false)
     }
 
     private func refreshBackupStatusCache() {
         cachedSessionBackupStatus = computeSessionBackupStatus()
+    }
+
+    private func refreshBackupStatusCacheDeferred(reason: String) {
+        let currentSessions = sessions
+        let currentBaseline = baseline
+        let currentProfile = profile
+        let sessionFileURL = url
+        Task.detached(priority: .utility) { [currentSessions, currentBaseline, currentProfile, sessionFileURL] in
+            let startedAt = CFAbsoluteTimeGetCurrent()
+            let status = Self.computeSessionBackupStatus(currentSessions: currentSessions,
+                                                         baseline: currentBaseline,
+                                                         profile: currentProfile,
+                                                         sessionFileURL: sessionFileURL)
+            let elapsedMS = Int(((CFAbsoluteTimeGetCurrent() - startedAt) * 1000).rounded())
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.cachedSessionBackupStatus = status
+                self.cachedHomeDashboardDiagnostics = nil
+                self.publishDashboardRevision()
+                AtriaDebugLog("ATRIADBG session_backup_status_deferred status=%@ reason=%@ elapsed_ms=%d sessions=%d",
+                              status.reason,
+                              reason,
+                              elapsedMS,
+                              currentSessions.count)
+            }
+        }
     }
 
     private func refreshHomeDashboardDiagnosticsCache() {
@@ -3364,12 +4483,14 @@ final class SessionStore: ObservableObject {
         guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
         let snapshot = sessions
         let sourceURL = url
+        let coldURL = coldSessionsURL
+        let coldWriteReady = hasCompletedDeferredSessionLoad
         let revision = sessionPersistenceRevision
 
         pendingSessionSaveWorkItem?.cancel()
         pendingSessionPersistenceRevision = revision
         let workItem = DispatchWorkItem { [weak self] in
-            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+            Self.persistPartitionedSessionsSnapshot(snapshot, hotURL: sourceURL, coldURL: coldURL, allowColdWrite: coldWriteReady, reason: reason)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.lastCompletedSessionPersistenceRevision = max(self.lastCompletedSessionPersistenceRevision, revision)
@@ -3382,16 +4503,43 @@ final class SessionStore: ObservableObject {
         persistenceQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
+    private func loadPersistedDailyMetrics() {
+        let sourceURL = dailyMetricsURL
+        Task.detached(priority: .utility) { [sourceURL] in
+            guard let data = try? Data(contentsOf: sourceURL),
+                  let decoded = try? JSONDecoder().decode([SavedDailyMetric].self, from: data) else {
+                return
+            }
+            await MainActor.run {
+                self.dailyMetricHistory = decoded.sorted { $0.day > $1.day }
+            }
+        }
+    }
+
+    private func scheduleDailyMetricPersist(reason: String, delay: TimeInterval = 0.35) {
+        let snapshot = dailyMetricHistory
+        let sourceURL = dailyMetricsURL
+
+        pendingDailyMetricSaveWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            Self.persistDailyMetricsSnapshot(snapshot, to: sourceURL, reason: reason)
+        }
+        pendingDailyMetricSaveWorkItem = workItem
+        persistenceQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     func requestPersistenceFlush(reason: String) {
         guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
         let snapshot = sessions
         let sourceURL = url
+        let coldURL = coldSessionsURL
+        let coldWriteReady = hasCompletedDeferredSessionLoad
         let revision = sessionPersistenceRevision
 
         pendingSessionSaveWorkItem?.cancel()
         pendingSessionPersistenceRevision = revision
         let workItem = DispatchWorkItem { [weak self] in
-            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+            Self.persistPartitionedSessionsSnapshot(snapshot, hotURL: sourceURL, coldURL: coldURL, allowColdWrite: coldWriteReady, reason: reason)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.lastCompletedSessionPersistenceRevision = max(self.lastCompletedSessionPersistenceRevision, revision)
@@ -3408,12 +4556,14 @@ final class SessionStore: ObservableObject {
         guard sessionPersistenceRevision > lastCompletedSessionPersistenceRevision else { return }
         let snapshot = sessions
         let sourceURL = url
+        let coldURL = coldSessionsURL
+        let coldWriteReady = hasCompletedDeferredSessionLoad
         let revision = sessionPersistenceRevision
         pendingSessionSaveWorkItem?.cancel()
         pendingSessionSaveWorkItem = nil
         pendingSessionPersistenceRevision = revision
         persistenceQueue.sync {
-            Self.persistSessionsSnapshot(snapshot, to: sourceURL, reason: reason)
+            Self.persistPartitionedSessionsSnapshot(snapshot, hotURL: sourceURL, coldURL: coldURL, allowColdWrite: coldWriteReady, reason: reason)
         }
         lastCompletedSessionPersistenceRevision = max(lastCompletedSessionPersistenceRevision, revision)
         if pendingSessionPersistenceRevision == revision {
@@ -3422,8 +4572,60 @@ final class SessionStore: ObservableObject {
     }
 
     func performBackgroundMaintenance(reason: String) {
+        performBackgroundMaintenance(reason: reason, now: Date(), calendar: .current)
+    }
+
+    /// Archive compaction (docs/24 §14.1 step 2): folds base-file rows older
+    /// than 30 days (by BOTH strap-anchored and wall clocks, outside every
+    /// confirmed sleep/workout window ±1 day) into per-minute summaries. Gated:
+    /// runs at most once per day, and only when the base file is large enough
+    /// to matter. `--atria-compact-archive` forces a run for physical proof.
+    private static let archiveCompactionLastRunKey = "atria.archiveCompaction.lastRunAt"
+    static let archiveCompactionMinimumRows = 50_000
+
+    func compactHistoricalArchiveIfUseful(reason: String, now: Date = Date()) {
+        let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
+        let defaults = UserDefaults.standard
+        if !forced {
+            let lastRun = defaults.double(forKey: Self.archiveCompactionLastRunKey)
+            guard now.timeIntervalSince1970 - lastRun >= 24 * 60 * 60 else { return }
+            guard historicalArchiveStatus.rows >= Self.archiveCompactionMinimumRows else { return }
+        }
+        var pinned: [(start: Date, end: Date)] = confirmedSleeps.map { ($0.start, $0.end) }
+        pinned.append(contentsOf: confirmedWorkouts.map { ($0.start, $0.end) })
+        let pinnedWindows = pinned
+        Task.detached(priority: .utility) {
+            let result = HistoricalArchive.compactArchive(pinnedWindows: pinnedWindows,
+                                                          reason: reason,
+                                                          now: now)
+            AtriaDebugLog("ATRIADBG archive_compaction_driver status=%@ reason=%@ scanned=%d kept=%d compacted=%d summaries=%d bytes_before=%d bytes_after=%d",
+                          result.status,
+                          reason,
+                          result.scannedRows,
+                          result.keptRows,
+                          result.compactedRows,
+                          result.summaryRows,
+                          result.bytesBefore,
+                          result.bytesAfter)
+            await MainActor.run {
+                // Failed/aborted runs may retry at the next maintenance pass;
+                // only a completed run (ok or nothing-to-do) starts the 24 h gap.
+                if result.status == "ok" || result.status == "noop_nothing_to_compact" {
+                    UserDefaults.standard.set(now.timeIntervalSince1970, forKey: Self.archiveCompactionLastRunKey)
+                }
+                self.refreshHistoricalArchiveStatus(reason: "archive_compaction")
+            }
+        }
+    }
+
+    func performBackgroundMaintenance(reason: String,
+                                      now: Date,
+                                      calendar: Calendar) {
         flushScheduledPersistence(reason: "\(reason)_persistence")
         writeAutomaticSessionBackup(reason: reason)
+        generateWeeklyReportIfNeeded(now: now, calendar: calendar, reason: reason)
+        generateWeeklyPlanIfNeeded(now: now, calendar: calendar, reason: reason)
+        compactHistoricalArchiveIfUseful(reason: reason, now: now)
         let health = HealthKitExporter.diagnostics(for: sessions,
                                                     rest: baseline.restingInt ?? 60,
                                                     maxHR: profile.maxHR,
@@ -3440,6 +4642,92 @@ final class SessionStore: ObservableObject {
               health.planned.sleeps)
     }
 
+    func generateWeeklyReportProductionFixtureFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-test-weekly-report-production-maintenance") else { return }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let forcedMonday = calendar.date(from: DateComponents(year: 2026, month: 7, day: 13, hour: 9, minute: 0, second: 0)) ?? Date()
+        performBackgroundMaintenance(reason: "debug_forced_monday_background_maintenance",
+                                     now: forcedMonday,
+                                     calendar: calendar)
+    }
+
+    private func generateWeeklyReportIfNeeded(now: Date = Date(),
+                                              calendar: Calendar = .current,
+                                              reason: String) {
+        let weekday = calendar.component(.weekday, from: now)
+        guard weekday == 2 else {
+            AtriaDebugLog("ATRIADBG weekly_report_generation status=skipped reason=not_monday weekday=%d source=%@",
+                          weekday,
+                          reason)
+            return
+        }
+
+        let report = WeeklyReport(rollups: dailyRollupStore.rollups(last: 14),
+                                  now: now,
+                                  calendar: calendar)
+        guard report.recoveryAvg != nil else {
+            AtriaDebugLog("ATRIADBG weekly_report_generation status=skipped reason=no_recovery_average source=%@ isoYear=%d isoWeek=%d",
+                          reason,
+                          report.isoYear,
+                          report.isoWeek)
+            return
+        }
+        guard weeklyReportStore.report(isoYear: report.isoYear, isoWeek: report.isoWeek) == nil else {
+            AtriaDebugLog("ATRIADBG weekly_report_generation status=skipped reason=already_exists source=%@ isoYear=%d isoWeek=%d",
+                          reason,
+                          report.isoYear,
+                          report.isoWeek)
+            return
+        }
+
+        weeklyReportStore.save(report)
+        LocalNotificationScheduler.scheduleWeeklyReport(report)
+        AtriaDebugLog("ATRIADBG weekly_report_generation status=generated source=%@ isoYear=%d isoWeek=%d recovery_avg=%d sleep_consistency=%d notification_requested=1",
+                      reason,
+                      report.isoYear,
+                      report.isoWeek,
+                      report.recoveryAvg ?? -1,
+                      report.sleepConsistencyPct ?? -1)
+    }
+
+    private func generateWeeklyPlanIfNeeded(now: Date = Date(),
+                                            calendar: Calendar = .current,
+                                            reason: String) {
+        let weekday = calendar.component(.weekday, from: now)
+        guard weekday == 2 else {
+            AtriaDebugLog("ATRIADBG weekly_plan_generation status=skipped reason=not_monday weekday=%d source=%@",
+                          weekday,
+                          reason)
+            return
+        }
+
+        let plan = WeeklyPlan(rollups: dailyRollupStore.rollups(last: 28),
+                              now: now,
+                              calendar: calendar)
+        guard !plan.targets.isEmpty else {
+            AtriaDebugLog("ATRIADBG weekly_plan_generation status=skipped reason=no_targets source=%@ isoYear=%d isoWeek=%d",
+                          reason,
+                          plan.isoYear,
+                          plan.isoWeek)
+            return
+        }
+        guard weeklyPlanStore.plan(isoYear: plan.isoYear, isoWeek: plan.isoWeek) == nil else {
+            AtriaDebugLog("ATRIADBG weekly_plan_generation status=skipped reason=already_exists source=%@ isoYear=%d isoWeek=%d",
+                          reason,
+                          plan.isoYear,
+                          plan.isoWeek)
+            return
+        }
+
+        weeklyPlanStore.save(plan)
+        AtriaDebugLog("ATRIADBG weekly_plan_generation status=generated source=%@ isoYear=%d isoWeek=%d targets=%d",
+                      reason,
+                      plan.isoYear,
+                      plan.isoWeek,
+                      plan.targets.count)
+    }
+
     private nonisolated static func persistSessionsSnapshot(_ sessions: [SavedSession], to url: URL, reason: String) {
         do {
             let data = try JSONEncoder().encode(sessions)
@@ -3450,6 +4738,116 @@ final class SessionStore: ObservableObject {
                   data.count)
         } catch {
             AtriaDebugLog("ATRIADBG session_store_save status=failed op=%@ error=%@",
+                  reason,
+                  error.localizedDescription)
+        }
+    }
+
+    // MARK: - Hot/cold session file split (docs/24 §14.1 step 1)
+    //
+    // sessions.json holds only RECENT sessions (start within the last
+    // `coldSessionAgeDays`); older sessions live full-fidelity in
+    // sessions-cold.json, which is rewritten only when its content actually
+    // changes (a session aging across the boundary, a delete, a restore).
+    // Every persist used to rewrite all ~12 MB; steady-state now rewrites only
+    // the small hot file. No schema change: both files are plain [SavedSession].
+
+    static let coldSessionAgeDays = 30
+
+    private nonisolated static func coldSessionCutoff(now: Date = Date()) -> Date {
+        now.addingTimeInterval(-TimeInterval(coldSessionAgeDays) * 24 * 60 * 60)
+    }
+
+    nonisolated static func partitionSessionsForPersist(_ sessions: [SavedSession],
+                                                        now: Date = Date()) -> (hot: [SavedSession], cold: [SavedSession]) {
+        let cutoff = coldSessionCutoff(now: now)
+        var hot: [SavedSession] = []
+        var cold: [SavedSession] = []
+        for session in sessions {
+            if session.start >= cutoff {
+                hot.append(session)
+            } else {
+                cold.append(session)
+            }
+        }
+        return (hot, cold)
+    }
+
+    /// Cheap change detector for the cold set: count + newest cold start +
+    /// total sample count. Collisions would only skip a rewrite when the set is
+    /// effectively identical.
+    private nonisolated static func coldSessionsFingerprint(_ sessions: [SavedSession]) -> String {
+        let newest = sessions.map(\.start.timeIntervalSince1970).max() ?? 0
+        let samples = sessions.reduce(0) { $0 + $1.points.count }
+        // Content hash so in-place mutations of an old session (e.g. HRV
+        // reference validation) are not skipped by a count-identical rewrite.
+        var hash: UInt64 = 5381
+        for session in sessions {
+            for byte in session.id.uuidString.utf8 {
+                hash = (hash &* 33) ^ UInt64(byte)
+            }
+            hash = (hash &* 33) ^ UInt64(bitPattern: Int64(session.hrv ?? -1))
+        }
+        return "\(sessions.count)-\(Int(newest))-\(samples)-\(hash)"
+    }
+
+    /// Removes the cold fingerprint marker so the NEXT partitioned persist
+    /// rewrites sessions-cold.json — required after any raw full-set write
+    /// (restore, prune migration) that bypasses the partitioned path.
+    nonisolated static func invalidateColdSessionsFingerprint(nextTo hotURL: URL) {
+        let markerURL = hotURL.deletingLastPathComponent()
+            .appendingPathComponent("sessions-cold.json.fingerprint")
+        try? FileManager.default.removeItem(at: markerURL)
+    }
+
+    /// Writes hot always; writes cold only when its fingerprint differs from the
+    /// marker file next to it (write data first, marker last, so a crash between
+    /// the two just causes one redundant rewrite, never loss).
+    private nonisolated static func persistPartitionedSessionsSnapshot(_ sessions: [SavedSession],
+                                                                       hotURL: URL,
+                                                                       coldURL: URL,
+                                                                       allowColdWrite: Bool,
+                                                                       reason: String) {
+        let partition = partitionSessionsForPersist(sessions)
+        persistSessionsSnapshot(partition.hot, to: hotURL, reason: reason)
+        // A persist before the deferred load has read sessions-cold.json would
+        // partition an incomplete in-memory set and overwrite real cold data
+        // with an empty array. Cold writes wait for load completion.
+        guard allowColdWrite else { return }
+        let fingerprint = coldSessionsFingerprint(partition.cold)
+        let markerURL = coldURL.appendingPathExtension("fingerprint")
+        let existing = (try? String(contentsOf: markerURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing == fingerprint {
+            return
+        }
+        do {
+            let data = try JSONEncoder().encode(partition.cold)
+            try data.write(to: coldURL, options: .atomic)
+            try fingerprint.write(to: markerURL, atomically: true, encoding: .utf8)
+            AtriaDebugLog("ATRIADBG session_store_save status=ok op=%@_cold sessions=%d bytes=%d",
+                  reason,
+                  partition.cold.count,
+                  data.count)
+        } catch {
+            AtriaDebugLog("ATRIADBG session_store_save status=failed op=%@_cold error=%@",
+                  reason,
+                  error.localizedDescription)
+        }
+    }
+
+    private nonisolated static func persistDailyMetricsSnapshot(_ metrics: [SavedDailyMetric],
+                                                                to url: URL,
+                                                                reason: String) {
+        do {
+            let data = try JSONEncoder().encode(metrics)
+            try data.write(to: url, options: .atomic)
+            AtriaDebugLog("ATRIADBG daily_metric_history_save status=ok op=%@ days=%d bytes=%d",
+                  reason,
+                  metrics.count,
+                  data.count)
+        } catch {
+            AtriaDebugLog("ATRIADBG daily_metric_history_save status=failed op=%@ error=%@",
                   reason,
                   error.localizedDescription)
         }
@@ -3655,7 +5053,7 @@ final class SessionStore: ObservableObject {
             let samples = record.samples.count
             let duration = max(0, Int(((record.samples.last?.t ?? record.updatedAt).timeIntervalSince(record.startedAt)).rounded()))
             let fresh = age <= 90
-            let label = Self.diagnosticToken(record.label.isEmpty ? "Long wear" : record.label)
+            let label = Self.diagnosticToken(record.label.isEmpty ? "All-day wear" : record.label)
             if fresh && samples > 0 {
                 status = CurrentCollectionStatus(ready: true,
                                                  source: "active_journal",
@@ -3814,7 +5212,7 @@ final class SessionStore: ObservableObject {
             .filter { $0.t >= first.t && $0.t <= last.t.addingTimeInterval(1) }
             .sorted { $0.t < $1.t }
         let label = record.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Long wear active"
+            ? "All-day wear active"
             : "\(record.label) active"
         return SavedSession(id: record.id,
                             start: first.t,
@@ -3833,13 +5231,6 @@ final class SessionStore: ObservableObject {
                             motionShortMin: nil,
                             motionShortMax: nil,
                             motionShortOverOneCount: nil,
-                            phoneMotionSource: nil,
-                            phoneMotionValidated: false,
-                            phoneMotionSamples: nil,
-                            phoneMotionMeanDeltaG: nil,
-                            phoneMotionMaxDeltaG: nil,
-                            phoneMotionOverStillThreshold: nil,
-                            phoneMotionStillThresholdG: nil,
                             hrRaw2A37: record.rawHRNotifications,
                             hrAccepted: record.acceptedHRSamples,
                             hrZero: record.zeroHRSamples,
@@ -3852,6 +5243,10 @@ final class SessionStore: ObservableObject {
     }
 
     private func preferredSession(_ candidate: SavedSession, over existing: SavedSession) -> Bool {
+        Self.preferredSession(candidate, over: existing)
+    }
+
+    private nonisolated static func preferredSession(_ candidate: SavedSession, over existing: SavedSession) -> Bool {
         if candidate.points.count != existing.points.count {
             return candidate.points.count > existing.points.count
         }
@@ -3861,8 +5256,50 @@ final class SessionStore: ObservableObject {
         return candidate.end > existing.end
     }
 
+    private nonisolated static func mergedSessions(primary: [SavedSession], secondary: [SavedSession]) -> [SavedSession] {
+        var byID: [UUID: SavedSession] = [:]
+        for session in secondary + primary {
+            if let existing = byID[session.id], !preferredSession(session, over: existing) {
+                continue
+            }
+            byID[session.id] = session
+        }
+        return byID.values.sorted { $0.start > $1.start }
+    }
+
+    @discardableResult
+    private func reconcileSessionsBeforeLiveUpsert(reason: String) -> Bool {
+        var merged = sessions
+        if let data = try? Data(contentsOf: url),
+           let diskSessions = try? JSONDecoder().decode([SavedSession].self, from: data),
+           diskSessions.count > merged.count {
+            merged = Self.mergedSessions(primary: merged, secondary: diskSessions)
+        }
+        if let backupURL = latestRestorableSessionBackupURL(),
+           let envelope = try? Self.decodeSessionBackupEnvelope(at: backupURL),
+           Self.supportedBackupSchemas.contains(envelope.schema),
+           envelope.sessions.count > merged.count {
+            merged = Self.mergedSessions(primary: merged, secondary: envelope.sessions)
+        }
+        guard merged.count > sessions.count else { return false }
+        sessions = merged
+        refreshSessionDerivedCaches()
+        invalidateHomeDashboardDiagnosticsCache()
+        AtriaDebugLog("ATRIADBG session_store_reconcile status=merged reason=%@ sessions=%d",
+                      reason,
+                      sessions.count)
+        return true
+    }
+
+    func reconcileCanonicalSessionsFromBackupIfNeeded(reason: String) {
+        guard reconcileSessionsBeforeLiveUpsert(reason: reason) else { return }
+        markSessionPersistenceDirty()
+        requestPersistenceFlush(reason: "session_reconcile_\(reason)")
+    }
+
     @discardableResult
     func add(_ s: SavedSession) -> Bool {
+        reconcileSessionsBeforeLiveUpsert(reason: "add")
         let mode = upsertSession(s)
         markSessionPersistenceDirty()
         refreshSessionDerivedCachesAfterUpsert(s)
@@ -3977,6 +5414,7 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func checkpoint(_ s: SavedSession) -> Bool {
+        reconcileSessionsBeforeLiveUpsert(reason: "checkpoint")
         _ = upsertSession(s)
         markSessionPersistenceDirty()
         refreshSessionDerivedCachesAfterUpsert(s)
@@ -4030,6 +5468,56 @@ final class SessionStore: ObservableObject {
         AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
+    }
+
+    private func refreshMaxHRSuggestion(reason: String,
+                                        now: Date = Date(),
+                                        calendar: Calendar = .current,
+                                        force: Bool = false) {
+        if !force {
+            let monthKey = Self.monthKey(for: now, calendar: calendar)
+            let prior = UserDefaults.standard.string(forKey: Self.maxHRSuggestionLastRollupMonthKey)
+            guard prior != monthKey || cachedMaxHRSuggestion == nil else { return }
+            UserDefaults.standard.set(monthKey, forKey: Self.maxHRSuggestionLastRollupMonthKey)
+        }
+        cachedMaxHRSuggestion = makeMaxHRSuggestion(now: now, calendar: calendar)
+        AtriaDebugLog("ATRIADBG max_hr_suggestion_rollup status=%@ reason=%@ observed_peak=%d current_max_hr=%d",
+                      cachedMaxHRSuggestion == nil ? "none" : "ready",
+                      reason,
+                      cachedMaxHRSuggestion?.observedPeak ?? 0,
+                      profile.maxHR)
+    }
+
+    private static func monthKey(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month], from: date)
+        return String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
+    }
+
+    private func makeMaxHRSuggestion(now: Date = Date(), calendar: Calendar = .current) -> AtriaMaxHRSuggestion? {
+        let windowStart = calendar.date(byAdding: .day,
+                                        value: -AtriaMaxHRSuggestionEngine.lookbackDays,
+                                        to: calendar.startOfDay(for: now))
+            ?? now.addingTimeInterval(TimeInterval(-AtriaMaxHRSuggestionEngine.lookbackDays * 24 * 60 * 60))
+        let peaks = canonicalSessions()
+            .filter { $0.start >= windowStart && $0.start <= now }
+            .map(\.peak)
+        return AtriaMaxHRSuggestionEngine.suggestion(sessionPeaks: peaks,
+                                                     currentMaxHR: profile.maxHR,
+                                                     dismissed: AtriaMaxHRSuggestionEngine.loadDismissal(),
+                                                     now: now,
+                                                     calendar: calendar)
+    }
+
+    func maxHRSuggestion(now: Date = Date(), calendar: Calendar = .current) -> AtriaMaxHRSuggestion? {
+        if cachedMaxHRSuggestion == nil {
+            refreshMaxHRSuggestion(reason: "read", now: now, calendar: calendar, force: true)
+        }
+        return cachedMaxHRSuggestion
+    }
+
+    func dismissMaxHRSuggestion(observedPeak: Int, now: Date = Date()) {
+        AtriaMaxHRSuggestionEngine.saveDismissal(observedPeak: observedPeak, now: now)
+        refreshMaxHRSuggestion(reason: "dismiss", now: now, force: true)
     }
 
     func completeOnboarding(with profile: AthleteProfile) {
@@ -4878,12 +6366,6 @@ final class SessionStore: ObservableObject {
             if lhs.t != rhs.t { return lhs.t < rhs.t }
             return lhs.bpm < rhs.bpm
         }
-        let phoneMotion = Metrics.stepsDaily(overlapping.map { session in
-            Metrics.PhoneMotionSample(steps: session.phoneStepCountValue,
-                                      distanceMeters: session.phoneStepDistanceMeters,
-                                      floorsAscended: session.phoneStepFloorsAscended,
-                                      floorsDescended: session.phoneStepFloorsDescended)
-        })
         let session = SavedSession(id: UUID(),
                                    start: workout.start,
                                    end: workout.end,
@@ -4901,12 +6383,6 @@ final class SessionStore: ObservableObject {
                                    motionShortMin: nil,
                                    motionShortMax: nil,
                                    motionShortOverOneCount: nil,
-                                   phoneStepSource: phoneMotion.hasStepEvidence ? "phone_coremotion_pedometer" : "unavailable",
-                                   phoneStepValidated: false,
-                                   phoneStepCount: phoneMotion.steps,
-                                   phoneStepDistanceMeters: phoneMotion.distanceMeters,
-                                   phoneStepFloorsAscended: phoneMotion.floorsAscended,
-                                   phoneStepFloorsDescended: phoneMotion.floorsDescended,
                                    hrRaw2A37: overlapping.reduce(0) { $0 + $1.hrRaw2A37Value },
                                    hrAccepted: overlapping.reduce(0) { $0 + $1.hrAcceptedValue },
                                    hrZero: overlapping.reduce(0) { $0 + $1.hrZeroValue },
@@ -4932,7 +6408,9 @@ final class SessionStore: ObservableObject {
                                                        historicalMotionStatus: String,
                                                        fallbackAccepted: Bool,
                                                        fallbackPolicy: String) {
-        let candidates = aggregateSleepCandidates(rest: rest, calendar: .current)
+        let candidates = aggregateSleepCandidates(rest: rest,
+                                                  calendar: .current,
+                                                  historicalMotionPolicy: .boundedRecent)
         guard let best = candidates.max(by: {
             overlapSeconds($0.start, $0.end, sleep.start, sleep.end) < overlapSeconds($1.start, $1.end, sleep.start, sleep.end)
         }) else {
@@ -5630,6 +7108,8 @@ final class SessionStore: ObservableObject {
         return SavedWorkoutAttemptStatus(source: summary.bestSource,
                                          label: summary.bestLabel,
                                          chunks: summary.bestChunkCount,
+                                         start: summary.bestStart,
+                                         end: summary.bestEnd,
                                          status: summary.bestStatus,
                                          reason: summary.bestReason,
                                          primaryBlocker: summary.bestPrimaryBlocker,
@@ -5676,6 +7156,8 @@ final class SessionStore: ObservableObject {
         return SavedWorkoutAttemptStatus(source: "fast_\(summary.bestSource)",
                                          label: summary.bestLabel,
                                          chunks: summary.bestChunkCount,
+                                         start: summary.bestStart,
+                                         end: summary.bestEnd,
                                          status: summary.bestStatus,
                                          reason: summary.bestReason,
                                          primaryBlocker: summary.bestPrimaryBlocker,
@@ -5711,6 +7193,106 @@ final class SessionStore: ObservableObject {
                                          ready: summary.readySessions > 0)
     }
 
+    func latestWorkoutReviewCandidate(rest: Int,
+                                      maxHR: Int,
+                                      source: String = "ui",
+                                      now: Date = Date()) -> WorkoutReviewCandidate? {
+        guard hasCompletedDeferredSessionLoad else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=deferred source=%@ reason=store_not_loaded rest_hr=%d max_hr=%d",
+                          source,
+                          rest,
+                          maxHR)
+            return nil
+        }
+        let summary = replaySavedWorkoutReadiness(rest: rest, maxHR: maxHR)
+        guard summary.sessionsEvaluated > 0,
+              summary.bestSource != "none",
+              let start = summary.bestStart,
+              let end = summary.bestEnd,
+              end > start else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=none source=%@ reason=no_candidate rest_hr=%d max_hr=%d",
+                          source,
+                          rest,
+                          maxHR)
+            return nil
+        }
+
+        let secondsSinceEnd = now.timeIntervalSince(end)
+        guard secondsSinceEnd >= Self.workoutReviewSettleDelay else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=settling source=%@ candidate_source=%@ reason=waiting_for_post_effort_settle seconds_since_end=%.0f required_s=%.0f",
+                          source,
+                          summary.bestSource,
+                          secondsSinceEnd,
+                          Self.workoutReviewSettleDelay)
+            return nil
+        }
+
+        let confirmable = summary.readySessions > 0 || summary.bestReviewWorthyCandidate
+        guard confirmable else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=learning source=%@ candidate_source=%@ reason=candidate_not_review_worthy observed_s=%.0f coverage=%d peak_over_rest=%d ready=%d near_miss=%d strength_candidate=%d review_worthy=0",
+                          source,
+                          summary.bestSource,
+                          summary.bestObservedDuration,
+                          summary.bestStreamCoveragePercent,
+                          summary.bestPeakHR - rest,
+                          summary.readySessions > 0 ? 1 : 0,
+                          summary.nearMiss ? 1 : 0,
+                          summary.strengthCandidate ? 1 : 0)
+            return nil
+        }
+
+        let id = confirmedWorkoutID(start: start, end: end, source: summary.bestSource)
+        let alreadyConfirmed = cachedConfirmedWorkouts.contains { workout in
+            workout.id == id || workoutOverlapRatio(workout: workout, start: start, end: end) >= 0.70
+        }
+        guard !alreadyConfirmed else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=already_confirmed source=%@ candidate_source=%@ id=%@",
+                          source,
+                          summary.bestSource,
+                          id)
+            return nil
+        }
+
+        let reviewConfidence: ActivityDetection.Confidence = summary.readySessions > 0
+            ? .medium
+            : (summary.strengthCandidate || summary.nearMiss ? .medium : .low)
+
+        AtriaDebugLog("ATRIADBG workout_review_candidate status=review_worthy source=%@ candidate_source=%@ id=%@ observed_s=%.0f coverage=%d peak_over_rest=%d ready=%d strength_candidate=%d moderate_strength=%d",
+                      source,
+                      summary.bestSource,
+                      id,
+                      summary.bestObservedDuration,
+                      summary.bestStreamCoveragePercent,
+                      summary.bestPeakHR - rest,
+                      summary.readySessions > 0 ? 1 : 0,
+                      summary.strengthCandidate ? 1 : 0,
+                      summary.moderateStrengthReviewCandidate ? 1 : 0)
+        return WorkoutReviewCandidate(id: id,
+                                      start: start,
+                                      end: end,
+                                      kind: summary.readySessions > 0 ? .workout : .activityCandidate,
+                                      confidence: reviewConfidence,
+                                      duration: end.timeIntervalSince(start),
+                                      avgHR: summary.bestAvgHR,
+                                      peakHR: summary.bestPeakHR,
+                                      streamCoveragePercent: summary.bestStreamCoveragePercent,
+                                      observedDuration: summary.bestObservedDuration,
+                                      droppedGapSeconds: summary.bestDroppedGapSeconds,
+                                      maxSampleGap: summary.bestMaxSampleGap,
+                                      gapCount: summary.bestGapCount,
+                                      reason: summary.readySessions > 0 ? summary.bestReason : summary.bestPrimaryBlocker)
+    }
+
+    private func workoutOverlapRatio(workout: UserConfirmedWorkout,
+                                     start: Date,
+                                     end: Date) -> Double {
+        let overlap = min(workout.end, end).timeIntervalSince(max(workout.start, start))
+        guard overlap > 0 else { return 0 }
+        let shortest = min(workout.duration, end.timeIntervalSince(start))
+        guard shortest > 0 else { return 0 }
+        return min(1, overlap / shortest)
+    }
+
     func confirmBestWorkoutCandidateForUI(rest: Int, maxHR: Int, source: String = "ui") -> UserConfirmedWorkout? {
         confirmBestWorkoutCandidate(rest: rest, maxHR: maxHR, source: source)
     }
@@ -5719,13 +7301,25 @@ final class SessionStore: ObservableObject {
                                    end: Date,
                                    rest: Int,
                                    maxHR: Int,
-                                   source: String = "ui_window") -> UserConfirmedWorkout? {
+                                   source: String = "ui_window",
+                                   activityType: String? = nil,
+                                   activitySubtype: String? = nil,
+                                   exerciseNames: [String] = [],
+                                   strengthSets: [LoggedSet] = [],
+                                   excludedIntervals: [ExcludedInterval] = [],
+                                   reviewSource: String? = nil) -> UserConfirmedWorkout? {
         confirmWorkoutWindow(start: start,
                              end: end,
                              rest: rest,
                              maxHR: maxHR,
                              source: source,
-                             allowManualSave: true)
+                             allowManualSave: true,
+                             activityType: activityType,
+                             activitySubtype: activitySubtype,
+                             exerciseNames: exerciseNames,
+                             strengthSets: strengthSets,
+                             excludedIntervals: excludedIntervals,
+                             reviewSource: reviewSource)
     }
 
     func confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -5755,14 +7349,14 @@ final class SessionStore: ObservableObject {
                   maxHR)
             return nil
         }
-        let confirmable = summary.bestObservedDuration >= 10 * 60
-            && (summary.nearMiss || summary.strengthCandidate || summary.readySessions > 0 || summary.bestStreamCoveragePercent >= 20)
+        let confirmable = summary.readySessions > 0 || summary.bestReviewWorthyCandidate
         guard confirmable else {
-            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=candidate_too_weak source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
+            AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=candidate_not_review_worthy source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d peak_over_rest=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
                   source,
                   summary.bestSource,
                   summary.bestObservedDuration,
                   summary.bestStreamCoveragePercent,
+                  summary.bestPeakHR - rest,
                   summary.nearMiss ? 1 : 0,
                   summary.strengthCandidate ? 1 : 0,
                   summary.readySessions > 0 ? 1 : 0)
@@ -5785,7 +7379,8 @@ final class SessionStore: ObservableObject {
         let enriched = confirmedWorkoutMetrics(start: bestStart,
                                                end: bestEnd,
                                                rest: rest,
-                                               maxHR: maxHR)
+                                               maxHR: maxHR,
+                                               excludedIntervals: [])
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
                                              start: bestStart,
@@ -5844,7 +7439,13 @@ final class SessionStore: ObservableObject {
                                       rest: Int,
                                       maxHR: Int,
                                       source: String,
-                                      allowManualSave: Bool = false) -> UserConfirmedWorkout? {
+                                      allowManualSave: Bool = false,
+                                      activityType: String? = nil,
+                                      activitySubtype: String? = nil,
+                                      exerciseNames: [String] = [],
+                                      strengthSets: [LoggedSet] = [],
+                                      excludedIntervals: [ExcludedInterval] = [],
+                                      reviewSource: String? = nil) -> UserConfirmedWorkout? {
         guard requestedEnd > requestedStart else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
                   source,
@@ -5889,8 +7490,10 @@ final class SessionStore: ObservableObject {
             && points.count >= 4
             && readiness.observedDuration >= 60
             && readiness.streamCoveragePercent >= 5
-        let confirmable = (readiness.observedDuration >= 10 * 60
-            && (readiness.ready || readiness.nearMiss || readiness.strengthCandidate || readiness.streamCoveragePercent >= 20)
+        let confirmable = (readiness.ready
+            || (readiness.observedDuration >= 15 * 60
+                && readiness.streamCoveragePercent >= 60
+                && (readiness.nearMiss || readiness.strengthCandidate))
         ) || manualConfirmable
         guard confirmable else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_candidate_too_weak source=%@ observed_s=%.0f stream_coverage_percent=%d ready=%d near_miss=%d strength_candidate=%d primary_blocker=%@ metric_promotions=0",
@@ -5924,12 +7527,26 @@ final class SessionStore: ObservableObject {
         let enriched = confirmedWorkoutMetrics(start: requestedStart,
                                                end: requestedEnd,
                                                rest: rest,
-                                               maxHR: maxHR)
+                                               maxHR: maxHR,
+                                               excludedIntervals: excludedIntervals)
+        let activityTypeValue = activityType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activitySubtypeValue = activitySubtype?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reviewSourceValue = reviewSource?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanedActivityType = activityTypeValue.isEmpty ? nil : activityTypeValue
+        let cleanedActivitySubtype = activitySubtypeValue.isEmpty ? nil : activitySubtypeValue
+        let cleanedExercises = exerciseNames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let cleanedReviewSource = reviewSourceValue.isEmpty ? nil : reviewSourceValue
+        if !strengthSets.isEmpty || !excludedIntervals.isEmpty {
+            try? ActiveSessionJournal.mirrorStrengthState(strengthSets: strengthSets,
+                                                          excludedIntervals: excludedIntervals)
+        }
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
                                              start: requestedStart,
                                              end: requestedEnd,
-                                             label: "Live workout",
+                                             label: cleanedActivityType ?? "Live workout",
                                              source: workoutSource,
                                              confidence: confidence,
                                              sessions: overlapping.count,
@@ -5942,6 +7559,10 @@ final class SessionStore: ObservableObject {
                                              streamCoveragePercent: readiness.streamCoveragePercent,
                                              observedDuration: readiness.observedDuration,
                                              reason: readiness.ready ? readiness.reason : readiness.primaryBlocker,
+                                             activityType: cleanedActivityType,
+                                             activitySubtype: cleanedActivitySubtype,
+                                             exerciseNames: cleanedExercises.isEmpty ? nil : cleanedExercises,
+                                             reviewSource: cleanedReviewSource,
                                              strain: enriched.strain,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
                                              activeEnergyConfidence: enriched.activeEnergyConfidence,
@@ -5981,7 +7602,8 @@ final class SessionStore: ObservableObject {
     private func confirmedWorkoutMetrics(start: Date,
                                          end: Date,
                                          rest: Int,
-                                         maxHR: Int) -> (strain: Double?,
+                                         maxHR: Int,
+                                         excludedIntervals: [ExcludedInterval] = []) -> (strain: Double?,
                                                         activeEnergyKilocalories: Double?,
                                                         activeEnergyConfidence: String?,
                                                         zoneSeconds: [String: TimeInterval]?) {
@@ -6000,6 +7622,8 @@ final class SessionStore: ObservableObject {
             })
         }
         samples.sort { $0.t < $1.t }
+        samples = AtriaStrengthLog.samplesExcludingIntervals(samples,
+                                                             excludedIntervals: excludedIntervals)
         guard samples.count > 1 else { return (nil, nil, nil, nil) }
 
         let trimp = Metrics.trimp(samples.map { (t: $0.t.timeIntervalSince(start), bpm: $0.bpm) },
@@ -6041,20 +7665,259 @@ final class SessionStore: ObservableObject {
         confirmBestSleepCandidate(rest: rest, source: source)
     }
 
-    private func autoConfirmStrongSleepCandidates(reason: String, limit: Int = 2) {
+    func confirmSleepHistoryNightForUI(_ night: SleepHistorySnapshot.Night,
+                                       rest: Int,
+                                       source: String = "ui") -> UserConfirmedSleep? {
+        confirmSleepHistoryNight(night, rest: rest, source: source)
+    }
+
+    func latestSleepReviewNightForUI(rest: Int,
+                                     calendar: Calendar = .current,
+                                     source: String = "ui") -> SleepHistorySnapshot.Night? {
+        if let latest = sleepHistorySnapshot.latest, latest.confirmed == false {
+            return latest
+        }
+        guard let candidate = Self.preferredSleepCandidateForReview(from: aggregateSleepCandidates(rest: rest, calendar: calendar)),
+              !cachedConfirmedSleeps.contains(where: { Self.sleepWindowsOverlap($0, candidate: candidate) }) else {
+            return nil
+        }
+        AtriaDebugLog("ATRIADBG sleep_review_candidate source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d confidence=%@ motion_source=%@ motion_validated=%d snapshot_candidate_count=%d",
+                      source,
+                      sleepCandidateSource(for: candidate),
+                      isoString(candidate.start),
+                      isoString(candidate.end),
+                      candidate.duration,
+                      candidate.span,
+                      candidate.sessions,
+                      candidate.confidence.rawValue,
+                      candidate.motionEvidenceSource,
+                      candidate.motionEvidenceValidated ? 1 : 0,
+                      sleepHistorySnapshot.candidateCount)
+        let sleepEfficiency = candidate.span > 0
+            ? min(max(candidate.duration / candidate.span, 0), 1)
+            : nil
+        return SleepHistorySnapshot.Night(id: "sleep-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))-\(sleepCandidateSource(for: candidate))",
+                                          day: candidate.day,
+                                          start: candidate.start,
+                                          end: candidate.end,
+                                          duration: candidate.duration,
+                                          restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
+                                          hrv: nil,
+                                          respiratoryRate: nil,
+                                          sleepEfficiency: sleepEfficiency,
+                                          confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
+                                          source: sleepCandidateSource(for: candidate),
+                                          confirmed: false,
+                                          stageSegments: Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                                                        start: candidate.start,
+                                                                                        end: candidate.end,
+                                                                                        restingHR: candidate.restingHR,
+                                                                                        isNap: candidate.kind == "nap_candidate",
+                                                                                        motionValidated: candidate.motionEvidenceValidated))
+    }
+
+    private func confirmSleepHistoryNight(_ night: SleepHistorySnapshot.Night,
+                                          rest: Int,
+                                          source: String) -> UserConfirmedSleep? {
+        guard let start = night.start, let end = night.end, end > start else {
+            AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=invalid_review_window source=%@ candidate_source=%@ metric_promotions=0 auto_gate_e_unchanged=1",
+                          source,
+                          night.source)
+            return nil
+        }
+
+        let windowSpan = max(0, end.timeIntervalSince(start))
+        let duration = night.duration > 0 ? night.duration : windowSpan
+        let span = max(duration, windowSpan)
+        let isNap = night.isNapEvidence
+        let confirmable = isNap
+            ? duration >= AggregateSleepCandidate.napMinimumDuration && span <= AggregateSleepCandidate.napMaximumSpan
+            : duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+        guard confirmable else {
+            AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=candidate_too_short_specific source=%@ candidate_source=%@ kind=%@ duration_s=%.0f span_s=%.0f metric_promotions=0 auto_gate_e_unchanged=1",
+                          source,
+                          night.source,
+                          isNap ? "nap" : "sleep",
+                          duration,
+                          span)
+            return nil
+        }
+
+        let sleepSource = reviewedSleepSource(for: night)
+        let id = confirmedSleepID(start: start, end: end, source: sleepSource)
+        var existing = cachedConfirmedSleeps
+        if let already = existing.first(where: { $0.id == id }) {
+            AtriaDebugLog("ATRIADBG sleep_confirm status=already_confirmed_specific id=%@ source=%@ candidate_source=%@ start=%@ end=%@ confidence=%@ motion_source=%@ motion_validated=%d metric_promotions=0 auto_gate_e_unchanged=1",
+                          already.id,
+                          source,
+                          already.source,
+                          isoString(already.start),
+                          isoString(already.end),
+                          already.confidence,
+                          already.motionSource,
+                          already.motionValidated ? 1 : 0)
+            return already
+        }
+
+        let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
+        let motionValidated = night.confidence.caseInsensitiveCompare("ready") == .orderedSame
+            || night.stageEvidence == .validated
+        let stageSegments = night.displayStageSegments.isEmpty ? nil : night.displayStageSegments
+        let confirmed = UserConfirmedSleep(id: id,
+                                           createdAt: Date(),
+                                           start: start,
+                                           end: end,
+                                           source: sleepSource,
+                                           confidence: motionValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only",
+                                           sessions: metrics.sessions,
+                                           samples: metrics.samples,
+                                           avgHR: metrics.avgHR,
+                                           peakHR: metrics.peakHR,
+                                           restingHR: night.restingHR ?? metrics.restingHR,
+                                           hrv: metrics.hrv,
+                                           hrvWindowCount: metrics.hrvWindowCount,
+                                           duration: duration,
+                                           span: span,
+                                           reason: "\(source); \(night.confirmationText); \(night.confidenceText)",
+                                           motionSource: motionValidated ? "user_review_validated" : "user_review",
+                                           motionValidated: motionValidated,
+                                           stageSegments: stageSegments)
+        existing.append(confirmed)
+        saveConfirmedSleeps(existing)
+        AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed_specific id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
+                      confirmed.id,
+                      source,
+                      confirmed.source,
+                      isoString(confirmed.start),
+                      isoString(confirmed.end),
+                      confirmed.duration,
+                      confirmed.span,
+                      confirmed.sessions,
+                      confirmed.samples,
+                      confirmed.avgHR,
+                      confirmed.peakHR,
+                      rest,
+                      confirmed.restingHR,
+                      confirmed.confidence,
+                      confirmed.motionSource,
+                      confirmed.motionValidated ? 1 : 0,
+                      confirmed.stageSegments?.count ?? 0,
+                      confirmed.reason)
+        return confirmed
+    }
+
+    private func reviewedSleepSource(for night: SleepHistorySnapshot.Night) -> String {
+        if night.isNapEvidence { return "nap_candidate" }
+        if SleepHistorySnapshot.Night.explicitSleepSources.contains(night.source) {
+            return night.source
+        }
+        return "sleep_window"
+    }
+
+    private func scheduleSleepReadinessRetryIfUseful(reason: String) {
+        let readiness = sleepReadinessRetryState()
+        guard readiness.shouldRetry else { return }
+        pendingSleepReadinessRetry?.cancel()
+        let delays = Self.sleepReadinessRetryDelays
+        let delaySummary = delays.map { String(Int($0.rounded())) }.joined(separator: ",")
+        AtriaDebugLog("ATRIADBG sleep_auto_confirm_retry schedule reason=%@ attempts=%d delays_s=%@ state=%@ blocker=%@ candidates=%d ready_candidates=%d pending_backfill=%d",
+                      reason,
+                      delays.count,
+                      delaySummary,
+                      readiness.evidence.state,
+                      readiness.evidence.blocker,
+                      readiness.evidence.candidates,
+                      readiness.evidence.readyCandidates,
+                      readiness.pendingBackfill ? 1 : 0)
+        pendingSleepReadinessRetry = Task { @MainActor [weak self] in
+            for (index, delay) in delays.enumerated() {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                let attempt = index + 1
+                let retryState = self.sleepReadinessRetryState()
+                AtriaDebugLog("ATRIADBG sleep_auto_confirm_retry attempt=%d reason=%@ delay_s=%.0f state=%@ blocker=%@ candidates=%d ready_candidates=%d pending_backfill=%d action=recheck_existing_gates",
+                              attempt,
+                              reason,
+                              delay,
+                              retryState.evidence.state,
+                              retryState.evidence.blocker,
+                              retryState.evidence.candidates,
+                              retryState.evidence.readyCandidates,
+                              retryState.pendingBackfill ? 1 : 0)
+                self.refreshHistoricalArchiveStatus(reason: "sleep_auto_confirm_retry")
+                let saved = self.autoConfirmStrongSleepCandidates(reason: "retry_\(reason)_attempt_\(attempt)")
+                self.refreshHistorySnapshotCache(deferred: true)
+                if saved || !self.sleepReadinessRetryState().shouldRetry {
+                    self.pendingSleepReadinessRetry = nil
+                    return
+                }
+            }
+            self?.pendingSleepReadinessRetry = nil
+        }
+    }
+
+    private func sleepReadinessRetryState() -> (shouldRetry: Bool, evidence: SleepEvidenceStatus, pendingBackfill: Bool) {
         let rest = baseline.restingInt ?? 60
-        let candidates = aggregateSleepCandidates(rest: rest, calendar: .current)
+        let evidence = sleepEvidenceStatusFast(rest: rest)
+        let pendingBackfill = UserDefaults.standard.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        guard !evidence.ready else {
+            return (false, evidence, pendingBackfill)
+        }
+        let blockerCanImproveWithBackfill = evidence.blocker.hasPrefix("sleep_motion_unvalidated")
+            || evidence.blocker == "sleep_fragmented_below_minimum"
+        let shouldRetry = pendingBackfill || (evidence.fallbackAvailable && blockerCanImproveWithBackfill)
+        return (shouldRetry, evidence, pendingBackfill)
+    }
+
+    private var lastForegroundSleepAutoConfirmAt: Date?
+
+    /// Foreground (morning-flow) auto-confirm: launch-time auto-confirm never fires
+    /// while the app stays resident overnight, so the first foreground of the day
+    /// re-runs it. Rate-limited, and skipped while the newest confirmed sleep is
+    /// recent enough that there is nothing new to confirm.
+    func autoConfirmSleepOnForegroundIfUseful(reason: String) {
+        guard hasCompletedDeferredSessionLoad else { return }
+        let now = Date()
+        if let last = lastForegroundSleepAutoConfirmAt, now.timeIntervalSince(last) < 30 * 60 {
+            return
+        }
+        let latestOvernightEnd = cachedConfirmedSleeps
+            .filter { !Self.confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration) }
+            .map(\.end)
+            .max()
+        if let latestOvernightEnd, now.timeIntervalSince(latestOvernightEnd) < 16 * 60 * 60 {
+            return
+        }
+        lastForegroundSleepAutoConfirmAt = now
+        let saved = autoConfirmStrongSleepCandidates(reason: reason)
+        refreshHistorySnapshotCache(deferred: true)
+        if !saved {
+            // Back the rate limit off to ~10 min on failure so a transient
+            // blocker does not cost the whole 30-minute window.
+            lastForegroundSleepAutoConfirmAt = now.addingTimeInterval(-20 * 60)
+            scheduleSleepReadinessRetryIfUseful(reason: reason)
+        }
+    }
+
+    @discardableResult
+    private func autoConfirmStrongSleepCandidates(reason: String, limit: Int = 2) -> Bool {
+        let rest = baseline.restingInt ?? 60
+        let candidates = aggregateSleepCandidates(rest: rest,
+                                                  calendar: .current,
+                                                  historicalMotionPolicy: .boundedRecent)
             .filter(Self.isStrongAutoConfirmableSleepCandidate)
         guard !candidates.isEmpty else {
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=no_strong_candidate source=%@ candidates=0",
                           reason)
-            return
+            return false
         }
 
         var existing = cachedConfirmedSleeps
         var saved = 0
+        var firstSavedOvernight: UserConfirmedSleep?
         for candidate in candidates.prefix(limit) {
-            let sleepSource = candidate.kind == "nap_candidate" ? "auto_nap" : "auto_sleep"
+            let hrOnlyAutoConfirmed = Self.isUnambiguousHROnlyMainSleepCandidate(candidate)
+            let sleepSource = candidate.kind == "nap_candidate" ? "auto_nap" : "auto_confirmed_sleep"
             let id = confirmedSleepID(start: candidate.start, end: candidate.end, source: sleepSource)
             if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
                 continue
@@ -6065,24 +7928,33 @@ final class SessionStore: ObservableObject {
                                                                 end: candidate.end,
                                                                 restingHR: candidate.restingHR,
                                                                 isNap: candidate.kind == "nap_candidate",
-                                                                motionValidated: candidate.motionEvidenceValidated)
-            existing.append(UserConfirmedSleep(id: id,
+                                                                motionValidated: candidate.motionEvidenceValidated && !hrOnlyAutoConfirmed)
+            let metrics = confirmedSleepWindowMetrics(start: candidate.start,
+                                                      end: candidate.end,
+                                                      rest: candidate.restingHR)
+            let confirmed = UserConfirmedSleep(id: id,
                                                createdAt: Date(),
                                                start: candidate.start,
                                                end: candidate.end,
                                                source: sleepSource,
-                                               confidence: "auto_motion_validated",
+                                               confidence: hrOnlyAutoConfirmed ? "hr_only" : candidate.confidence.rawValue,
                                                sessions: candidate.sessions,
                                                samples: candidate.samples,
                                                avgHR: candidate.avgHR,
                                                peakHR: candidate.peakHR,
                                                restingHR: candidate.restingHR,
+                                               hrv: metrics.hrv,
+                                               hrvWindowCount: metrics.hrvWindowCount,
                                                duration: candidate.duration,
                                                span: candidate.span,
                                                reason: "\(reason); \(candidate.reason)",
-                                               motionSource: candidate.motionEvidenceSource,
-                                               motionValidated: true,
-                                               stageSegments: stageSegments.isEmpty ? nil : stageSegments))
+                                               motionSource: hrOnlyAutoConfirmed ? "strap_hr_only" : candidate.motionEvidenceSource,
+                                               motionValidated: candidate.motionEvidenceValidated && !hrOnlyAutoConfirmed,
+                                               stageSegments: stageSegments.isEmpty ? nil : stageSegments)
+            existing.append(confirmed)
+            if candidate.kind != "nap_candidate", firstSavedOvernight == nil {
+                firstSavedOvernight = confirmed
+            }
             saved += 1
         }
 
@@ -6090,16 +7962,33 @@ final class SessionStore: ObservableObject {
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=already_saved_or_overlapping source=%@ candidates=%d",
                           reason,
                           candidates.count)
-            return
+            return false
         }
         saveConfirmedSleeps(existing)
-        AtriaDebugLog("ATRIADBG sleep_auto_confirm status=saved source=%@ saved=%d candidates=%d policy=motion_validated_only",
+        if let firstSavedOvernight {
+            autoSleepLoggedBanner = AutoSleepLoggedBanner(id: firstSavedOvernight.id,
+                                                          start: firstSavedOvernight.start,
+                                                          end: firstSavedOvernight.end,
+                                                          duration: firstSavedOvernight.duration,
+                                                          sleepID: firstSavedOvernight.id)
+            LocalNotificationScheduler.scheduleSleepLogged(firstSavedOvernight)
+        }
+        AtriaDebugLog("ATRIADBG sleep_auto_confirm status=saved source=%@ saved=%d candidates=%d policy=motion_or_unambiguous_hr_only",
                       reason,
                       saved,
                       candidates.count)
+        return true
+    }
+
+    func dismissAutoSleepLoggedBanner(id: String) {
+        guard autoSleepLoggedBanner?.id == id else { return }
+        autoSleepLoggedBanner = nil
     }
 
     private nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+        if isUnambiguousHROnlyMainSleepCandidate(candidate) {
+            return true
+        }
         guard candidate.motionEvidenceValidated, candidate.confidence != .low else { return false }
         if candidate.kind == "nap_candidate" {
             return candidate.duration >= AggregateSleepCandidate.napMinimumDuration
@@ -6109,6 +7998,35 @@ final class SessionStore: ObservableObject {
             || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
                 && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan
                 && candidate.maxGap <= 2 * 60 * 60)
+    }
+
+    private nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
+                                                                          calendar: Calendar = .current) -> Bool {
+        guard candidate.kind != "nap_candidate",
+              candidate.sessions == 1,
+              candidate.duration >= 5 * 60 * 60,
+              candidate.maxGap <= 60,
+              candidate.avgHR <= candidate.restingHR + 12,
+              candidate.hrStandardDeviation <= 9.5 else { return false }
+        let startHour = calendar.component(.hour, from: candidate.start)
+        let endHour = calendar.component(.hour, from: candidate.end)
+        let overnight = startHour >= 20 || startHour <= 3 || endHour <= 10
+        return overnight && windowOverlapsSleepCore(start: candidate.start, end: candidate.end, calendar: calendar)
+    }
+
+    private nonisolated static func windowOverlapsSleepCore(start: Date,
+                                                            end: Date,
+                                                            calendar: Calendar) -> Bool {
+        let startDay = calendar.startOfDay(for: start)
+        for offset in -1...1 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
+                  let coreStart = calendar.date(bySettingHour: 0, minute: 0, second: 0, of: day),
+                  let coreEnd = calendar.date(bySettingHour: 6, minute: 0, second: 0, of: day) else { continue }
+            if start < coreEnd && end > coreStart {
+                return true
+            }
+        }
+        return false
     }
 
     private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
@@ -6125,17 +8043,20 @@ final class SessionStore: ObservableObject {
         let id = confirmedSleepID(start: start, end: end, source: sleepSource)
         var existing = cachedConfirmedSleeps.filter { $0.id != id }
         let duration = end.timeIntervalSince(start)
+        let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: start,
                                            end: end,
                                            source: sleepSource,
                                            confidence: "manual_user_entered",
-                                           sessions: 0,
-                                           samples: 0,
-                                           avgHR: 0,
-                                           peakHR: 0,
-                                           restingHR: rest,
+                                           sessions: metrics.sessions,
+                                           samples: metrics.samples,
+                                           avgHR: metrics.avgHR,
+                                           peakHR: metrics.peakHR,
+                                           restingHR: metrics.restingHR,
+                                           hrv: metrics.hrv,
+                                           hrvWindowCount: metrics.hrvWindowCount,
                                            duration: duration,
                                            span: duration,
                                            reason: source,
@@ -6185,7 +8106,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func confirmBestSleepCandidate(rest: Int, source: String) -> UserConfirmedSleep? {
-        guard let best = aggregateSleepCandidates(rest: rest, calendar: .current).first else {
+        guard let best = Self.preferredSleepCandidateForReview(from: aggregateSleepCandidates(rest: rest, calendar: .current)) else {
             AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
                   rest)
@@ -6229,6 +8150,9 @@ final class SessionStore: ObservableObject {
                                               isNap: best.kind == "nap_candidate",
                                               motionValidated: best.motionEvidenceValidated)
             : []
+        let metrics = confirmedSleepWindowMetrics(start: best.start,
+                                                  end: best.end,
+                                                  rest: best.restingHR)
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: best.start,
@@ -6240,6 +8164,8 @@ final class SessionStore: ObservableObject {
                                            avgHR: best.avgHR,
                                            peakHR: best.peakHR,
                                            restingHR: best.restingHR,
+                                           hrv: metrics.hrv,
+                                           hrvWindowCount: metrics.hrvWindowCount,
                                            duration: best.duration,
                                            span: best.span,
                                            reason: best.reason,
@@ -6270,6 +8196,41 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
+    private func confirmedSleepWindowMetrics(start: Date,
+                                             end: Date,
+                                             rest: Int) -> (sessions: Int, samples: Int, avgHR: Int, peakHR: Int, restingHR: Int, hrv: Int?, hrvWindowCount: Int) {
+        let overlapping = canonicalSessions().filter { session in
+            session.end > start && session.start < end && (!session.points.isEmpty || session.rrPoints?.isEmpty == false)
+        }
+        var values: [Int] = []
+        for session in overlapping {
+            for point in session.points {
+                let sampleTime = session.start.addingTimeInterval(max(0, point.t))
+                if sampleTime >= start && sampleTime <= end && point.bpm > 0 {
+                    values.append(point.bpm)
+                }
+            }
+        }
+        let avg = values.isEmpty ? 0 : values.reduce(0, +) / values.count
+        let peak = values.max() ?? 0
+        let resting = values.isEmpty ? rest : Self.percentileHR(0.05, values: values)
+        let hrvValues = overlapping.compactMap { $0.localRMSSD(in: start, end: end) }.filter { $0 > 0 }
+        let hrvWindowCount = overlapping.reduce(0) { total, session in
+            total + session.localHRVWindowCount(in: start, end: end)
+        }
+        let hrv: Int?
+        if hrvValues.isEmpty {
+            hrv = nil
+        } else {
+            let sortedHRV = hrvValues.sorted()
+            let middle = sortedHRV.count / 2
+            hrv = sortedHRV.count.isMultiple(of: 2)
+                ? Int((Double(sortedHRV[middle - 1] + sortedHRV[middle]) / 2.0).rounded())
+                : sortedHRV[middle]
+        }
+        return (overlapping.count, values.count, avg, peak, resting, hrv, hrvWindowCount)
+    }
+
     private nonisolated static func sleepStageResearchSegments(from sessions: [SavedSession],
                                                                start: Date,
                                                                end: Date,
@@ -6292,6 +8253,21 @@ final class SessionStore: ObservableObject {
                                                     restingHR: restingHR,
                                                     isNap: isNap,
                                                     motionValidated: motionValidated)
+    }
+
+    private nonisolated static func sleepStageResearchSampleCount(from sessions: [SavedSession],
+                                                                  start: Date,
+                                                                  end: Date) -> Int {
+        sessions.reduce(0) { total, session in
+            guard session.end >= start,
+                  session.start <= end,
+                  !session.points.isEmpty else { return total }
+            let count = session.points.reduce(0) { pointTotal, point in
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                return t >= start && t <= end && point.bpm > 0 ? pointTotal + 1 : pointTotal
+            }
+            return total + count
+        }
     }
 
     private static func readConfirmedSleeps() -> [UserConfirmedSleep] {
@@ -6327,10 +8303,14 @@ final class SessionStore: ObservableObject {
     private static func shouldPreserveConfirmedSleepStageSegments(_ sleep: UserConfirmedSleep) -> Bool {
         guard let stageSegments = sleep.stageSegments, !stageSegments.isEmpty else { return false }
         if sleep.source == "manual_sleep" || sleep.source == "manual_nap" { return false }
-        if sleep.confidence.localizedCaseInsensitiveContains("hr_only") { return false }
-        guard sleep.motionValidated || sleep.source == "validated_sleep_stages" else { return false }
         let covered = stageSegments.reduce(0) { $0 + max(0, $1.duration) }
-        return covered >= max(60, sleep.duration * 0.85)
+        guard covered >= max(60, sleep.duration * 0.85) else { return false }
+        let hasSleepStageEstimate = stageSegments.contains { $0.stage != .awake }
+        if sleep.motionValidated || sleep.source == "validated_sleep_stages" { return true }
+        return sleep.confidence.localizedCaseInsensitiveContains("hr_only")
+            && (SleepHistorySnapshot.Night.explicitSleepSources.contains(sleep.source)
+                || SleepHistorySnapshot.Night.explicitNapSources.contains(sleep.source))
+            && hasSleepStageEstimate
     }
 
     private static func copyConfirmedSleep(_ sleep: UserConfirmedSleep,
@@ -6346,6 +8326,8 @@ final class SessionStore: ObservableObject {
                                   avgHR: sleep.avgHR,
                                   peakHR: sleep.peakHR,
                                   restingHR: sleep.restingHR,
+                                  hrv: sleep.hrv,
+                                  hrvWindowCount: sleep.hrvWindowCount,
                                   duration: sleep.duration,
                                   span: sleep.span,
                                   reason: sleep.reason,
@@ -6385,6 +8367,141 @@ final class SessionStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
         cachedConfirmedSleeps = sorted
         refreshHistorySnapshotCache(deferred: true)
+        writeDutyCycleSleepWindow(from: sorted)
+    }
+
+    /// Learned sleep window for the capture duty cycle (docs/24 §13): median
+    /// bedtime −1h to median wake +1h across recent overnight confirmed sleeps,
+    /// written to the UserDefaults bridge the BLE manager reads.
+    private func writeDutyCycleSleepWindow(from sleeps: [UserConfirmedSleep],
+                                           calendar: Calendar = .current) {
+        let overnights = sleeps
+            .filter { !Self.confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration) }
+            .prefix(14)
+        guard overnights.count >= 3 else { return }
+        func minutesOfDay(_ date: Date) -> Int {
+            let components = calendar.dateComponents([.hour, .minute], from: date)
+            return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        }
+        // Shift starts by 12h so bedtimes around midnight sort contiguously.
+        let startMinutes = overnights.map { (minutesOfDay($0.start) + 720) % 1440 }.sorted()
+        let endMinutes = overnights.map { minutesOfDay($0.end) }.sorted()
+        let medianStartShifted = startMinutes[startMinutes.count / 2]
+        let medianStart = (medianStartShifted + 720) % 1440
+        let medianEnd = endMinutes[endMinutes.count / 2]
+        let windowStart = (medianStart + 1440 - 60) % 1440
+        let windowEnd = (medianEnd + 60) % 1440
+        let defaults = UserDefaults.standard
+        defaults.set(windowStart, forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin)
+        defaults.set(windowEnd, forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+        AtriaDebugLog("ATRIADBG duty_cycle sleep_window_start_min=%d sleep_window_end_min=%d source=confirmed_sleeps n=%d",
+                      windowStart,
+                      windowEnd,
+                      overnights.count)
+    }
+
+    private func backfillConfirmedSleepStagesFromSessions(reason: String) {
+        let sourceSessions = sessions
+        guard !sourceSessions.isEmpty, !cachedConfirmedSleeps.isEmpty else { return }
+
+        var repaired = 0
+        let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
+            if Self.shouldPreserveConfirmedSleepStageSegments(sleep) {
+                return sleep
+            }
+            let isNap = Self.confirmedSleepSourceIsNap(source: sleep.source,
+                                                       duration: sleep.duration)
+            let sampleCount = Self.sleepStageResearchSampleCount(from: sourceSessions,
+                                                                 start: sleep.start,
+                                                                 end: sleep.end)
+            var stages = Self.sleepStageResearchSegments(from: sourceSessions,
+                                                         start: sleep.start,
+                                                         end: sleep.end,
+                                                         restingHR: sleep.restingHR,
+                                                         isNap: isNap,
+                                                         motionValidated: sleep.motionValidated)
+            if !Self.confirmedSleepStagesCoverSleep(stages, sleep: sleep) {
+                let aggregateStages = Self.aggregateHRStageEstimate(for: sleep, isNap: isNap)
+                if Self.confirmedSleepStagesCoverSleep(aggregateStages, sleep: sleep) {
+                    stages = aggregateStages
+                }
+            }
+            guard !stages.isEmpty else { return sleep }
+            repaired += 1
+            let covered = stages.reduce(0) { $0 + max(0, $1.duration) }
+            let nonAwake = stages.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
+            AtriaDebugLog("ATRIADBG sleep_stage_backfill_record status=updated source=%@ sleep_source=%@ samples=%d segments=%d covered_s=%.0f non_awake_s=%.0f sleep_s=%.0f",
+                          reason,
+                          sleep.source,
+                          sampleCount,
+                          stages.count,
+                          covered,
+                          nonAwake,
+                          sleep.duration)
+            return Self.copyConfirmedSleep(sleep, stageSegments: stages)
+        }
+
+        guard repaired > 0 else { return }
+        saveConfirmedSleeps(updated)
+        let totalSegments = updated.reduce(0) { $0 + ($1.stageSegments?.count ?? 0) }
+        AtriaDebugLog("ATRIADBG sleep_stage_backfill status=updated source=%@ records=%d total_segments=%d policy=hr_samples_labeled_estimate",
+                      reason,
+                      repaired,
+                      totalSegments)
+    }
+
+    private static func confirmedSleepStagesCoverSleep(_ stages: [SleepStageSegment],
+                                                       sleep: UserConfirmedSleep) -> Bool {
+        guard !stages.isEmpty else { return false }
+        let covered = stages.reduce(0) { $0 + max(0, $1.duration) }
+        return covered >= max(60, sleep.duration * 0.85)
+    }
+
+    private static func aggregateHRStageEstimate(for sleep: UserConfirmedSleep,
+                                                 isNap: Bool) -> [SleepStageSegment] {
+        guard sleep.duration >= 20 * 60,
+              sleep.samples >= 12,
+              sleep.restingHR > 0,
+              sleep.avgHR > 0 else { return [] }
+        let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
+        let epochCount = max(1, Int(ceil(sleep.duration / epoch)))
+        let delta = sleep.avgHR - sleep.restingHR
+        let peakDelta = sleep.peakHR - sleep.restingHR
+        let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).map { index in
+            let epochStart = sleep.start.addingTimeInterval(Double(index) * epoch)
+            let epochEnd = index == epochCount - 1 ? sleep.end : min(sleep.end, epochStart.addingTimeInterval(epoch))
+            let progress = epochStart.timeIntervalSince(sleep.start) / max(1, sleep.duration)
+            let stage: SleepStageKind
+            if progress < 0.04 || progress > 0.96 {
+                stage = peakDelta >= 18 ? .awake : .light
+            } else if isNap {
+                if progress > 0.55, delta <= 12 {
+                    stage = .rem
+                } else if progress > 0.25, delta <= 7 {
+                    stage = .sws
+                } else {
+                    stage = .light
+                }
+            } else {
+                let cyclePosition = progress.truncatingRemainder(dividingBy: 0.22)
+                if progress >= 0.18 && progress <= 0.90 && cyclePosition >= 0.13 {
+                    stage = .rem
+                } else if progress >= 0.10 && progress <= 0.70 && delta <= 14 && cyclePosition <= 0.06 {
+                    stage = .deep
+                } else if progress >= 0.08 && progress <= 0.78 && delta <= 16 {
+                    stage = .sws
+                } else {
+                    stage = .light
+                }
+            }
+            return (epochStart, epochEnd, stage)
+        }
+        return staged.enumerated().map { index, item in
+            SleepStageSegment(id: "aggregate-hr-\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
+                              start: item.start,
+                              end: item.end,
+                              stage: item.stage)
+        }
     }
 
     func behaviorJournalEntry(for day: Date = Date(), calendar: Calendar = .current) -> BehaviorJournalEntry {
@@ -6402,10 +8519,17 @@ final class SessionStore: ObservableObject {
         var entry = behaviorJournalEntry(for: day, calendar: calendar)
         if entry.tags.contains(tag) {
             entry.tags.removeAll { $0 == tag }
+            if entry.healthAutoTags.contains(tag) {
+                entry.healthAutoTags.removeAll { $0 == tag }
+                rememberRemovedNutritionAutoTag(tag, day: entry.day, calendar: calendar)
+            }
         } else {
             entry.tags.append(tag)
+            entry.healthAutoTags.removeAll { $0 == tag }
+            forgetRemovedNutritionAutoTag(tag, day: entry.day, calendar: calendar)
         }
         entry.tags.sort { $0.rawValue < $1.rawValue }
+        entry.healthAutoTags.sort { $0.rawValue < $1.rawValue }
 
         var entries = cachedBehaviorJournalEntries.filter { !calendar.isDate($0.day, inSameDayAs: entry.day) }
         if !entry.tags.isEmpty {
@@ -6418,6 +8542,74 @@ final class SessionStore: ObservableObject {
               tag.rawValue,
               entry.tags.contains(tag) ? 1 : 0,
               entry.tags.map(\.rawValue).joined(separator: ","))
+    }
+
+    private func applyNutritionAutoTags(_ tags: Set<BehaviorJournalEntry.Tag>,
+                                        day: Date,
+                                        calendar: Calendar = .current) {
+        guard !tags.isEmpty else { return }
+        var entry = behaviorJournalEntry(for: day, calendar: calendar)
+        let removed = removedNutritionAutoTags(for: entry.day, calendar: calendar)
+        var changed = false
+        for tag in tags where !removed.contains(tag) {
+            if !entry.tags.contains(tag) {
+                entry.tags.append(tag)
+                changed = true
+            }
+            if !entry.healthAutoTags.contains(tag) {
+                entry.healthAutoTags.append(tag)
+                changed = true
+            }
+        }
+        guard changed else { return }
+        entry.tags.sort { $0.rawValue < $1.rawValue }
+        entry.healthAutoTags.sort { $0.rawValue < $1.rawValue }
+        var entries = cachedBehaviorJournalEntries.filter { !calendar.isDate($0.day, inSameDayAs: entry.day) }
+        entries.append(entry)
+        saveBehaviorJournalEntries(entries)
+        dashboardRevision += 1
+        AtriaDebugLog("ATRIADBG behavior_journal_auto_tags status=applied source=health day=%@ tags=%@ removed=%@",
+                      isoString(entry.day),
+                      entry.healthAutoTags.map(\.rawValue).joined(separator: ","),
+                      removed.map(\.rawValue).sorted().joined(separator: ","))
+    }
+
+    private func removedNutritionAutoTags(for day: Date,
+                                          calendar: Calendar = .current) -> Set<BehaviorJournalEntry.Tag> {
+        let key = Self.localDayIdentifier(for: day, calendar: calendar)
+        let raw = UserDefaults.standard.dictionary(forKey: BehaviorJournalDefaults.autoTagRemovalsKey) as? [String: [String]] ?? [:]
+        return Set((raw[key] ?? []).compactMap(BehaviorJournalEntry.Tag.init(rawValue:)))
+    }
+
+    private func rememberRemovedNutritionAutoTag(_ tag: BehaviorJournalEntry.Tag,
+                                                 day: Date,
+                                                 calendar: Calendar = .current) {
+        updateRemovedNutritionAutoTags(day: day, calendar: calendar) { tags in
+            tags.insert(tag)
+        }
+    }
+
+    private func forgetRemovedNutritionAutoTag(_ tag: BehaviorJournalEntry.Tag,
+                                               day: Date,
+                                               calendar: Calendar = .current) {
+        updateRemovedNutritionAutoTags(day: day, calendar: calendar) { tags in
+            tags.remove(tag)
+        }
+    }
+
+    private func updateRemovedNutritionAutoTags(day: Date,
+                                                calendar: Calendar = .current,
+                                                mutate: (inout Set<BehaviorJournalEntry.Tag>) -> Void) {
+        let key = Self.localDayIdentifier(for: day, calendar: calendar)
+        var raw = UserDefaults.standard.dictionary(forKey: BehaviorJournalDefaults.autoTagRemovalsKey) as? [String: [String]] ?? [:]
+        var tags = Set((raw[key] ?? []).compactMap(BehaviorJournalEntry.Tag.init(rawValue:)))
+        mutate(&tags)
+        if tags.isEmpty {
+            raw.removeValue(forKey: key)
+        } else {
+            raw[key] = tags.map(\.rawValue).sorted()
+        }
+        UserDefaults.standard.set(raw, forKey: BehaviorJournalDefaults.autoTagRemovalsKey)
     }
 
     private struct InsightDayMetrics { let recovery: Double?; let hrv: Double? }
@@ -6447,7 +8639,14 @@ final class SessionStore: ObservableObject {
         // Recovery correlations stay fail-closed until they can use real
         // baseline-gated Recovery inputs; strain-derived recovery proxies would
         // violate the honest-metrics tiering in docs/21.
-        let grouped = Dictionary(grouping: sessions) { calendar.startOfDay(for: $0.start) }
+        let referenceDate = (sessions.map(\.start) + journalEntries.map(\.day)).max() ?? Date()
+        let windowStart = calendar.date(byAdding: .day,
+                                        value: -behaviorCorrelationWindowDays,
+                                        to: calendar.startOfDay(for: referenceDate))
+            ?? referenceDate.addingTimeInterval(TimeInterval(-behaviorCorrelationWindowDays * 24 * 60 * 60))
+        let recentSessions = sessions.filter { $0.start >= windowStart }
+        let recentJournalEntries = journalEntries.filter { $0.day >= windowStart }
+        let grouped = Dictionary(grouping: recentSessions) { calendar.startOfDay(for: $0.start) }
         guard !grouped.isEmpty else {
             return BehaviorJournalEntry.Tag.allCases.map {
                 BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
@@ -6462,7 +8661,7 @@ final class SessionStore: ObservableObject {
         return BehaviorJournalEntry.Tag.allCases.map { tag in
             // Genuine tagged-vs-UNtagged contrast: the baseline excludes the tag's
             // own days, otherwise the delta is diluted by the days being measured.
-            let taggedDayKeys = Set(journalEntries
+            let taggedDayKeys = Set(recentJournalEntries
                 .filter { $0.tags.contains(tag) }
                 .map { calendar.startOfDay(for: $0.day) })
             let tagged = metricsByDay.filter { taggedDayKeys.contains($0.key) }.map(\.value)
@@ -6499,6 +8698,12 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func sortedBehaviorCorrelationSummaries(_ summaries: [BehaviorCorrelationSummary]) -> [BehaviorCorrelationSummary] {
         summaries.sorted { lhs, rhs in
+            if (lhs.impactDelta != nil) != (rhs.impactDelta != nil) {
+                return lhs.impactDelta != nil
+            }
+            if lhs.impactMagnitude != rhs.impactMagnitude {
+                return lhs.impactMagnitude > rhs.impactMagnitude
+            }
             if lhs.days != rhs.days { return lhs.days > rhs.days }
             return lhs.tag.rawValue < rhs.tag.rawValue
         }
@@ -6753,8 +8958,8 @@ final class SessionStore: ObservableObject {
         if rhs.sessionsEvaluated == 0 { return true }
         if lhs.bestStatus != rhs.bestStatus { return lhs.bestStatus == "ready" }
         if lhs.nearMiss != rhs.nearMiss { return lhs.nearMiss }
-        let lhsLongEnough = lhs.bestObservedDuration >= 10 * 60
-        let rhsLongEnough = rhs.bestObservedDuration >= 10 * 60
+        let lhsLongEnough = lhs.bestObservedDuration >= 15 * 60
+        let rhsLongEnough = rhs.bestObservedDuration >= 15 * 60
         if lhsLongEnough != rhsLongEnough { return lhsLongEnough }
         let lhsHasElevatedEvidence = lhs.bestElevatedSeconds > 0 || lhs.bestPeakHR >= lhs.bestThresholdHR
         let rhsHasElevatedEvidence = rhs.bestElevatedSeconds > 0 || rhs.bestPeakHR >= rhs.bestThresholdHR
@@ -6784,20 +8989,22 @@ final class SessionStore: ObservableObject {
     }
 
     private func latestBackupMatchesCurrentStore(_ latest: URL) -> Bool {
-        guard let data = try? Data(contentsOf: latest) else { return false }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let envelope = try? decoder.decode(SessionBackupEnvelope.self, from: data),
-              envelope.schema == 1,
+        guard let envelope = try? Self.decodeSessionBackupEnvelope(at: latest),
+              Self.supportedBackupSchemas.contains(envelope.schema),
               envelope.sessions.count == sessions.count else {
             return false
         }
+        let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
         let backupDigest = backupContentDigest(sessions: envelope.sessions,
                                                baseline: envelope.baseline,
-                                               profile: envelope.profile)
+                                               profile: envelope.profile,
+                                               dailyRollups: envelope.dailyRollups,
+                                               confirmedSleeps: envelope.confirmedSleeps)
         let currentDigest = backupContentDigest(sessions: sessions,
                                                 baseline: baseline,
-                                                profile: profile)
+                                                profile: profile,
+                                                dailyRollups: envelope.schema >= 2 ? rollups : nil,
+                                                confirmedSleeps: envelope.schema >= 2 ? cachedConfirmedSleeps : nil)
         return backupDigest != nil && backupDigest == currentDigest
     }
 
@@ -6809,15 +9016,13 @@ final class SessionStore: ObservableObject {
                                                   includeSafetyBackups: false) else {
             return .missing
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         let rrSamples = { (sessions: [SavedSession]) in
             sessions.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) }
         }
         do {
-            let data = try Data(contentsOf: latest)
-            let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
-            guard envelope.schema == 1 else {
+            let data = try Self.sessionBackupPayloadData(at: latest)
+            let envelope = try Self.decodeSessionBackupEnvelope(from: data)
+            guard Self.supportedBackupSchemas.contains(envelope.schema) else {
                 return SessionBackupStatus(available: true,
                                            current: false,
                                            path: backupRelativePath(for: latest),
@@ -6852,20 +9057,21 @@ final class SessionStore: ObservableObject {
                                                                     currentSessions: [SavedSession],
                                                                     baseline: PersonalBaseline,
                                                                     profile: AthleteProfile) -> Bool {
-        guard let data = try? Data(contentsOf: latest) else { return false }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let envelope = try? decoder.decode(SessionBackupEnvelope.self, from: data),
-              envelope.schema == 1,
+        guard let envelope = try? decodeSessionBackupEnvelope(at: latest),
+              supportedBackupSchemas.contains(envelope.schema),
               envelope.sessions.count == currentSessions.count else {
             return false
         }
         let backupDigest = makeBackupContentDigest(sessions: envelope.sessions,
                                                    baseline: envelope.baseline,
-                                                   profile: envelope.profile)
+                                                   profile: envelope.profile,
+                                                   dailyRollups: envelope.dailyRollups,
+                                                   confirmedSleeps: envelope.confirmedSleeps)
         let currentDigest = makeBackupContentDigest(sessions: currentSessions,
                                                     baseline: baseline,
-                                                    profile: profile)
+                                                    profile: profile,
+                                                    dailyRollups: envelope.schema >= 2 ? envelope.dailyRollups : nil,
+                                                    confirmedSleeps: envelope.schema >= 2 ? envelope.confirmedSleeps : nil)
         return backupDigest != nil && backupDigest == currentDigest
     }
 
@@ -6876,15 +9082,12 @@ final class SessionStore: ObservableObject {
             guard let files = try? FileManager.default.contentsOfDirectory(at: backupDir,
                                                                            includingPropertiesForKeys: nil,
                                                                            options: [.skipsHiddenFiles])
-                .filter({
-                    $0.pathExtension == "json"
-                        && (includeSafetyBackups || !$0.deletingPathExtension().lastPathComponent.hasSuffix("-pre-restore"))
-                }) else {
+                .filter({ isSessionBackupFile($0, includeSafetyBackups: includeSafetyBackups) }) else {
                 continue
             }
             allFiles.append(contentsOf: files)
         }
-        return allFiles.max { backupSortDate($0) < backupSortDate($1) }
+        return Self.latestDecodableSessionBackupURL(from: allFiles)
     }
 
     private nonisolated static func sessionBackupDirectoriesForReading(sessionFileURL: URL) -> [URL] {
@@ -6893,6 +9096,42 @@ final class SessionStore: ObservableObject {
             documentsURL.appendingPathComponent("atria-backups"),
             documentsURL.appendingPathComponent("whoop-backups")
         ]
+    }
+
+    private nonisolated static func latestDecodableSessionBackupURL(from files: [URL]) -> URL? {
+        files
+            .sorted { backupSortDate($0) > backupSortDate($1) }
+            .first { url in
+                guard let envelope = try? decodeSessionBackupEnvelope(at: url) else {
+                    return false
+                }
+                return supportedBackupSchemas.contains(envelope.schema)
+            }
+    }
+
+    private nonisolated static func bestRestorableSessionBackupURL(from files: [URL]) -> URL? {
+        let candidates = files
+            .compactMap { url -> (url: URL, isComplete: Bool, sessions: Int, date: Date)? in
+                guard let envelope = try? decodeSessionBackupEnvelope(at: url),
+                      supportedBackupSchemas.contains(envelope.schema),
+                      envelope.schema >= 2 else {
+                    return nil
+                }
+                let hasProductState = !(envelope.dailyRollups ?? []).isEmpty
+                    && !(envelope.confirmedSleeps ?? []).isEmpty
+                return (url, hasProductState, envelope.sessions.count, backupSortDate(url))
+            }
+        let productComplete = candidates.filter(\.isComplete)
+        let ranked = productComplete.isEmpty ? candidates : productComplete
+        return ranked
+            .sorted {
+                if $0.sessions != $1.sessions {
+                    return $0.sessions > $1.sessions
+                }
+                return $0.date > $1.date
+            }
+            .first?
+            .url
     }
 
     private nonisolated static func backupRelativePath(for backupURL: URL) -> String {
@@ -6907,6 +9146,30 @@ final class SessionStore: ObservableObject {
         return .distantPast
     }
 
+    private nonisolated static let supportedBackupSchemas: Set<Int> = [1, 2, 3]
+
+    private nonisolated static func decodeSessionBackupEnvelope(at url: URL) throws -> SessionBackupEnvelope {
+        try decodeSessionBackupEnvelope(from: sessionBackupPayloadData(at: url))
+    }
+
+    private nonisolated static func decodeSessionBackupEnvelope(from data: Data) throws -> SessionBackupEnvelope {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(SessionBackupEnvelope.self, from: data)
+    }
+
+    private nonisolated static func sessionBackupPayloadData(at url: URL) throws -> Data {
+        let data = try Data(contentsOf: url)
+        return try AtriaBackupCompression.archivePayloadData(from: data, fileExtension: url.pathExtension)
+    }
+
+    private nonisolated static func isSessionBackupFile(_ url: URL, includeSafetyBackups: Bool) -> Bool {
+        let ext = url.pathExtension
+        guard ext == "json" || ext == "gz" else { return false }
+        let name = url.deletingPathExtension().deletingPathExtension().lastPathComponent
+        return includeSafetyBackups || !name.hasSuffix("-pre-restore")
+    }
+
     func sessionBackupStatus() -> SessionBackupStatus {
         cachedSessionBackupStatus
     }
@@ -6915,12 +9178,10 @@ final class SessionStore: ObservableObject {
         guard let latest = latestSessionBackupURL() else {
             return .missing
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         do {
-            let data = try Data(contentsOf: latest)
-            let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
-            guard envelope.schema == 1 else {
+            let data = try Self.sessionBackupPayloadData(at: latest)
+            let envelope = try Self.decodeSessionBackupEnvelope(from: data)
+            guard Self.supportedBackupSchemas.contains(envelope.schema) else {
                 return SessionBackupStatus(available: true,
                                            current: false,
                                            path: backupRelativePath(for: latest),
@@ -7196,7 +9457,7 @@ final class SessionStore: ObservableObject {
         let replaySessions = canonicalSessions()
         let single = replaySessions.compactMap { $0.detectedActivity(rest: rest, maxHR: maxHR) }
         let aggregateWorkouts = aggregateWorkoutCandidates(rest: rest, maxHR: maxHR, calendar: Calendar.current)
-            .filter { $0.readiness.ready || $0.readiness.nearMiss || $0.readiness.strengthCandidate }
+            .filter { $0.readiness.ready || $0.readiness.reviewWorthyCandidate }
             .map { aggregate in
                 let kind: ActivityDetection.Kind = aggregate.readiness.ready ? .workout : .activityCandidate
                 let confidence: ActivityDetection.Confidence = aggregate.readiness.ready ? .medium : .low
@@ -7221,16 +9482,20 @@ final class SessionStore: ObservableObject {
         let grouped = Dictionary(grouping: replaySessions) { session in
             calendar.startOfDay(for: session.start)
         }
-        let aggregateSleeps = Dictionary(uniqueKeysWithValues: aggregateSleepCandidates(rest: rest, calendar: calendar).map { ($0.day, $0) })
+        let aggregateSleeps = Self.preferredSleepCandidatesByDay(aggregateSleepCandidates(rest: rest,
+                                                                                         calendar: calendar,
+                                                                                         historicalMotionPolicy: .boundedRecent))
         let aggregateCandidatesByDay = Dictionary(grouping: aggregateWorkoutCandidates(rest: rest, maxHR: maxHR, calendar: calendar).filter {
-            $0.readiness.ready || $0.readiness.nearMiss || $0.readiness.strengthCandidate
+            $0.readiness.ready || $0.readiness.reviewWorthyCandidate
         }) { candidate in
             candidate.day
         }
         let confirmedWorkoutsByDay = Dictionary(grouping: cachedConfirmedWorkouts) { workout in
             calendar.startOfDay(for: workout.start)
         }
-        return grouped.map { day, daySessions in
+        let rollupDays = Set(grouped.keys).union(aggregateSleeps.keys)
+        return rollupDays.map { day in
+            let daySessions = grouped[day] ?? []
             let detections = daySessions.compactMap { $0.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar) }
             let singleSessionWorkouts = detections.filter { $0.kind == .workout }.count
             let aggregateCandidates = aggregateCandidatesByDay[day] ?? []
@@ -7451,12 +9716,6 @@ final class SessionStore: ObservableObject {
                                                maxHR: Int,
                                                thresholdFraction: Double) -> AggregateWorkoutCandidate? {
         guard points.count >= 2, end > start else { return nil }
-        let phoneMotion = Metrics.stepsDaily(ordered.map { session in
-            Metrics.PhoneMotionSample(steps: session.phoneStepCountValue,
-                                      distanceMeters: session.phoneStepDistanceMeters,
-                                      floorsAscended: session.phoneStepFloorsAscended,
-                                      floorsDescended: session.phoneStepFloorsDescended)
-        })
         let aggregate = SavedSession(id: ordered.first?.id ?? UUID(),
                                      start: start,
                                      end: end,
@@ -7474,12 +9733,6 @@ final class SessionStore: ObservableObject {
                                      motionShortMin: nil,
                                      motionShortMax: nil,
                                      motionShortOverOneCount: nil,
-                                     phoneStepSource: phoneMotion.hasStepEvidence ? "phone_coremotion_pedometer" : "unavailable",
-                                     phoneStepValidated: false,
-                                     phoneStepCount: phoneMotion.steps,
-                                     phoneStepDistanceMeters: phoneMotion.distanceMeters,
-                                     phoneStepFloorsAscended: phoneMotion.floorsAscended,
-                                     phoneStepFloorsDescended: phoneMotion.floorsDescended,
                                      hrRaw2A37: ordered.reduce(0) { $0 + $1.hrRaw2A37Value },
                                      hrAccepted: ordered.reduce(0) { $0 + $1.hrAcceptedValue },
                                      hrZero: ordered.reduce(0) { $0 + $1.hrZeroValue },
@@ -7610,14 +9863,26 @@ final class SessionStore: ObservableObject {
         return left < dates.count ? left : nil
     }
 
-    func aggregateSleepCandidates(rest: Int, calendar: Calendar = .current) -> [AggregateSleepCandidate] {
-        Self.aggregateSleepCandidates(in: canonicalSessions(), rest: rest, maxHR: profile.maxHR, calendar: calendar)
+    enum HistoricalSleepMotionPolicy {
+        case fullArchive
+        case boundedRecent
+    }
+
+    func aggregateSleepCandidates(rest: Int,
+                                  calendar: Calendar = .current,
+                                  historicalMotionPolicy: HistoricalSleepMotionPolicy = .fullArchive) -> [AggregateSleepCandidate] {
+        Self.aggregateSleepCandidates(in: canonicalSessions(),
+                                      rest: rest,
+                                      maxHR: profile.maxHR,
+                                      calendar: calendar,
+                                      historicalMotionPolicy: historicalMotionPolicy)
     }
 
     private nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
                                                              rest: Int,
                                                              maxHR: Int,
-                                                             calendar: Calendar = .current) -> [AggregateSleepCandidate] {
+                                                             calendar: Calendar = .current,
+                                                             historicalMotionPolicy: HistoricalSleepMotionPolicy = .fullArchive) -> [AggregateSleepCandidate] {
         let eligible = sourceSessions.filter { session in
             guard session.duration >= AggregateSleepCandidate.minimumFragmentDuration,
                   !session.points.isEmpty else { return false }
@@ -7631,15 +9896,22 @@ final class SessionStore: ObservableObject {
                 && session.peak <= rest + 35
             let napLike = daytimeNapWindow && shortLowHRNapLike
             let lowHR = session.avg <= rest + 18 && session.peak <= rest + 55
+            let longOvernightReviewLike = overnight
+                && session.duration >= AggregateSleepCandidate.strictMinimumDuration
+                && session.avg <= rest + 22
+                && session.peak <= rest + 75
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
-            return ((overnight && lowHR) || napLike || shortLowHRNapLike) && notWorkout
+            return ((overnight && lowHR) || longOvernightReviewLike || napLike || shortLowHRNapLike) && notWorkout
         }
         let grouped = Dictionary(grouping: eligible) { session in
             Self.aggregateSleepDay(for: session, calendar: calendar)
         }
         let candidates: [AggregateSleepCandidate] = grouped.flatMap { day, daySessions in
             let ordered = daySessions.sorted { $0.start < $1.start }
-            let clusters = Self.sleepClusters(from: ordered, maxGap: 2 * 60 * 60)
+            let clusters = Self.sleepClusters(from: ordered,
+                                              maxGap: 2 * 60 * 60,
+                                              rest: rest,
+                                              calendar: calendar)
             return clusters.compactMap { cluster -> AggregateSleepCandidate? in
                 let totalDuration = cluster.reduce(0) { $0 + $1.duration }
                 let gaps = zip(cluster, cluster.dropFirst()).map { previous, next in
@@ -7652,6 +9924,7 @@ final class SessionStore: ObservableObject {
                 let span = end.timeIntervalSince(start)
                 let avg = allHR.reduce(0, +) / allHR.count
                 let peak = allHR.max() ?? 0
+                let hrStandardDeviation = standardDeviation(allHR.map(Double.init))
                 let resting = Self.percentileHR(0.05, values: allHR)
                 let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                 let fragmentedFallbackReady = cluster.count > 1
@@ -7660,11 +9933,17 @@ final class SessionStore: ObservableObject {
                     && maxGap <= 2 * 60 * 60
                 let clusterStartHour = calendar.component(.hour, from: start)
                 let clusterEndHour = calendar.component(.hour, from: end)
-                let daytimeNapCandidateReady = clusterStartHour >= 11
+                let clusterOvernightReviewWindow = clusterStartHour >= 20
+                    || clusterStartHour <= 5
+                    || clusterEndHour <= 11
+                let clusterDaytimeNapWindow = !clusterOvernightReviewWindow
+                    && clusterStartHour >= 11
                     && clusterEndHour <= 20
+                let daytimeNapCandidateReady = clusterDaytimeNapWindow
                     && span <= AggregateSleepCandidate.napMaximumSpan
                     && totalDuration >= AggregateSleepCandidate.napMinimumDuration
                 let shortLowHRNapCandidateReady = cluster.count == 1
+                    && clusterDaytimeNapWindow
                     && span <= AggregateSleepCandidate.napMaximumSpan
                     && totalDuration >= AggregateSleepCandidate.napMinimumDuration
                     && avg <= rest + 12
@@ -7673,7 +9952,13 @@ final class SessionStore: ObservableObject {
                 guard strictDurationReady || fragmentedFallbackReady || napCandidateReady else { return nil }
                 let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
                 let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
-                let historicalMotion = HistoricalArchive.motionWindowDiagnostics(start: start, end: end)
+                let historicalMotion: HistoricalArchive.MotionWindowDiagnostics
+                switch historicalMotionPolicy {
+                case .fullArchive:
+                    historicalMotion = HistoricalArchive.motionWindowDiagnostics(start: start, end: end)
+                case .boundedRecent:
+                    historicalMotion = HistoricalArchive.boundedMotionWindowDiagnostics(start: start, end: end)
+                }
                 let motionSource = historicalMotion.lowMotionReady
                     ? "historical_gravity"
                     : (motionHintCount > 0 ? "diagnostic_observe_only" : "unavailable")
@@ -7694,9 +9979,9 @@ final class SessionStore: ObservableObject {
                 } else if napCandidateReady {
                     reason = "HR-only daytime nap candidate; user confirmation required; \(motionReason)"
                 } else if cluster.count > 1 {
-                    reason = "HR-only broken overnight low-HR aggregate; \(motionReason)"
+                    reason = "HR-only broken overnight review aggregate; user confirmation required; \(motionReason)"
                 } else {
-                    reason = "HR-only overnight low-HR window; \(motionReason)"
+                    reason = "HR-only overnight review window; user confirmation required; \(motionReason)"
                 }
                 let kind = napCandidateReady ? "nap_candidate" : "overnight_sleep"
                 return AggregateSleepCandidate(kind: kind,
@@ -7710,6 +9995,7 @@ final class SessionStore: ObservableObject {
                                                samples: cluster.reduce(0) { $0 + $1.points.count },
                                                avgHR: avg,
                                                peakHR: peak,
+                                               hrStandardDeviation: hrStandardDeviation,
                                                restingHR: resting,
                                                confidence: confidence,
                                                reason: reason,
@@ -7748,11 +10034,12 @@ final class SessionStore: ObservableObject {
         let candidates = Self.aggregateSleepCandidates(in: recent,
                                                        rest: rest,
                                                        maxHR: profile.maxHR,
-                                                       calendar: calendar)
+                                                       calendar: calendar,
+                                                       historicalMotionPolicy: .boundedRecent)
         let ready = candidates.filter { candidate in
             candidate.motionEvidenceValidated && candidate.confidence != .low
         }
-        if let best = ready.first {
+        if let best = Self.preferredSleepCandidateForReview(from: ready) {
             return SleepEvidenceStatus(ready: true,
                                        state: "ready",
                                        blocker: "none",
@@ -7769,7 +10056,7 @@ final class SessionStore: ObservableObject {
                                        fallbackSessions: 0)
         }
 
-        if let best = candidates.first {
+        if let best = Self.preferredSleepCandidateForReview(from: candidates) {
             return SleepEvidenceStatus(ready: false,
                                        state: "low_confidence",
                                        blocker: sleepEvidenceBlocker(for: best),
@@ -7830,7 +10117,7 @@ final class SessionStore: ObservableObject {
         let ready = candidates.filter { candidate in
             candidate.motionEvidenceValidated && candidate.confidence != .low
         }
-        if let best = ready.first {
+        if let best = Self.preferredSleepCandidateForReview(from: ready) {
             return SleepEvidenceStatus(ready: true,
                                        state: "ready",
                                        blocker: "none",
@@ -7848,7 +10135,7 @@ final class SessionStore: ObservableObject {
         }
 
         let observedSleepDays = sleepDays ?? (candidates.isEmpty ? 0 : candidates.count)
-        if let best = candidates.first {
+        if let best = Self.preferredSleepCandidateForReview(from: candidates) {
             return SleepEvidenceStatus(ready: false,
                                        state: "low_confidence",
                                        blocker: sleepEvidenceBlocker(for: best),
@@ -7902,6 +10189,9 @@ final class SessionStore: ObservableObject {
     }
 
     private func sleepEvidenceBlocker(for candidate: AggregateSleepCandidate) -> String {
+        if Self.isStrapOnlyMainSleepReviewCandidate(candidate) {
+            return "sleep_review_pending_user_confirmation"
+        }
         if candidate.motionEvidenceValidated && candidate.confidence == .low {
             return "sleep_low_confidence_threshold"
         }
@@ -7960,7 +10250,10 @@ final class SessionStore: ObservableObject {
             Self.aggregateSleepDay(for: session, calendar: calendar)
         }
         let clusters = grouped.values.flatMap { daySessions in
-            Self.sleepClusters(from: daySessions.sorted { $0.start < $1.start }, maxGap: 2 * 60 * 60)
+            Self.sleepClusters(from: daySessions.sorted { $0.start < $1.start },
+                               maxGap: 2 * 60 * 60,
+                               rest: rest,
+                               calendar: calendar)
         }
         return clusters.compactMap { cluster -> IncompleteSleepFallback? in
             guard let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
@@ -8139,111 +10432,42 @@ final class SessionStore: ObservableObject {
 
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
         let chronologicalAge = profile.age
-        var blockers: [String] = []
-        if profile.biologicalSex == .unspecified {
-            blockers.append("Add sex in profile")
-        }
-        if vo2MaxEstimate.value == nil {
-            blockers.append("VO2max estimate")
-        }
-        if baseline.restingInt == nil || !baseline.hasTrustedRestingBaseline() {
-            blockers.append("14 fresh RHR baseline nights")
-        }
-        if baseline.hrvInt == nil || !baseline.hasTrustedHRVBaseline() {
-            blockers.append("14 fresh HRV baseline nights")
-        }
-        let sleepNights = sleepHistorySnapshot.nights
-            .filter { !$0.isNapEvidence }
-            .prefix(14)
-        if sleepNights.count < 3 {
-            blockers.append("3 sleep night records")
-        }
-        if profile.heightCm <= 0 || profile.weightKg <= 0 {
-            blockers.append("height and weight")
-        }
-        if trainingLoadSummarySnapshot.confidence != "local" || trainingLoadSummarySnapshot.chronicLoad <= 0 {
-            blockers.append("14 activity load days")
-        }
-        guard blockers.isEmpty,
-              let vo2Max = vo2MaxEstimate.value,
-              let restingHR = baseline.restingInt,
-              let hrv = baseline.hrvInt else {
-            return .building(chronologicalAge: chronologicalAge, blockers: blockers)
-        }
+        _ = vo2MaxEstimate
+        let calendar = Calendar.current
+        let recentMetrics = Array(dailyMetricHistory
+            .sorted { $0.day > $1.day }
+            .prefix(28))
+        let metricDays = Set(dailyMetricHistory.map { calendar.startOfDay(for: $0.day) })
+        let sessionDays = Set(canonicalSessions().map { calendar.startOfDay(for: $0.start) })
+        let historyDays = metricDays.union(sessionDays).count
+        let restingHR = averageInt(recentMetrics.compactMap(\.restingHR)) ?? baseline.restingInt
+        let hrv = averageInt(recentMetrics.compactMap(\.hrv)) ?? baseline.hrvInt
+        let sleepConsistency = recentMetrics.compactMap(\.sleepConsistencyPercent).first
+            ?? sleepHistorySnapshot.sleepConsistencyPercent
+        let weeklyZone2PlusMinutes = weeklyZone2PlusMinutes(now: Date())
 
-        let sleepDurationHours = sleepNights.reduce(0) { $0 + $1.durationHours } / Double(sleepNights.count)
-        let sleepEfficiencyValues = sleepNights.compactMap(\.sleepEfficiency)
-        let sleepEfficiency = sleepEfficiencyValues.isEmpty ? 0.82 : sleepEfficiencyValues.reduce(0, +) / Double(sleepEfficiencyValues.count)
-        let heightM = profile.heightCm / 100
-        let bmi = profile.weightKg / max(0.1, heightM * heightM)
-        let factors = [
-            AtriaAnalytics.BiologicalAge.factor(id: "vo2max",
-                                                label: "VO2max",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.vo2AgeEquivalent(vo2Max, sex: profile.biologicalSex),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.30,
-                                                detail: String(format: "%.1f ml/kg/min", vo2Max)),
-            AtriaAnalytics.BiologicalAge.factor(id: "rhr",
-                                                label: "Resting HR",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.rhrAgeEquivalent(restingHR),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.20,
-                                                detail: "\(restingHR) bpm baseline"),
-            AtriaAnalytics.BiologicalAge.factor(id: "hrv",
-                                                label: "HRV",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.hrvAgeEquivalent(hrv),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.20,
-                                                detail: "\(hrv) ms baseline"),
-            AtriaAnalytics.BiologicalAge.factor(id: "sleep",
-                                                label: "Sleep",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.sleepAgeEquivalent(durationHours: sleepDurationHours,
-                                                                                                              efficiency: sleepEfficiency,
-                                                                                                              consistencyPercent: sleepHistorySnapshot.sleepConsistencyPercent,
-                                                                                                              chronologicalAge: chronologicalAge),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.15,
-                                                detail: String(format: "%.1fh · %.0f%% eff · %@ consistent",
-                                                               sleepDurationHours,
-                                                               sleepEfficiency * 100,
-                                                               sleepHistorySnapshot.sleepConsistencyText)),
-            AtriaAnalytics.BiologicalAge.factor(id: "activity",
-                                                label: "Activity",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.activityAgeEquivalent(trainingLoadSummarySnapshot.chronicLoad,
-                                                                                                                  chronologicalAge: chronologicalAge),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.10,
-                                                detail: String(format: "load %.1f", trainingLoadSummarySnapshot.chronicLoad)),
-            AtriaAnalytics.BiologicalAge.factor(id: "bmi",
-                                                label: "BMI",
-                                                ageEquivalent: AtriaAnalytics.BiologicalAge.bmiAgeEquivalent(bmi, chronologicalAge: chronologicalAge),
-                                                chronologicalAge: chronologicalAge,
-                                                weight: 0.05,
-                                                detail: String(format: "BMI %.1f", bmi))
-        ]
-        let trendDeltaYears: Int?
-        if let vo2TrendDelta = vo2MaxEstimate.trendDelta {
-            let priorVO2 = max(1, vo2Max - vo2TrendDelta)
-            let priorFactors = factors.map { factor -> BioAgeFactor in
-                guard factor.id == "vo2max" else { return factor }
-                return AtriaAnalytics.BiologicalAge.factor(id: factor.id,
-                                                           label: factor.label,
-                                                           ageEquivalent: AtriaAnalytics.BiologicalAge.vo2AgeEquivalent(priorVO2, sex: profile.biologicalSex),
-                                                           chronologicalAge: chronologicalAge,
-                                                           weight: factor.weight,
-                                                           detail: String(format: "prior VO2max %.1f", priorVO2))
-            }
-            let currentAge = AtriaAnalytics.BiologicalAge.estimatedAge(chronologicalAge: chronologicalAge,
-                                                                       factors: factors)
-            let priorAge = AtriaAnalytics.BiologicalAge.estimatedAge(chronologicalAge: chronologicalAge,
-                                                                     factors: priorFactors)
-            trendDeltaYears = currentAge - priorAge
-        } else {
-            trendDeltaYears = nil
+        return AtriaFitnessAge.summary(inputs: AtriaFitnessAge.Inputs(chronologicalAge: chronologicalAge,
+                                                                      restingHeartRate: restingHR,
+                                                                      hrvRMSSD: hrv,
+                                                                      weeklyZone2PlusMinutes: weeklyZone2PlusMinutes,
+                                                                      sleepConsistencyPercent: sleepConsistency,
+                                                                      historyDays: historyDays))
+    }
+
+    private func weeklyZone2PlusMinutes(now: Date, calendar: Calendar = .current) -> Double? {
+        let cutoff = now.addingTimeInterval(-7 * 24 * 60 * 60)
+        let sessions = canonicalSessions()
+            .filter { $0.end >= cutoff && !$0.points.isEmpty && $0.duration >= 60 }
+        guard !sessions.isEmpty else { return nil }
+        let seconds = sessions.reduce(0.0) { total, session in
+            let zones = session.timeInZone(maxHR: profile.maxHR)
+            return total
+                + (zones[.fatBurn] ?? 0)
+                + (zones[.aerobic] ?? 0)
+                + (zones[.anaerobic] ?? 0)
+                + (zones[.max] ?? 0)
         }
-        return AtriaAnalytics.BiologicalAge.summary(chronologicalAge: chronologicalAge,
-                                                    factors: factors,
-                                                    trendDeltaYears: trendDeltaYears)
+        return seconds / 60
     }
 
     func trendSummaryFast(rest: Int,
@@ -8330,18 +10554,16 @@ final class SessionStore: ObservableObject {
         let baselineSnapshot = baseline
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
-        DispatchQueue.global(qos: .utility).async {
-            let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
-                                                      confirmedWorkouts: confirmedWorkouts,
-                                                      confirmedSleeps: confirmedSleeps,
-                                                      baseline: baselineSnapshot,
-                                                      rest: rest,
-                                                      maxHR: maxHR)
-            Self.logTrendSummaries(summaries: snapshots.history.trends,
-                                   sessionsCount: sourceSessions.count,
-                                   rest: rest,
-                                   maxHR: maxHR)
-        }
+        let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+                                                  confirmedWorkouts: confirmedWorkouts,
+                                                  confirmedSleeps: confirmedSleeps,
+                                                  baseline: baselineSnapshot,
+                                                  rest: rest,
+                                                  maxHR: maxHR)
+        Self.logTrendSummaries(summaries: snapshots.history.trends,
+                               sessionsCount: sourceSessions.count,
+                               rest: rest,
+                               maxHR: maxHR)
     }
 
     private nonisolated static func logTrendSummaries(summaries: [TrendSummary],
@@ -8672,14 +10894,41 @@ final class SessionStore: ObservableObject {
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
             }
-            logSleepValidation(label: label?.isEmpty == false ? label : nil)
+            await logSleepValidationWithReadinessRetry(label: label?.isEmpty == false ? label : nil)
         }
+    }
+
+    private func logSleepValidationWithReadinessRetry(label: String?) async {
+        guard label == nil else {
+            logSleepValidation(label: label)
+            return
+        }
+        for (index, delay) in Self.sleepValidationRetryDelays.enumerated() {
+            let readiness = sleepReadinessRetryState()
+            guard readiness.shouldRetry else {
+                logSleepValidation(label: nil)
+                return
+            }
+            AtriaDebugLog("ATRIADBG sleep_validation status=deferred reason=%@ attempt=%d next_delay_s=%.0f state=%@ candidates=%d ready_candidates=%d pending_backfill=%d action=retry_existing_gates",
+                          readiness.evidence.blocker,
+                          index + 1,
+                          delay,
+                          readiness.evidence.state,
+                          readiness.evidence.candidates,
+                          readiness.evidence.readyCandidates,
+                          readiness.pendingBackfill ? 1 : 0)
+            try? await Task.sleep(for: .seconds(delay))
+        }
+        logSleepValidation(label: nil)
     }
 
     private func logSleepValidation(label: String?) {
         let rest = baseline.restingInt ?? 60
         let calendar = Calendar.current
         let aggregateSleepCandidatesForValidation = label == nil ? aggregateSleepCandidates(rest: rest, calendar: calendar) : []
+        if label == nil, !aggregateSleepCandidatesForValidation.isEmpty {
+            logSleepValidationCandidateMatrix(candidates: aggregateSleepCandidatesForValidation)
+        }
         if label == nil,
            let aggregate = aggregateSleepCandidatesForValidation.first {
             let startHour = calendar.component(.hour, from: aggregate.start)
@@ -8807,6 +11056,54 @@ final class SessionStore: ObservableObject {
               formatDouble(session.motionShortMinValue),
               formatDouble(session.motionShortMaxValue),
               session.motionShortOverOneCountValue)
+    }
+
+    private func logSleepValidationCandidateMatrix(candidates: [AggregateSleepCandidate],
+                                                   maxRows: Int = 6) {
+        let preferred = Self.preferredSleepCandidateForReview(from: candidates)
+        let readyCount = candidates.filter { $0.motionEvidenceValidated && $0.confidence != .low }.count
+        AtriaDebugLog("ATRIADBG sleep_candidate_matrix candidates=%d emitted=%d ready_candidates=%d preferred_kind=%@ preferred_start=%@ preferred_end=%@ policy=review_before_recovery",
+                      candidates.count,
+                      min(maxRows, candidates.count),
+                      readyCount,
+                      preferred?.kind ?? "none",
+                      preferred.map { isoString($0.start) } ?? "none",
+                      preferred.map { isoString($0.end) } ?? "none")
+
+        for (index, candidate) in candidates.prefix(maxRows).enumerated() {
+            let selected = preferred.map {
+                $0.kind == candidate.kind
+                    && abs($0.start.timeIntervalSince(candidate.start)) < 1
+                    && abs($0.end.timeIntervalSince(candidate.end)) < 1
+            } ?? false
+            let autoConfirmable = Self.isStrongAutoConfirmableSleepCandidate(candidate)
+            AtriaDebugLog("ATRIADBG sleep_candidate rank=%d selected=%d kind=%@ source=%@ duration_s=%.0f span_s=%.0f max_gap_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d sleep_rhr=%d confidence=%@ auto_confirmable=%d motion_source=%@ motion_validated=%d blocker=%@ fallback_source=%@ historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_nearest_separation_s=%d detail=%@",
+                          index + 1,
+                          selected ? 1 : 0,
+                          candidate.kind,
+                          sleepCandidateSource(for: candidate),
+                          candidate.duration,
+                          candidate.span,
+                          candidate.maxGap,
+                          candidate.sessions,
+                          candidate.samples,
+                          candidate.avgHR,
+                          candidate.peakHR,
+                          candidate.restingHR,
+                          candidate.confidence.rawValue,
+                          autoConfirmable ? 1 : 0,
+                          candidate.motionEvidenceSource,
+                          candidate.motionEvidenceValidated ? 1 : 0,
+                          sleepEvidenceBlocker(for: candidate),
+                          sleepFallbackSource(for: candidate),
+                          candidate.historicalMotionStatus,
+                          candidate.historicalMotionReason,
+                          candidate.historicalMotionRows,
+                          candidate.historicalMotionValidatedRows,
+                          candidate.historicalMotionCoverageSeconds,
+                          candidate.historicalMotionNearestSeparationSeconds,
+                          candidate.reason)
+        }
     }
 
     func scheduleWorkoutValidationFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -8937,18 +11234,42 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func writeSessionBackup(label: String = "manual") -> URL? {
-        let envelope = SessionBackupEnvelope(schema: 1,
+        let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
+        let sleeps = cachedConfirmedSleeps
+        let rawExport = SessionBackupRawExport(schemaVersion: AtriaRawExport.schemaVersion,
+                                               schemaHeader: AtriaRawExport.schemaHeader,
+                                               schemaDocument: AtriaRawExport.schemaDocument,
+                                               hrRows: AtriaRawExport.hrRows(sessions: sessions),
+                                               rrRows: AtriaRawExport.rrRows(sessions: sessions),
+                                               hrSamples: sessions.reduce(0) { $0 + $1.points.count },
+                                               rrSamples: totalRRSamples(in: sessions),
+                                               sleeps: sleeps.count,
+                                               workouts: confirmedWorkouts.count,
+                                               rollups: rollups.count)
+        let envelope = SessionBackupEnvelope(schema: 3,
                                              createdAt: Date(),
                                              app: "Atria.local",
                                              sessions: sessions,
                                              baseline: baseline,
-                                             profile: profile)
+                                             profile: profile,
+                                             dailyMetrics: dailyMetricHistory,
+                                             dailyRollups: rollups,
+                                             confirmedSleeps: sleeps,
+                                             rawExport: rawExport)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
         do {
             let data = try encoder.encode(envelope)
+            let encodedBackup: (data: Data, fileExtension: String, compressed: Bool)
+            do {
+                encodedBackup = (try AtriaBackupCompression.compressedArchiveData(from: data), "json.gz", true)
+            } catch {
+                AtriaDebugLog("ATRIADBG session_backup_compress_fallback error=%@",
+                              String(describing: error))
+                encodedBackup = (data, "json", false)
+            }
             let backupDir = sessionBackupDirectory()
             try FileManager.default.createDirectory(at: backupDir,
                                                     withIntermediateDirectories: true)
@@ -8956,25 +11277,34 @@ final class SessionStore: ObservableObject {
                                                        with: "-",
                                                        options: .regularExpression)
             let timestamp = SessionStore.backupTimestamp()
-            let filename = "atria-sessions-\(timestamp)-\(safeLabel).json"
+            let filename = "atria-sessions-\(timestamp)-\(safeLabel).\(encodedBackup.fileExtension)"
             let backupURL = backupDir.appendingPathComponent(filename)
-            try data.write(to: backupURL, options: .atomic)
+            try encodedBackup.data.write(to: backupURL, options: .atomic)
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
-                                             profile: profile) ?? "error"
-            AtriaDebugLog("ATRIADBG session_backup path=%@ sessions=%d rr_samples=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d schema=%d digest=%@",
+                                             profile: profile,
+                                             dailyRollups: rollups,
+                                             confirmedSleeps: sleeps) ?? "error"
+            AtriaDebugLog("ATRIADBG session_backup path=%@ sessions=%d rollups=%d confirmed_sleeps=%d rr_samples=%d raw_export_hr_rows=%d raw_export_rr_rows=%d motion_short_samples=%d hr_raw_2a37=%d hr_accepted=%d hr_raw_gaps=%d hr_accepted_gaps=%d bytes=%d raw_bytes=%d schema=%d compressed=%d digest=%@",
                   backupRelativePath(for: backupURL),
                   sessions.count,
+                  rollups.count,
+                  sleeps.count,
                   totalRRSamples(in: sessions),
+                  rawExport.hrRows.count,
+                  rawExport.rrRows.count,
                   totalMotionShortSamples(in: sessions),
                   totalHRRaw2A37(in: sessions),
                   totalHRAccepted(in: sessions),
                   totalHRRawGaps(in: sessions),
                   totalHRAcceptedGaps(in: sessions),
+                  encodedBackup.data.count,
                   data.count,
                   envelope.schema,
+                  encodedBackup.compressed ? 1 : 0,
                   digest)
-            pruneAutomaticBackups(in: backupDir, keep: 24)
+            pruneAutomaticBackups(in: backupDir, keep: 14)
+            mirrorSessionBackupToICloudIfEnabled(backupURL)
             return backupURL
         } catch {
             AtriaDebugLog("ATRIADBG session_backup_error error=%@", String(describing: error))
@@ -10028,26 +12358,53 @@ final class SessionStore: ObservableObject {
     func restoreLatestSessionBackup() {
         guard let latest = latestRestorableSessionBackupURL() else {
             AtriaDebugLog("ATRIADBG session_backup_restore status=missing reason=no_backup_files")
+            recordSessionBackupRestoreDebug(status: "missing", reason: "no_backup_files")
             return
         }
 
+        restoreSessionBackup(from: latest)
+    }
+
+    @discardableResult
+    func restoreSessionBackup(from backupURL: URL) -> Bool {
+        Self.invalidateColdSessionsFingerprint(nextTo: url)
         let safetyURL = writeSessionBackup(label: "pre-restore")
         do {
-            let data = try Data(contentsOf: latest)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
-            guard envelope.schema == 1 else {
+            let envelope = try Self.decodeSessionBackupEnvelope(at: backupURL)
+            guard Self.supportedBackupSchemas.contains(envelope.schema) else {
                 AtriaDebugLog("ATRIADBG session_backup_restore status=error reason=unsupported_schema schema=%d", envelope.schema)
-                return
+                recordSessionBackupRestoreDebug(status: "error",
+                                                path: backupRelativePath(for: backupURL),
+                                                schema: envelope.schema,
+                                                reason: "unsupported_schema")
+                return false
             }
 
             sessions = envelope.sessions
+            if let dailyMetrics = envelope.dailyMetrics {
+                dailyMetricHistory = dailyMetrics.sorted { $0.day > $1.day }
+                scheduleDailyMetricPersist(reason: "restore_backup")
+            }
+            if let dailyRollups = envelope.dailyRollups {
+                dailyRollupHistory = dailyRollups.sorted { $0.day > $1.day }
+                dailyRollupStore.replaceAll(dailyRollupHistory)
+            }
+            if let confirmedSleeps = envelope.confirmedSleeps {
+                saveConfirmedSleeps(confirmedSleeps)
+            }
             profile = envelope.profile
             refreshSessionDerivedCaches()
             guard save() else {
                 AtriaDebugLog("ATRIADBG session_backup_restore status=error reason=store_save_failed")
-                return
+                recordSessionBackupRestoreDebug(status: "error",
+                                                path: backupRelativePath(for: backupURL),
+                                                safetyPath: safetyURL.map { backupRelativePath(for: $0) },
+                                                schema: envelope.schema,
+                                                sessions: envelope.sessions.count,
+                                                rollups: envelope.dailyRollups?.count ?? 0,
+                                                confirmedSleeps: envelope.confirmedSleeps?.count ?? 0,
+                                                reason: "store_save_failed")
+                return false
             }
             rebuildBaselineFromEligibleSessions(reason: "restore-backup")
             profile.save()
@@ -10056,18 +12413,74 @@ final class SessionStore: ObservableObject {
             publishDashboardRevision()
             let digest = backupContentDigest(sessions: sessions,
                                              baseline: baseline,
-                                             profile: profile) ?? "error"
-            AtriaDebugLog("ATRIADBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d baseline_samples=%d profile_max_hr=%d digest=%@",
-                  backupRelativePath(for: latest),
+                                             profile: profile,
+                                             dailyRollups: envelope.dailyRollups,
+                                             confirmedSleeps: envelope.confirmedSleeps) ?? "error"
+            recordSessionBackupRestoreDebug(status: "ok",
+                                            path: backupRelativePath(for: backupURL),
+                                            safetyPath: safetyURL.map { backupRelativePath(for: $0) },
+                                            schema: envelope.schema,
+                                            sessions: sessions.count,
+                                            rollups: envelope.dailyRollups?.count ?? 0,
+                                            confirmedSleeps: envelope.confirmedSleeps?.count ?? 0,
+                                            digest: digest,
+                                            reason: "restored_latest")
+            AtriaDebugLog("ATRIADBG session_backup_restore status=ok path=%@ safety=%@ schema=%d sessions=%d rollups=%d confirmed_sleeps=%d baseline_samples=%d profile_max_hr=%d digest=%@",
+                  backupRelativePath(for: backupURL),
                   safetyURL.map { backupRelativePath(for: $0) } ?? "none",
                   envelope.schema,
                   sessions.count,
+                  envelope.dailyRollups?.count ?? 0,
+                  envelope.confirmedSleeps?.count ?? 0,
                   baseline.sessions,
                   profile.maxHR,
                   digest)
+            return true
         } catch {
             AtriaDebugLog("ATRIADBG session_backup_restore status=error error=%@", String(describing: error))
+            recordSessionBackupRestoreDebug(status: "error",
+                                            path: backupRelativePath(for: backupURL),
+                                            safetyPath: safetyURL.map { backupRelativePath(for: $0) },
+                                            reason: String(describing: error))
+            return false
         }
+    }
+
+    private func recordSessionBackupRestoreDebug(status: String,
+                                                 path: String = "none",
+                                                 safetyPath: String? = nil,
+                                                 schema: Int = 0,
+                                                 sessions: Int = 0,
+                                                 rollups: Int = 0,
+                                                 confirmedSleeps: Int = 0,
+                                                 digest: String = "none",
+                                                 reason: String) {
+        let defaults = UserDefaults.standard
+        let summary: [String: Any] = [
+            "status": status,
+            "path": path,
+            "safetyPath": safetyPath ?? "none",
+            "schema": schema,
+            "sessions": sessions,
+            "rollups": rollups,
+            "confirmedSleeps": confirmedSleeps,
+            "digest": digest,
+            "reason": reason
+        ]
+        for key in SessionBackupDebugDefaults.allRestoreKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.set(summary, forKey: SessionBackupDebugDefaults.restoreSummary)
+        defaults.set(status, forKey: SessionBackupDebugDefaults.restoreStatus)
+        defaults.set(path, forKey: SessionBackupDebugDefaults.restorePath)
+        defaults.set(safetyPath ?? "none", forKey: SessionBackupDebugDefaults.restoreSafetyPath)
+        defaults.set(schema, forKey: SessionBackupDebugDefaults.restoreSchema)
+        defaults.set(sessions, forKey: SessionBackupDebugDefaults.restoreSessions)
+        defaults.set(rollups, forKey: SessionBackupDebugDefaults.restoreRollups)
+        defaults.set(confirmedSleeps, forKey: SessionBackupDebugDefaults.restoreConfirmedSleeps)
+        defaults.set(digest, forKey: SessionBackupDebugDefaults.restoreDigest)
+        defaults.set(reason, forKey: SessionBackupDebugDefaults.restoreReason)
+        defaults.synchronize()
     }
 
     private func latestSessionBackupURL() -> URL? {
@@ -10075,7 +12488,17 @@ final class SessionStore: ObservableObject {
     }
 
     private func latestRestorableSessionBackupURL() -> URL? {
-        latestSessionBackupURL(includeSafetyBackups: false)
+        var allFiles: [URL] = []
+        for backupDir in sessionBackupDirectoriesForReading() {
+            guard let files = try? FileManager.default.contentsOfDirectory(at: backupDir,
+                                                                           includingPropertiesForKeys: nil,
+                                                                           options: [.skipsHiddenFiles])
+                .filter({ Self.isSessionBackupFile($0, includeSafetyBackups: false) }) else {
+                continue
+            }
+            allFiles.append(contentsOf: files)
+        }
+        return Self.bestRestorableSessionBackupURL(from: allFiles)
     }
 
     private func latestSessionBackupURL(includeSafetyBackups: Bool) -> URL? {
@@ -10084,19 +12507,25 @@ final class SessionStore: ObservableObject {
             guard let files = try? FileManager.default.contentsOfDirectory(at: backupDir,
                                                                            includingPropertiesForKeys: nil,
                                                                            options: [.skipsHiddenFiles])
-                .filter({
-                    $0.pathExtension == "json"
-                        && (includeSafetyBackups || !$0.deletingPathExtension().lastPathComponent.hasSuffix("-pre-restore"))
-                }) else {
+                .filter({ Self.isSessionBackupFile($0, includeSafetyBackups: includeSafetyBackups) }) else {
                 continue
             }
             allFiles.append(contentsOf: files)
         }
-        return allFiles.max { backupSortDate($0) < backupSortDate($1) }
+        return Self.latestDecodableSessionBackupURL(from: allFiles)
     }
 
     private func sessionBackupDirectory() -> URL {
         url.deletingLastPathComponent().appendingPathComponent("atria-backups")
+    }
+
+    private func iCloudSessionBackupDirectory() -> URL? {
+        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
+            return nil
+        }
+        return container
+            .appendingPathComponent("Documents")
+            .appendingPathComponent("Atria Backups")
     }
 
     private func legacySessionBackupDirectory() -> URL {
@@ -10105,6 +12534,32 @@ final class SessionStore: ObservableObject {
 
     private func sessionBackupDirectoriesForReading() -> [URL] {
         [sessionBackupDirectory(), legacySessionBackupDirectory()]
+    }
+
+    private func mirrorSessionBackupToICloudIfEnabled(_ backupURL: URL) {
+        guard UserDefaults.standard.bool(forKey: Self.iCloudBackupEnabledKey) else {
+            AtriaDebugLog("ATRIADBG session_backup_icloud status=skipped_toggle path=%@",
+                          backupRelativePath(for: backupURL))
+            return
+        }
+        guard let iCloudDir = iCloudSessionBackupDirectory() else {
+            AtriaDebugLog("ATRIADBG session_backup_icloud status=unavailable path=%@",
+                          backupRelativePath(for: backupURL))
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: iCloudDir, withIntermediateDirectories: true)
+            let destination = iCloudDir.appendingPathComponent(backupURL.lastPathComponent)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: backupURL, to: destination)
+            pruneAutomaticBackups(in: iCloudDir, keep: 14)
+            AtriaDebugLog("ATRIADBG session_backup_icloud status=ok path=Documents/Atria Backups/%@",
+                          destination.lastPathComponent)
+        } catch {
+            AtriaDebugLog("ATRIADBG session_backup_icloud status=error error=%@", String(describing: error))
+        }
     }
 
     private func backupRelativePath(for backupURL: URL) -> String {
@@ -10123,7 +12578,7 @@ final class SessionStore: ObservableObject {
         guard let files = try? FileManager.default.contentsOfDirectory(at: backupDir,
                                                                        includingPropertiesForKeys: nil,
                                                                        options: [.skipsHiddenFiles])
-            .filter({ $0.pathExtension == "json" }) else {
+            .filter({ Self.isSessionBackupFile($0, includeSafetyBackups: true) }) else {
             AtriaDebugLog("ATRIADBG session_backup_prune status=missing_dir keep=%d deleted=0 total_json=0 auto_json=0",
                   keep)
             return
@@ -10154,18 +12609,21 @@ final class SessionStore: ObservableObject {
 
     private func verifySessionBackup(at latest: URL) {
         do {
-            let data = try Data(contentsOf: latest)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let envelope = try decoder.decode(SessionBackupEnvelope.self, from: data)
+            let data = try Self.sessionBackupPayloadData(at: latest)
+            let envelope = try Self.decodeSessionBackupEnvelope(from: data)
             let countMatches = envelope.sessions.count == sessions.count
-            let schemaOK = envelope.schema == 1
+            let schemaOK = Self.supportedBackupSchemas.contains(envelope.schema)
+            let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
             let backupDigest = backupContentDigest(sessions: envelope.sessions,
                                                    baseline: envelope.baseline,
-                                                   profile: envelope.profile)
+                                                   profile: envelope.profile,
+                                                   dailyRollups: envelope.dailyRollups,
+                                                   confirmedSleeps: envelope.confirmedSleeps)
             let currentDigest = backupContentDigest(sessions: sessions,
                                                     baseline: baseline,
-                                                    profile: profile)
+                                                    profile: profile,
+                                                    dailyRollups: envelope.schema >= 2 ? rollups : nil,
+                                                    confirmedSleeps: envelope.schema >= 2 ? cachedConfirmedSleeps : nil)
             let digestMatches = backupDigest != nil && backupDigest == currentDigest
             let status = countMatches && schemaOK && digestMatches ? "ok" : "mismatch"
             AtriaDebugLog("ATRIADBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
@@ -10201,20 +12659,29 @@ final class SessionStore: ObservableObject {
 
     private func backupContentDigest(sessions: [SavedSession],
                                      baseline: PersonalBaseline,
-                                     profile: AthleteProfile) -> String? {
+                                     profile: AthleteProfile,
+                                     dailyRollups: [DailyRollupStoreEntry]?,
+                                     confirmedSleeps: [UserConfirmedSleep]?) -> String? {
         Self.makeBackupContentDigest(sessions: sessions,
                                      baseline: baseline,
-                                     profile: profile)
+                                     profile: profile,
+                                     dailyRollups: dailyRollups,
+                                     confirmedSleeps: confirmedSleeps)
     }
 
     private nonisolated static func makeBackupContentDigest(sessions: [SavedSession],
                                                             baseline: PersonalBaseline,
-                                                            profile: AthleteProfile) -> String? {
-        let content = SessionBackupContentFingerprint(schema: 1,
+                                                            profile: AthleteProfile,
+                                                            dailyRollups: [DailyRollupStoreEntry]?,
+                                                            confirmedSleeps: [UserConfirmedSleep]?) -> String? {
+        let schema = dailyRollups == nil && confirmedSleeps == nil ? 1 : 2
+        let content = SessionBackupContentFingerprint(schema: schema,
                                                       app: "Atria.local",
                                                       sessions: sessions,
                                                       baseline: baseline,
-                                                      profile: profile)
+                                                      profile: profile,
+                                                      dailyRollups: dailyRollups,
+                                                      confirmedSleeps: confirmedSleeps)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
@@ -10245,6 +12712,142 @@ final class SessionStore: ObservableObject {
                                  restingBaselineSamples: baseline.freshRestingSampleCount(),
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
+    }
+
+    func requestNutritionReadAuthorizationIfEnabled() {
+        healthKitExporter.requestNutritionReadAuthorizationIfEnabled()
+        refreshNutritionRollupFromHealthIfEnabled(for: Date(), reason: "nutrition_authorization")
+    }
+
+    @discardableResult
+    func exportRawDataPackage() -> URL? {
+        let exportDir = url.deletingLastPathComponent().appendingPathComponent("atria-raw-exports")
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let exportURL = exportDir.appendingPathComponent("atria-export-\(formatter.string(from: Date())).zip")
+        do {
+            try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
+            let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
+            let telemetry = try AtriaRawExport.writePackage(to: exportURL,
+                                                            sessions: sessions,
+                                                            confirmedSleeps: confirmedSleeps,
+                                                            confirmedWorkouts: confirmedWorkouts,
+                                                            rollups: rollups)
+            AtriaDebugLog("ATRIADBG raw_export status=ok path=%@ sessions=%d hr_samples=%d rr_samples=%d sleeps=%d workouts=%d rollups=%d schema=%d memory_peak_kb=%d",
+                          "Documents/atria-raw-exports/\(exportURL.lastPathComponent)",
+                          sessions.count,
+                          sessions.reduce(0) { $0 + $1.points.count },
+                          sessions.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) },
+                          confirmedSleeps.count,
+                          confirmedWorkouts.count,
+                          rollups.count,
+                          AtriaRawExport.schemaVersion,
+                          telemetry.peakResidentKilobytes)
+            return exportURL
+        } catch {
+            AtriaDebugLog("ATRIADBG raw_export status=error error=%@", String(describing: error))
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func exportRawDataPackageFromPersistedFiles() -> URL? {
+        let sourceURL = url
+        let exportDir = sourceURL.deletingLastPathComponent().appendingPathComponent("atria-raw-exports")
+        let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
+        let confirmedSleeps = cachedConfirmedSleeps
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let exportURL = exportDir.appendingPathComponent("atria-export-\(formatter.string(from: Date())).zip")
+
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            let sessions = try JSONDecoder().decode([SavedSession].self, from: data)
+            try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
+            let telemetry = try AtriaRawExport.writePackage(to: exportURL,
+                                                            sessions: sessions,
+                                                            confirmedSleeps: confirmedSleeps,
+                                                            confirmedWorkouts: confirmedWorkouts,
+                                                            rollups: rollups)
+            AtriaDebugLog("ATRIADBG raw_export_disk status=ok path=%@ sessions=%d hr_samples=%d rr_samples=%d sleeps=%d workouts=%d rollups=%d schema=%d memory_peak_kb=%d",
+                          "Documents/atria-raw-exports/\(exportURL.lastPathComponent)",
+                          sessions.count,
+                          sessions.reduce(0) { $0 + $1.points.count },
+                          sessions.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) },
+                          confirmedSleeps.count,
+                          confirmedWorkouts.count,
+                          rollups.count,
+                          AtriaRawExport.schemaVersion,
+                          telemetry.peakResidentKilobytes)
+            return exportURL
+        } catch {
+            AtriaDebugLog("ATRIADBG raw_export_disk status=error error=%@", String(describing: error))
+            return nil
+        }
+    }
+
+    private func scheduleRawDataPackageFromPersistedFilesForLaunch() {
+        let sourceURL = url
+        let exportDir = sourceURL.deletingLastPathComponent().appendingPathComponent("atria-raw-exports")
+        let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
+        let confirmedSleeps = cachedConfirmedSleeps
+        let confirmedWorkouts = cachedConfirmedWorkouts
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let exportURL = exportDir.appendingPathComponent("atria-export-\(formatter.string(from: Date())).zip")
+
+        Task.detached(priority: .utility) {
+            AtriaDebugLog("ATRIADBG raw_export_disk_async status=attempt")
+            do {
+                let data = try Data(contentsOf: sourceURL)
+                let sessions = try JSONDecoder().decode([SavedSession].self, from: data)
+                try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
+                let telemetry = try AtriaRawExport.writePackage(to: exportURL,
+                                                                sessions: sessions,
+                                                                confirmedSleeps: confirmedSleeps,
+                                                                confirmedWorkouts: confirmedWorkouts,
+                                                                rollups: rollups)
+                AtriaDebugLog("ATRIADBG raw_export_disk_async status=ok path=%@ sessions=%d hr_samples=%d rr_samples=%d sleeps=%d workouts=%d rollups=%d schema=%d memory_peak_kb=%d",
+                              "Documents/atria-raw-exports/\(exportURL.lastPathComponent)",
+                              sessions.count,
+                              sessions.reduce(0) { $0 + $1.points.count },
+                              sessions.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) },
+                              confirmedSleeps.count,
+                              confirmedWorkouts.count,
+                              rollups.count,
+                              AtriaRawExport.schemaVersion,
+                              telemetry.peakResidentKilobytes)
+            } catch {
+                AtriaDebugLog("ATRIADBG raw_export_disk_async status=error error=%@", String(describing: error))
+            }
+        }
+    }
+
+    @discardableResult
+    func exportRawDataPackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) -> URL? {
+        guard arguments.contains("--atria-export-raw-package") else { return nil }
+        AtriaDebugLog("ATRIADBG raw_export_launch status=attempt")
+        let exportURL = hasCompletedDeferredSessionLoad
+            ? exportRawDataPackage()
+            : exportRawDataPackageFromPersistedFiles()
+        AtriaDebugLog("ATRIADBG raw_export_launch status=%@",
+                      exportURL == nil ? "failed" : "ok")
+        return exportURL
+    }
+
+    func scheduleRawDataPackageFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-export-raw-package") else { return }
+        scheduleRawDataPackageFromPersistedFilesForLaunch()
     }
 
     func resetAndRebuildHealthKitHeartRateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -10432,7 +13035,10 @@ final class SessionStore: ObservableObject {
         return calendar.startOfDay(for: session.start)
     }
 
-    private nonisolated static func sleepClusters(from sessions: [SavedSession], maxGap: TimeInterval) -> [[SavedSession]] {
+    nonisolated static func sleepClusters(from sessions: [SavedSession],
+                                          maxGap: TimeInterval,
+                                          rest: Int,
+                                          calendar: Calendar = .current) -> [[SavedSession]] {
         var clusters: [[SavedSession]] = []
         for session in sessions.sorted(by: { $0.start < $1.start }) {
             guard var current = clusters.popLast() else {
@@ -10440,7 +13046,7 @@ final class SessionStore: ObservableObject {
                 continue
             }
             let gap = max(0, session.start.timeIntervalSince(current.last?.end ?? session.start))
-            if gap <= maxGap {
+            if gap <= maxGap, !shouldSplitPostWakeNap(from: current, next: session, rest: rest, calendar: calendar) {
                 current.append(session)
                 clusters.append(current)
             } else {
@@ -10449,6 +13055,27 @@ final class SessionStore: ObservableObject {
             }
         }
         return clusters
+    }
+
+    private nonisolated static func shouldSplitPostWakeNap(from current: [SavedSession],
+                                                           next: SavedSession,
+                                                           rest: Int,
+                                                           calendar: Calendar) -> Bool {
+        guard let start = current.first?.start, let end = current.last?.end else { return false }
+        let duration = current.reduce(0) { $0 + $1.duration }
+        guard duration >= AggregateSleepCandidate.strictMinimumDuration else { return false }
+        let startHour = calendar.component(.hour, from: start)
+        let endHour = calendar.component(.hour, from: end)
+        let mainOvernight = startHour >= 20 || startHour <= 5 || endHour <= 11
+        guard mainOvernight else { return false }
+        let nextStartHour = calendar.component(.hour, from: next.start)
+        let nextEndHour = calendar.component(.hour, from: next.end)
+        let postWakeWindow = nextStartHour >= 8 && nextEndHour <= 20
+        let shortLowHRRest = next.duration >= AggregateSleepCandidate.napMinimumDuration
+            && next.duration <= AggregateSleepCandidate.napMaximumSpan
+            && next.avg <= rest + 12
+            && next.peak <= rest + 55
+        return postWakeWindow && shortLowHRRest
     }
 
     private func workoutClusters(from sessions: [SavedSession], maxGap: TimeInterval) -> [[SavedSession]] {
@@ -10478,6 +13105,13 @@ final class SessionStore: ObservableObject {
         return sorted[index]
     }
 
+    private nonisolated static func standardDeviation(_ values: [Double]) -> Double {
+        guard values.count >= 2 else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
+        return sqrt(variance)
+    }
+
     private func formatInt(_ value: Int?) -> String {
         value.map(String.init) ?? "learning"
     }
@@ -10496,17 +13130,31 @@ final class SessionStore: ObservableObject {
 
     private func loadPersistedSessionsDeferred() {
         let sourceURL = url
+        let coldURL = coldSessionsURL
         let currentBaseline = baseline
         let currentProfile = profile
-        Task.detached(priority: .utility) { [sourceURL, currentBaseline, currentProfile] in
+        Task.detached(priority: .utility) { [sourceURL, coldURL, currentBaseline, currentProfile] in
             let startedAt = CFAbsoluteTimeGetCurrent()
             guard let data = try? Data(contentsOf: sourceURL),
-                  let decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
+                  var decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
                 await MainActor.run {
                     self.hasCompletedDeferredSessionLoad = true
                     AtriaDebugLog("ATRIADBG session_store_load status=empty")
                 }
                 return
+            }
+            // Hot/cold split (§14.1): sessions older than coldSessionAgeDays
+            // live in sessions-cold.json; union them back in for the in-memory
+            // model. A missing cold file is normal (pre-split installs).
+            if let coldData = try? Data(contentsOf: coldURL),
+               let coldDecoded = try? JSONDecoder().decode([SavedSession].self, from: coldData) {
+                let hotIDs = Set(decoded.map(\.id))
+                let coldOnly = coldDecoded.filter { !hotIDs.contains($0.id) }
+                decoded.append(contentsOf: coldOnly)
+                decoded.sort { $0.start > $1.start }
+                AtriaDebugLog("ATRIADBG session_store_load cold_sessions=%d cold_bytes=%d",
+                              coldOnly.count,
+                              coldData.count)
             }
 
             let migrated = Self.pruningShortLongWearFragments(from: decoded)
@@ -10514,6 +13162,7 @@ final class SessionStore: ObservableObject {
                 Self.persistSessionsSnapshot(migrated.sessions,
                                              to: sourceURL,
                                              reason: "prune_short_long_wear_fragments")
+                Self.invalidateColdSessionsFingerprint(nextTo: sourceURL)
             }
 
             let preparation = Self.prepareDeferredLoad(decoded: migrated.sessions,
@@ -10540,40 +13189,280 @@ final class SessionStore: ObservableObject {
               sessions.count)
     }
 
+    func queueSessionBackupAfterDeferredLoadFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        let wantsWrite = arguments.contains("--atria-backup-sessions")
+            || arguments.contains("--atria-write-session-backup")
+        let wantsVerify = arguments.contains("--atria-verify-backup")
+            || arguments.contains("--atria-verify-session-backup")
+        guard wantsWrite || wantsVerify else { return }
+
+        if hasCompletedDeferredSessionLoad {
+            AtriaDebugLog("ATRIADBG session_backup_deferred status=ready write=%d verify=%d sessions=%d",
+                          wantsWrite ? 1 : 0,
+                          wantsVerify ? 1 : 0,
+                          sessions.count)
+            writeSessionBackupFromLaunchIfRequested(arguments: arguments)
+            verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
+        } else {
+            pendingDeferredSessionBackupArguments = arguments
+            AtriaDebugLog("ATRIADBG session_backup_deferred status=queued write=%d verify=%d",
+                          wantsWrite ? 1 : 0,
+                          wantsVerify ? 1 : 0)
+        }
+    }
+
+    private func runQueuedSessionBackupAfterDeferredLoadIfNeeded() {
+        guard let arguments = pendingDeferredSessionBackupArguments else { return }
+        pendingDeferredSessionBackupArguments = nil
+        AtriaDebugLog("ATRIADBG session_backup_deferred status=running sessions=%d",
+                      sessions.count)
+        writeSessionBackupFromLaunchIfRequested(arguments: arguments)
+        verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
+    }
+
     private func finishDeferredLoad(_ decoded: [SavedSession],
                                     preparation: DeferredLoadPreparation,
                                     elapsedMS: Int) {
-        sessions = decoded
-        cachedLatestReferenceValidatedHRV = preparation.latestReferenceValidatedHRV
-        cachedCanonicalSessions = preparation.canonicalSessions
+        let merged = Self.mergedSessions(primary: sessions, secondary: decoded)
+        let finalPreparation = merged.count == decoded.count
+            ? preparation
+            : Self.prepareDeferredLoad(decoded: merged,
+                                       baseline: baseline,
+                                       profile: profile,
+                                       sessionFileURL: url,
+                                       prunedShortLongWearFragments: preparation.prunedShortLongWearFragments)
+        sessions = merged
+        cachedLatestReferenceValidatedHRV = finalPreparation.latestReferenceValidatedHRV
+        cachedCanonicalSessions = finalPreparation.canonicalSessions
         cachedHomeSavedAggregate = nil
         cachedCurrentCollectionStatus = nil
-        cachedSessionBackupStatus = preparation.backupStatus
         hasCompletedDeferredSessionLoad = true
+        if merged.count != decoded.count {
+            markSessionPersistenceDirty()
+            scheduleSessionFilePersist(reason: "deferred_load_merge", delay: 0.10)
+        }
+        runQueuedSessionBackupAfterDeferredLoadIfNeeded()
+        refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
 
-        if preparation.didRebuildBaseline {
-            baseline = preparation.baseline
-            let preparedBaseline = preparation.baseline
+        if finalPreparation.didRebuildBaseline {
+            baseline = finalPreparation.baseline
+            let preparedBaseline = finalPreparation.baseline
             Task.detached(priority: .utility) {
                 preparedBaseline.save()
             }
         }
         cachedHomeDashboardDiagnostics = nil
-        refreshHistorySnapshotCache(deferred: true)
+        AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=before_rollup_refresh sessions=%d elapsed_ms=%d",
+                      sessions.count,
+                      elapsedMS)
+        if !dailyMetricHistory.isEmpty {
+            AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=pre_snapshot_rollup_persist sessions=%d metrics=%d elapsed_ms=%d",
+                          sessions.count,
+                          dailyMetricHistory.count,
+                          elapsedMS)
+            persistDailyRollups(from: dailyMetricHistory)
+        }
+        refreshHistorySnapshotCache(deferred: false)
+        AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=after_rollup_refresh sessions=%d elapsed_ms=%d",
+                      sessions.count,
+                      elapsedMS)
+        backfillConfirmedSleepStagesFromSessions(reason: "deferred_session_load")
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
-        autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
+        let savedStrongSleep = autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
+        if !savedStrongSleep {
+            scheduleSleepReadinessRetryIfUseful(reason: "deferred_session_load")
+        }
         publishDashboardRevision()
+        if ProcessInfo.processInfo.arguments.contains("--atria-compact-archive") {
+            compactHistoricalArchiveIfUseful(reason: "debug_launch_arg")
+        }
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
         Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }
 
         AtriaDebugLog("ATRIADBG session_store_load status=ok sessions=%d pruned_short_long_wear_fragments=%d baseline_rebuilt=%d elapsed_ms=%d",
-              decoded.count,
-              preparation.prunedShortLongWearFragments,
-              preparation.didRebuildBaseline ? 1 : 0,
+              merged.count,
+              finalPreparation.prunedShortLongWearFragments,
+              finalPreparation.didRebuildBaseline ? 1 : 0,
               elapsedMS)
+        #if DEBUG
+        seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
+        #endif
     }
+
+    #if DEBUG
+    private static func shouldSeedDebugStrengthWorkoutProof(arguments: [String]) -> Bool {
+        arguments.contains("--atria-seed-strength-workout-proof")
+            || ProcessInfo.processInfo.environment["ATRIA_SEED_STRENGTH_WORKOUT_PROOF"] == "1"
+    }
+
+    func seedDebugStrengthWorkoutProofIfRequested(arguments: [String]) {
+        guard Self.shouldSeedDebugStrengthWorkoutProof(arguments: arguments) else {
+            UserDefaults.standard.set("skipped", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("trigger_missing", forKey: Self.debugStrengthWorkoutProofReasonKey)
+            return
+        }
+        guard !didSeedDebugStrengthWorkoutProof else {
+            UserDefaults.standard.set("skipped", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("already_seeded", forKey: Self.debugStrengthWorkoutProofReasonKey)
+            return
+        }
+        guard hasCompletedDeferredSessionLoad else {
+            UserDefaults.standard.set("waiting", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("deferred_session_load", forKey: Self.debugStrengthWorkoutProofReasonKey)
+            seedDebugStrengthWorkoutProofPersistedFileOnly()
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(900))
+                self?.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
+            }
+            return
+        }
+        didSeedDebugStrengthWorkoutProof = true
+
+        let proofSessionID = UUID(uuidString: "CD120000-0000-4000-8000-000000000012") ?? UUID()
+        let proof = makeDebugStrengthWorkoutProof(proofSessionID: proofSessionID)
+        var proofSession = proof.session
+        proofSession.activeCalories = proofSession.activeCalories(rest: baseline.restingInt ?? 60,
+                                                                  profile: profile)
+        _ = upsertSession(proofSession)
+        _ = save()
+        refreshSessionDerivedCachesAfterUpsert(proofSession)
+
+        let proofWorkout = UserConfirmedWorkout(id: "debug-cd12-strength-workout-proof",
+                                                createdAt: Date(),
+                                                start: proofSession.start,
+                                                end: proofSession.end,
+                                                label: "Strength",
+                                                source: "debug_cd12_strength_proof",
+                                                confidence: "debug_physical_json_proof",
+                                                sessions: 1,
+                                                samples: proofSession.points.count,
+                                                avgHR: 126,
+                                                peakHR: 136,
+                                                p95HR: 136,
+                                                p99HR: 136,
+                                                thresholdHR: 120,
+                                                streamCoveragePercent: 100,
+                                                observedDuration: proofSession.end.timeIntervalSince(proofSession.start),
+                                                reason: "cd12_strength_json_proof",
+                                                activityType: "strength",
+                                                activitySubtype: "lifting",
+                                                exerciseNames: ["Barbell bench press"],
+                                                reviewSource: "debug_cd12_strength_proof",
+                                                strain: nil,
+                                                activeEnergyKilocalories: proofSession.activeCalories,
+                                                activeEnergyConfidence: proofSession.caloriesConfidence,
+                                                zoneSeconds: nil)
+        var workouts = cachedConfirmedWorkouts.filter { $0.id != proofWorkout.id }
+        workouts.append(proofWorkout)
+        saveConfirmedWorkouts(workouts)
+        try? ActiveSessionJournal.mirrorStrengthState(strengthSets: [proof.strengthSet],
+                                                      excludedIntervals: [proof.excluded])
+        UserDefaults.standard.set("seeded", forKey: Self.debugStrengthWorkoutProofStatusKey)
+        UserDefaults.standard.set("ok", forKey: Self.debugStrengthWorkoutProofReasonKey)
+        UserDefaults.standard.set(proofSession.id.uuidString, forKey: Self.debugStrengthWorkoutProofSessionIDKey)
+        UserDefaults.standard.set(proofWorkout.id, forKey: Self.debugStrengthWorkoutProofWorkoutIDKey)
+        AtriaDebugLog("ATRIADBG cd12_strength_workout_proof status=seeded session_id=%@ workout_id=%@ strength_sets=%d excluded_intervals=%d",
+                      proofSession.id.uuidString,
+                      proofWorkout.id,
+                      proofSession.strengthSets?.count ?? 0,
+                      proofSession.excludedIntervals?.count ?? 0)
+    }
+
+    private func seedDebugStrengthWorkoutProofPersistedFileOnly() {
+        let proofSessionID = UUID(uuidString: "CD120000-0000-4000-8000-000000000012") ?? UUID()
+        var proof = makeDebugStrengthWorkoutProof(proofSessionID: proofSessionID)
+        proof.session.activeCalories = proof.session.activeCalories(rest: baseline.restingInt ?? 60,
+                                                                    profile: profile)
+        do {
+            let data = try Data(contentsOf: url)
+            var decoded = try JSONDecoder().decode([SavedSession].self, from: data)
+            decoded.removeAll { $0.id == proof.session.id || $0.label == "CD-12 strength proof" }
+            decoded.insert(proof.session, at: 0)
+            Self.persistSessionsSnapshot(decoded, to: url, reason: "debug_cd12_strength_proof_persisted_file")
+
+            let proofWorkout = UserConfirmedWorkout(id: "debug-cd12-strength-workout-proof",
+                                                    createdAt: Date(),
+                                                    start: proof.session.start,
+                                                    end: proof.session.end,
+                                                    label: "Strength",
+                                                    source: "debug_cd12_strength_proof",
+                                                    confidence: "debug_physical_json_proof",
+                                                    sessions: 1,
+                                                    samples: proof.session.points.count,
+                                                    avgHR: 126,
+                                                    peakHR: 136,
+                                                    p95HR: 136,
+                                                    p99HR: 136,
+                                                    thresholdHR: 120,
+                                                    streamCoveragePercent: 100,
+                                                    observedDuration: proof.session.duration,
+                                                    reason: "cd12_strength_json_proof",
+                                                    activityType: "strength",
+                                                    activitySubtype: "lifting",
+                                                    exerciseNames: ["Barbell bench press"],
+                                                    reviewSource: "debug_cd12_strength_proof",
+                                                    strain: nil,
+                                                    activeEnergyKilocalories: proof.session.activeCalories,
+                                                    activeEnergyConfidence: proof.session.caloriesConfidence,
+                                                    zoneSeconds: nil)
+            var workouts = cachedConfirmedWorkouts.filter { $0.id != proofWorkout.id }
+            workouts.append(proofWorkout)
+            saveConfirmedWorkouts(workouts)
+            UserDefaults.standard.set("seeded_persisted_file", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("deferred_load_not_ready", forKey: Self.debugStrengthWorkoutProofReasonKey)
+            UserDefaults.standard.set(proof.session.id.uuidString, forKey: Self.debugStrengthWorkoutProofSessionIDKey)
+            UserDefaults.standard.set(proofWorkout.id, forKey: Self.debugStrengthWorkoutProofWorkoutIDKey)
+        } catch {
+            UserDefaults.standard.set("failed", forKey: Self.debugStrengthWorkoutProofStatusKey)
+            UserDefaults.standard.set("persisted_file_error:\(error.localizedDescription)", forKey: Self.debugStrengthWorkoutProofReasonKey)
+        }
+    }
+
+    private func makeDebugStrengthWorkoutProof(proofSessionID: UUID) -> (session: SavedSession, strengthSet: LoggedSet, excluded: ExcludedInterval) {
+        let end = Date()
+        let start = end.addingTimeInterval(-32 * 60)
+        let pauseStart = start.addingTimeInterval(12 * 60)
+        let pauseEnd = pauseStart.addingTimeInterval(4 * 60)
+        let setTime = start.addingTimeInterval(18 * 60)
+        let strengthSet = LoggedSet(id: UUID(uuidString: "CD120000-0000-4000-8000-000000000112") ?? UUID(),
+                                    exercise: "Barbell bench press",
+                                    weightKg: 80,
+                                    reps: 5,
+                                    rpe: 8,
+                                    t: setTime)
+        let excluded = ExcludedInterval(start: pauseStart, end: pauseEnd)
+        var points: [SavedSession.Point] = []
+        var second = 0
+        while second <= 32 * 60 {
+            let bpm: Int
+            if second < 12 * 60 {
+                bpm = 118
+            } else if second < 16 * 60 {
+                bpm = 92
+            } else {
+                bpm = 136
+            }
+            points.append(SavedSession.Point(t: Double(second), bpm: bpm))
+            second += 60
+        }
+        let session = SavedSession(id: proofSessionID,
+                                   start: start,
+                                   end: end,
+                                   label: "CD-12 strength proof",
+                                   points: points,
+                                   hrv: nil,
+                                   activeCalories: nil,
+                                   caloriesConfidence: "estimate",
+                                   hrRaw2A37: points.count,
+                                   hrAccepted: points.count,
+                                   strengthSets: [strengthSet],
+                                   kind: "workout",
+                                   excludedIntervals: [excluded])
+        return (session, strengthSet, excluded)
+    }
+    #endif
 
     private nonisolated static func prepareDeferredLoad(decoded: [SavedSession],
                                                         baseline: PersonalBaseline,
@@ -10589,10 +13478,6 @@ final class SessionStore: ObservableObject {
             canonicalSessions: makeCanonicalSessions(from: decoded),
             baseline: preparedBaseline,
             didRebuildBaseline: shouldRebuildBaseline,
-            backupStatus: computeSessionBackupStatus(currentSessions: decoded,
-                                                     baseline: preparedBaseline,
-                                                     profile: profile,
-                                                     sessionFileURL: sessionFileURL),
             prunedShortLongWearFragments: prunedShortLongWearFragments
         )
     }
@@ -10656,9 +13541,27 @@ final class SessionStore: ObservableObject {
 
 struct HistoryView: View {
     @ObservedObject var store: SessionStore
+    @State private var adjustmentNight: SleepHistorySnapshot.Night?
 
     private var snapshot: HistorySnapshot {
-        store.historySnapshot
+        #if DEBUG
+        if let fixture = Self.debugFixtureHistorySnapshot(arguments: ProcessInfo.processInfo.arguments) {
+            return fixture
+        }
+        #endif
+        return store.historySnapshot
+    }
+
+    private var pendingSleepReview: SleepHistorySnapshot.Night? {
+        #if DEBUG
+        if let fixture = Self.debugFixtureSleepReviewNight(arguments: ProcessInfo.processInfo.arguments) {
+            return fixture
+        }
+        #endif
+        guard let latest = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
+                                                             source: "history_sleep_review"),
+              latest.confirmed == false else { return nil }
+        return latest
     }
 
     var body: some View {
@@ -10669,6 +13572,17 @@ struct HistoryView: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     historyHeroCard
+                    if let pendingSleepReview {
+                        HistorySleepReviewCTA(night: pendingSleepReview,
+                                              onConfirm: {
+                                                  _ = store.confirmSleepHistoryNightForUI(pendingSleepReview,
+                                                                                         rest: store.baseline.restingInt ?? 60,
+                                                                                         source: "history_sleep_review")
+                                              },
+                                              onAdjust: {
+                                                  adjustmentNight = pendingSleepReview
+                                              })
+                    }
 
                     if snapshot.sessions.isEmpty {
                         ContentUnavailableView("No sessions yet",
@@ -10678,16 +13592,18 @@ struct HistoryView: View {
                             .padding(20)
                             .atriaCard(cornerRadius: 22, emphasis: .soft)
                     } else {
-                        historySection(title: "Trends", subtitle: "Saved readiness over time") {
-                            TrendSummaryView(summaries: snapshot.trends)
-                        }
-
                         historySection(title: "Daily rollups", subtitle: "Recent saved evidence") {
                             LazyVStack(spacing: 12) {
+                                HistoryActivityRhythmCard(rollups: Array(snapshot.rollups.prefix(14)))
+
                                 ForEach(snapshot.rollups.prefix(14), id: \.day) { rollup in
                                     DailyRollupRow(rollup: rollup)
                                 }
                             }
+                        }
+
+                        historySection(title: "Trends", subtitle: "Saved readiness over time") {
+                            TrendSummaryView(summaries: snapshot.trends)
                         }
 
                         if !snapshot.detections.isEmpty {
@@ -10737,6 +13653,18 @@ struct HistoryView: View {
         }
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $adjustmentNight) { adjustment in
+            AtriaManualSleepSheet(initialStart: adjustment.start,
+                                  initialEnd: adjustment.end,
+                                  initialIsNap: adjustment.isNapEvidence) { start, end, isNap in
+                _ = store.addManualSleep(start: start,
+                                         end: end,
+                                         isNap: isNap,
+                                         rest: store.baseline.restingInt ?? 60,
+                                         source: "history_sleep_review_adjust")
+                adjustmentNight = nil
+            }
+        }
     }
 
     private var historyHeroCard: some View {
@@ -10827,6 +13755,180 @@ struct HistoryView: View {
         .padding(.vertical, 10)
         .background(HistoryPillBackground(tint: tint))
     }
+
+    #if DEBUG
+    private static func debugFixtureSleepReviewNight(arguments: [String]) -> SleepHistorySnapshot.Night? {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex),
+              arguments[valueIndex] == "history-sleep-review" else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let end = calendar.date(bySettingHour: 7, minute: 18, second: 0, of: Date()) ?? Date()
+        let start = calendar.date(byAdding: .minute, value: -438, to: end) ?? end.addingTimeInterval(-438 * 60)
+        return SleepHistorySnapshot.Night(id: "debug-ui-fixture-history-sleep-review",
+                                          day: calendar.startOfDay(for: end),
+                                          start: start,
+                                          end: end,
+                                          duration: 438 * 60,
+                                          restingHR: 54,
+                                          hrv: 72,
+                                          respiratoryRate: 14.6,
+                                          sleepEfficiency: 0.89,
+                                          confidence: "review_needed",
+                                          source: "sleep_candidate",
+                                          confirmed: false,
+                                          stageSegments: [])
+    }
+
+    private static func debugFixtureHistorySnapshot(arguments: [String]) -> HistorySnapshot? {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex),
+              ["history-activity-rhythm", "history-sleep-review"].contains(arguments[valueIndex]) else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let rollups: [DailyRollup] = (0..<14).map { offset in
+            let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
+            let hasWorkout = [1, 4, 8].contains(offset)
+            let needsReview = [2, 6].contains(offset)
+            let sleepContext = offset % 3 == 0
+            return DailyRollup(day: day,
+                               sessions: hasWorkout || needsReview || sleepContext ? 2 : 1,
+                               activityCandidates: needsReview ? 1 : 0,
+                               workouts: hasWorkout ? 1 : 0,
+                               confirmedWorkouts: hasWorkout && offset != 8 ? 1 : 0,
+                               restCandidates: offset == 10 ? 1 : 0,
+                               sleepReady: sleepContext ? 1 : 0,
+                               sleepCandidates: offset == 5 ? 1 : 0,
+                               duration: TimeInterval((hasWorkout ? 78 : 32) * 60),
+                               sleepDuration: sleepContext ? TimeInterval(7 * 60 * 60) : nil,
+                               sleepSpan: nil,
+                               sleepStart: nil,
+                               sleepEnd: nil,
+                               sleepSource: sleepContext ? "debug_fixture" : nil,
+                               sleepStageSegments: [],
+                               strain: hasWorkout ? 13.6 : (needsReview ? 8.8 : Double([2, 4, 3, 5][offset % 4])),
+                               avgHRV: 68,
+                               restingHR: 56,
+                               avgRespiratoryRate: 14.8)
+        }
+
+        let start = today.addingTimeInterval(-90 * 60)
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: today.addingTimeInterval(-12 * 60),
+                                   label: "Strength",
+                                   points: [
+                                    SavedSession.Point(t: 0, bpm: 88),
+                                    SavedSession.Point(t: 900, bpm: 132),
+                                    SavedSession.Point(t: 1_800, bpm: 156),
+                                    SavedSession.Point(t: 3_600, bpm: 118)
+                                   ],
+                                   hrv: 72)
+        return HistorySnapshot(sessions: [session],
+                               detections: [],
+                               trends: [],
+                               rollups: rollups,
+                               maxHR: 190)
+    }
+    #endif
+}
+
+private struct HistorySleepReviewCTA: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+    let onConfirm: () -> Void
+    let onAdjust: () -> Void
+
+    static func == (lhs: HistorySleepReviewCTA, rhs: HistorySleepReviewCTA) -> Bool {
+        lhs.night == rhs.night
+    }
+
+    private var tint: Color {
+        night.isNapEvidence ? .indigo : .cyan
+    }
+
+    private var title: String {
+        night.isNapEvidence ? "Review nap" : "Review sleep"
+    }
+
+    private var stateText: String {
+        night.isNapEvidence ? "Separate" : "Not counted"
+    }
+
+    private var timeText: String {
+        guard let start = night.start, let end = night.end else { return night.confirmationText }
+        return "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var progress: Double {
+        let targetHours = night.isNapEvidence ? 1.5 : 8.0
+        return min(max(night.durationHours / targetHours, 0.08), 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .stroke(tint.opacity(0.14), lineWidth: 5)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(tint.opacity(0.92),
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: night.isNapEvidence ? "moon.zzz.fill" : "bed.double.fill")
+                        .font(.caption.weight(.black))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline.weight(.semibold))
+                    Text(timeText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(night.durationText)
+                        .font(.title3.weight(.black).monospacedDigit())
+                    Text(stateText)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(tint)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button(action: onAdjust) {
+                    Label("Adjust", systemImage: "slider.horizontal.3")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: tint)
+
+                Button(action: onConfirm) {
+                    Label(night.isNapEvidence ? "Confirm nap" : "Confirm sleep",
+                          systemImage: "checkmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(tint: tint)
+            }
+        }
+        .padding(16)
+        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("History sleep review. \(night.durationText), \(timeText), \(stateText). Confirm or adjust.")
+    }
 }
 
 struct HistorySnapshot {
@@ -10916,6 +14018,7 @@ struct SleepHistorySnapshot: Equatable {
         let duration: TimeInterval
         let restingHR: Int?
         let hrv: Int?
+        let hrvWindowCount: Int
         let respiratoryRate: Double?
         let sleepEfficiency: Double?
         let confidence: String
@@ -10933,6 +14036,7 @@ struct SleepHistorySnapshot: Equatable {
              duration: TimeInterval,
              restingHR: Int?,
              hrv: Int?,
+             hrvWindowCount: Int = 0,
              respiratoryRate: Double?,
              sleepEfficiency: Double?,
              confidence: String,
@@ -10946,6 +14050,7 @@ struct SleepHistorySnapshot: Equatable {
             self.duration = duration
             self.restingHR = restingHR
             self.hrv = hrv
+            self.hrvWindowCount = hrvWindowCount
             self.respiratoryRate = respiratoryRate
             self.sleepEfficiency = sleepEfficiency
             self.confidence = confidence
@@ -10989,10 +14094,45 @@ struct SleepHistorySnapshot: Equatable {
             confirmed ? "confirmed" : confidence.replacingOccurrences(of: "_", with: " ")
         }
 
+        private var observedSpan: TimeInterval {
+            guard let start, let end, end > start else { return duration }
+            return max(duration, end.timeIntervalSince(start))
+        }
+
+        private var fitsNapCandidateWindow: Bool {
+            duration <= AggregateSleepCandidate.napMaximumSpan
+                && observedSpan <= AggregateSleepCandidate.napMaximumSpan
+        }
+
+        private var fitsMainSleepReviewWindow: Bool {
+            if duration >= AggregateSleepCandidate.strictMinimumDuration { return true }
+            return duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+                && observedSpan >= AggregateSleepCandidate.fragmentedMinimumSpan
+        }
+
+        fileprivate var reviewReferenceDate: Date {
+            end ?? start ?? day
+        }
+
+        fileprivate var isShortNapReviewCandidate: Bool {
+            isNapEvidence && fitsNapCandidateWindow
+        }
+
+        fileprivate var isMainSleepReviewCandidate: Bool {
+            guard !confirmed, !isNapEvidence else { return false }
+            return fitsMainSleepReviewWindow
+        }
+
         var isNapEvidence: Bool {
+            if !confirmed && Self.reviewPromotableNapSources.contains(source) && fitsMainSleepReviewWindow {
+                return false
+            }
             if Self.explicitNapSources.contains(source) { return true }
+            if !confirmed && Self.napSizedSleepCandidateSources.contains(source) && fitsNapCandidateWindow {
+                return true
+            }
             if Self.explicitSleepSources.contains(source) { return false }
-            return !confirmed && duration <= AggregateSleepCandidate.napMaximumSpan
+            return !confirmed && fitsNapCandidateWindow
         }
 
         var evidenceLabel: String {
@@ -11008,6 +14148,17 @@ struct SleepHistorySnapshot: Equatable {
                 return isNapEvidence ? "Confirmed nap" : "Confirmed sleep"
             }
             return isNapEvidence ? "Nap candidate" : "Sleep candidate"
+        }
+
+        var reviewContextText: String {
+            if isNapEvidence {
+                return confirmed
+                    ? "Confirmed nap. Kept separate from main sleep."
+                    : "Nap candidate. Kept separate from main sleep unless you adjust it."
+            }
+            return confirmed
+                ? "Confirmed sleep. Used for sleep history and recovery."
+                : "Sleep candidate. Review before it affects recovery."
         }
 
         func stageDuration(_ stage: SleepStageKind) -> TimeInterval {
@@ -11049,6 +14200,7 @@ struct SleepHistorySnapshot: Equatable {
         fileprivate static let explicitSleepSources: Set<String> = [
             "manual_sleep",
             "auto_sleep",
+            "auto_confirmed_sleep",
             "aggregate_sleep",
             "sleep_window",
             "validated_sleep_window",
@@ -11056,6 +14208,17 @@ struct SleepHistorySnapshot: Equatable {
             "sleep_candidate",
             "single_session_sleep_candidate",
             "incomplete_fragmented_sleep"
+        ]
+
+        private static let napSizedSleepCandidateSources: Set<String> = [
+            "sleep_candidate",
+            "single_session_sleep_candidate",
+            "incomplete_fragmented_sleep"
+        ]
+
+        private static let reviewPromotableNapSources: Set<String> = [
+            "nap_candidate",
+            "hr_only_nap"
         ]
     }
 
@@ -11113,7 +14276,8 @@ struct SleepHistorySnapshot: Equatable {
                                      end: sleep.end,
                                      duration: sleep.duration,
                                      restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
-                                     hrv: nil,
+                                     hrv: sleep.hrv,
+                                     hrvWindowCount: sleep.hrvWindowCount ?? 0,
                                      respiratoryRate: nil,
                                      sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span),
                                      confidence: sleep.confidence,
@@ -11136,6 +14300,7 @@ struct SleepHistorySnapshot: Equatable {
                                      duration: sleepDuration,
                                      restingHR: rollup.restingHR,
                                      hrv: rollup.avgHRV,
+                                     hrvWindowCount: rollup.avgHRV == nil ? 0 : AtriaNapRecovery.minimumQualifyingHRVWindows,
                                      respiratoryRate: rollup.avgRespiratoryRate,
                                      sleepEfficiency: Self.efficiency(duration: sleepDuration, span: rollup.sleepSpan),
                                      confidence: rollup.sleepReady > 0 ? "ready" : "candidate",
@@ -11177,6 +14342,8 @@ struct SleepHistorySnapshot: Equatable {
               duration: night.duration,
               restingHR: night.restingHR ?? rollup.restingHR,
               hrv: night.hrv ?? rollup.avgHRV,
+              hrvWindowCount: max(night.hrvWindowCount,
+                                  rollup.avgHRV == nil ? 0 : AtriaNapRecovery.minimumQualifyingHRVWindows),
               respiratoryRate: night.respiratoryRate ?? rollup.avgRespiratoryRate,
               sleepEfficiency: night.sleepEfficiency,
               confidence: night.confidence,
@@ -11220,7 +14387,23 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     var latest: Night? {
-        nights.first
+        Self.preferredReviewableLatestSleep(from: nights)
+    }
+
+    private static let napVsMainSleepReviewWindow: TimeInterval = 18 * 60 * 60
+
+    private static func preferredReviewableLatestSleep(from nights: [Night]) -> Night? {
+        guard let newest = nights.first else { return nil }
+        guard !newest.confirmed, newest.isShortNapReviewCandidate else { return newest }
+
+        let reference = newest.reviewReferenceDate
+        let earliest = reference.addingTimeInterval(-napVsMainSleepReviewWindow)
+        let latest = reference.addingTimeInterval(60 * 60)
+        return nights.first { night in
+            night.isMainSleepReviewCandidate
+                && night.reviewReferenceDate >= earliest
+                && night.reviewReferenceDate <= latest
+        } ?? newest
     }
 
     var respiratoryBaselineStats: (mean: Double, sd: Double, count: Int)? {
@@ -11255,6 +14438,106 @@ struct SleepHistorySnapshot: Equatable {
 
     private static func recentSleepNights(_ nights: [Night]) -> [Night] {
         nights.filter { !$0.isNapEvidence }
+    }
+
+    private static func recentNapNights(_ nights: [Night]) -> [Night] {
+        nights.filter(\.isNapEvidence)
+    }
+
+    func sleepBudgetDebtHours(baseNeedHours: Double, excluding excludedNightID: String? = nil) -> Double {
+        let records = Self.recentSleepNights(nights)
+            .filter { night in
+                guard let excludedNightID else { return true }
+                return night.id != excludedNightID
+            }
+            .prefix(7)
+        let oldestFirst = records.reversed().map { night in
+            (needed: min(max(baseNeedHours, 6), 10), slept: night.durationHours)
+        }
+        return AtriaSleepBudget.sleepDebt(nights: Array(oldestFirst))
+    }
+
+    func sameDayNapHours(for night: Night, calendar: Calendar = .current) -> Double {
+        Self.recentNapNights(nights)
+            .filter { calendar.isDate($0.day, inSameDayAs: night.day) }
+            .reduce(0) { $0 + $1.durationHours }
+    }
+
+    func napAdjustedRecovery(morningRecovery: Int?,
+                             for night: Night?,
+                             calendar: Calendar = .current) -> AtriaNapRecovery.Result {
+        guard let night,
+              !night.isNapEvidence else {
+            return AtriaNapRecovery.Result(percent: morningRecovery, lifted: false)
+        }
+        let morningLnRMSSD = night.hrv.flatMap { $0 > 0 ? log(Double($0)) : nil }
+        let bestNap = Self.recentNapNights(nights)
+            .filter { nap in
+                nap.confirmed
+                    && nap.durationHours >= AtriaNapRecovery.minimumNapHours
+                    && calendar.isDate(nap.day, inSameDayAs: night.day)
+                    && (nap.hrv ?? 0) > 0
+                    && nap.hrvWindowCount >= AtriaNapRecovery.minimumQualifyingHRVWindows
+            }
+            .max { lhs, rhs in
+                (lhs.hrv ?? 0) < (rhs.hrv ?? 0)
+            }
+        let napLnRMSSD = bestNap?.hrv.flatMap { $0 > 0 ? log(Double($0)) : nil }
+        let qualifyingWindows = bestNap?.hrvWindowCount ?? 0
+        return AtriaNapRecovery.adjustedRecovery(morningRecovery: morningRecovery,
+                                                 morningLnRMSSD: morningLnRMSSD,
+                                                 napLnRMSSD: napLnRMSSD,
+                                                 napDurationHours: bestNap?.durationHours ?? 0,
+                                                 qualifyingHRVWindows: qualifyingWindows)
+    }
+
+    func sleepNeedHours(for night: Night,
+                        baseNeedHours: Double,
+                        yesterdayStrain: Double? = nil,
+                        calendar: Calendar = .current) -> Double {
+        AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
+                                   yesterdayStrain: yesterdayStrain,
+                                   debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
+                                                                   excluding: night.id),
+                                   sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+    }
+
+    func sleepPerformancePercent(for night: Night,
+                                  baseNeedHours: Double,
+                                  yesterdayStrain: Double? = nil,
+                                  calendar: Calendar = .current) -> Int {
+        AtriaSleepBudget.performancePercent(slept: night.durationHours,
+                                            needed: sleepNeedHours(for: night,
+                                                                   baseNeedHours: baseNeedHours,
+                                                                   yesterdayStrain: yesterdayStrain,
+                                                                   calendar: calendar))
+    }
+
+    func sleepPerformanceSummary(for night: Night,
+                                 baseNeedHours: Double,
+                                 yesterdayStrain: Double? = nil,
+                                 calendar: Calendar = .current) -> String {
+        let need = sleepNeedHours(for: night,
+                                  baseNeedHours: baseNeedHours,
+                                  yesterdayStrain: yesterdayStrain,
+                                  calendar: calendar)
+        let performance = AtriaSleepBudget.performancePercent(slept: night.durationHours, needed: need)
+        return "Slept \(night.durationText) of \(AtriaMetricFormat.sleepHours(need)) needed · \(performance)%"
+    }
+
+    func bedtimeSuggestionText(now: Date = Date(),
+                               targetHours: Double,
+                               calendar: Calendar = .current) -> String? {
+        guard calendar.component(.hour, from: now) >= 21 else { return nil }
+        if let latest, !latest.confirmed, !latest.isNapEvidence { return nil }
+        let wakeMinutes = Self.recentSleepNights(nights)
+            .prefix(14)
+            .compactMap { Self.sleepWakeMinute($0, calendar: calendar) }
+        guard !wakeMinutes.isEmpty else { return nil }
+        let medianWake = Self.medianMinute(wakeMinutes)
+        let targetMinutes = Int((min(max(targetHours, 6), 10) * 60).rounded())
+        let bedtimeMinute = Self.normalizedDayMinute(medianWake - targetMinutes)
+        return "In bed by \(Self.formatClockMinute(bedtimeMinute)) to hit \(AtriaMetricFormat.sleepHours(targetHours))"
     }
 
     private static func makeSleepConsistency(_ nights: [Night]) -> (percent: Int?, text: String, footnote: String) {
@@ -11308,6 +14591,33 @@ struct SleepHistorySnapshot: Equatable {
         return TimeInterval(hour * 3_600 + minute * 60 + second)
     }
 
+    private static func sleepWakeMinute(_ night: Night, calendar: Calendar) -> Int? {
+        guard let end = night.end else { return nil }
+        let components = calendar.dateComponents([.hour, .minute], from: end)
+        guard let hour = components.hour, let minute = components.minute else { return nil }
+        return hour * 60 + minute
+    }
+
+    private static func medianMinute(_ minutes: [Int]) -> Int {
+        let sorted = minutes.sorted()
+        let midpoint = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return Int((Double(sorted[midpoint - 1]) + Double(sorted[midpoint])) / 2.0)
+        }
+        return sorted[midpoint]
+    }
+
+    private static func normalizedDayMinute(_ minute: Int) -> Int {
+        let dayMinutes = 24 * 60
+        return ((minute % dayMinutes) + dayMinutes) % dayMinutes
+    }
+
+    private static func formatClockMinute(_ minute: Int) -> String {
+        let hour = minute / 60
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        return String(format: "%d:%02d", displayHour, minute % 60)
+    }
+
     private static func circularMeanAbsoluteDeviationHours(_ seconds: [TimeInterval]) -> Double {
         let daySeconds = 24.0 * 60.0 * 60.0
         let angles = seconds.map { ($0 / daySeconds) * 2.0 * Double.pi }
@@ -11326,7 +14636,20 @@ struct SleepHistorySnapshot: Equatable {
     func sleepDebtText(goalHours: Double) -> String {
         guard let debt = sleepDebtHours(goalHours: goalHours) else { return "--" }
         if debt < 0.05 { return "Met" }
-        return String(format: "%.1fh", debt)
+        return AtriaMetricFormat.sleepHours(debt)
+    }
+
+    func sleepPlannerTargetHours(goalHours: Double, recoveryPercent: Int?) -> Double {
+        let safeGoal = min(max(goalHours, 4), 12)
+        let debt = sleepDebtHours(goalHours: safeGoal) ?? 0
+        let debtBuffer = min(max(debt * 0.5, 0), 1.5)
+        let recoveryBuffer: Double
+        if let recoveryPercent {
+            recoveryBuffer = recoveryPercent < 34 ? 0.5 : (recoveryPercent < 67 ? 0.25 : 0)
+        } else {
+            recoveryBuffer = 0
+        }
+        return min(10.5, safeGoal + debtBuffer + recoveryBuffer)
     }
 
     func sleepDebtFootnote(goalHours: Double) -> String {
@@ -11334,9 +14657,9 @@ struct SleepHistorySnapshot: Equatable {
             return "Needs recent sleep records."
         }
         if debt < 0.05 {
-            return String(format: "Recent sleep meets %.1fh goal.", goalHours)
+            return "Recent sleep meets \(AtriaMetricFormat.sleepHours(goalHours)) goal."
         }
-        return String(format: "Average shortfall vs %.1fh goal.", goalHours)
+        return "Average shortfall vs \(AtriaMetricFormat.sleepHours(goalHours)) goal."
     }
 
     private func sleepDebtHours(goalHours: Double) -> Double? {
@@ -11404,6 +14727,188 @@ private struct HistoryQuickStat: View {
     }
 }
 
+private struct HistoryActivityRhythmCard: View {
+    let rollups: [DailyRollup]
+
+    private var recentRollups: [DailyRollup] {
+        Array(rollups.prefix(14).reversed())
+    }
+
+    private var confirmedCount: Int {
+        rollups.reduce(0) { $0 + $1.confirmedWorkouts }
+    }
+
+    private var reviewCount: Int {
+        rollups.reduce(0) { $0 + $1.activityCandidates }
+    }
+
+    private var sleepContextCount: Int {
+        rollups.reduce(0) { $0 + $1.sleepReady + $1.sleepCandidates }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Activity rhythm", systemImage: "waveform.path.ecg")
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 8)
+                Text("\(recentRollups.count)d")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .bottom, spacing: 5) {
+                ForEach(recentRollups, id: \.day) { rollup in
+                    rhythmBar(rollup)
+                }
+            }
+            .frame(height: 68)
+
+            daySequenceStrip
+
+            HStack(spacing: 8) {
+                rhythmPill("Saved", value: "\(confirmedCount)", systemImage: "checkmark.seal.fill", tint: .orange)
+                rhythmPill("Review", value: "\(reviewCount)", systemImage: "figure.strengthtraining.traditional", tint: .cyan)
+                rhythmPill("Sleep", value: "\(sleepContextCount)", systemImage: "moon.zzz.fill", tint: .secondary)
+            }
+        }
+        .padding(12)
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Activity rhythm with day sequence. \(confirmedCount) confirmed workouts, \(reviewCount) review candidates, \(sleepContextCount) sleep context days.")
+    }
+
+    private var daySequenceStrip: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Day sequence")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(sequenceSummary)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(recentRollups, id: \.day) { rollup in
+                    daySequenceNode(rollup)
+                }
+            }
+        }
+        .padding(10)
+        .atriaInsetCard(cornerRadius: 18, tint: .white)
+    }
+
+    private var sequenceSummary: String {
+        let reviewDays = rollups.filter { $0.activityCandidates > 0 }.count
+        let sleepDays = rollups.filter { $0.sleepReady + $0.sleepCandidates > 0 }.count
+        if reviewDays > 0 {
+            return "\(reviewDays) review"
+        }
+        if confirmedCount > 0 {
+            return "\(confirmedCount) saved"
+        }
+        return "\(sleepDays) sleep"
+    }
+
+    private func daySequenceNode(_ rollup: DailyRollup) -> some View {
+        let state = sequenceState(for: rollup)
+        let intensity = min(max(rollup.strain / 21.0, 0.16), 1)
+        return VStack(spacing: 5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(state.tint.opacity(0.10 + (0.14 * intensity)))
+                    .frame(height: 28)
+                Image(systemName: state.symbol)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(state.tint)
+            }
+
+            Capsule(style: .continuous)
+                .fill(state.tint.opacity(state.isEmpty ? 0.16 : 0.70))
+                .frame(width: state.isToday ? 16 : 8, height: 3)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("\(rollup.day.formatted(date: .abbreviated, time: .omitted)): \(state.label), strain \(String(format: "%.1f", rollup.strain)).")
+    }
+
+    private func sequenceState(for rollup: DailyRollup) -> (symbol: String, tint: Color, label: String, isToday: Bool, isEmpty: Bool) {
+        let isToday = Calendar.current.isDateInToday(rollup.day)
+        if rollup.activityCandidates > 0 && rollup.workouts == 0 && rollup.confirmedWorkouts == 0 {
+            return ("questionmark.circle.fill", .cyan, "needs workout review", isToday, false)
+        }
+        if rollup.confirmedWorkouts > 0 || rollup.workouts > 0 {
+            return ("bolt.heart.fill", .orange, "workout saved", isToday, false)
+        }
+        if rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
+            return ("moon.zzz.fill", .blue, "sleep context", isToday, false)
+        }
+        if rollup.restCandidates > 0 {
+            return ("leaf.fill", .secondary, "recovery context", isToday, false)
+        }
+        return ("circle.fill", .secondary, "quiet day", isToday, true)
+    }
+
+    private func rhythmBar(_ rollup: DailyRollup) -> some View {
+        let active = rollup.confirmedWorkouts > 0 || rollup.workouts > 0 || rollup.activityCandidates > 0
+        let tint = rollup.confirmedWorkouts > 0 || rollup.workouts > 0 ? Color.orange : (rollup.activityCandidates > 0 ? Color.cyan : Color.secondary)
+        let progress = min(max(rollup.strain / 21.0, 0.08), 1)
+        return VStack(spacing: 5) {
+            ZStack(alignment: .bottom) {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.08))
+                Capsule(style: .continuous)
+                    .fill(tint.opacity(active ? 0.78 : 0.25))
+                    .frame(height: max(6, 54 * progress))
+            }
+            .frame(maxWidth: .infinity)
+
+            Circle()
+                .fill(markerTint(for: rollup))
+                .frame(width: markerSize(for: rollup), height: markerSize(for: rollup))
+        }
+        .accessibilityLabel("\(rollup.day.formatted(date: .abbreviated, time: .omitted)): strain \(String(format: "%.1f", rollup.strain)), \(rollup.confirmedWorkouts) confirmed, \(rollup.activityCandidates) review candidates.")
+    }
+
+    private func markerTint(for rollup: DailyRollup) -> Color {
+        if rollup.confirmedWorkouts > 0 || rollup.workouts > 0 { return .orange }
+        if rollup.activityCandidates > 0 { return .cyan }
+        if rollup.sleepReady > 0 || rollup.sleepCandidates > 0 { return .blue }
+        if rollup.restCandidates > 0 { return .secondary }
+        return .primary.opacity(0.18)
+    }
+
+    private func markerSize(for rollup: DailyRollup) -> CGFloat {
+        if rollup.confirmedWorkouts > 0 || rollup.workouts > 0 { return 8 }
+        if rollup.activityCandidates > 0 { return 7 }
+        if rollup.sleepReady > 0 || rollup.sleepCandidates > 0 || rollup.restCandidates > 0 { return 6 }
+        return 4
+    }
+
+    private func rhythmPill(_ label: String, value: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.bold))
+            Text(value)
+                .font(.caption.weight(.bold).monospacedDigit())
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .foregroundStyle(tint)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+    }
+}
+
 private struct HistoryPillBackground: View {
     let tint: Color
     @Environment(\.colorScheme) private var colorScheme
@@ -11423,25 +14928,23 @@ private struct DailyRollupRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: rollup.workouts > 0 ? "figure.run" : (rollup.activityCandidates > 0 ? "figure.strengthtraining.traditional" : "calendar"))
-                .foregroundStyle(rollup.workouts > 0 ? .green : (rollup.activityCandidates > 0 ? .orange : .secondary))
+            Image(systemName: rollup.confirmedWorkouts > 0 || rollup.workouts > 0 ? "figure.run" : (rollup.activityCandidates > 0 ? "figure.strengthtraining.traditional" : "calendar"))
+                .foregroundStyle(rowTint)
                 .frame(width: 20)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(rollup.day, style: .date)
                         .font(.caption.weight(.semibold))
                     Spacer()
-                    Text(String(format: "strain %.1f", rollup.strain))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text(String(format: "%.1f strain", rollup.strain))
+                        .font(.caption2.weight(.bold).monospacedDigit())
+                        .foregroundStyle(Metrics.electricStrain)
                 }
-                Text("\(rollup.sessions) sessions · \(formatMinutes(rollup.duration)) saved · \(rollup.activityCandidates) activity · \(rollup.restCandidates) rest · \(rollup.workouts) auto workout · \(rollup.confirmedWorkouts) confirmed · \(rollup.sleepReady) sleep ready · \(rollup.sleepCandidates) candidate")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
+
+                rollupChipGrid
+
                 if rollup.activityCandidates > 0 && rollup.workouts == 0 {
-                    Text("Activity candidates are local evidence only; workout export stays gated.")
+                    Text("Activity candidates stay local until you confirm them.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                         .lineLimit(2)
@@ -11459,6 +14962,51 @@ private struct DailyRollupRow: View {
         .padding(.vertical, 2)
     }
 
+    private var rowTint: Color {
+        if rollup.confirmedWorkouts > 0 || rollup.workouts > 0 { return .orange }
+        if rollup.activityCandidates > 0 { return .cyan }
+        return .secondary
+    }
+
+    private var rollupChipGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 6)], alignment: .leading, spacing: 6) {
+            rollupChip(title: "Saved", value: formatMinutes(rollup.duration), tint: .secondary)
+            if rollup.confirmedWorkouts > 0 {
+                rollupChip(title: "Confirmed", value: "\(rollup.confirmedWorkouts)", tint: .orange)
+            }
+            if rollup.workouts > 0 {
+                rollupChip(title: "Auto", value: "\(rollup.workouts)", tint: .orange)
+            }
+            if rollup.activityCandidates > 0 {
+                rollupChip(title: "Review", value: "\(rollup.activityCandidates)", tint: .cyan)
+            }
+            if rollup.restCandidates > 0 {
+                rollupChip(title: "Rest", value: "\(rollup.restCandidates)", tint: .cyan)
+            }
+            if rollup.sleepReady + rollup.sleepCandidates > 0 {
+                rollupChip(title: "Sleep", value: "\(rollup.sleepReady + rollup.sleepCandidates)", tint: .blue)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Saved \(formatMinutes(rollup.duration)), \(rollup.confirmedWorkouts) confirmed workouts, \(rollup.activityCandidates) activity reviews, \(rollup.sleepReady + rollup.sleepCandidates) sleep items.")
+    }
+
+    private func rollupChip(title: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Text(value)
+                .font(.caption.weight(.bold).monospacedDigit())
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.74)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.09), in: Capsule(style: .continuous))
+    }
+
     private func formatMinutes(_ seconds: TimeInterval) -> String {
         let minutes = max(0, Int((seconds / 60).rounded()))
         if minutes >= 60 {
@@ -11470,73 +15018,67 @@ private struct DailyRollupRow: View {
 
 struct TrendSummaryView: View {
     let summaries: [TrendSummary]
+    private let chartOverview: TrendChartOverview
+    private let windowChips: [TrendWindowChipModel]
+    @State private var selectedDays: Int
+
+    init(summaries: [TrendSummary]) {
+        self.summaries = summaries
+        self.chartOverview = TrendChartOverview(summaries: summaries)
+        self.windowChips = summaries.map(TrendWindowChipModel.init)
+        let preferred = summaries.first { $0.days == TrendSummary.Window.thirty.rawValue }
+            ?? summaries.first
+        _selectedDays = State(initialValue: preferred?.days ?? TrendSummary.Window.thirty.rawValue)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TrendChartOverview(summaries: summaries)
-            ForEach(summaries) { summary in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("\(summary.days)d")
-                            .font(.headline.monospacedDigit())
-                        Spacer()
-                        Text("\(summary.coverageDays)/\(summary.requiredCoverageDays)d required")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 6) {
-                        Text(summary.confidence)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(summary.confidence == "high" ? .green : .orange)
-                        Text("\(summary.coveragePercent)% coverage · \(summary.sessions) sessions")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 10) {
-                        trendMetric("Rec", value: summary.avgRecovery.map { "\($0)%" })
-                        trendMetric("HRV", value: summary.avgHRV.map { "\($0)" })
-                        trendMetric("RHR", value: summary.avgRHR.map { "\($0)" })
-                        trendMetric("Resp", value: summary.avgRespiratoryRate.map { String(format: "%.1f", $0) })
-                        trendMetric("Strain", value: summary.avgStrain.map { String(format: "%.1f", $0) })
-                    }
-                    Text(summary.detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.8)
-                    if summary.blockers != "none" {
-                        Text("Blocked: \(summary.blockers.replacingOccurrences(of: "+", with: " · "))")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.75)
-                    }
-                    if !summary.anomalies.isEmpty {
-                        Text(summary.anomalies.joined(separator: " · "))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                    }
-                }
-                .padding(.vertical, 4)
-                if summary.id != summaries.last?.id {
-                    Divider()
-                }
+            windowPicker
+            if let selectedSummary {
+                TrendWindowFocusCard(summary: selectedSummary)
             }
+            chartOverview
+            windowStrip
         }
         .onAppear { logTrendChartUI() }
+        .animation(.snappy(duration: 0.24), value: selectedDays)
     }
 
-    private func trendMetric(_ label: String, value: String?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value ?? "learning")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    private var selectedSummary: TrendSummary? {
+        summaries.first { $0.days == selectedDays } ?? summaries.first
+    }
+
+    private var windowPicker: some View {
+        Picker("Trend window", selection: $selectedDays) {
+            ForEach(summaries) { summary in
+                Text(trendWindowLabel(summary.days))
+                    .tag(summary.days)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .pickerStyle(.segmented)
+        .accessibilityLabel("Trend window")
+    }
+
+    private var windowStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(windowChips) { chip in
+                TrendWindowChip(chip: chip, selected: chip.days == selectedDays)
+                    .onTapGesture {
+                        selectedDays = chip.days
+                    }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func trendWindowLabel(_ days: Int) -> String {
+        switch days {
+        case 7: return "W"
+        case 30: return "M"
+        case 90: return "Q"
+        case 180: return "6M"
+        default: return "\(days)d"
+        }
     }
 
     private func logTrendChartUI() {
@@ -11599,36 +15141,240 @@ struct TrendSummaryView: View {
     }
 }
 
+private struct TrendWindowFocusCard: View {
+    let summary: TrendSummary
+
+    private var coverageFraction: Double {
+        guard summary.requiredCoverageDays > 0 else { return 0 }
+        return min(max(Double(summary.coverageDays) / Double(summary.requiredCoverageDays), 0), 1)
+    }
+
+    private var stateText: String {
+        summary.confidence == "high" ? "Ready" : "Building"
+    }
+
+    private var blockersText: String? {
+        guard summary.blockers != "none" else { return nil }
+        return summary.blockers
+            .split(separator: "+")
+            .map(Self.userVisibleNeedText)
+            .joined(separator: " · ")
+    }
+
+    private static func userVisibleNeedText(_ raw: Substring) -> String {
+        switch String(raw) {
+        case "coverage_below_70pct":
+            return "more complete days"
+        case "hrv_learning":
+            return "more HRV nights"
+        case "recovery_points_missing":
+            return "recovery history"
+        case "hrv_points_missing":
+            return "HRV history"
+        default:
+            return "more history"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    Circle()
+                        .stroke(.secondary.opacity(0.12), lineWidth: 8)
+                    Circle()
+                        .trim(from: 0, to: coverageFraction)
+                        .stroke(summary.confidence == "high" ? Metrics.electricGreen : .cyan,
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Text("\(summary.coveragePercent)%")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .minimumScaleFactor(0.75)
+                }
+                .frame(width: 62, height: 62)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(summary.days)-day trend")
+                        .font(.headline.weight(.semibold))
+                    Text("\(stateText) · \(summary.coverageDays)/\(summary.requiredCoverageDays) days · \(summary.sessions) sessions")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.82)
+                }
+
+                Spacer(minLength: 8)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8)],
+                      spacing: 8) {
+                TrendFocusMetric(label: "Recovery", value: summary.avgRecovery.map { "\($0)%" }, tint: Metrics.recoveryColor(summary.avgRecovery ?? 0))
+                TrendFocusMetric(label: "HRV", value: summary.avgHRV.map { "\($0) ms" }, tint: .cyan)
+                TrendFocusMetric(label: "RHR", value: summary.avgRHR.map { "\($0) bpm" }, tint: .pink)
+                TrendFocusMetric(label: "Strain", value: summary.avgStrain.map { String(format: "%.1f", $0) }, tint: Metrics.electricStrain)
+                TrendFocusMetric(label: "Resp", value: summary.avgRespiratoryRate.map { String(format: "%.1f/min", $0) }, tint: .cyan)
+                TrendFocusMetric(label: "Source", value: summary.anomalySampleDays > 0 ? "\(summary.anomalySampleDays)d" : "local", tint: .secondary)
+            }
+
+            if let blockersText {
+                Text("Needs more data: \(blockersText)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+            } else if !summary.anomalies.isEmpty {
+                Text(summary.anomalies.joined(separator: " · "))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+            } else {
+                Text(summary.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(summary.days)-day trend. \(stateText). Coverage \(summary.coverageDays) of \(summary.requiredCoverageDays) days. Recovery \(summary.avgRecovery.map { "\($0) percent" } ?? "building"). HRV \(summary.avgHRV.map { "\($0) milliseconds" } ?? "building").")
+    }
+}
+
+private struct TrendFocusMetric: View {
+    let label: String
+    let value: String?
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value ?? "Building")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(value == nil ? .secondary : .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct TrendWindowChipModel: Identifiable {
+    let days: Int
+    let label: String
+    let coverageText: String
+    let confidence: String
+
+    var id: Int { days }
+
+    init(summary: TrendSummary) {
+        days = summary.days
+        switch summary.days {
+        case 7: label = "Week"
+        case 30: label = "Month"
+        case 90: label = "Quarter"
+        case 180: label = "6 months"
+        default: label = "\(summary.days)d"
+        }
+        coverageText = "\(summary.coverageDays)/\(summary.requiredCoverageDays)"
+        confidence = summary.confidence == "high" ? "ready" : "building"
+    }
+}
+
+private struct TrendWindowChip: View {
+    let chip: TrendWindowChipModel
+    let selected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(chip.label)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(selected ? .primary : .secondary)
+                .lineLimit(1)
+            Text(chip.coverageText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(chip.confidence)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(selected ? Color.primary.opacity(0.08) : Color.secondary.opacity(0.05),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(selected ? Color.primary.opacity(0.14) : Color.secondary.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityLabel("\(chip.label), \(chip.coverageText) days, \(chip.confidence)")
+        .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
+    }
+}
+
 private struct TrendChartOverview: View {
-    let summaries: [TrendSummary]
+    private let coverageSummaries: [TrendSummary]
+    private let coverageLabel: String
+    private let metricCards: [TrendMetricChartModel]
+
+    init(summaries: [TrendSummary]) {
+        self.coverageSummaries = summaries
+        self.coverageLabel = summaries.map { "\($0.days)d \($0.coverageDays)/\($0.requiredCoverageDays)" }.joined(separator: " · ")
+        self.metricCards = [
+            TrendMetricChartModel(title: "Recovery",
+                                  unit: "%",
+                                  color: Metrics.electricGreen,
+                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRecovery.map(Double.init)) }),
+            TrendMetricChartModel(title: "HRV",
+                                  unit: "ms",
+                                  color: .cyan,
+                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgHRV.map(Double.init)) }),
+            TrendMetricChartModel(title: "RHR",
+                                  unit: "bpm",
+                                  color: .pink,
+                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRHR.map(Double.init)) }),
+            TrendMetricChartModel(title: "Resp",
+                                  unit: "/min",
+                                  color: .cyan,
+                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRespiratoryRate) }),
+            TrendMetricChartModel(title: "Strain",
+                                  unit: "",
+                                  color: Metrics.electricStrain,
+                                  values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgStrain) })
+        ]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TrendCoverageChart(summaries: summaries)
+            TrendCoverageChart(summaries: coverageSummaries, summaryText: coverageLabel)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                TrendMetricChart(title: "Recovery",
-                                 unit: "%",
-                                 color: .green,
-                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRecovery.map(Double.init)) })
-                TrendMetricChart(title: "HRV",
-                                 unit: "ms",
-                                 color: .purple,
-                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgHRV.map(Double.init)) })
-                TrendMetricChart(title: "RHR",
-                                 unit: "bpm",
-                                 color: .teal,
-                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRHR.map(Double.init)) })
-                TrendMetricChart(title: "Resp",
-                                 unit: "/min",
-                                 color: .cyan,
-                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgRespiratoryRate) })
-                TrendMetricChart(title: "Strain",
-                                 unit: "",
-                                 color: .orange,
-                                 values: summaries.map { TrendMetricPoint(days: $0.days, value: $0.avgStrain) })
+                ForEach(metricCards) { card in
+                    TrendMetricChart(model: card)
+                }
             }
         }
     }
+}
+
+private struct TrendMetricChartModel: Identifiable {
+    let title: String
+    let unit: String
+    let color: Color
+    let values: [TrendMetricPoint]
+
+    var id: String { title }
 }
 
 private struct TrendMetricPoint: Identifiable {
@@ -11641,6 +15387,7 @@ private struct TrendMetricPoint: Identifiable {
 
 private struct TrendCoverageChart: View {
     let summaries: [TrendSummary]
+    let summaryText: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -11648,7 +15395,7 @@ private struct TrendCoverageChart: View {
                 Text("Coverage")
                     .font(.caption.weight(.semibold))
                 Spacer()
-                Text(summaries.map { "\($0.days)d \($0.coverageDays)/\($0.requiredCoverageDays)" }.joined(separator: " · "))
+                Text(summaryText)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -11657,7 +15404,7 @@ private struct TrendCoverageChart: View {
             Chart(summaries) { summary in
                 BarMark(x: .value("Window", "\(summary.days)d"),
                         y: .value("Coverage", summary.coveragePercent))
-                    .foregroundStyle(summary.confidence == "high" ? Color.green : Color.orange)
+                    .foregroundStyle(summary.confidence == "high" ? Metrics.electricGreen : Color.cyan)
             }
             .chartYScale(domain: 0...100)
             .chartYAxis(.hidden)
@@ -11667,24 +15414,21 @@ private struct TrendCoverageChart: View {
 }
 
 private struct TrendMetricChart: View {
-    let title: String
-    let unit: String
-    let color: Color
-    let values: [TrendMetricPoint]
+    let model: TrendMetricChartModel
 
     private var plotted: [TrendMetricPoint] {
-        values.filter { $0.value != nil }
+        model.values.filter { $0.value != nil }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
-                Text(title)
+                Text(model.title)
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Text(latestText)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(plotted.isEmpty ? .secondary : color)
+                    .foregroundStyle(plotted.isEmpty ? .secondary : model.color)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
@@ -11697,12 +15441,12 @@ private struct TrendMetricChart: View {
             } else {
                 Chart(plotted) { point in
                     LineMark(x: .value("Window", point.label),
-                             y: .value(title, point.value ?? 0))
+                             y: .value(model.title, point.value ?? 0))
                         .interpolationMethod(.monotone)
-                        .foregroundStyle(color)
+                        .foregroundStyle(model.color)
                     PointMark(x: .value("Window", point.label),
-                              y: .value(title, point.value ?? 0))
-                        .foregroundStyle(color)
+                              y: .value(model.title, point.value ?? 0))
+                        .foregroundStyle(model.color)
                 }
                 .chartYAxis(.hidden)
                 .frame(height: 54)
@@ -11713,10 +15457,10 @@ private struct TrendMetricChart: View {
 
     private var latestText: String {
         guard let value = plotted.last?.value else { return "learning" }
-        if title == "Strain" {
-            return String(format: "%.1f%@", value, unit)
+        if model.title == "Strain" {
+            return String(format: "%.1f%@", value, model.unit)
         }
-        return "\(Int(value.rounded()))\(unit)"
+        return "\(Int(value.rounded()))\(model.unit)"
     }
 }
 

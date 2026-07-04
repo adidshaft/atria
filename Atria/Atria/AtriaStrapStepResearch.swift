@@ -29,10 +29,4 @@ enum AtriaStrapStepResearch {
         }
         return Result(steps: peaks, peaks: peaks, state: "research_unvalidated")
     }
-
-    static func agreement(strapSteps: Int, phoneSteps: Int?) -> Double? {
-        guard strapSteps > 0, let phoneSteps, phoneSteps > 0 else { return nil }
-        let denominator = Double(max(strapSteps, phoneSteps))
-        return 1.0 - (abs(Double(strapSteps - phoneSteps)) / denominator)
-    }
 }

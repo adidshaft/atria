@@ -34,6 +34,9 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
         }
         .scaleEffect(configuration.isPressed ? 0.97 : 1)
         .animation(.snappy(duration: 0.14), value: selected)
+        // Haptics deliberately NOT here: a feedback modifier inside a reusable
+        // ButtonStyle registers an engine observer per rendered segment. Owners
+        // fire .selection once at their segment-change handler instead.
     }
 }
 
@@ -70,7 +73,6 @@ private struct AtriaCardBackground: View {
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(baseFill)
-            .overlay(tintWash)
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
@@ -79,25 +81,8 @@ private struct AtriaCardBackground: View {
                     radius: 10, x: 0, y: 4)
     }
 
-    private var baseFill: some ShapeStyle {
-        AnyShapeStyle(AtriaDesignTokens.Surface.card(isDark: colorScheme == .dark, emphasis: emphasis))
-    }
-
-    @ViewBuilder
-    private var tintWash: some View {
-        if colorScheme == .dark {
-            // ~1% white wash is invisible on the dark UI; drop the extra layer.
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        Color.white.opacity(emphasis == .strong ? 0.22 : 0.14),
-                        Color.blue.opacity(0.018),
-                        Color.clear
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        }
+    private var baseFill: AnyShapeStyle {
+        AtriaDesignTokens.Surface.card(isDark: colorScheme == .dark, emphasis: emphasis)
     }
 
     private var strokeShape: some View {
@@ -117,7 +102,6 @@ private struct AtriaRaisedCardBackground: View {
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(baseFill)
-            .overlay(tintWash)
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
@@ -126,24 +110,8 @@ private struct AtriaRaisedCardBackground: View {
                     radius: 10, x: 0, y: 4)
     }
 
-    private var baseFill: some ShapeStyle {
-        AnyShapeStyle(AtriaDesignTokens.Surface.raisedCard(isDark: colorScheme == .dark, emphasis: emphasis))
-    }
-
-    @ViewBuilder
-    private var tintWash: some View {
-        if colorScheme == .dark {
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        Color.white.opacity(emphasis == .strong ? 0.16 : 0.10),
-                        Color.blue.opacity(0.025),
-                        Color.clear
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        }
+    private var baseFill: AnyShapeStyle {
+        AtriaDesignTokens.Surface.raisedCard(isDark: colorScheme == .dark, emphasis: emphasis)
     }
 
     @ViewBuilder
@@ -171,8 +139,8 @@ private struct AtriaInsetCardBackground: View {
             )
     }
 
-    private var baseFill: some ShapeStyle {
-        AnyShapeStyle(AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark))
+    private var baseFill: AnyShapeStyle {
+        AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark)
     }
 
     @ViewBuilder
@@ -192,12 +160,6 @@ private struct AtriaInsetCardBackground: View {
         }
     }
 
-    private var accentTint: Color {
-        if tint == .white {
-            return Color(red: 0.52, green: 0.76, blue: 0.98)
-        }
-        return tint
-    }
 }
 
 struct AtriaIconTileBackground: View {
@@ -216,8 +178,8 @@ struct AtriaIconTileBackground: View {
             }
     }
 
-    private var baseFill: some ShapeStyle {
-        AnyShapeStyle(AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark))
+    private var baseFill: AnyShapeStyle {
+        AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark)
     }
 
     @ViewBuilder
@@ -230,12 +192,6 @@ struct AtriaIconTileBackground: View {
         }
     }
 
-    private var accentTint: Color {
-        if tint == .white {
-            return Color(red: 0.55, green: 0.78, blue: 0.98)
-        }
-        return tint
-    }
 }
 
 struct AtriaChecklistBadgeBackground: View {

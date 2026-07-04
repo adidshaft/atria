@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Identifiable wrapper so a live workout can drive `.fullScreenCover(item:)`.
 struct AtriaWorkoutSession: Identifiable {
@@ -15,10 +16,27 @@ struct AtriaLiveWorkoutView: View {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
+    let strainTarget: Double?
     let startDate: Date
+    let strengthHistorySessions: [SavedSession]
+    @Binding var loggedSets: [LoggedSet]
+    @Binding var excludedIntervals: [ExcludedInterval]
+    @Binding var heartRateBroadcastEnabled: Bool
+    let broadcastPersistsAfterWorkout: Bool
+    let onMinimize: () -> Void
     let onStop: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showSetLogger = false
+    @State private var selectedExercise = "Barbell bench press"
+    @State private var loggerWeightKg = 60.0
+    @State private var loggerReps = 8
+    @State private var loggerRestSeconds: TimeInterval = 120
+    @State private var restTimerEndsAt: Date?
+    @State private var editingSetID: UUID?
+    @State private var pauseStartedAt: Date?
+    @State private var latestPRSetID: UUID?
 
     private var heartRate: Int { pulseStore.state.heartRate }
     private var strain: Double { heroStore.state.strain }
@@ -34,24 +52,69 @@ struct AtriaLiveWorkoutView: View {
                 .ignoresSafeArea()
                 .animation(.easeInOut(duration: 0.6), value: zone)
 
-            VStack(spacing: 26) {
-                header
-                Spacer(minLength: 0)
-                heartBlock(zone)
-                zoneBar(zone)
-                Spacer(minLength: 0)
-                statsRow
+            VStack(spacing: 0) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 10) {
+                        header
+                        heartBlock(zone)
+                            .padding(.top, 2)
+                        workoutCoachCueCard(zone)
+                        strengthLoggerCard
+                        pauseResumeCard
+                        broadcastHeartRateCard
+                        workoutTargetLane(zone)
+                        workoutSourceStrip(zone)
+                        zoneBar(zone)
+                        zoneFocusCard(zone)
+                        strainTargetCard
+                    }
+                    .padding(22)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                }
+
                 stopButton
+                    .padding(.horizontal, 24)
+                    .padding(.top, 10)
+                    .padding(.bottom, 12)
             }
-            .padding(24)
-            .padding(.top, 8)
         }
+        .safeAreaPadding(.top)
+        .safeAreaPadding(.bottom)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showSetLogger) {
+            setLoggerSheet
+                .presentationDetents([.height(390)])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
+        }
+        .onAppear {
+            #if DEBUG
+            applyDebugWorkoutFixtureIfNeeded(arguments: ProcessInfo.processInfo.arguments)
+            if ProcessInfo.processInfo.arguments.contains("--atria-open-set-logger") {
+                primeLoggerFromLastSet()
+                showSetLogger = true
+            }
+            #endif
+        }
     }
 
     private var header: some View {
         HStack {
-            Label("Workout", systemImage: "figure.run")
+            Button {
+                onMinimize()
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.white.opacity(0.10), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Minimize workout")
+
+            Label("Live workout", systemImage: "figure.run")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
             Spacer()
@@ -65,13 +128,10 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private func heartBlock(_ zone: HRZone) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: "heart.fill")
-                .font(.title2)
-                .foregroundStyle(.red)
-                .symbolEffect(.pulse, options: .repeating)
+        VStack(spacing: 2) {
+            pulsingHeartIcon
             Text(heartRate > 0 ? "\(heartRate)" : "--")
-                .font(.system(size: 96, weight: .heavy, design: .rounded))
+                .font(.system(size: 72, weight: .heavy, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.white)
                 .contentTransition(.numericText())
@@ -83,17 +143,863 @@ struct AtriaLiveWorkoutView: View {
         .accessibilityLabel("Heart rate \(heartRate), \(zone.name) zone")
     }
 
+    @ViewBuilder
+    private var pulsingHeartIcon: some View {
+        let icon = Image(systemName: "heart.fill")
+            .font(.title2)
+            .foregroundStyle(.red)
+        if reduceMotion {
+            icon
+        } else {
+            icon.symbolEffect(.pulse, options: .repeating)
+        }
+    }
+
+    private func workoutSourceStrip(_ zone: HRZone) -> some View {
+        HStack(spacing: 9) {
+            stripPill(title: "Source", value: "Strap HR", systemImage: "bolt.heart.fill", tint: zone.color)
+            stripPill(title: "Review", value: "Confirm later", systemImage: "checkmark.bubble.fill", tint: .white)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Workout source is strap heart rate. End workout to confirm or adjust the session later.")
+    }
+
+    private var strengthLoggerCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Strength log", systemImage: "dumbbell.fill")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                if let restTimerEndsAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(restTimerText(now: context.date, end: restTimerEndsAt))
+                            .font(.caption.weight(.black).monospacedDigit())
+                            .foregroundStyle(.mint)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(.mint.opacity(0.16), in: Capsule())
+                    }
+                }
+            }
+
+            if loggedSets.isEmpty {
+                Text("Log sets without leaving the workout.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.66))
+            } else {
+                VStack(spacing: 7) {
+                    ForEach(loggedSets.suffix(4)) { set in
+                        loggedSetRow(set)
+                    }
+                }
+            }
+
+            Button {
+                primeLoggerFromLastSet()
+                showSetLogger = true
+            } label: {
+                Label("Log set", systemImage: "plus.circle.fill")
+                    .font(.headline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.mint)
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: .mint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Strength log. \(loggedSets.count) sets logged.")
+    }
+
+    private func loggedSetRow(_ set: LoggedSet) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                editLoggedSet(set)
+            } label: {
+                HStack(spacing: 10) {
+                    Text(set.exercise)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(setSummary(set))
+                        .font(.caption.weight(.black).monospacedDigit())
+                        .foregroundStyle(.mint)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button(role: .destructive) {
+                deleteLoggedSet(set)
+            } label: {
+                Image(systemName: "trash.circle.fill")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.red.opacity(0.92))
+            }
+            .accessibilityLabel("Delete set")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var pauseResumeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(isPaused ? "Workout paused" : "Pause workout",
+                      systemImage: isPaused ? "pause.circle.fill" : "pause.circle")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                if let pauseStartedAt {
+                    TimelineView(.periodic(from: pauseStartedAt, by: 1)) { context in
+                        Text(pauseElapsedText(context.date))
+                            .font(.caption.weight(.black).monospacedDigit())
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(.orange.opacity(0.16), in: Capsule())
+                    }
+                }
+            }
+
+            Text(isPaused ? "HR keeps recording. This span is excluded when saved." : "Use for rest, setup, or interruptions.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.66))
+                .lineLimit(2)
+
+            Button {
+                toggleWorkoutPause()
+            } label: {
+                Label(isPaused ? "Resume workout" : "Pause workout",
+                      systemImage: isPaused ? "play.circle.fill" : "pause.circle.fill")
+                    .font(.headline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(isPaused ? .green : .orange)
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: isPaused ? .orange : .white)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isPaused ? "Workout paused. Resume workout." : "Pause workout.")
+    }
+
+    private var setLoggerSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(editingSetID == nil ? "Log set" : "Edit set", systemImage: "dumbbell.fill")
+                    .font(.headline.weight(.black))
+                Spacer()
+                Button("Done") { showSetLogger = false }
+                    .font(.subheadline.weight(.bold))
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(loggerExerciseOptions, id: \.self) { exercise in
+                        Button {
+                            selectedExercise = exercise
+                            primeLoggerFromLastSet(exercise: exercise)
+                            loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
+                        } label: {
+                            Text(exercise)
+                                .font(.caption.weight(.bold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 8)
+                                .background(selectedExercise == exercise ? Color.mint.opacity(0.26) : Color.white.opacity(0.08),
+                                            in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            loggerStepperRow(title: "Weight",
+                             value: "\(Int(loggerWeightKg.rounded())) kg",
+                             decrement: { loggerWeightKg = max(0, loggerWeightKg - 2.5) },
+                             increment: { loggerWeightKg += 2.5 })
+            loggerStepperRow(title: "Reps",
+                             value: "\(loggerReps)",
+                             decrement: { loggerReps = max(1, loggerReps - 1) },
+                             increment: { loggerReps = min(99, loggerReps + 1) })
+            loggerStepperRow(title: "Rest",
+                             value: restOverrideText(loggerRestSeconds),
+                             decrement: { updateRestOverride(max(30, loggerRestSeconds - 15)) },
+                             increment: { updateRestOverride(min(600, loggerRestSeconds + 15)) })
+
+            exerciseHistoryPanel
+
+            Button {
+                saveLoggedSet()
+            } label: {
+                Label(editingSetID == nil ? "Save set" : "Update set", systemImage: "checkmark.circle.fill")
+                    .font(.headline.weight(.black))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.mint)
+        }
+        .padding(18)
+    }
+
+    private func loggerStepperRow(title: String,
+                                  value: String,
+                                  decrement: @escaping () -> Void,
+                                  increment: @escaping () -> Void) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline.weight(.bold))
+            Spacer()
+            Button(action: decrement) {
+                Image(systemName: "minus.circle.fill")
+                    .font(.title2)
+            }
+            Text(value)
+                .font(.title3.weight(.black).monospacedDigit())
+                .frame(minWidth: 86)
+            Button(action: increment) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+            }
+        }
+        .padding(10)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func workoutCoachCueCard(_ zone: HRZone) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(coachCueTint.opacity(0.18))
+                Image(systemName: coachCueSymbol)
+                    .font(.title3.weight(.black))
+                    .foregroundStyle(coachCueTint)
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(coachCueTitle)
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(.white)
+                    Text("Z\(zone.rawValue)")
+                        .font(.caption.weight(.black).monospacedDigit())
+                        .foregroundStyle(zone.color)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(zone.color.opacity(0.16), in: Capsule())
+                }
+
+                GeometryReader { proxy in
+                    let width = max(proxy.size.width, 1)
+                    HStack(spacing: 4) {
+                        Capsule(style: .continuous)
+                            .fill(zone.color.opacity(0.82))
+                            .frame(width: max(10, width * 0.52 * heartRateProgress))
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(0.78))
+                            .frame(width: max(10, width * 0.44 * strainTargetProgress))
+                    }
+                }
+                .frame(height: 9)
+                .accessibilityHidden(true)
+
+                Text(coachCueDetail)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.70))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 24, tint: coachCueTint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Workout cue. \(coachCueTitle). \(coachCueDetail). Current zone \(zone.rawValue), \(zone.name).")
+    }
+
+    private var broadcastHeartRateCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $heartRateBroadcastEnabled) {
+                Label("Broadcast heart rate", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.white)
+            }
+            .tint(.cyan)
+
+            Text(broadcastPersistsAfterWorkout
+                 ? "Stays available after this workout from Settings. Uses extra phone and strap battery while on."
+                 : "Turns off when this workout ends. Uses extra phone and strap battery while on.")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.62))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: .cyan)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Broadcast heart rate \(heartRateBroadcastEnabled ? "on" : "off"). \(broadcastPersistsAfterWorkout ? "Stays available after this workout from Settings." : "Turns off when this workout ends.") Uses extra phone and strap battery while on.")
+    }
+
+    private func workoutTargetLane(_ zone: HRZone) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Target lane")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.white.opacity(0.90))
+                Spacer(minLength: 8)
+                Text(coachCueTitle)
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(coachCueTint)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(coachCueTint.opacity(0.16), in: Capsule())
+            }
+
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                let markerX = min(max(width * strainTargetProgress, 0), width)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.10))
+                        .frame(height: 12)
+
+                    HStack(spacing: 4) {
+                        ForEach(HRZone.allCases, id: \.self) { candidate in
+                            Capsule(style: .continuous)
+                                .fill(candidate == zone ? candidate.color.opacity(0.92) : candidate.color.opacity(0.26))
+                                .frame(height: candidate == zone ? 16 : 8)
+                        }
+                    }
+
+                    Circle()
+                        .fill(coachCueTint)
+                        .overlay {
+                            Circle()
+                                .stroke(.white.opacity(0.86), lineWidth: 2)
+                        }
+                        .shadow(color: coachCueTint.opacity(0.44), radius: 10, y: 3)
+                        .frame(width: 18, height: 18)
+                        .offset(x: min(max(markerX - 9, 0), max(width - 18, 0)))
+                        .animation(.snappy(duration: 0.28), value: strainTargetProgress)
+                }
+            }
+            .frame(height: 20)
+            .accessibilityHidden(true)
+
+            HStack(spacing: 8) {
+                targetLaneChip(title: "Zone", value: "Z\(zone.rawValue)", tint: zone.color)
+                targetLaneChip(title: "Strain", value: String(format: "%.1f", strain), tint: Metrics.electricStrain)
+                targetLaneChip(title: "Target", value: strainTargetValueText, tint: coachCueTint)
+            }
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: coachCueTint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Target lane. Heart rate zone \(zone.rawValue), strain \(String(format: "%.1f", strain)), target \(strainTargetValueText), \(coachCueTitle).")
+    }
+
+    private func stripPill(title: String, value: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.58))
+                Text(value)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .atriaWorkoutGlassSurface(cornerRadius: 18, tint: tint)
+    }
+
     private func zoneBar(_ zone: HRZone) -> some View {
-        HStack(spacing: 4) {
-            ForEach(HRZone.allCases, id: \.self) { z in
-                Capsule()
-                    .fill(z == zone ? z.color : z.color.opacity(0.22))
-                    .frame(height: z == zone ? 12 : 8)
-                    .animation(.snappy(duration: 0.25), value: zone)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Heart-rate zones")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.70))
+                Spacer(minLength: 8)
+                Text("Z\(zone.rawValue)")
+                    .font(.caption.weight(.black).monospacedDigit())
+                    .foregroundStyle(zone.color)
+            }
+
+            HStack(spacing: 4) {
+                ForEach(HRZone.allCases, id: \.self) { z in
+                    VStack(spacing: 5) {
+                        Capsule()
+                            .fill(z == zone ? z.color : z.color.opacity(0.22))
+                            .frame(height: z == zone ? 12 : 7)
+                            .animation(.snappy(duration: 0.25), value: zone)
+                        Text("Z\(z.rawValue)")
+                            .font(.system(size: 9, weight: z == zone ? .black : .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(z == zone ? z.color : .white.opacity(0.42))
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity)
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Heart-rate zones. Current zone \(zone.rawValue), \(zone.name).")
+    }
+
+    private func zoneFocusCard(_ zone: HRZone) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("Zone focus", systemImage: "scope")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                Text(zone.name)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(zone.color)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(zone.color.opacity(0.16), in: Capsule())
+            }
+
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                let progress = heartRateProgress
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.10))
+                    Capsule(style: .continuous)
+                        .fill(zone.color.opacity(0.78))
+                        .frame(width: max(10, width * progress))
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 12, height: 12)
+                        .offset(x: min(max(width * progress - 6, 0), max(width - 12, 0)))
+                }
+            }
+            .frame(height: 14)
+
+            HStack(spacing: 8) {
+                focusPill(title: "Band", value: zoneBandText(zone))
+                focusPill(title: "Samples", value: "\(liveStore.state.sessionSampleCount)")
+                focusPill(title: "Evidence", value: liveStore.state.sessionSampleCount >= 900 ? "steady" : "building")
+            }
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 20, tint: zone.color)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Zone focus. \(zone.name), \(zoneBandText(zone)), \(liveStore.state.sessionSampleCount) samples.")
+    }
+
+    private var strainTargetCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("Target strain", systemImage: "target")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                Text(strainTargetValueText)
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .foregroundStyle(Metrics.electricStrain)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Metrics.electricStrain.opacity(0.16), in: Capsule())
+            }
+
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.10))
+                    Capsule(style: .continuous)
+                        .fill(Metrics.electricStrain.opacity(0.78))
+                        .frame(width: max(10, width * strainTargetProgress))
+                    if effectiveStrainTarget != nil {
+                        Rectangle()
+                            .fill(.white.opacity(0.92))
+                            .frame(width: 3, height: 18)
+                            .clipShape(Capsule(style: .continuous))
+                            .offset(x: min(max(width - 3, 0), width))
+                    }
+                }
+            }
+            .frame(height: 14)
+            .accessibilityHidden(true)
+
+            HStack(spacing: 8) {
+                focusPill(title: "Now", value: String(format: "%.1f", strain))
+                focusPill(title: "Target", value: strainTargetValueText)
+                focusPill(title: "Cue", value: strainTargetCue)
+            }
+        }
+        .padding(12)
+        .atriaWorkoutGlassSurface(cornerRadius: 20, tint: Metrics.electricStrain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Target strain. Current \(String(format: "%.1f", strain)), target \(strainTargetValueText), \(strainTargetCue).")
+    }
+
+    private var strainTargetValueText: String {
+        guard let strainTarget = effectiveStrainTarget else { return "Learning" }
+        return String(format: "%.1f", strainTarget)
+    }
+
+    private var strainTargetProgress: Double {
+        guard let strainTarget = effectiveStrainTarget, strainTarget > 0 else { return min(max(strain / 21.0, 0), 1) }
+        return min(max(strain / strainTarget, 0), 1)
+    }
+
+    private var strainTargetCue: String {
+        guard let strainTarget = effectiveStrainTarget else { return "building" }
+        if strain >= strainTarget + 1.0 { return "ease" }
+        if strain >= strainTarget { return "hold" }
+        return "build"
+    }
+
+    private var coachCueTitle: String {
+        switch strainTargetCue {
+        case "ease": return "Ease down"
+        case "hold": return "Hold here"
+        default: return "Build gently"
+        }
+    }
+
+    private var coachCueDetail: String {
+        switch strainTargetCue {
+        case "ease": return "Above target. Let HR settle."
+        case "hold": return "Target matched. Keep this effort."
+        default: return "Below target. Add effort when ready."
+        }
+    }
+
+    private var coachCueSymbol: String {
+        switch strainTargetCue {
+        case "ease": return "arrow.down.heart.fill"
+        case "hold": return "equal.circle.fill"
+        default: return "arrow.up.heart.fill"
+        }
+    }
+
+    private var coachCueTint: Color {
+        switch strainTargetCue {
+        case "ease": return .orange
+        case "hold": return .mint
+        default: return Metrics.electricStrain
+        }
+    }
+
+    private var effectiveStrainTarget: Double? {
+        #if DEBUG
+        if let debugTarget = debugStrainTarget {
+            return debugTarget
+        }
+        #endif
+        return strainTarget
+    }
+
+    #if DEBUG
+    private var debugStrainTarget: Double? {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("live-workout-target-build") {
+            return max(0.1, strain + 3.0)
+        }
+        if arguments.contains("live-workout-target-hold") {
+            return max(0.1, strain)
+        }
+        if arguments.contains("live-workout-target-ease") {
+            return max(0.1, strain - 2.0)
+        }
+        return nil
+    }
+    #endif
+
+    private var heartRateProgress: Double {
+        guard maxHR > 0, heartRate > 0 else { return 0 }
+        return min(max(Double(heartRate) / Double(maxHR), 0), 1)
+    }
+
+    private var loggerExerciseOptions: [String] {
+        let recents = loggedSets.reversed().map(\.exercise)
+        let suggested = AtriaWorkoutExerciseCatalog.suggestedExercises(for: AtriaWorkoutActivityType.strength.rawValue)
+        let fallback = Array(AtriaWorkoutExerciseCatalog.groups.flatMap(\.exercises).prefix(8))
+        let options = (recents + suggested).reduce(into: [String]()) { result, exercise in
+            guard !result.contains(where: { $0.localizedCaseInsensitiveCompare(exercise) == .orderedSame }) else { return }
+            result.append(exercise)
+        }
+        return Array((options.isEmpty ? fallback : options).prefix(12))
+    }
+
+    private func primeLoggerFromLastSet() {
+        editingSetID = nil
+        primeLoggerFromLastSet(exercise: selectedExercise)
+    }
+
+    #if DEBUG
+    private func applyDebugWorkoutFixtureIfNeeded(arguments: [String]) {
+        guard let fixture = Self.debugLaunchFixtureValue(arguments: arguments) else { return }
+        if fixture == "live-workout-set-saved" {
+            selectedExercise = "Barbell bench press"
+            loggerWeightKg = 85
+            loggerReps = 5
+            loggerRestSeconds = AtriaStrengthLog.restSeconds(for: selectedExercise)
+            latestPRSetID = loggedSets.last?.id
+            restTimerEndsAt = Date().addingTimeInterval(91)
+        } else if fixture == "live-workout-paused" {
+            pauseStartedAt = Date().addingTimeInterval(-74)
+        }
+    }
+
+    private static func debugLaunchFixtureValue(arguments: [String]) -> String? {
+        if let environmentValue = ProcessInfo.processInfo.environment["ATRIA_UI_FIXTURE"],
+           !environmentValue.isEmpty {
+            return environmentValue
+        }
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex) else { return nil }
+        return arguments[valueIndex]
+    }
+    #endif
+
+    private func primeLoggerFromLastSet(exercise: String) {
+        loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
+        guard let last = loggedSets.last(where: { $0.exercise.localizedCaseInsensitiveCompare(exercise) == .orderedSame }) else {
+            selectedExercise = exercise
+            return
+        }
+        selectedExercise = exercise
+        loggerWeightKg = last.weightKg ?? loggerWeightKg
+        loggerReps = last.reps ?? loggerReps
+    }
+
+    private func saveLoggedSet() {
+        let set = LoggedSet(exercise: selectedExercise,
+                            weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+                            reps: loggerReps,
+                            rpe: nil,
+                            t: Date())
+        let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
+        if let editingSetID,
+           let index = loggedSets.firstIndex(where: { $0.id == editingSetID }) {
+            loggedSets[index] = set
+            self.editingSetID = nil
+        } else {
+            loggedSets.append(set)
+        }
+        latestPRSetID = isNewPR ? set.id : nil
+        restTimerEndsAt = Date().addingTimeInterval(restSeconds(for: selectedExercise))
+        mirrorLoggedSetsToActiveJournal()
+        UIImpactFeedbackGenerator(style: isNewPR ? .heavy : .light).impactOccurred()
+    }
+
+    private func editLoggedSet(_ set: LoggedSet) {
+        editingSetID = set.id
+        selectedExercise = set.exercise
+        loggerRestSeconds = AtriaStrengthLog.restSeconds(for: set.exercise)
+        loggerWeightKg = set.weightKg ?? loggerWeightKg
+        loggerReps = set.reps ?? loggerReps
+        showSetLogger = true
+    }
+
+    private func deleteLoggedSet(_ set: LoggedSet) {
+        loggedSets.removeAll { $0.id == set.id }
+        mirrorLoggedSetsToActiveJournal()
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
+    private func mirrorLoggedSetsToActiveJournal() {
+        try? ActiveSessionJournal.mirrorStrengthState(strengthSets: loggedSets,
+                                                      excludedIntervals: effectiveExcludedIntervals)
+    }
+
+    private var isPaused: Bool {
+        pauseStartedAt != nil
+    }
+
+    private var effectiveExcludedIntervals: [ExcludedInterval] {
+        guard let pauseStartedAt else { return excludedIntervals }
+        return excludedIntervals + [ExcludedInterval(start: pauseStartedAt, end: Date())]
+    }
+
+    private func toggleWorkoutPause() {
+        if isPaused {
+            finalizePauseIfNeeded()
+        } else {
+            pauseStartedAt = Date()
+            mirrorLoggedSetsToActiveJournal()
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func finalizePauseIfNeeded(now: Date = Date()) {
+        guard let started = pauseStartedAt else { return }
+        let end = max(now, started)
+        excludedIntervals.append(ExcludedInterval(start: started, end: end))
+        pauseStartedAt = nil
+        mirrorLoggedSetsToActiveJournal()
+    }
+
+    private func pauseElapsedText(_ date: Date) -> String {
+        guard let pauseStartedAt else { return "00:00" }
+        let total = max(0, Int(date.timeIntervalSince(pauseStartedAt)))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    private func restSeconds(for exercise: String) -> TimeInterval {
+        AtriaStrengthLog.restSeconds(for: exercise)
+    }
+
+    private func updateRestOverride(_ seconds: TimeInterval) {
+        loggerRestSeconds = seconds
+        AtriaStrengthLog.setRestSeconds(seconds, for: selectedExercise)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func restOverrideText(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func restTimerText(now: Date, end: Date) -> String {
+        let remaining = max(0, Int(end.timeIntervalSince(now).rounded()))
+        return String(format: "%d:%02d", remaining / 60, remaining % 60)
+    }
+
+    private func setSummary(_ set: LoggedSet) -> String {
+        let weight = set.weightKg.map { "\(Int($0.rounded())) kg" } ?? "--"
+        let reps = set.reps.map { "\($0)" } ?? "--"
+        let base = "\(weight) x \(reps)"
+        return isPersonalRecord(set) ? "\(base) · PR" : base
+    }
+
+    private var exerciseHistoryPanel: some View {
+        let records = personalRecords(for: selectedExercise)
+        let history = AtriaStrengthLog.history(for: selectedExercise, in: strengthHistorySessions)
+        let best = history.last?.best
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("History", systemImage: "chart.xyaxis.line")
+                    .font(.caption.weight(.black))
+                Spacer()
+                Text(history.isEmpty ? "No sets yet" : "\(history.count) days")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                historyMetric("Best", value: best.map(setSummaryPlain) ?? "--")
+                historyMetric("e1RM", value: records.maxE1RM.map { "\(Int($0.rounded())) kg" } ?? "--")
+                historyMetric("Max", value: records.maxWeightKg.map { "\(Int($0.rounded())) kg" } ?? "--")
+            }
+
+            if let latestPRSetID,
+               loggedSets.contains(where: { $0.id == latestPRSetID }) {
+                Label("New PR", systemImage: "sparkles")
+                    .font(.caption.weight(.black))
+                    .foregroundStyle(.yellow)
+            }
+        }
+        .padding(10)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func historyMetric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.black).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func personalRecords(for exercise: String) -> StrengthPersonalRecords {
+        AtriaStrengthLog.personalRecords(for: exercise, in: strengthHistorySessions)
+    }
+
+    private func personalRecordsIncludingCurrentWorkout(for exercise: String) -> StrengthPersonalRecords {
+        AtriaStrengthLog.personalRecords(for: exercise, in: strengthHistorySessions + currentStrengthSession)
+    }
+
+    private func isPersonalRecord(_ set: LoggedSet) -> Bool {
+        latestPRSetID == set.id || AtriaStrengthLog.isPR(set, against: personalRecords(for: set.exercise))
+    }
+
+    private var currentStrengthSession: [SavedSession] {
+        guard !loggedSets.isEmpty else { return [] }
+        return [SavedSession(id: UUID(),
+                             start: startDate,
+                             end: Date(),
+                             label: "Live workout",
+                             points: [],
+                             strengthSets: loggedSets)]
+    }
+
+    private func setSummaryPlain(_ set: LoggedSet) -> String {
+        let weight = set.weightKg.map { "\(Int($0.rounded())) kg" } ?? "--"
+        let reps = set.reps.map { "\($0)" } ?? "--"
+        return "\(weight) x \(reps)"
+    }
+
+    private func zoneBandText(_ zone: HRZone) -> String {
+        let lower = Int((Double(maxHR) * zone.lowerFraction).rounded())
+        let next = HRZone(rawValue: zone.rawValue + 1)
+        if let upperZone = next {
+            let upper = max(lower, Int((Double(maxHR) * upperZone.lowerFraction).rounded()) - 1)
+            return "\(lower)-\(upper)"
+        }
+        return "\(lower)+"
+    }
+
+    private func focusPill(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white.opacity(0.60))
+            Text(value)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func targetLaneChip(title: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white.opacity(0.58))
+            Text(value)
+                .font(.caption.weight(.black).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.07), in: Capsule())
     }
 
     private var statsRow: some View {
@@ -121,15 +1027,12 @@ struct AtriaLiveWorkoutView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(tint.opacity(0.4), lineWidth: 1)
-        }
+        .atriaWorkoutGlassSurface(cornerRadius: 18, tint: tint)
     }
 
     private var stopButton: some View {
         Button(role: .destructive) {
+            finalizePauseIfNeeded()
             onStop()
             dismiss()
         } label: {
@@ -146,5 +1049,26 @@ struct AtriaLiveWorkoutView: View {
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%02d:%02d", m, s)
+    }
+}
+
+private struct AtriaWorkoutGlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .overlay {
+                shape
+                    .stroke(tint.opacity(0.28), lineWidth: 1)
+            }
+            .glassEffect(.regular.tint(tint.opacity(0.12)), in: shape)
+    }
+}
+
+private extension View {
+    func atriaWorkoutGlassSurface(cornerRadius: CGFloat, tint: Color) -> some View {
+        modifier(AtriaWorkoutGlassSurfaceModifier(cornerRadius: cornerRadius, tint: tint))
     }
 }
