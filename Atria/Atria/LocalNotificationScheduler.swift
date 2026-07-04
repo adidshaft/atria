@@ -1329,8 +1329,32 @@ enum LocalNotificationScheduler {
         return adjusted
     }
 
+    /// fit_check nudges repeat while the underlying condition persists, so
+    /// left ungated they can drain the whole shared attention budget in one
+    /// loose-strap evening (observed 2026-07-05: used=6 cap=6, silencing the
+    /// journal check-in and morning summary). Own cap: 2/day, 4 h apart.
+    private static func fitCheckAllowed(now: Date = Date()) -> Bool {
+        let defaults = UserDefaults.standard
+        let lastKey = "atria.notification.fitcheck.lastAt"
+        let dayKey = "atria.notification.fitcheck.day"
+        let countKey = "atria.notification.fitcheck.dayCount"
+        let day = localDayIdentifier(for: now, calendar: .current)
+        let count = defaults.string(forKey: dayKey) == day ? defaults.integer(forKey: countKey) : 0
+        let last = defaults.object(forKey: lastKey) as? Date ?? .distantPast
+        guard count < 2, now.timeIntervalSince(last) >= 4 * 60 * 60 else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=fit_check reason=own_cap count=%d since_last_s=%.0f",
+                          count, now.timeIntervalSince(last))
+            return false
+        }
+        defaults.set(day, forKey: dayKey)
+        defaults.set(count + 1, forKey: countKey)
+        defaults.set(now, forKey: lastKey)
+        return true
+    }
+
     private static func add(decision: NotificationDecision,
                             center: UNUserNotificationCenter) async throws {
+        if decision.kind == "fit_check", !fitCheckAllowed() { return }
         guard consumeAttentionBudget(kind: decision.kind) else { return }
         var decision = decision
         decision = NotificationDecision(kind: decision.kind,
