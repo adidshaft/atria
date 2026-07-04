@@ -403,6 +403,23 @@ enum AtriaResearchUploadQueue {
         pruneOutbox(now: now, calendar: calendar)
     }
 
+    /// Foreground catch-up: iOS grants BGProcessingTask windows opportunistically
+    /// and can starve a freshly-reinstalled app for days. If the nightly window
+    /// was missed (we are past the sleep window, nothing ran today), build the
+    /// day's bundle on foreground instead — same gates, same once-per-day mark,
+    /// so the two paths can never double-build.
+    static func runForegroundCatchUpIfMissed(store: SessionStore, now: Date = Date(), calendar: Calendar = .current) async {
+        guard AtriaResearchSharing.isOptedIn else { return }
+        guard !isWithinSleepWindow(now: now, calendar: calendar) else { return }
+        guard !hasRunToday(now: now, calendar: calendar) else { return }
+        markRanToday(now: now, calendar: calendar)
+        AtriaDebugLog("ATRIADBG research_upload status=catchup reason=foreground_missed_nightly")
+        if let built = await AtriaResearchBundleBuilder.build(store: store, now: now) {
+            _ = await enqueueAndAttemptTransport(built: built, now: now, reason: "foreground_catchup")
+        }
+        pruneOutbox(now: now, calendar: calendar)
+    }
+
     /// Manual "send now" from Settings: builds/persists immediately (ignoring
     /// the sleep-window and once-per-day gates, since the user explicitly
     /// asked), then attempts the transport step below. Returns the outbox file
