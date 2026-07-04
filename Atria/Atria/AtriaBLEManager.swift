@@ -2120,12 +2120,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard longWearModeEnabled else {
             defaults.set("disabled", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("wait_long_wear_enabled", forKey: KeepaliveDefaults.lastAction)
-            defaults.synchronize()
             return
         }
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastTickAt)
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.ticks) + 1, forKey: KeepaliveDefaults.ticks)
-        defaults.synchronize()
         if peripheral == nil {
             recomputeConnectionStatus(reason: "foreground_keepalive_missing_peripheral")
             defaults.set("missing_peripheral", forKey: KeepaliveDefaults.lastStatus)
@@ -2143,7 +2141,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set("peripheral_not_connected", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
             defaults.set(Double(peripheral.state.rawValue), forKey: KeepaliveDefaults.lastPeripheralState)
-            defaults.synchronize()
             AtriaDebugLog("ATRIADBG foreground_keepalive status=peripheral_not_connected peripheral_state=%d action=reconnect_known_strap saved=%d",
                           peripheral.state.rawValue,
                           hasSavedStrap ? 1 : 0)
@@ -2220,7 +2217,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set("low_battery_shutoff", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("suppress_hard_reconnect", forKey: KeepaliveDefaults.lastAction)
             markLowBatteryReconnectSuppressed(reason: "low_battery_shutoff", defaults: defaults, now: now)
-            defaults.synchronize()
             AtriaDebugLog("ATRIADBG foreground_keepalive status=low_battery_shutoff battery=%d packet_age_s=%.0f action=suppress_hard_reconnect",
                           batteryLevel,
                           packetAge)
@@ -2236,7 +2232,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             foregroundKeepaliveReassertAt = nil
             defaults.set("sample_counter_stalled", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("hard_reconnect", forKey: KeepaliveDefaults.lastAction)
-            defaults.synchronize()
             AtriaDebugLog("ATRIADBG foreground_keepalive status=sample_counter_stalled raw_notifications=%d packet_age_s=%.0f action=hard_reconnect",
                           currentRawNotifications,
                           now.timeIntervalSince(lastPacketAt))
@@ -2254,7 +2249,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             foregroundKeepaliveReassertAt = nil
             defaults.set("sample_counter_stalled", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("hard_reconnect", forKey: KeepaliveDefaults.lastAction)
-            defaults.synchronize()
             AtriaDebugLog("ATRIADBG foreground_keepalive status=sample_counter_stalled raw_notifications=%d previous=%d elapsed_s=%.0f action=hard_reconnect",
                           currentRawNotifications,
                           previousRawNotifications,

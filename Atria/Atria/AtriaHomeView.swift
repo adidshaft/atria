@@ -346,7 +346,17 @@ struct AtriaHomeView: View {
     @State private var showSettings = false
     @State private var showShareSheet = false
     @State private var incomingFaceOff: AtriaFaceOffPayload?
-    @AppStorage("atria.faceoff.displayName") private var faceOffDisplayName = ""
+    // Plain read, not @AppStorage: this key has dots, which is the exact
+    // KVO-storm hazard documented above for persistentHeartRateBroadcastEnabled
+    // and homeLayoutConfigStorage (~790 evals/sec self-invalidation, 0x8BADF00D
+    // crash loop, 2026-07-03) — this app writes "atria.*"-prefixed diagnostics
+    // keys constantly, and a dotted @AppStorage key path re-fires on ANY of
+    // them. AtriaHomeView never writes this value (AtriaSettingsView's own
+    // TextField is the sole writer), so a live UserDefaults read at the two
+    // use sites below is equivalent with zero subscription overhead.
+    private var faceOffDisplayName: String {
+        UserDefaults.standard.string(forKey: "atria.faceoff.displayName") ?? ""
+    }
     @State private var showCustomizeSheet = false
     @State private var showWidgetProofSheet = false
     @State private var widgetProofSnapshot: WidgetSnapshot?

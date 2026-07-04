@@ -7319,3 +7319,49 @@ metricDetail sheet routes. Additive only; pinned composition untouched.
 
 Next-run queue (user-ranked): stress monitor, cycle tracking, reference ranges,
 monthly report, strain-target card, Deep/SWS calibration, steps copy honesty.
+
+## 20. Fitness-style rings, smoothness/memory pass, nightly sharing (2026-07-04 late)
+
+Model-tiering policy now in force (user directive): high-reasoning models think
+(review/judgment), lower tiers implement. This run: 3 implement agents + 2
+adversarial reviewers; all 7 reviewer findings fixed before commit. Gate:
+checks OK (128/128), Release BUILD SUCCEEDED + installed, unit suite green.
+
+**Ring hero (Apple Fitness style, HIG-informed)**: duplicate glance strip
+REMOVED (user call: rings suffice). AtriaTriRing rebuilt — formula-driven even
+gaps, rounded-cap AngularGradient strokes with end-cap shadow, real per-ring
+annulus tap targets (previously only legend chips were tappable), honest center
+delta vs yesterday (omitted when no prior), ring-order customization
+(atria.today.ringOrder via the top menu; full arbitrary-metric picker descoped —
+conflicts with the pinned IA-6.1 3-ring construction, noted for a coordinated
+follow-up). NEW AtriaRingShare.swift: 1080x1350 ImageRenderer share card of the
+configured rings (Face-Off pattern), rendered ON TAP only (reviewer caught a
+per-tick live render — fixed).
+
+**Smoothness + memory**: third instance of the dotted-@AppStorage KVO-storm
+pattern found in AtriaHomeView (faceoff.displayName — same class as the
+2026-07-03 790-evals/sec crash loop) → plain UserDefaults read; 5
+UserDefaults.synchronize() calls removed from the triple-redundant ~20 s
+keepalive tick (forced main-thread flushes); per-row DateFormatter allocation
+hoisted. Audit found ring buffers/caches/watchdogs already disciplined —
+no leaks found beyond these.
+
+**Sharing pipeline (user decision: opt-out)**: onboarding sharing step, toggle
+ON by default — but consent still routes through the SAME inspector-gated
+consent sheet as Settings (reviewer caught the bypass; fixed — Agree stays
+disabled until the real bundle is opened; dismissing completes onboarding with
+sharing off). Nightly bundle build during the learned sleep window (fallback
+03:00-05:00) via the existing BGProcessingTask, once/day; outbox in Application
+Support/research-outbox; 7-day retention; revoke now CLEARS the outbox and
+opted-out outboxes empty on prune (reviewer catches). HONEST LIMIT: the
+local-first static gate bans all network clients — so bundles QUEUE ON DEVICE
+and no POST exists yet; onboarding/Settings copy says exactly that. When a
+server decision is made, the transport plugs into
+AtriaResearchUploadQueue.enqueueAndAttemptTransport + endpoint key
+atria.research.endpointURL (and the network ban needs an explicit exemption).
+
+On-device retention stays the §14.1 design (hot 30d raw → per-minute summaries →
+daily scores forever; confirmed sleeps/workouts raw permanently) — deliberately
+NOT the "delete raw after a week" floated in the directive: the compactor
+already achieves the same footprint goal without losing confirmed-session
+fidelity. Flagged for the user in the turn summary.

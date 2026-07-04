@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AtriaTodayScreen: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
@@ -32,6 +33,7 @@ struct AtriaTodayScreen: View {
     @State private var metricDetail: AtriaMetricDetailKind?
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
+    @State private var ringShareImage: UIImage?
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
 
@@ -49,14 +51,12 @@ struct AtriaTodayScreen: View {
             } else if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
                 AtriaOverviewBehaviorJournalSection(store: store)
             } else {
-            // Fixed header, not yet wired into the AtriaTodayMetric hidden/order
-            // customization CSV: this glance strip duplicates fields already
-            // covered by the pinned triRingHero (IA-6.1, static-check gated) and
-            // the customizable glance grid below, so folding its visibility into
-            // that per-metric system would mean a second source of truth for the
-            // same three values. Ship it fixed above the pinned hero; revisit if
-            // the strip itself needs to become optional.
-            glanceStrip
+            // The tri-ring hero (IA-6.1, static-check gated) is the one and
+            // only glance-first summary on this screen. A fixed 3-tile
+            // "glance strip" used to sit above it showing the same
+            // sleep/recovery/strain numbers a second time -- pure
+            // duplication -- and was removed; the ring hero plus its legend
+            // chips are now the single source of truth for those values.
             topActionMenu
             triRingHero
             if layoutConfig.showLiveStrip {
@@ -198,6 +198,9 @@ struct AtriaTodayScreen: View {
                 Button(action: onOpenShare) {
                     Label("Share Today", systemImage: "square.and.arrow.up")
                 }
+                Button(action: rotateRingOrder) {
+                    Label("Rotate Ring Order", systemImage: "arrow.triangle.2.circlepath")
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.callout.weight(.semibold))
@@ -210,24 +213,104 @@ struct AtriaTodayScreen: View {
     }
 
     private var triRingHero: some View {
-        AtriaTriRing(sleep: sleepMetric,
-                     recovery: recoveryMetric,
-                     strain: strainMetric,
-                     centerValue: centerValue,
-                     centerState: centerState,
-                     accessibilitySummary: accessibilitySummary,
-                     onSleep: { metricDetail = .sleep },
-                     onRecovery: { metricDetail = .recovery },
-                     onStrain: { metricDetail = .strain })
+        VStack(spacing: 10) {
+            AtriaTriRing(sleep: sleepMetric,
+                         recovery: recoveryMetric,
+                         strain: strainMetric,
+                         centerValue: centerValue,
+                         centerState: centerState,
+                         centerDelta: centerDeltaText,
+                         accessibilitySummary: accessibilitySummary,
+                         ringOrder: ringOrder,
+                         onSleep: { metricDetail = .sleep },
+                         onRecovery: { metricDetail = .recovery },
+                         onStrain: { metricDetail = .strain })
+
+            ringShareButton
+        }
     }
 
-    private var glanceStrip: some View {
-        AtriaTodayGlanceStrip(recovery: recoveryMetric,
-                              strain: strainMetric,
-                              sleep: sleepMetric,
-                              onRecovery: { metricDetail = .recovery },
-                              onStrain: { metricDetail = .strain },
-                              onSleep: { metricDetail = .sleep })
+    /// Small, discoverable "share as picture" affordance hosted right under
+    /// the ring hero -- same idea as the Face-Off story-image share button,
+    /// just local to this card instead of a separate sheet.
+    @ViewBuilder
+    private var ringShareButton: some View {
+        // Rendered on demand: rasterizing the 1080x1350 card is main-thread
+        // work, so it happens once per tap, never per live metric tick.
+        if let ringShareImage {
+            ShareLink(item: Image(uiImage: ringShareImage),
+                      preview: SharePreview("Atria \(ringShareContent.dateText)",
+                                            image: Image(uiImage: ringShareImage))) {
+                Label("Share as picture", systemImage: "square.and.arrow.up")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        } else {
+            Button {
+                ringShareImage = AtriaRingShare.renderImage(ringShareContent)
+            } label: {
+                Label("Share as picture", systemImage: "square.and.arrow.up")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .onChange(of: ringShareSignature) { _, _ in
+                ringShareImage = nil
+            }
+        }
+    }
+
+    private var ringShareContent: AtriaRingShare.Content {
+        AtriaRingShare.Content(sleep: sleepMetric,
+                               recovery: recoveryMetric,
+                               strain: strainMetric,
+                               centerValue: centerValue,
+                               centerState: centerState,
+                               ringOrder: ringOrder,
+                               dateText: Self.ringShareDateFormatter.string(from: Date()))
+    }
+
+    private var ringShareSignature: String {
+        [sleepMetric.value, recoveryMetric.value, strainMetric.value,
+         centerValue, centerState, ringOrder.map(\.rawValue).joined(separator: ",")]
+            .joined(separator: "|")
+    }
+
+    private static let ringShareDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMM d"
+        return formatter
+    }()
+
+    /// Which of the three known ring metrics draws on the outer/middle/inner
+    /// band. Persisted the same way other single-value layout prefs are
+    /// (an `@AtriaDefault`-backed comma-joined string), independent of the
+    /// separate `AtriaHomeLayoutConfig` JSON blob so this stays inside this
+    /// screen's own file. Defaults to the original sleep/recovery/strain
+    /// (outer to inner) layout.
+    @AtriaDefault("atria.today.ringOrder") private var ringOrderRaw: String = "sleep,recovery,strain"
+
+    private var ringOrder: [AtriaTriRingSlot] {
+        var seen = Set<AtriaTriRingSlot>()
+        var result = ringOrderRaw
+            .split(separator: ",")
+            .compactMap { AtriaTriRingSlot(rawValue: String($0)) }
+            .filter { seen.insert($0).inserted }
+        for slot in AtriaTriRingSlot.defaultOrder where !result.contains(slot) {
+            result.append(slot)
+        }
+        return Array(result.prefix(3))
+    }
+
+    private func rotateRingOrder() {
+        var order = ringOrder
+        guard order.count == 3 else {
+            ringOrderRaw = AtriaTriRingSlot.defaultOrder.map(\.rawValue).joined(separator: ",")
+            return
+        }
+        order.append(order.removeFirst())
+        ringOrderRaw = order.map(\.rawValue).joined(separator: ",")
     }
 
     private var highlightRollups: [DailyRollupStoreEntry] {
@@ -533,6 +616,42 @@ struct AtriaTodayScreen: View {
         }
     }
 
+    /// Prior day's rollup, used only for the ring hero's tiny center delta.
+    /// Nil whenever there isn't a distinct prior day on record -- the delta
+    /// is omitted rather than fabricated in that case.
+    private var previousRollup: DailyRollupStoreEntry? {
+        let sorted = highlightRollups.sorted { $0.day > $1.day }
+        guard sorted.count > 1 else { return nil }
+        return sorted[1]
+    }
+
+    /// Tiny "+4% vs yesterday" style read under the ring hero's center
+    /// numeral. Only ever built from two real, already-stored values; when
+    /// either side is missing (still learning, first day, etc.) this is
+    /// nil and the hero simply omits the line -- no placeholder guess.
+    private var centerDeltaText: String? {
+        switch layoutConfig.ringCenterMetric {
+        case .recovery:
+            guard let current = displayHero.recoveryEstimate.percent,
+                  let previous = previousRollup?.recovery else { return nil }
+            return Self.deltaText(current - previous, unit: "%")
+        case .sleep:
+            guard let current = latestRollup?.sleepPerformance,
+                  let previous = previousRollup?.sleepPerformance else { return nil }
+            return Self.deltaText(current - previous, unit: "%")
+        case .strain:
+            guard let previous = previousRollup?.strain else { return nil }
+            let delta = displayHero.strain - previous
+            guard abs(delta) >= 0.05 else { return "Flat vs yesterday" }
+            return String(format: "%@%.1f vs yesterday", delta > 0 ? "+" : "-", abs(delta))
+        }
+    }
+
+    private static func deltaText(_ delta: Int, unit: String) -> String {
+        guard delta != 0 else { return "Flat vs yesterday" }
+        return "\(delta > 0 ? "+" : "-")\(abs(delta))\(unit) vs yesterday"
+    }
+
     private var accessibilitySummary: String {
         "Sleep \(sleepMetric.value), Recovery \(recoveryMetric.value) \(recoveryMetric.detail), Strain \(strainMetric.value) \(strainMetric.detail)."
     }
@@ -794,88 +913,6 @@ struct AtriaTodayScreen: View {
             && ["ai-coach-local", "ai-coach-flagged", "ai-coach-audit"].contains(arguments[valueIndex])
     }
     #endif
-}
-
-/// Calm, glance-first header: one dominant number (Recovery, with its ring)
-/// flanked by two smaller tap targets (Strain, Sleep). Every tile taps through
-/// to the same AtriaMetricDetailSheet route as the rings/legend below it.
-private struct AtriaTodayGlanceStrip: View, Equatable {
-    let recovery: AtriaTriRingMetric
-    let strain: AtriaTriRingMetric
-    let sleep: AtriaTriRingMetric
-    let onRecovery: () -> Void
-    let onStrain: () -> Void
-    let onSleep: () -> Void
-
-    static func == (lhs: AtriaTodayGlanceStrip, rhs: AtriaTodayGlanceStrip) -> Bool {
-        lhs.recovery == rhs.recovery && lhs.strain == rhs.strain && lhs.sleep == rhs.sleep
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AtriaTodayGlanceHeroTile(metric: recovery, isDominant: true, action: onRecovery)
-            AtriaTodayGlanceHeroTile(metric: strain, isDominant: false, action: onStrain)
-            AtriaTodayGlanceHeroTile(metric: sleep, isDominant: false, action: onSleep)
-        }
-        .accessibilityElement(children: .contain)
-    }
-}
-
-private struct AtriaTodayGlanceHeroTile: View, Equatable {
-    let metric: AtriaTriRingMetric
-    let isDominant: Bool
-    let action: () -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    static func == (lhs: AtriaTodayGlanceHeroTile, rhs: AtriaTodayGlanceHeroTile) -> Bool {
-        lhs.metric == rhs.metric && lhs.isDominant == rhs.isDominant
-    }
-
-    private var ringDiameter: CGFloat { isDominant ? 78 : 56 }
-    private var numeralSize: CGFloat { isDominant ? 32 : 21 }
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                ZStack {
-                    if let fill = metric.fill {
-                        Circle()
-                            .stroke(metric.tint.opacity(0.14),
-                                    style: StrokeStyle(lineWidth: isDominant ? 6 : 4, lineCap: .round))
-                        Circle()
-                            .trim(from: 0, to: min(max(fill, 0), 1))
-                            .stroke(metric.tint,
-                                    style: StrokeStyle(lineWidth: isDominant ? 6 : 4, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: fill)
-                    }
-                    Text(metric.value)
-                        .font(.system(size: numeralSize, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                        .padding(.horizontal, 4)
-                }
-                .frame(width: ringDiameter, height: ringDiameter)
-
-                Text(metric.title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, minHeight: isDominant ? 118 : 100)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.plain)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.inset,
-                   emphasis: isDominant ? .strong : .soft)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(metric.title) \(metric.value), \(metric.detail)")
-        .accessibilityHint("Opens \(metric.title.lowercased()) details.")
-    }
 }
 
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {

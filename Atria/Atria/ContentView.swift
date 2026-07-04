@@ -6,6 +6,16 @@ struct ContentView: View {
     let ble: AtriaBLEManager
     let store: SessionStore
     @State private var showOnboarding = false
+    @State private var onboardingStage: OnboardingStage = .flow
+    @State private var showOnboardingConsentSheet = false
+
+    /// The onboarding choice about anonymous research sharing is its own stage,
+    /// shown after the athlete-profile flow finishes and before the app opens
+    /// (docs/24 §14.3 phase 2 — opt-out, default on, revocable in Settings).
+    private enum OnboardingStage {
+        case flow
+        case sharingChoice(AthleteProfile)
+    }
 
     var body: some View {
         AtriaHomeContainer(ble: ble, store: store)
@@ -14,21 +24,48 @@ struct ContentView: View {
                 let debugOnboardingStep = Self.debugOnboardingStepArgument()
                 let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
                     && ProcessInfo.processInfo.arguments.contains("--atria-complete-onboarding")
+                onboardingStage = .flow
                 showOnboarding = debugOnboardingStep != nil || (!store.profile.hasCompletedOnboarding && !debugCompletesOnboarding)
             }
             .fullScreenCover(isPresented: $showOnboarding) {
-                AtriaOnboardingFlow(profile: store.profile,
-                                    ble: ble,
-                                    debugInitialStep: Self.debugOnboardingStepArgument(),
-                                    onRestoreBackup: { url in
-                                        guard store.restoreSessionBackup(from: url) else { return false }
-                                        showOnboarding = !store.profile.hasCompletedOnboarding
-                                        return true
-                                    }) { profile in
-                    store.completeOnboarding(with: profile)
-                    showOnboarding = false
+                switch onboardingStage {
+                case .flow:
+                    AtriaOnboardingFlow(profile: store.profile,
+                                        ble: ble,
+                                        debugInitialStep: Self.debugOnboardingStepArgument(),
+                                        onRestoreBackup: { url in
+                                            guard store.restoreSessionBackup(from: url) else { return false }
+                                            showOnboarding = !store.profile.hasCompletedOnboarding
+                                            return true
+                                        }) { profile in
+                        onboardingStage = .sharingChoice(profile)
+                    }
+                    .interactiveDismissDisabled()
+                case .sharingChoice(let profile):
+                    AtriaOnboardingSharingChoiceStep { sharingEnabled in
+                        if sharingEnabled {
+                            // Same inspector-gated consent flow as Settings:
+                            // Agree stays disabled until the real bundle has
+                            // been opened. Dismissing without agreeing means
+                            // sharing stays off — onboarding still completes.
+                            showOnboardingConsentSheet = true
+                        } else {
+                            store.completeOnboarding(with: profile)
+                            showOnboarding = false
+                        }
+                    }
+                    .interactiveDismissDisabled()
+                    .sheet(isPresented: $showOnboardingConsentSheet,
+                           onDismiss: {
+                               store.completeOnboarding(with: profile)
+                               showOnboarding = false
+                           }) {
+                        AtriaResearchConsentSheet(buildPreview: { await AtriaResearchBundleBuilder.build(store: store) },
+                                                  onConsented: {
+                                                      showOnboardingConsentSheet = false
+                                                  })
+                    }
                 }
-                .interactiveDismissDisabled()
             }
     }
 
@@ -41,6 +78,68 @@ struct ContentView: View {
 #else
         return nil
 #endif
+    }
+}
+
+/// Final onboarding step: the anonymous research-sharing choice. Opt-out —
+/// the toggle starts ON, honest about what leaves the phone, and the user can
+/// decline right here or later in Settings. Consent itself is still only ever
+/// recorded through `AtriaResearchSharing.grantConsent()` (never bypassed),
+/// and declining here simply skips that call — the existing revoke path in
+/// Settings is untouched.
+struct AtriaOnboardingSharingChoiceStep: View {
+    let onContinue: (Bool) -> Void
+    @State private var sharingEnabled = true
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AtriaDashboardBackdrop()
+                    .ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Image(systemName: "shippingbox")
+                            .font(.system(size: 42, weight: .semibold))
+                            .foregroundStyle(.blue)
+                            .symbolRenderingMode(.hierarchical)
+                        Text("Help improve Atria")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                        Text("Share anonymized heart-rate, sleep and workout series, daily scores, and journal answers to improve Atria. No identity, no location — and you can inspect the exact bundle before agreeing.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Toggle(isOn: $sharingEnabled) {
+                            Label("Share anonymously with developers", systemImage: "shippingbox")
+                        }
+                        .padding(18)
+                        .atriaCard(emphasis: .soft)
+
+                        Text("On by default. Bundles are prepared nightly during your sleep window and queue on this phone until a server is configured — identified only by a random code, never your name, exact dates, or location. Turn it off any time in Settings, with no effect on how Atria works.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 124)
+                }
+            }
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button {
+                        onContinue(sharingEnabled)
+                    } label: {
+                        Text("Start using Atria")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: .green)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+            }
+        }
     }
 }
 

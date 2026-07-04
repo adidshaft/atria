@@ -153,6 +153,12 @@ struct AtriaApp: App {
             // Refresh the shared widget snapshot so the morning recovery number
             // is on the Lock Screen before the app is ever opened.
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
+            // Nightly research-sharing upload piggybacks the processing task
+            // only (app-refresh's budget is too short for a build+network
+            // round trip); gated to the sleep window and once per day inside.
+            if reason == "bg_processing" {
+                await AtriaResearchUploadQueue.runNightlyIfDue(store: store, reason: reason)
+            }
             task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
