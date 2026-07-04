@@ -219,16 +219,6 @@ struct AtriaTodayScreen: View {
     private static let heroShrinkDistance: CGFloat = 140
     private static let heroMinScale: CGFloat = 0.6
 
-    private var heroScale: CGFloat {
-        guard !reduceMotion else { return 1.0 }
-        return 1.0 - (1.0 - Self.heroMinScale) * heroShrinkProgress
-    }
-
-    private var heroOpacity: CGFloat {
-        guard !reduceMotion else { return 1.0 }
-        return 1.0 - 0.35 * heroShrinkProgress
-    }
-
     /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
     /// above the ring hero -- nil (and simply omitted) whenever no nickname
     /// has been set, never a placeholder greeting.
@@ -313,19 +303,23 @@ struct AtriaTodayScreen: View {
             // (coordinated with the IA-6.1 static-check pin update in
             // test_handoff_static_checks.py -- see that file for the note
             // citing this migration).
-            AtriaTriRing(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
-                         centerValue: centerValue,
-                         centerState: centerState,
-                         centerDelta: centerDeltaText,
-                         accessibilitySummary: accessibilitySummary,
-                         actions: ringActions)
-                // Apple-Fitness-style scroll shrink -- scales/fades toward
-                // the top edge only (never sideways) so the rings visually
-                // recede as the user scrolls further content up over them.
-                // Reduce Motion pins both to their resting values (see
-                // `heroScale`/`heroOpacity`).
-                .scaleEffect(heroScale, anchor: .top)
-                .opacity(heroOpacity)
+            //
+            // Perf pass (2026-07-05): the scroll-driven scale/opacity used to
+            // be applied here, directly inside AtriaTodayScreen's own body --
+            // every `heroShrinkProgress` write (quantized, but still ~20
+            // steps over a full scroll) forced this whole property (ring
+            // construction + all its slot/metric plumbing) to be rebuilt.
+            // `AtriaTodayHeroShrink` isolates the scale/opacity consumer in
+            // its own `View` so the per-step churn during scroll shows up on
+            // its own probe line instead of amplifying `AtriaTodayScreen`'s.
+            AtriaTodayHeroShrink(progress: heroShrinkProgress, minScale: Self.heroMinScale) {
+                AtriaTriRing(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
+                             centerValue: centerValue,
+                             centerState: centerState,
+                             centerDelta: centerDeltaText,
+                             accessibilitySummary: accessibilitySummary,
+                             actions: ringActions)
+            }
 
             AtriaStrainTargetCard(currentStrain: displayHero.strain,
                                   target: displayHero.guidance.target,
@@ -762,10 +756,26 @@ struct AtriaTodayScreen: View {
     /// showing the last stored daily recovery, labeled "yesterday", instead of
     /// a live provisional recompute that jumps around pre-sleep. Once today's
     /// rollup carries a recovery value, the live estimate takes over again.
+    /// Rollups sorted day-descending, memoized behind
+    /// `store.dailyRollupHistoryRevision` (measured-perf pass, 2026-07-05):
+    /// `displayRecovery`, `latestRollup`, and `previousRollup` all used to
+    /// independently re-sort `highlightRollups` on every one of the many
+    /// live-pulse body evals in between actual rollup changes -- now the sort
+    /// runs at most once per revision and every consumer shares it.
+    private var dayDescendingRollups: [DailyRollupStoreEntry] {
+        let revision = store.dailyRollupHistoryRevision
+        if glanceMemo.dayDescendingRevision == revision, let cached = glanceMemo.dayDescendingRollups {
+            return cached
+        }
+        let sorted = highlightRollups.sorted { $0.day > $1.day }
+        glanceMemo.dayDescendingRevision = revision
+        glanceMemo.dayDescendingRollups = sorted
+        return sorted
+    }
+
     private var displayRecovery: (value: String, detail: String, percent: Int?) {
         let estimate = displayHero.recoveryEstimate
-        let newestStored = highlightRollups
-            .sorted(by: { $0.day > $1.day })
+        let newestStored = dayDescendingRollups
             .first(where: { $0.recovery != nil })
         let todayHasReading = newestStored.map {
             Calendar.current.isDateInToday($0.day)
@@ -884,7 +894,7 @@ struct AtriaTodayScreen: View {
     }
 
     private var latestRollup: DailyRollupStoreEntry? {
-        highlightRollups.sorted { $0.day > $1.day }.first
+        dayDescendingRollups.first
     }
 
     private var weeklyPlan: WeeklyPlan {
@@ -926,7 +936,7 @@ struct AtriaTodayScreen: View {
     /// Nil whenever there isn't a distinct prior day on record -- the delta
     /// is omitted rather than fabricated in that case.
     private var previousRollup: DailyRollupStoreEntry? {
-        let sorted = highlightRollups.sorted { $0.day > $1.day }
+        let sorted = dayDescendingRollups
         guard sorted.count > 1 else { return nil }
         return sorted[1]
     }
@@ -1374,6 +1384,45 @@ private final class AtriaTodayGlanceMemo {
     var workoutsRevision: Int?
     var workoutsWeekCount: Int?
     var workoutsOneLiner: String?
+    var dayDescendingRevision: Int?
+    var dayDescendingRollups: [DailyRollupStoreEntry]?
+}
+
+/// Isolates the Apple-Fitness-style hero scroll-shrink consumer (scale +
+/// opacity applied to the ring hero content) in its own `View` so that
+/// scroll-driven `heroShrinkProgress` writes only force *this* small view's
+/// body to re-evaluate, instead of amplifying the churn back up into
+/// `AtriaTodayScreen`'s body, which builds the whole rest of the screen
+/// (glance grid, plan card, AI coach card, etc.) on every eval. `progress` is
+/// still owned and driven by the parent's `.onScrollGeometryChange` (measured-
+/// perf pass, 2026-07-05) -- this view is a pure pass-through consumer of it.
+private struct AtriaTodayHeroShrink<Content: View>: View {
+    let progress: CGFloat
+    let minScale: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var scale: CGFloat {
+        guard !reduceMotion else { return 1.0 }
+        return 1.0 - (1.0 - minScale) * progress
+    }
+
+    private var opacity: CGFloat {
+        guard !reduceMotion else { return 1.0 }
+        return 1.0 - 0.35 * progress
+    }
+
+    var body: some View {
+        let _ = AtriaBodyEvalProbe.tick("AtriaTodayHeroShrink")
+        content()
+            // Apple-Fitness-style scroll shrink -- scales/fades toward the
+            // top edge only (never sideways) so the rings visually recede as
+            // the user scrolls further content up over them. Reduce Motion
+            // pins both to their resting values.
+            .scaleEffect(scale, anchor: .top)
+            .opacity(opacity)
+    }
 }
 
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {
@@ -1511,8 +1560,13 @@ private struct AtriaTodayPlanCard: View, Equatable {
                 Text(detail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    // Sentence policy (perf/crop pass, 2026-07-05): this is a
+                    // full guidance sentence ("Your strain matches what
+                    // today's recovery can handle.") -- `lineLimit(1)` used
+                    // to hard-truncate it mid-word ("...matches what tod…").
+                    // `fixedSize` lets it wrap and grow the card instead of
+                    // ever being clipped.
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)

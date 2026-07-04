@@ -1479,6 +1479,235 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                 now: now))
     }
 
+    // MARK: - Phantom-workout artifact hardening (2026-07-05)
+    //
+    // These exercise SavedSession.workoutReadiness(rest:maxHR:) directly --
+    // the pure, testable core that replaySavedWorkoutReadiness/
+    // latestWorkoutReviewCandidate build on (readySessions is literally a
+    // count of sessions where this same call's `.ready` is true, and the
+    // review-worthy/contact-compromised gates below are what those private
+    // SessionStore paths carry through unchanged).
+
+    private func workoutFixtureSession(start: Date,
+                                       end: Date,
+                                       label: String,
+                                       points: [SavedSession.Point],
+                                       rrPoints: [SavedSession.RRPoint]? = nil,
+                                       hrRaw2A37: Int = 0,
+                                       hrAccepted: Int = 0,
+                                       hrZero: Int = 0,
+                                       hrArtifactHeld: Int = 0,
+                                       hrArtifactDropped: Int = 0,
+                                       hrAcceptedGaps: Int = 0,
+                                       hrMaxAcceptedGap: Double = 0) -> SavedSession {
+        SavedSession(id: UUID(),
+                     start: start,
+                     end: end,
+                     label: label,
+                     points: points,
+                     rrPoints: rrPoints,
+                     hrRaw2A37: hrRaw2A37,
+                     hrAccepted: hrAccepted,
+                     hrZero: hrZero,
+                     hrArtifactHeld: hrArtifactHeld,
+                     hrArtifactDropped: hrArtifactDropped,
+                     hrAcceptedGaps: hrAcceptedGaps,
+                     hrMaxAcceptedGap: hrMaxAcceptedGap)
+    }
+
+    func testArtifactContactGapNightProducesNoWorkoutCandidate() {
+        // Overnight session: true resting HR ~55 for most of the night, with a
+        // ~20-minute loose-contact stretch of sustained ~120bpm artifact HR at
+        // 5-12s spacing (the reconnect/hr_mismatch fingerprint). Audit counters
+        // carry the watchdog-cycling signature: heavy artifact hold+drop share,
+        // heavy zero share, and several large accepted-HR gaps. No RR channel.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var cursor: TimeInterval = 0
+        // 20 minutes clean baseline @ 5s cadence.
+        while cursor < 20 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+        // ~22 minutes sustained loose-contact artifact @ ~5-12s spacing.
+        var spacingToggle = false
+        let artifactEnd = cursor + 22 * 60
+        while cursor < artifactEnd {
+            points.append(SavedSession.Point(t: cursor, bpm: 120))
+            cursor += spacingToggle ? 12 : 5
+            spacingToggle.toggle()
+        }
+        // 18 more minutes clean baseline.
+        let tailEnd = cursor + 18 * 60
+        while cursor < tailEnd {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Sleep",
+                                            points: points,
+                                            rrPoints: nil,
+                                            hrRaw2A37: 1_000,
+                                            hrAccepted: 600,
+                                            hrZero: 300,
+                                            hrArtifactHeld: 100,
+                                            hrArtifactDropped: 100,
+                                            hrAcceptedGaps: 4,
+                                            hrMaxAcceptedGap: 150)
+
+        XCTAssertTrue(session.hrContactCompromised)
+
+        let readiness = session.workoutReadiness(rest: 55, maxHR: 190)
+
+        XCTAssertFalse(readiness.ready, "a watchdog-cycling artifact stretch must never mark a session ready")
+        XCTAssertFalse(readiness.reviewWorthyCandidate, "a compromised session must never surface an auto-detect review prompt")
+    }
+
+    func testRealWorkoutCandidateSurvivesHardening() {
+        // 35-minute run: ramp 90->150 over 3 min, 28 min sustained ~150bpm,
+        // 4 min cool-down. RR intervals agree with reported HR throughout
+        // (ms = 60000/bpm), artifact/zero shares are zero, no accepted gaps.
+        let rest = 55
+        let maxHR = 190
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        var cursor: TimeInterval = 0
+        func appendPhase(duration: TimeInterval, bpmAt: (TimeInterval) -> Int) {
+            let phaseEnd = cursor + duration
+            while cursor < phaseEnd {
+                let bpm = bpmAt(cursor - (phaseEnd - duration))
+                points.append(SavedSession.Point(t: cursor, bpm: bpm))
+                rrPoints.append(SavedSession.RRPoint(t: cursor, ms: Int((60_000.0 / Double(bpm)).rounded())))
+                cursor += 2
+            }
+        }
+        appendPhase(duration: 3 * 60) { t in 90 + Int((t / (3 * 60)) * 60) } // 90 -> 150
+        appendPhase(duration: 28 * 60) { _ in 150 }
+        appendPhase(duration: 4 * 60) { t in max(90, 150 - Int((t / (4 * 60)) * 60)) } // 150 -> 90
+
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Run",
+                                            points: points,
+                                            rrPoints: rrPoints,
+                                            hrRaw2A37: points.count,
+                                            hrAccepted: points.count,
+                                            hrZero: 0,
+                                            hrArtifactHeld: 0,
+                                            hrArtifactDropped: 0,
+                                            hrAcceptedGaps: 0,
+                                            hrMaxAcceptedGap: 2)
+
+        XCTAssertFalse(session.hrContactCompromised)
+        XCTAssertFalse(session.hrRRDisagreesWithReportedHR)
+
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertTrue(readiness.ready, "a clean, RR-agreeing sustained effort must still count as a workout")
+        XCTAssertTrue(readiness.reviewWorthyCandidate)
+    }
+
+    func testRRContradictsElevationIsRejectedByAgreementCeiling() {
+        // Reported HR sustained ~120bpm (clean stream, no artifact/zero share,
+        // no gaps) -- looks like a real workout -- but RR intervals throughout
+        // imply ~55bpm (ms ~1090), 65bpm outside the +/-20bpm agreement
+        // tolerance. The strap's own RR channel contradicting its reported HR
+        // must reject the candidate outright.
+        let rest = 50
+        let maxHR = 170 // HRR50 threshold = 110, so reported 120bpm clears it.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        var cursor: TimeInterval = 0
+        while cursor < 20 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 120))
+            cursor += 5
+        }
+        var rrCursor: TimeInterval = 0
+        while rrCursor < 20 * 60 {
+            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: 1_090))
+            rrCursor += 24
+        }
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Contradicted",
+                                            points: points,
+                                            rrPoints: rrPoints,
+                                            hrRaw2A37: points.count,
+                                            hrAccepted: points.count,
+                                            hrZero: 0,
+                                            hrArtifactHeld: 0,
+                                            hrArtifactDropped: 0,
+                                            hrAcceptedGaps: 0,
+                                            hrMaxAcceptedGap: 5)
+
+        XCTAssertFalse(session.hrContactCompromised)
+        XCTAssertTrue(session.hrRRDisagreesWithReportedHR)
+
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertFalse(readiness.ready, "RR contradicting reported HR must reject readiness")
+        XCTAssertFalse(readiness.reviewWorthyCandidate, "RR contradicting reported HR must reject review-worthiness")
+    }
+
+    func testStitchedChunksArtifactBoundaryDoesNotSeedABout() {
+        // Two clean low-HR chunks stitched with a hard >15s reconnect gap
+        // (mirroring stitchedObservedWorkoutPoints' resetGap), plus a brief,
+        // noisy artifact blip right at the chunk-1 boundary: each transition
+        // jumps >=25bpm, so every sample in the blip is an "unverified
+        // reconnect blip" per the sustainedEvidence() contact mask and must
+        // not seed or extend an elevated bout. The underlying chunk that saw
+        // the reconnect also carried its own artifact-frame counters (as the
+        // real aggregate path sums from the stitched sessions), so the
+        // candidate is additionally source-compromised per item 3.
+        let rest = 55
+        let maxHR = 190 // HRR50 threshold ~123.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var cursor: TimeInterval = 0
+        while cursor < 15 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+        // Noisy reconnect-boundary blip: alternating big up/down jumps, all
+        // clearing the ~123bpm threshold on the "up" samples.
+        for bpm in [130, 58, 128, 56] {
+            points.append(SavedSession.Point(t: cursor, bpm: bpm))
+            cursor += 6
+        }
+        // Hard stitch gap (workoutContinuityGapLimit + 1).
+        cursor += SavedSession.workoutContinuityGapLimit + 1
+        let chunk2Start = cursor
+        while cursor < chunk2Start + 15 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Stitched observed",
+                                            points: points,
+                                            rrPoints: nil,
+                                            hrRaw2A37: 200,
+                                            hrAccepted: 170,
+                                            hrZero: 0,
+                                            hrArtifactHeld: 20,
+                                            hrArtifactDropped: 15,
+                                            hrAcceptedGaps: 0,
+                                            hrMaxAcceptedGap: SavedSession.workoutContinuityGapLimit + 1)
+
+        XCTAssertTrue(session.hrContactCompromised, "the reconnect that produced the boundary blip must show up in the source's own artifact share")
+
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertLessThan(readiness.elevatedSeconds, 30, "a noisy reconnect blip must not accumulate elevated seconds")
+        XCTAssertLessThan(readiness.longestElevatedBout, 30, "a noisy reconnect blip must not seed a qualifying bout")
+        XCTAssertFalse(readiness.ready)
+        XCTAssertFalse(readiness.reviewWorthyCandidate)
+    }
+
     @MainActor
     func testPendingSleepFixtureShowsProvisionalRecovery() {
         #if DEBUG
@@ -2565,6 +2794,322 @@ final class AtriaAnalyticsTests: XCTestCase {
                             end: end,
                             label: "Test",
                             points: points)
+    }
+
+    // MARK: - HR-only sleep auto-confirm (degraded tier) + today rollup-from-wear
+
+    // Deliberately `Calendar.current` (device-local), not a fixed GMT calendar:
+    // isStrongAutoConfirmableSleepCandidate/autoSleepClassification take no
+    // `calendar` parameter and always resolve their sub-predicates against
+    // `.current` internally (matching real production usage, where
+    // aggregateSleepCandidates is likewise always called with `calendar: .current`).
+    // These fixtures build every date through this same calendar so hour-of-day
+    // gating stays self-consistent regardless of which timezone the test host runs in.
+    private var utcCalendar: Calendar {
+        Calendar.current
+    }
+
+    private func utcDate(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        DateComponents(calendar: utcCalendar,
+                      timeZone: utcCalendar.timeZone,
+                      year: year,
+                      month: month,
+                      day: day,
+                      hour: hour,
+                      minute: minute).date!
+    }
+
+    private func flatHRSession(start: Date, end: Date, bpm: Int, stepSeconds: Double = 60) -> SavedSession {
+        let duration = end.timeIntervalSince(start)
+        let count = max(2, Int(duration / stepSeconds))
+        let points = (0..<count).map { SavedSession.Point(t: Double($0) * stepSeconds, bpm: bpm) }
+        return SavedSession(id: UUID(), start: start, end: end, label: "Test", points: points)
+    }
+
+    /// A fragmented overnight artifact night (three watchdog-reconnect segments)
+    /// with a small, bounded hr_mismatch-style burst inside the middle fragment —
+    /// the exact shape the degraded HR-only auto-confirm tier exists for.
+    func testArtifactFragmentedOvernightConfirmsAsDegradedHROnlySleep() {
+        let calendar = utcCalendar
+        let rest = 50
+
+        let frag1Start = utcDate(2027, 3, 2, 0, 10)
+        let frag1End = utcDate(2027, 3, 2, 2, 0)
+        let frag1 = flatHRSession(start: frag1Start, end: frag1End, bpm: 52)
+
+        let frag2Start = utcDate(2027, 3, 2, 2, 30)
+        let frag2End = utcDate(2027, 3, 2, 4, 30)
+        // 120 one-minute samples: 105 true low-HR + 15 bounded ~95bpm artifact burst
+        // (an accepted hr_mismatch-style spike) — a small enough fraction to stay
+        // under the elevated-sample-fraction and hrP90 gates.
+        let frag2Points = (0..<105).map { SavedSession.Point(t: Double($0) * 60, bpm: 52) }
+            + (0..<15).map { SavedSession.Point(t: Double(105 + $0) * 60, bpm: 95) }
+        let frag2 = SavedSession(id: UUID(), start: frag2Start, end: frag2End, label: "Test", points: frag2Points)
+
+        let frag3Start = utcDate(2027, 3, 2, 5, 0)
+        let frag3End = utcDate(2027, 3, 2, 7, 0)
+        let frag3 = flatHRSession(start: frag3Start, end: frag3End, bpm: 52)
+
+        let candidates = SessionStore.aggregateSleepCandidates(in: [frag1, frag2, frag3],
+                                                               rest: rest,
+                                                               maxHR: 190,
+                                                               calendar: calendar,
+                                                               historicalMotionPolicy: .boundedRecent)
+        XCTAssertEqual(candidates.count, 1, "the three reconnect fragments should cluster into one overnight candidate")
+        guard let candidate = candidates.first else { return }
+
+        XCTAssertEqual(candidate.sessions, 3)
+        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate),
+                       "fragmented (sessions>1) must fail the unambiguous single-session gate")
+        XCTAssertTrue(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
+                      "a bounded artifact burst in an otherwise low-HR fragmented night should clear the degraded gate")
+        XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+
+        let classification = SessionStore.autoSleepClassification(for: candidate)
+        XCTAssertEqual(classification.source, "auto_confirmed_sleep_hr_only")
+        XCTAssertEqual(classification.confidence, "hr_only")
+        XCTAssertFalse(classification.motionValidated)
+        XCTAssertEqual(classification.motionSource, "strap_hr_only")
+        XCTAssertTrue(classification.isHROnly)
+
+        // auto_confirmed_sleep_hr_only must be registered as an explicit sleep
+        // source (SleepHistorySnapshot.Night.explicitSleepSources is fileprivate,
+        // so exercise the registration through the public snapshot API instead of
+        // reaching into the private set directly): an unregistered source would
+        // fall through to fitsNapCandidateWindow and could get misclassified as a
+        // nap, breaking the rollup/recovery flow.
+        let confirmed = UserConfirmedSleep(id: "test-hr-only-registration",
+                                           createdAt: candidate.start,
+                                           start: candidate.start,
+                                           end: candidate.end,
+                                           source: classification.source,
+                                           confidence: classification.confidence,
+                                           sessions: candidate.sessions,
+                                           samples: candidate.samples,
+                                           avgHR: candidate.avgHR,
+                                           peakHR: candidate.peakHR,
+                                           restingHR: candidate.restingHR,
+                                           hrv: nil,
+                                           hrvWindowCount: nil,
+                                           duration: candidate.duration,
+                                           span: candidate.span,
+                                           reason: "test",
+                                           motionSource: classification.motionSource,
+                                           motionValidated: classification.motionValidated,
+                                           stageSegments: nil)
+        let snapshot = SleepHistorySnapshot(rollups: [], confirmedSleeps: [confirmed])
+        XCTAssertEqual(snapshot.nights.first?.isNapEvidence, false,
+                       "auto_confirmed_sleep_hr_only must classify as sleep, not a nap")
+    }
+
+    /// An evening couch session (not overnight) must never confirm through the
+    /// degraded HR-only tier: near-zero overlap with the sleep-core window (00:00-06:00)
+    /// is the primary guardrail against an active/awake evening masquerading as sleep.
+    func testCouchEveningSessionRejectedByDegradedTier() {
+        let calendar = utcCalendar
+        let rest = 50
+        let start = utcDate(2027, 3, 2, 20, 0)
+        let end = utcDate(2027, 3, 2, 23, 30)
+        let session = flatHRSession(start: start, end: end, bpm: rest + 15)
+
+        let candidates = SessionStore.aggregateSleepCandidates(in: [session],
+                                                               rest: rest,
+                                                               maxHR: 190,
+                                                               calendar: calendar,
+                                                               historicalMotionPolicy: .boundedRecent)
+        XCTAssertEqual(candidates.count, 1)
+        guard let candidate = candidates.first else { return }
+
+        XCTAssertEqual(candidate.kind, "overnight_sleep")
+        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
+                       "a couch evening should fail on sleep-core overlap even though duration clears 3h")
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+    }
+
+    /// A short daytime nap must never be promotable through the degraded HR-only
+    /// overnight tier (that tier is for main sleep only).
+    func testShortDaytimeNapRejectedByDegradedTier() {
+        let calendar = utcCalendar
+        let rest = 50
+        let start = utcDate(2027, 3, 2, 14, 0)
+        let end = utcDate(2027, 3, 2, 14, 40)
+        let session = flatHRSession(start: start, end: end, bpm: 52)
+
+        let candidates = SessionStore.aggregateSleepCandidates(in: [session],
+                                                               rest: rest,
+                                                               maxHR: 190,
+                                                               calendar: calendar,
+                                                               historicalMotionPolicy: .boundedRecent)
+        XCTAssertEqual(candidates.count, 1)
+        guard let candidate = candidates.first else { return }
+
+        XCTAssertEqual(candidate.kind, "nap_candidate")
+        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
+                       "the degraded tier is main-sleep-only and must reject nap-shaped candidates outright")
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+    }
+
+    /// Motion validation stays strictly preferred: a fragmented night with real
+    /// historical-gravity low-motion evidence must confirm through the existing
+    /// motion-validated path (source=auto_confirmed_sleep, motionValidated=true),
+    /// never downgraded into the degraded HR-only tier even though it would also
+    /// pass the degraded gates.
+    func testMotionValidatedFragmentedNightPreferredOverDegradedTier() throws {
+        try withCleanHistoricalArchive {
+            let calendar = self.utcCalendar
+            let rest = 50
+            let frag1Start = self.utcDate(2027, 3, 2, 0, 10)
+            let frag1End = self.utcDate(2027, 3, 2, 2, 0)
+            let frag1 = self.flatHRSession(start: frag1Start, end: frag1End, bpm: 52)
+            let frag2Start = self.utcDate(2027, 3, 2, 2, 30)
+            let frag2End = self.utcDate(2027, 3, 2, 4, 30)
+            let frag2 = self.flatHRSession(start: frag2Start, end: frag2End, bpm: 52)
+            let frag3Start = self.utcDate(2027, 3, 2, 5, 0)
+            let frag3End = self.utcDate(2027, 3, 2, 7, 0)
+            let frag3 = self.flatHRSession(start: frag3Start, end: frag3End, bpm: 52)
+
+            // Constant, validated, still gravity samples spanning the whole night
+            // (60s cadence) so HistoricalArchive.boundedMotionWindowDiagnostics finds
+            // >=30 rows, all still (stillnessRatio 1.0, movementIntensity 0).
+            var index = 0
+            var unix = UInt32(frag1Start.timeIntervalSince1970)
+            let endUnix = UInt32(frag3End.timeIntervalSince1970)
+            while unix < endUnix {
+                let payload = self.historicalPayloadWithGravity(x: 0, y: 0, z: 1)
+                let capturedAt = Date(timeIntervalSince1970: TimeInterval(unix))
+                let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
+                                                      capturedAt: capturedAt,
+                                                      source: "0x2f",
+                                                      layoutVersion: HistoricalArchive.layoutVersion,
+                                                      sequence: index,
+                                                      command: 0x16,
+                                                      unix7: unix,
+                                                      subsec11: 0,
+                                                      flash13: UInt32(index),
+                                                      payloadLength: payload.count,
+                                                      whoofHR17: 52,
+                                                      whoofRRNum18: 0,
+                                                      whoofRR19: [],
+                                                      kRR64: [],
+                                                      gravityX36: 0,
+                                                      gravityY40: 0,
+                                                      gravityZ44: 1,
+                                                      gravityMagnitude: 1,
+                                                      gravityValidated: true,
+                                                      candidateRR: [],
+                                                      rawPayloadHex: HistoricalArchive.hex(payload),
+                                                      clockDeviceRef: unix,
+                                                      clockWallRef: unix,
+                                                      clockDriftSeconds: 0,
+                                                      clockCorrectedUnix7: unix,
+                                                      clockCorrectionStatus: "corrected",
+                                                      currentSessionUsable: false,
+                                                      metricUsable: false,
+                                                      usabilityReason: "test_degraded_vs_motion_priority")
+                _ = try? HistoricalArchive.append(record)
+                index += 1
+                unix += 60
+            }
+
+            let candidates = SessionStore.aggregateSleepCandidates(in: [frag1, frag2, frag3],
+                                                                   rest: rest,
+                                                                   maxHR: 190,
+                                                                   calendar: calendar,
+                                                                   historicalMotionPolicy: .boundedRecent)
+            XCTAssertEqual(candidates.count, 1)
+            guard let candidate = candidates.first else { return }
+
+            XCTAssertTrue(candidate.motionEvidenceValidated,
+                          "constant validated low-motion gravity samples should validate motion for this window")
+            XCTAssertNotEqual(candidate.confidence, .low)
+            XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+
+            let classification = SessionStore.autoSleepClassification(for: candidate)
+            XCTAssertEqual(classification.source, "auto_confirmed_sleep",
+                          "motion-validated nights must not be downgraded to the HR-only degraded tier")
+            XCTAssertTrue(classification.motionValidated)
+            XCTAssertFalse(classification.isHROnly)
+            XCTAssertNotEqual(classification.confidence, "hr_only")
+        }
+    }
+
+    /// Section D fix: today's frozen daily metric must exist from wear alone —
+    /// independent of sleep confirmation — when an overnight-shaped session ended
+    /// this morning with no RR/HRV and no confirmed sleep, even though the
+    /// session's own start day (yesterday) is what `dailyRollups` buckets it under
+    /// (so `computed` carries no same-day entry for today).
+    func testMorningFrozenMetricFromOvernightSessionWithoutRR() {
+        let calendar = utcCalendar
+        let now = utcDate(2027, 3, 5, 10, 40)
+        let day = calendar.startOfDay(for: now)
+        let session = flatHRSession(start: utcDate(2027, 3, 4, 23, 0),
+                                    end: utcDate(2027, 3, 5, 7, 0),
+                                    bpm: 48)
+        XCTAssertNil(session.rrPoints)
+
+        let sleep = SleepHistorySnapshot(rollups: [], confirmedSleeps: [])
+        let baseline = PersonalBaseline()
+
+        let result = SessionStore.makeMorningFrozenDailyMetric(for: day,
+                                                               computed: [],
+                                                               sessions: [session],
+                                                               sleep: sleep,
+                                                               baseline: baseline,
+                                                               maxHR: 190,
+                                                               now: now,
+                                                               calendar: calendar)
+        XCTAssertNotNil(result, "wear alone should be enough to settle today's morning row")
+        XCTAssertNotNil(result?.restingHR)
+        XCTAssertNil(result?.sleepDuration, "no confirmed sleep and no dailyRollup sleep evidence exists for today")
+    }
+
+    /// Same-day wear fallback exercised specifically: a long overnight-shaped
+    /// session whose OWN start/end hours don't satisfy the loose
+    /// `isOvernightHRVWindow` heuristic (so the pre-existing overnight-session
+    /// fallback would miss it) still settles today's row via `morningMetricDay`
+    /// end-day attribution, and survives `mergeDailyMetricHistory` as exactly one
+    /// today row.
+    func testTodayRollupSurvivesMergeFromWearOnlySession() {
+        let calendar = utcCalendar
+        let now = utcDate(2027, 3, 5, 10, 40)
+        let day = calendar.startOfDay(for: now)
+        // startHour=19 (not >=20), endHour=11 (not <=10): isOvernightHRVWindow is
+        // false for this session even though it plainly represents overnight wear.
+        let session = flatHRSession(start: utcDate(2027, 3, 4, 19, 30),
+                                    end: utcDate(2027, 3, 5, 11, 15),
+                                    bpm: 55,
+                                    stepSeconds: 900)
+        XCTAssertFalse(session.isOvernightHRVWindow(calendar: calendar))
+
+        let sleep = SleepHistorySnapshot(rollups: [], confirmedSleeps: [])
+        let baseline = PersonalBaseline()
+
+        let settled = SessionStore.makeMorningFrozenDailyMetric(for: day,
+                                                                computed: [],
+                                                                sessions: [session],
+                                                                sleep: sleep,
+                                                                baseline: baseline,
+                                                                maxHR: 190,
+                                                                now: now,
+                                                                calendar: calendar)
+        XCTAssertNotNil(settled, "the wear-only fallback (attribution by session END day) should still settle today")
+        XCTAssertNotNil(settled?.restingHR)
+        XCTAssertNil(settled?.sleepDuration)
+
+        let merged = SessionStore.mergeDailyMetricHistory(existing: [],
+                                                          computed: [],
+                                                          sessions: [session],
+                                                          sleep: sleep,
+                                                          baseline: baseline,
+                                                          maxHR: 190,
+                                                          now: now,
+                                                          calendar: calendar)
+        let todayRows = merged.filter { calendar.isDate($0.day, inSameDayAs: day) }
+        XCTAssertEqual(todayRows.count, 1, "today's rollup row must survive the merge from wear alone")
+        XCTAssertNotNil(todayRows.first?.restingHR)
+        XCTAssertNil(todayRows.first?.sleepDuration)
     }
 
     /// On a physical device the test host app's own container can hold a real,
