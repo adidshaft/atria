@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AtriaTriRingMetric: Equatable {
     let title: String
@@ -7,6 +8,20 @@ struct AtriaTriRingMetric: Equatable {
     let systemImage: String
     let tint: Color
     let fill: Double?
+    /// Fixed per-metric identity hue (sleep violet / recovery heart-green /
+    /// strain electric blue) -- always-colorful-rings pass (2026-07-05): the
+    /// ring's track and learning-state cap arc paint in this hue so the trio
+    /// reads like Apple Activity even before a real zone-graded `tint` can be
+    /// computed. Nil falls back to `tint` itself, so call sites that predate
+    /// this (AtriaOverviewSections.swift, AtriaCustomizeSheet.swift) keep
+    /// their prior single-tint look unchanged.
+    var identityTint: Color? = nil
+    /// Fractional position (0...1, same 0-at-top/clockwise scale `fill`
+    /// sweeps) of a REAL target/recommendation to notch onto the ring -- e.g.
+    /// the coach's recovery-derived strain target, or "sleep need met" at
+    /// 1.0. Nil -- and no marker drawn -- whenever there isn't a real target
+    /// to honestly show (never fabricated).
+    var targetFraction: Double? = nil
 }
 
 /// Which ring band (outer/middle/inner) a slot draws on, AND -- since the
@@ -288,9 +303,16 @@ struct AtriaTriRing: View, Equatable {
                             diameter: CGFloat,
                             lineWidth: CGFloat,
                             fill: Double) -> some View {
-        ZStack {
+        // Always-colorful-rings pass (2026-07-05): the track and the
+        // learning-state cap paint in the metric's fixed IDENTITY hue --
+        // never gray -- so the trio always reads as three distinct rings
+        // (Apple-Activity-style), independent of whether a real zone-graded
+        // `tint` has been computed yet. The fill itself keeps `tint` (the
+        // under/optimal/over zone color) so state still shows.
+        let identity = metric.identityTint ?? metric.tint
+        return ZStack {
             Circle()
-                .stroke(metric.tint.opacity(0.16), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(identity.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
 
             if metric.fill != nil {
                 Circle()
@@ -318,12 +340,38 @@ struct AtriaTriRing: View, Equatable {
                 // never fabricate progress).
                 Circle()
                     .trim(from: 0.06, to: 0.16)
-                    .stroke(metric.tint.opacity(0.4),
+                    .stroke(identity.opacity(0.5),
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
+
+            if let targetFraction = metric.targetFraction {
+                targetMarker(diameter: diameter, lineWidth: lineWidth, tint: identity, fraction: targetFraction)
+            }
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    /// A small tangential notch marking a REAL target/recommendation on the
+    /// ring (e.g. the coach's recovery-derived strain target, or "sleep need
+    /// met"). Positioned at the same angle convention the fill arc above
+    /// uses (`-90deg + 360 * fraction`, i.e. 0 at the top, sweeping
+    /// clockwise) so it always lines up with where the fill arc's edge would
+    /// sit at that fraction. The identity tint plus a thin contrasting
+    /// border keeps it legible over both the faint track and a bright fill.
+    private func targetMarker(diameter: CGFloat, lineWidth: CGFloat, tint: Color, fraction: Double) -> some View {
+        let clamped = min(max(fraction, 0), 1)
+        let theta = Angle.degrees(-90 + 360 * clamped)
+        let radius = diameter / 2
+        let length = lineWidth + 6
+        let width: CGFloat = 3
+        return Capsule()
+            .fill(tint)
+            .overlay(Capsule().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1))
+            .frame(width: width, height: length)
+            .rotationEffect(theta)
+            .offset(x: radius * cos(theta.radians), y: radius * sin(theta.radians))
+            .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 0)
     }
 
     private func legendChip(metric: AtriaTriRingMetric, action: @escaping () -> Void) -> some View {

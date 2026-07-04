@@ -2148,7 +2148,9 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         let validated = config.validated()
 
-        XCTAssertEqual(validated.glanceMetrics, ["recovery", "strain", "sleep", "hrv", "rhr", "steps", "load", "stress"])
+        // Cap raised 8 -> 14 (2026-07-05 essentials-visible default): the 11
+        // valid, deduped inputs all survive; "unknown" is still dropped.
+        XCTAssertEqual(validated.glanceMetrics, ["recovery", "strain", "sleep", "hrv", "rhr", "steps", "load", "stress", "calories", "bodyTemp"])
         XCTAssertEqual(validated.sizeOverrides, ["load": "wide"])
         XCTAssertEqual(validated.ringCenterMetric, .sleep)
         XCTAssertEqual(validated.legendStatStyle, .value)

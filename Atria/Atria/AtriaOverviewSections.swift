@@ -1426,7 +1426,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, load, hrZones, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, load, hrZones, workouts, strainCompare, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -1434,6 +1434,8 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "Strain"
         case .load: return "Load"
         case .hrZones: return "HR Zones"
+        case .workouts: return "Workouts"
+        case .strainCompare: return "Strain vs typical"
         case .hrv: return "HRV"
         case .stress: return "Stress"
         case .sleep: return "Sleep"
@@ -1464,6 +1466,8 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strain: return "figure.run"
         case .load: return "chart.bar.xaxis"
         case .hrZones: return "chart.bar.fill"
+        case .workouts: return "figure.run"
+        case .strainCompare: return "chart.bar.xaxis"
         case .hrv: return "waveform.path.ecg"
         case .stress: return "bolt.heart.fill"
         case .sleep: return "bed.double.fill"
@@ -1565,17 +1569,18 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     // consistency, charts, calories) is VISIBLE by default — user feedback
     // 2026-07-05: hiding essentials behind Customize reads as "missing".
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
+        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .workouts, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
     }
 
-    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
+    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .workouts, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
     static let moreMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep]
     static let experimentalMetrics: [AtriaTodayMetric] = [.bloodOxygen, .bioAge]
 
     static func migratedRawValue(_ raw: String) -> String? {
         switch raw {
         case "strapSteps": return AtriaTodayMetric.steps.rawValue
-        case "backfill", "hapticAlerts", "workout": return nil
+        case "workout": return AtriaTodayMetric.workouts.rawValue
+        case "backfill", "hapticAlerts": return nil
         default: return AtriaTodayMetric(rawValue: raw)?.rawValue
         }
     }
@@ -2762,6 +2767,24 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: .orange,
                                   accessibilityDetail: hero.hrZoneMinutes.accessibilityDetailText)
+        case .workouts:
+            detailButton(.strain) {
+                AtriaGlanceMetricCard(title: "Workouts",
+                                      value: "\(thisWeekConfirmedWorkouts.count)",
+                                      detail: workoutsGlanceDetailText,
+                                      systemImage: metric.systemImage,
+                                      tint: .mint,
+                                      accessibilityDetail: "\(thisWeekConfirmedWorkouts.count) confirmed workouts this week. \(workoutsGlanceDetailText).")
+            }
+        case .strainCompare:
+            detailButton(.strain) {
+                AtriaGlanceMetricCard(title: "Strain vs typical",
+                                      value: metricDisplayValue(hero.strainValue),
+                                      detail: strainCompareDetailText,
+                                      systemImage: metric.systemImage,
+                                      tint: Metrics.electricStrain,
+                                      accessibilityDetail: "Today's strain \(metricDisplayValue(hero.strainValue)). \(strainCompareDetailText).")
+            }
         case .hrv:
             detailButton(.hrv) {
                 AtriaGlanceMetricCard(title: "HRV",
@@ -2998,6 +3021,67 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if hero.stressValue.hasPrefix("1") { return .mint }
         if hero.stressValue.hasPrefix("2") { return .orange }
         return .red
+    }
+
+    private static let workoutDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE")
+        return formatter
+    }()
+
+    private var thisWeekConfirmedWorkouts: [UserConfirmedWorkout] {
+        let calendar = Calendar.current
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start ?? calendar.startOfDay(for: Date())
+        return confirmedWorkouts.filter { $0.start >= weekStart }
+    }
+
+    private var latestConfirmedWorkout: UserConfirmedWorkout? {
+        confirmedWorkouts.max { $0.start < $1.start }
+    }
+
+    private var workoutsGlanceDetailText: String {
+        guard let latest = latestConfirmedWorkout else { return "No workouts yet" }
+        let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
+        let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
+        let dayText = Self.workoutDayFormatter.string(from: latest.start)
+        return [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Strict 14-calendar-day window (excluding today, which is still live/incomplete).
+    private var strainCompareWindowStrains: [Double] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return [] }
+        return dailyRollupHistory
+            .filter { $0.day >= cutoff && $0.day < today }
+            .compactMap { $0.strain }
+    }
+
+    private var strainCompareMedian: Double? {
+        let strains = strainCompareWindowStrains
+        guard strains.count >= 7 else { return nil }
+        let sorted = strains.sorted()
+        let mid = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[mid - 1] + sorted[mid]) / 2
+        }
+        return sorted[mid]
+    }
+
+    private var strainCompareDetailText: String {
+        guard let median = strainCompareMedian else { return "Building baseline" }
+        let medianText = String(format: "%.1f", median)
+        guard !metricIsPending(hero.strainValue) else { return "14-day median \(medianText)" }
+        let delta = hero.strain - median
+        let comparison: String
+        if abs(delta) < 0.5 {
+            comparison = "in line"
+        } else if delta < 0 {
+            comparison = "below typical"
+        } else {
+            comparison = "above typical"
+        }
+        return "14-day median \(medianText) · \(comparison)"
     }
 
     private var hrvDetailText: String {
