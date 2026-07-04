@@ -1562,7 +1562,7 @@ private struct AtriaResearchSignalInfoSheet: View {
                 Spacer(minLength: 0)
             }
             .padding(20)
-            .navigationTitle("Sensor signals")
+            .navigationTitle("Experimental sensors")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

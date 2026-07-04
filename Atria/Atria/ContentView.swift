@@ -95,6 +95,7 @@ struct AtriaDashboardBackdrop: View {
 /// card, not the whole onboarding screen.
 struct OnboardingConnectionStatusView: View {
     @ObservedObject var ble: AtriaBLEManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
 
@@ -140,8 +141,8 @@ struct OnboardingConnectionStatusView: View {
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
-        .animation(.snappy(duration: 0.25), value: ble.status)
-        .animation(.snappy(duration: 0.25), value: ble.hasContact)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.status)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.hasContact)
     }
 
     private var isSearching: Bool {

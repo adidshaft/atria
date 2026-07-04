@@ -57,7 +57,7 @@ func AtriaDebugLog(_ format: StaticString, _ args: CVarArg...) {
 /// Debug-only body-evaluation counter (docs/24 §14.4 measurement protocol):
 /// `let _ = AtriaBodyEvalProbe.tick("ViewName")` at the top of a body logs every
 /// 25th evaluation so cross-tab rebuild claims are measurable from the console.
-/// No-op unless debug logging is enabled.
+/// Does nothing unless debug logging is enabled.
 enum AtriaBodyEvalProbe {
     private static var counts: [String: Int] = [:]
 

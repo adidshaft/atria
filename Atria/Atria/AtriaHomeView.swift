@@ -769,7 +769,7 @@ struct AtriaHomeView: View {
             updateConnectionDiagnosisVisibility(reason: "connection_trigger")
         }
         .onReceive(Self.connectionDiagnosisTimer) { _ in
-            // Idle discipline: the 5 s tick is a no-op unless the scene is
+            // Idle discipline: the 5 s tick does nothing unless the scene is
             // actually on screen — a backgrounded app must be quiescent.
             guard scenePhase == .active else { return }
             updateConnectionDiagnosisVisibility(reason: "timer")
@@ -1863,7 +1863,7 @@ struct AtriaHomeView: View {
         updateHapticCoordinator()
         // Morning flow: auto-confirm only ran at launch, so a resident app never
         // confirmed last night's sleep until the next relaunch. Foregrounding is
-        // the natural morning trigger; the store rate-limits and no-ops when the
+        // the natural morning trigger; the store rate-limits and does nothing when the
         // newest confirmed sleep is already recent.
         store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground")
         LocalNotificationScheduler.scheduleEveningJournalCheckIn(
@@ -2180,6 +2180,10 @@ struct AtriaHomeView: View {
 
     private var overviewContent: some View {
         VStack(spacing: 18) {
+            if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
+                overviewSystemBanners
+            }
+
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
                     workoutDetectionPrompt = nil
@@ -2269,7 +2273,7 @@ struct AtriaHomeView: View {
                                  showCustomizeSheet = true
                              })
 
-            if !debugShowsNorthStarTodayFixture {
+            if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
         }
@@ -4392,7 +4396,7 @@ private struct AtriaWorkoutReviewFlow: View {
                                 in: Capsule(style: .continuous))
 
                 if row.currentPRSet != nil {
-                    Label("PR", systemImage: "sparkles")
+                    Label("PR", systemImage: "trophy.fill")
                         .font(.caption2.weight(.black))
                         .foregroundStyle(.yellow)
                         .padding(.horizontal, 8)

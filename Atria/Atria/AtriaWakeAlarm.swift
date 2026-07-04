@@ -148,9 +148,6 @@ enum AtriaWakeAlarmScheduler {
                                   defaults: UserDefaults = .standard) async -> ScheduleResult {
         let fireDate = plan.hardAlarmDate(after: now)
         #if canImport(AlarmKit)
-        guard #available(iOS 26.0, *) else {
-            return .unavailable(reason: "alarmkit_unavailable")
-        }
         do {
             let authorization = try await AlarmManager.shared.requestAuthorization()
             guard authorization == .authorized else { return .denied }
@@ -182,8 +179,7 @@ enum AtriaWakeAlarmScheduler {
 
     static func cancelLast(defaults: UserDefaults = .standard) {
         #if canImport(AlarmKit)
-        guard #available(iOS 26.0, *),
-              let existing = defaults.string(forKey: AtriaWakeAlarmStore.lastScheduledIDKey),
+        guard let existing = defaults.string(forKey: AtriaWakeAlarmStore.lastScheduledIDKey),
               let existingID = UUID(uuidString: existing) else {
             return
         }
