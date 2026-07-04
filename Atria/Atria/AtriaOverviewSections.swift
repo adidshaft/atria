@@ -5752,7 +5752,7 @@ private struct AtriaSleepPlanStrip: View, Equatable {
                             }
                         }
                     } label: {
-                        Image(systemName: "slider.horizontal.3")
+                        Image(systemName: "chevron.up.chevron.down.circle")
                             .font(.caption.weight(.bold))
                             .padding(7)
                     }

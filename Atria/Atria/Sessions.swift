@@ -10432,7 +10432,17 @@ final class SessionStore: ObservableObject {
 
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
         let chronologicalAge = profile.age
-        _ = vo2MaxEstimate
+        var blockers: [String] = []
+        if vo2MaxEstimate.value == nil { blockers.append("vo2max_learning") }
+        if !baseline.hasTrustedRestingBaseline() { blockers.append("resting_hr_learning") }
+        if !baseline.hasTrustedHRVBaseline() { blockers.append("hrv_learning") }
+        let sleepNights = confirmedSleeps.filter { !Self.confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration) }
+        if sleepNights.count < 3 { blockers.append("sleep_history_thin") }
+        if trainingLoadSummarySnapshot.confidence != "local" { blockers.append("training_load_learning") }
+        guard blockers.isEmpty, vo2MaxEstimate.value != nil else {
+            return BiologicalAgeSummary.building(chronologicalAge: chronologicalAge, blockers: blockers)
+        }
+
         let calendar = Calendar.current
         let recentMetrics = Array(dailyMetricHistory
             .sorted { $0.day > $1.day }
@@ -13262,7 +13272,7 @@ final class SessionStore: ObservableObject {
                           elapsedMS)
             persistDailyRollups(from: dailyMetricHistory)
         }
-        refreshHistorySnapshotCache(deferred: false)
+        refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=after_rollup_refresh sessions=%d elapsed_ms=%d",
                       sessions.count,
                       elapsedMS)

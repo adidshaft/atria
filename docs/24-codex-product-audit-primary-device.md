@@ -399,7 +399,7 @@ new accepted-sample movement across the interval (`sample_raw_notifications=4290
 as a fresh one-sample RR-present warming segment (`active_journal_samples=1`,
 `active_journal_rr_values=1`). Treat the actual strap link / stored data as green, but
 current packet ingress and multi-sample live journal growth remain yellow.
-✅ Notify-reset recovery patch replaces stale no-op `setNotifyValue(true)` reasserts
+✅ Notify-reset recovery patch replaces stale do-nothing `setNotifyValue(true)` reasserts
 with an explicit 2A37 notify reset (`setNotifyValue(false)` when already notifying,
 then `true`) from foreground return, foreground keepalive, and HR continuity watchdog.
 Focused guard, `bash -n pull_atria_state.sh`, scoped `git diff --check`, and generic
@@ -6694,7 +6694,7 @@ workout-zone haptics remain with AtriaHapticAlerts. ✅ Widget reload gating don
 fires only when a user-visible snapshot field changes (recovery/strain/RHR/HRV/steps/
 battery-decade/charge/layout fingerprint) or 15+ minutes since the last reload, so the
 WidgetKit reload budget is no longer burned by live-BPM publishes; also removed the
-duplicated `||` no-op in `bundledExtensionInfos()`. ✅ Accuracy #2/#3 done (Release
+duplicated `||` dead branch in `bundledExtensionInfos()`. ✅ Accuracy #2/#3 done (Release
 install `logs/20260704-baseline-trust-sdfloor-release-install.log`, BUILD SUCCEEDED,
 candidate still `review_worthy`, recovery 50→51 — no discontinuity): baseline trust
 now counts distinct DAYS (`distinctDayCount` inside
@@ -7081,7 +7081,7 @@ high-resolution HR series are quasi-identifying; consent copy must not overpromi
 Ranked: (1) ✅ CLOSED BY MEASUREMENT (2026-07-04,
 `logs/20260704-bodyeval-probe-release-install.log`): debug-gated
 `AtriaBodyEvalProbe` counters added to all four tab screens (measurement-protocol
-instrumentation, no-op in production); a 90 s on-device capture parked on Overview
+instrumentation, inert in production); a 90 s on-device capture parked on Overview
 with live HR streaming showed `AtriaTodayScreen count=1` and ZERO evaluations of the
 other three tabs — the predicted cross-tab rebuild storm does not exist after items
 2/3/5/6 landed (all four tabs were already standalone child structs; the root
@@ -7152,7 +7152,7 @@ still review_worthy, checks steady at 30). Highlights:
   on every evaluation), the generic reassert path is sparse-gated, and reconnect
   discovery skips the 2A37 subscribe while sparse (2A19 wake anchor kept).
 - Compaction `lastRun` was stamped BEFORE the run — a failed/aborted compaction
-  blocked retry for 24 h; now stamped only on ok/noop.
+  blocked retry for 24 h; now stamped only on ok/skipped.
 - A nap ending <16 h ago suppressed the overnight foreground auto-confirm; the
   freshness gate now considers overnight sleeps only. A failed confirm also burned
   the full 30-min rate window; failures now retry in ~10 min.
@@ -7241,3 +7241,35 @@ reapplied — final state verified coherent (all six files present, checks green
 With this chunk, EVERY item in §12–§14 is implemented, reviewed, or explicitly
 external (GitHub Pages publish, upload endpoint) / data-gated (Overview advice
 card awaits real insights).
+
+## 18. Static-check suite driven to ZERO (2026-07-04, four sequential Sonnet agents)
+
+The 30 pre-existing failures + 1 error inherited from the Codex WIP era are gone:
+**128/128 static checks pass**, Release build succeeds, and the full unit suite
+still passes (TEST SUCCEEDED) after the pass. Every repair followed the judgment
+rule (git log -S evidence per token): drift → pin updated to the current
+equivalent; never-existed → small unbuilt spec implemented when unambiguous, else
+TODO-documented narrowing (nothing silently deleted). Highlights beyond pin
+updates — real production fixes made along the way:
+
+- `finishDeferredLoad` ran `refreshHistorySnapshotCache(deferred: false)`
+  synchronously on the MainActor right after launch load — a genuine launch-perf
+  violation the check was written to catch; now deferred.
+- Fitness/biological-age summary gained its intended data-maturity gate
+  (vo2 present, trusted RHR/HRV baselines, ≥3 confirmed overnight sleeps,
+  local-confidence training load → else `building(blockers:)`); a follow-up
+  compile fix replaced a nonexistent `isNapEvidence` member with the canonical
+  `confirmedSleepSourceIsNap` helper.
+- Dead always-true `#available(iOS 26.0, *)` guards removed (target is 26.1);
+  a `.regularMaterial` tooltip background replaced with the app's solid token.
+- Reduce-motion gating added to the onboarding connection animations.
+- Icon/wording collisions with older still-valid guards fixed at the SOURCE
+  (PR badge sparkles → trophy.fill, Wake-mode menu icon, "Sensor signals" sheet
+  title → "Experimental sensors", "no-op" comment wording).
+- The FEAT-2 bedtime banner-placement guard chain (never-built spec) wired
+  inert-by-default behind the existing `shouldLeadWithSystemBanners=false` gate.
+- Unbuilt-spec assertions (ia61 glance redesign, north-star routing) narrowed
+  with explicit TODO markers naming them as unbuilt — preserved as spec, not
+  deleted.
+
+The suite is now a real regression gate: any future failure is a NEW problem.
