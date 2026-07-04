@@ -78,6 +78,13 @@ struct SavedSession: Codable, Identifiable {
     var hrAcceptedGaps: Int? = nil
     var hrMaxRawGap: Double? = nil
     var hrMaxAcceptedGap: Double? = nil
+    /// Count of realtime frames where the strap's RR/IBI-implied heart rate
+    /// disagreed with its own reported bpm by more than the BLE layer's
+    /// mismatch threshold (AtriaBLEManager `hr_mismatch`, >30bpm). Audit-only;
+    /// reserved for the workout contact-artifact sanity ceiling below. Not yet
+    /// populated at finalize (BLE-layer wiring is out of scope for this pass),
+    /// so it defaults to nil/0 until that plumbing lands. (2026-07-05)
+    var hrRRMismatch: Int? = nil
     /// Strength sets logged during this session. Optional so old archives keep
     /// decoding while the live logger is being rolled in.
     var strengthSets: [LoggedSet]? = nil
@@ -285,6 +292,7 @@ struct SavedSession: Codable, Identifiable {
     var hrAcceptedGapsValue: Int { hrAcceptedGaps ?? 0 }
     var hrMaxRawGapValue: Double { hrMaxRawGap ?? 0 }
     var hrMaxAcceptedGapValue: Double { hrMaxAcceptedGap ?? 0 }
+    var hrRRMismatchValue: Int { hrRRMismatch ?? 0 }
 
     /// More robust resting estimate than the raw min: the 10th percentile, so a
     /// single low blip doesn't define "resting". Used to train the baseline.
@@ -439,6 +447,24 @@ struct WorkoutReadiness {
     let primaryBlocker: String
     let avgOverRest: Int
     let peakOverRest: Int
+    /// Contact-quality-gated companions to `elevatedSeconds`/`longestElevatedBout`:
+    /// zero unless the session backs its elevation with RR presence or an
+    /// unbroken accepted-HR stream (see `SavedSession.hrRRSampleCount`/
+    /// `hrAcceptedGapsValue`/`hrMaxAcceptedGapValue`). A loose-contact/reconnect
+    /// artifact run can still show up in `elevatedSeconds` but cannot satisfy
+    /// this pair, so it cannot alone make a session `ready` or review-worthy.
+    let contactQualifiedElevatedSeconds: TimeInterval
+    let contactQualifiedLongestBout: TimeInterval
+    /// True when this session's own audit counters show the watchdog-cycling /
+    /// loose-contact fingerprint (heavy artifact hold+drop share, heavy zero
+    /// share, or repeated large accepted-stream gaps). Such a session must
+    /// never source an auto-detected workout, regardless of its raw HR values.
+    let contactCompromised: Bool
+    /// True when RR/IBI intervals are present but their implied heart rate
+    /// disagrees with the session's own reported average HR by more than the
+    /// sanity-ceiling tolerance -- the strap's own RR channel contradicting its
+    /// reported HR is treated as a hard contact-artifact rejection.
+    let rrDisagreement: Bool
     let ready: Bool
 
     var status: String {
@@ -523,11 +549,20 @@ struct WorkoutReadiness {
 
     var reviewWorthyCandidate: Bool {
         guard !ready else { return true }
+        // Contact-artifact hardening: a compromised stream or an RR channel that
+        // contradicts its own reported HR may still surface as a diagnostic
+        // near-miss/strength candidate above, but it must never be promoted to
+        // a review-worthy (auto-detect prompt) candidate.
+        guard !contactCompromised, !rrDisagreement else { return false }
         guard observedDuration >= Self.reviewMinimumObservedDuration,
               streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         if nearMiss {
-            return elevatedSeconds >= Self.reviewMinimumElevatedSeconds
-                || longestElevatedBout >= Self.reviewMinimumElevatedBout
+            // Contact-quality-gated: an elevated-looking near-miss can only be
+            // promoted on evidence that is itself RR/continuity-backed, so a
+            // loose-contact blip cannot alone clear this bar (borderline-based
+            // strengthCandidate promotion below is unaffected).
+            return contactQualifiedElevatedSeconds >= Self.reviewMinimumElevatedSeconds
+                || contactQualifiedLongestBout >= Self.reviewMinimumElevatedBout
                 || strengthCandidate
         }
         if strengthCandidate {
@@ -536,7 +571,7 @@ struct WorkoutReadiness {
                 || thresholdGapBPM <= 10
         }
         if moderateStrengthReviewCandidate {
-            return true
+            return contactQualifiedLongestBout > 0
         }
         return false
     }
@@ -1791,6 +1826,17 @@ struct AggregateSleepCandidate {
     let avgHR: Int
     let peakHR: Int
     let hrStandardDeviation: Double
+    /// Median HR across the cluster — robust to a bounded number of accepted
+    /// hr_mismatch artifact spikes (a sustained loose-contact drift can pull the
+    /// mean/SD past the strict gates even in a genuinely low-HR night).
+    let medianHR: Int
+    /// 90th-percentile HR across the cluster, for an artifact-robust "how high did
+    /// this plausibly get" read that a handful of outliers cannot move much.
+    let hrP90: Int
+    /// Fraction of cluster HR samples at/above restingHR+35 — used to distinguish
+    /// a bounded artifact burst (small fraction) from a genuinely elevated,
+    /// awake/active evening (large fraction).
+    let elevatedSampleFraction: Double
     let restingHR: Int
     let confidence: ActivityDetection.Confidence
     let reason: String
@@ -1879,6 +1925,7 @@ struct AggregateWorkoutCandidate {
     let hrAcceptedGaps: Int
     let hrMaxRawGap: TimeInterval
     let hrMaxAcceptedGap: TimeInterval
+    let hrRRMismatch: Int
     let readiness: WorkoutReadiness
 }
 
@@ -2335,6 +2382,14 @@ private struct WorkoutReplaySummary {
     let bestHRAcceptedGaps: Int
     let bestHRMaxRawGap: TimeInterval
     let bestHRMaxAcceptedGap: TimeInterval
+    let bestHRRRMismatch: Int
+    /// Contact-artifact hardening carried counters (2026-07-05), mirroring
+    /// WorkoutReadiness's own fields for the winning single-session/aggregate
+    /// candidate. See SavedSession.hrContactCompromised/hrRRDisagreesWithReportedHR.
+    let bestContactQualifiedElevatedSeconds: TimeInterval
+    let bestContactQualifiedLongestBout: TimeInterval
+    let bestContactCompromised: Bool
+    let bestRRDisagreement: Bool
     let restHR: Int
     let maxHR: Int
 
@@ -2436,11 +2491,14 @@ private struct WorkoutReplaySummary {
 
     var bestReviewWorthyCandidate: Bool {
         guard bestStatus != "ready" else { return true }
+        // Contact-artifact hardening: never promote a compromised stream or an
+        // RR-contradicts-reported-HR candidate to a review-worthy prompt.
+        guard !bestContactCompromised, !bestRRDisagreement else { return false }
         guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
               bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         if nearMiss {
-            return bestElevatedSeconds >= Self.reviewMinimumElevatedSeconds
-                || bestLongestBout >= Self.reviewMinimumElevatedBout
+            return bestContactQualifiedElevatedSeconds >= Self.reviewMinimumElevatedSeconds
+                || bestContactQualifiedLongestBout >= Self.reviewMinimumElevatedBout
                 || strengthCandidate
         }
         if strengthCandidate {
@@ -2530,6 +2588,11 @@ private struct WorkoutReplaySummary {
                              bestHRAcceptedGaps: 0,
                              bestHRMaxRawGap: 0,
                              bestHRMaxAcceptedGap: 0,
+                             bestHRRRMismatch: 0,
+                             bestContactQualifiedElevatedSeconds: 0,
+                             bestContactQualifiedLongestBout: 0,
+                             bestContactCompromised: false,
+                             bestRRDisagreement: false,
                              restHR: rest,
                              maxHR: maxHR)
     }
@@ -2673,6 +2736,55 @@ extension SavedSession {
     fileprivate static let restReviewAvgOverRestBPM = 30
     fileprivate static let restReviewP95OverRestBPM = 42
     fileprivate static let restReviewPeakOverRestBPM = 55
+    /// Contact-artifact hardening thresholds (2026-07-05, phantom-workout pass).
+    /// See sustainedEvidence()/hrContactCompromised/hrRRDisagreesWithReportedHR.
+    fileprivate static let workoutMicroGapReseedCadence: TimeInterval = 3
+    fileprivate static let workoutMicroGapReseedJumpBPM = 25
+    fileprivate static let workoutArtifactShareCeiling = 0.15
+    fileprivate static let workoutZeroShareCeiling = 0.25
+    fileprivate static let workoutAcceptedGapSecondsCeiling: TimeInterval = 120
+    fileprivate static let workoutAcceptedGapCountCeiling = 3
+    fileprivate static let workoutRRAgreementToleranceBPM = 20.0
+
+    /// True when this session's own audit counters show the watchdog-cycling /
+    /// loose-contact fingerprint that can fabricate a workout from noise: a
+    /// heavy artifact hold+drop share, a heavy zero share, or several large
+    /// accepted-stream gaps. A session like this must never SOURCE an
+    /// auto-detected workout candidate, whatever its raw HR values look like.
+    var hrContactCompromised: Bool {
+        let raw = hrRaw2A37Value
+        guard raw > 0 else { return false }
+        let artifactShare = Double(hrArtifactHeldValue + hrArtifactDroppedValue) / Double(raw)
+        let zeroShare = Double(hrZeroValue) / Double(raw)
+        if artifactShare >= Self.workoutArtifactShareCeiling { return true }
+        if zeroShare >= Self.workoutZeroShareCeiling { return true }
+        if hrMaxAcceptedGapValue > Self.workoutAcceptedGapSecondsCeiling
+            && hrAcceptedGapsValue >= Self.workoutAcceptedGapCountCeiling { return true }
+        return false
+    }
+
+    /// Median heart rate implied by this session's RR/IBI intervals (bpm =
+    /// 60000/ms), or nil when there are too few RR samples to judge. This is
+    /// the sanity-ceiling companion to the strap's own reported HR.
+    var rrImpliedMedianBPM: Double? {
+        guard let rrPoints, rrPoints.count >= 3 else { return nil }
+        let implied = rrPoints.compactMap { point -> Double? in
+            guard point.ms > 0 else { return nil }
+            return 60_000.0 / Double(point.ms)
+        }.sorted()
+        guard implied.count >= 3 else { return nil }
+        let mid = implied.count / 2
+        return implied.count.isMultiple(of: 2) ? (implied[mid - 1] + implied[mid]) / 2 : implied[mid]
+    }
+
+    /// True when RR intervals are present but imply a heart rate more than
+    /// `workoutRRAgreementToleranceBPM` away from this session's own reported
+    /// average HR. The strap's RR channel contradicting its reported HR is a
+    /// strong contact-artifact signal and rejects the candidate outright.
+    var hrRRDisagreesWithReportedHR: Bool {
+        guard let rrImpliedMedianBPM else { return false }
+        return abs(rrImpliedMedianBPM - Double(avg)) > Self.workoutRRAgreementToleranceBPM
+    }
 
     func workoutReadiness(rest: Int, maxHR: Int, thresholdFraction: Double = 0.50) -> WorkoutReadiness {
         let sustained = sustainedElevatedEvidence(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
@@ -2689,10 +2801,21 @@ extension SavedSession {
         let peakOverRest = peak - rest
         let thresholdGapBPM = max(0, thresholdHR - peak)
         let streamCoveragePercent = Self.workoutStreamCoveragePercent(observed: observedDuration, duration: duration)
+        // RR present OR an unbroken accepted-HR stream backs the elevation with
+        // something other than raw wrist/strap bpm alone (see spec item 2).
+        let contactQualified = rrSampleCount > 0
+            || (hrAcceptedGapsValue == 0 && hrMaxAcceptedGapValue <= Self.workoutContinuityGapLimit)
+        let contactQualifiedElevatedSeconds = contactQualified ? elevatedSeconds : 0
+        let contactQualifiedLongestBout = contactQualified ? sustained.longestBout : 0
+        let contactCompromised = hrContactCompromised
+        let rrDisagreement = hrRRDisagreesWithReportedHR
         let ready = observedDuration >= 10 * 60
             && streamCoveragePercent >= 75
             && elevatedSeconds >= requiredElevatedSeconds
             && sustained.longestBout >= requiredElevatedBout
+            && contactQualifiedLongestBout >= requiredElevatedBout
+            && !contactCompromised
+            && !rrDisagreement
         let primaryBlocker = Self.workoutPrimaryBlocker(ready: ready,
                                                         duration: duration,
                                                         observedDuration: observedDuration,
@@ -2732,6 +2855,10 @@ extension SavedSession {
                                 primaryBlocker: primaryBlocker,
                                 avgOverRest: avgOverRest,
                                 peakOverRest: peakOverRest,
+                                contactQualifiedElevatedSeconds: contactQualifiedElevatedSeconds,
+                                contactQualifiedLongestBout: contactQualifiedLongestBout,
+                                contactCompromised: contactCompromised,
+                                rrDisagreement: rrDisagreement,
                                 ready: ready)
     }
 
@@ -2904,7 +3031,18 @@ extension SavedSession {
                 continue
             }
             observedDuration += dt
-            let elevated = points[i].bpm >= minimumHR
+            // Contact-artifact hardening: a reconnect/loose-contact boundary
+            // often shows up as a sub-15s (so not a hard stream gap) but
+            // wider-than-cadence sample spacing paired with a large bpm jump --
+            // exactly the accepted-median-drift fingerprint a per-sample jump
+            // filter alone cannot catch. Treat that first post-gap sample as
+            // unverified so it cannot seed (or continue) an elevated bout; the
+            // hard >15s gap reset above already covers the rest of the run.
+            let isMicroGapReconnect = dt > Self.workoutMicroGapReseedCadence
+            let bpmJumpFromPreviousSample = abs(points[i].bpm - points[i - 1].bpm)
+            let unverifiedReconnectBlip = isMicroGapReconnect
+                && bpmJumpFromPreviousSample >= Self.workoutMicroGapReseedJumpBPM
+            let elevated = points[i].bpm >= minimumHR && !unverifiedReconnectBlip
             if elevated {
                 total += dt
                 currentBout += dt
@@ -4039,7 +4177,7 @@ final class SessionStore: ObservableObject {
             }
     }
 
-    private nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
+    nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
                                                             computed: [SavedDailyMetric],
                                                             sessions: [SavedSession],
                                                             sleep: SleepHistorySnapshot,
@@ -4188,7 +4326,7 @@ final class SessionStore: ObservableObject {
         return minutes < 12 * 60 ? minutes + 24 * 60 : minutes
     }
 
-    private nonisolated static func makeMorningFrozenDailyMetric(for day: Date,
+    nonisolated static func makeMorningFrozenDailyMetric(for day: Date,
                                                                  computed: [SavedDailyMetric],
                                                                  sessions: [SavedSession],
                                                                  sleep: SleepHistorySnapshot,
@@ -4208,8 +4346,32 @@ final class SessionStore: ObservableObject {
         }
         let computedToday = computed.first { calendar.isDate($0.day, inSameDayAs: day) }
 
+        // Same-day WEAR fallback: `computed` rollups bucket a session by its
+        // *start* day (dailyRollups groups by calendar.startOfDay(session.start)),
+        // so an overnight session that starts yesterday and ends this morning has
+        // no same-day `computedToday` entry even though the strap was worn all
+        // night into today. Attribute sessions to today by their *end* day
+        // (morningMetricDay) instead, so today's rollup can exist from wear alone
+        // even when there is no confirmed sleep and no RR-bearing overnight HRV
+        // window (rrPoints absent). This is independent of sleep confirmation —
+        // sleepDuration stays nil here unless one of the sleep-bearing sources
+        // above already set it.
+        let wearSessionsToday = sessions.filter {
+            calendar.isDate(morningMetricDay(for: $0, calendar: calendar), inSameDayAs: day)
+        }
+        let daySessionsExist = !wearSessionsToday.isEmpty
+        let wearRestingHR = wearSessionsToday.map(\.restingStable).filter { $0 > 0 }.min()
+        let wearStrainTRIMP = wearSessionsToday.reduce(0.0) {
+            $0 + $1.trimp(rest: baseline.restingInt ?? wearRestingHR ?? 60, max: maxHR)
+        }
+        let wearStrain = wearStrainTRIMP > 0 ? Metrics.strain(fromTRIMP: wearStrainTRIMP) : nil
+
         let hrv = overnightSleep?.hrv ?? overnightSession?.localRMSSD ?? computedToday?.hrv
-        let restingHR = overnightSleep?.restingHR ?? overnightSession?.sleepCandidateRestingHR ?? overnightSession?.restingStable ?? computedToday?.restingHR
+        let restingHR = overnightSleep?.restingHR
+            ?? overnightSession?.sleepCandidateRestingHR
+            ?? overnightSession?.restingStable
+            ?? computedToday?.restingHR
+            ?? wearRestingHR
         let respiratoryRate = overnightSleep?.respiratoryRate
             ?? overnightSession?.sleepRespiratoryRate(rest: baseline.restingInt ?? overnightSession?.restingStable ?? 60,
                                                       maxHR: maxHR,
@@ -4225,9 +4387,12 @@ final class SessionStore: ObservableObject {
         let sleepSource = overnightSleep?.source ?? computedToday?.sleepSource
         let sleepSegments = overnightSleep?.displayStageSegments ?? computedToday?.sleepStageSegments ?? []
         let sleepConsistencyPercent = computedToday?.sleepConsistencyPercent ?? sleep.sleepConsistencyPercent
-        let strain = computedToday?.strain
+        let strain = computedToday?.strain ?? wearStrain
 
-        guard hrv != nil || restingHR != nil || sleepDuration != nil else {
+        guard hrv != nil
+                || restingHR != nil
+                || sleepDuration != nil
+                || (daySessionsExist && (restingHR != nil || strain != nil)) else {
             return nil
         }
 
@@ -7421,7 +7586,8 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
-        let confirmable = summary.readySessions > 0 || summary.bestReviewWorthyCandidate
+        let confirmable = (summary.readySessions > 0 || summary.bestReviewWorthyCandidate)
+            && !summary.bestContactCompromised
         guard confirmable else {
             AtriaDebugLog("ATRIADBG workout_review_candidate status=learning source=%@ candidate_source=%@ reason=candidate_not_review_worthy observed_s=%.0f coverage=%d peak_over_rest=%d ready=%d near_miss=%d strength_candidate=%d review_worthy=0",
                           source,
@@ -7543,7 +7709,8 @@ final class SessionStore: ObservableObject {
                   maxHR)
             return nil
         }
-        let confirmable = summary.readySessions > 0 || summary.bestReviewWorthyCandidate
+        let confirmable = (summary.readySessions > 0 || summary.bestReviewWorthyCandidate)
+            && !summary.bestContactCompromised
         guard confirmable else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=candidate_not_review_worthy source=%@ candidate_source=%@ observed_s=%.0f stream_coverage_percent=%d peak_over_rest=%d near_miss=%d strength_candidate=%d auto_ready=%d metric_promotions=0",
                   source,
@@ -8111,8 +8278,8 @@ final class SessionStore: ObservableObject {
         var saved = 0
         var firstSavedOvernight: UserConfirmedSleep?
         for candidate in candidates.prefix(limit) {
-            let hrOnlyAutoConfirmed = Self.isUnambiguousHROnlyMainSleepCandidate(candidate)
-            let sleepSource = candidate.kind == "nap_candidate" ? "auto_nap" : "auto_confirmed_sleep"
+            let classification = Self.autoSleepClassification(for: candidate)
+            let sleepSource = classification.source
             let id = confirmedSleepID(start: candidate.start, end: candidate.end, source: sleepSource)
             if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
                 continue
@@ -8123,7 +8290,7 @@ final class SessionStore: ObservableObject {
                                                                 end: candidate.end,
                                                                 restingHR: candidate.restingHR,
                                                                 isNap: candidate.kind == "nap_candidate",
-                                                                motionValidated: candidate.motionEvidenceValidated && !hrOnlyAutoConfirmed)
+                                                                motionValidated: classification.motionValidated)
             let metrics = confirmedSleepWindowMetrics(start: candidate.start,
                                                       end: candidate.end,
                                                       rest: candidate.restingHR)
@@ -8132,7 +8299,7 @@ final class SessionStore: ObservableObject {
                                                start: candidate.start,
                                                end: candidate.end,
                                                source: sleepSource,
-                                               confidence: hrOnlyAutoConfirmed ? "hr_only" : candidate.confidence.rawValue,
+                                               confidence: classification.confidence,
                                                sessions: candidate.sessions,
                                                samples: candidate.samples,
                                                avgHR: candidate.avgHR,
@@ -8143,8 +8310,8 @@ final class SessionStore: ObservableObject {
                                                duration: candidate.duration,
                                                span: candidate.span,
                                                reason: "\(reason); \(candidate.reason)",
-                                               motionSource: hrOnlyAutoConfirmed ? "strap_hr_only" : candidate.motionEvidenceSource,
-                                               motionValidated: candidate.motionEvidenceValidated && !hrOnlyAutoConfirmed,
+                                               motionSource: classification.motionSource,
+                                               motionValidated: classification.motionValidated,
                                                stageSegments: stageSegments.isEmpty ? nil : stageSegments)
             existing.append(confirmed)
             if candidate.kind != "nap_candidate", firstSavedOvernight == nil {
@@ -8180,23 +8347,32 @@ final class SessionStore: ObservableObject {
         autoSleepLoggedBanner = nil
     }
 
-    private nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+    /// Exposed (not `private`) so unit tests can exercise the auto-confirm gate
+    /// directly against constructed `AggregateSleepCandidate` fixtures, matching
+    /// the existing `partitionSessionsForPersist` pure-static-testing pattern.
+    nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         if isUnambiguousHROnlyMainSleepCandidate(candidate) {
             return true
         }
-        guard candidate.motionEvidenceValidated, candidate.confidence != .low else { return false }
-        if candidate.kind == "nap_candidate" {
-            return candidate.duration >= AggregateSleepCandidate.napMinimumDuration
-                && candidate.span <= AggregateSleepCandidate.napMaximumSpan
+        // Motion stays strictly preferred: once motion evidence is validated with
+        // non-.low confidence, commit to that path's own gates below and never
+        // fall through to the degraded HR-only tier, even if this candidate would
+        // also happen to pass the degraded gates.
+        if candidate.motionEvidenceValidated, candidate.confidence != .low {
+            if candidate.kind == "nap_candidate" {
+                return candidate.duration >= AggregateSleepCandidate.napMinimumDuration
+                    && candidate.span <= AggregateSleepCandidate.napMaximumSpan
+            }
+            return candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
+                || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
+                    && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan
+                    && candidate.maxGap <= 2 * 60 * 60)
         }
-        return candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
-            || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
-                && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan
-                && candidate.maxGap <= 2 * 60 * 60)
+        return isDegradedHROnlyOvernightSleepCandidate(candidate)
     }
 
-    private nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
-                                                                          calendar: Calendar = .current) -> Bool {
+    nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
+                                                                   calendar: Calendar = .current) -> Bool {
         guard candidate.kind != "nap_candidate",
               candidate.sessions == 1,
               candidate.duration >= 5 * 60 * 60,
@@ -8207,6 +8383,99 @@ final class SessionStore: ObservableObject {
         let endHour = calendar.component(.hour, from: candidate.end)
         let overnight = startHour >= 20 || startHour <= 3 || endHour <= 10
         return overnight && windowOverlapsSleepCore(start: candidate.start, end: candidate.end, calendar: calendar)
+    }
+
+    /// Degraded HR-only overnight auto-confirm tier (WHOOP parity for a fragmented
+    /// or artifact-inflated night that fails the unambiguous single-session gate
+    /// above). Motion-validated nights never reach this — see
+    /// `isStrongAutoConfirmableSleepCandidate`, which only consults this after the
+    /// unambiguous HR-only path has already failed. Every gate below is required:
+    /// duration, learned/fallback sleep-core window overlap, fragmentation bound,
+    /// and artifact-robust median/percentile HR (not mean/SD, which a sustained
+    /// loose-contact drift can drag past the strict gate).
+    nonisolated static func isDegradedHROnlyOvernightSleepCandidate(_ candidate: AggregateSleepCandidate,
+                                                                     calendar: Calendar = .current) -> Bool {
+        guard candidate.kind != "nap_candidate" else { return false }
+        guard candidate.duration >= AggregateSleepCandidate.strictMinimumDuration else { return false }
+        guard windowOverlapsSleepCore(start: candidate.start, end: candidate.end, calendar: calendar),
+              sleepCoreOverlapFraction(start: candidate.start, end: candidate.end, calendar: calendar) >= 0.60
+        else { return false }
+        guard candidate.sessions >= 1,
+              candidate.maxGap <= 90 * 60,
+              candidate.span <= candidate.duration * 1.8 else { return false }
+        guard candidate.medianHR <= candidate.restingHR + 10,
+              candidate.hrP90 <= candidate.restingHR + 22,
+              candidate.elevatedSampleFraction < 0.10 else { return false }
+        // Wake/false-night guard: an active evening cannot masquerade as sleep just
+        // because a bounded fraction of samples were elevated — bound the total
+        // elevated time too (approximated from the elevated fraction over the
+        // candidate's total duration, since raw per-sample timestamps aren't kept
+        // on the aggregate).
+        let approxElevatedSeconds = candidate.elevatedSampleFraction * candidate.duration
+        guard approxElevatedSeconds < 20 * 60 else { return false }
+        return true
+    }
+
+    /// Fraction of `[start, end)` that overlaps the sleep-core window (00:00-06:00,
+    /// checked against the day before/of/after `start` the same way
+    /// `windowOverlapsSleepCore` does). A same-day core-overlap fraction is used
+    /// rather than a fixed learned-window lookup so this stays a pure, deterministic
+    /// function of the candidate's own start/end for unit testing; the 0-6am core
+    /// is the same fallback window `windowOverlapsSleepCore` already uses.
+    private nonisolated static func sleepCoreOverlapFraction(start: Date, end: Date, calendar: Calendar) -> Double {
+        let span = end.timeIntervalSince(start)
+        guard span > 0 else { return 0 }
+        let startDay = calendar.startOfDay(for: start)
+        var overlap: TimeInterval = 0
+        for offset in -1...1 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
+                  let coreStart = calendar.date(bySettingHour: 0, minute: 0, second: 0, of: day),
+                  let coreEnd = calendar.date(bySettingHour: 6, minute: 0, second: 0, of: day) else { continue }
+            let overlapStart = max(start, coreStart)
+            let overlapEnd = min(end, coreEnd)
+            if overlapEnd > overlapStart {
+                overlap += overlapEnd.timeIntervalSince(overlapStart)
+            }
+        }
+        return overlap / span
+    }
+
+    /// Single source of truth for how an auto-confirmed sleep candidate is
+    /// classified (source string / confidence tier / motion fields), so
+    /// `autoConfirmStrongSleepCandidates` and unit tests agree on exactly one
+    /// place that decides "unambiguous HR-only" vs "degraded HR-only" vs
+    /// "motion-validated".
+    struct AutoSleepClassification: Equatable {
+        let source: String
+        let confidence: String
+        let motionValidated: Bool
+        let motionSource: String
+        let isHROnly: Bool
+    }
+
+    nonisolated static func autoSleepClassification(for candidate: AggregateSleepCandidate) -> AutoSleepClassification {
+        let hrOnlyUnambiguous = isUnambiguousHROnlyMainSleepCandidate(candidate)
+        // Motion stays strictly preferred (see isStrongAutoConfirmableSleepCandidate):
+        // never classify a motion-validated, non-.low-confidence night into the
+        // degraded HR-only tier.
+        let motionPreferred = !hrOnlyUnambiguous
+            && candidate.motionEvidenceValidated
+            && candidate.confidence != .low
+        let hrOnlyDegraded = !hrOnlyUnambiguous && !motionPreferred && isDegradedHROnlyOvernightSleepCandidate(candidate)
+        let hrOnly = hrOnlyUnambiguous || hrOnlyDegraded
+        let source: String
+        if candidate.kind == "nap_candidate" {
+            source = "auto_nap"
+        } else if hrOnlyDegraded {
+            source = "auto_confirmed_sleep_hr_only"
+        } else {
+            source = "auto_confirmed_sleep"
+        }
+        return AutoSleepClassification(source: source,
+                                       confidence: hrOnly ? "hr_only" : candidate.confidence.rawValue,
+                                       motionValidated: candidate.motionEvidenceValidated && !hrOnly,
+                                       motionSource: hrOnly ? "strap_hr_only" : candidate.motionEvidenceSource,
+                                       isHROnly: hrOnly)
     }
 
     private nonisolated static func windowOverlapsSleepCore(start: Date,
@@ -9084,6 +9353,11 @@ final class SessionStore: ObservableObject {
                                                  bestHRAcceptedGaps: session.hrAcceptedGapsValue,
                                                  bestHRMaxRawGap: session.hrMaxRawGapValue,
                                                  bestHRMaxAcceptedGap: session.hrMaxAcceptedGapValue,
+                                                 bestHRRRMismatch: session.hrRRMismatchValue,
+                                                 bestContactQualifiedElevatedSeconds: readiness.contactQualifiedElevatedSeconds,
+                                                 bestContactQualifiedLongestBout: readiness.contactQualifiedLongestBout,
+                                                 bestContactCompromised: readiness.contactCompromised,
+                                                 bestRRDisagreement: readiness.rrDisagreement,
                                                  restHR: rest,
                                                  maxHR: maxHR)
             if isBetterWorkoutReplaySummary(candidate, than: best) {
@@ -9137,6 +9411,11 @@ final class SessionStore: ObservableObject {
                                                  bestHRAcceptedGaps: aggregate.hrAcceptedGaps,
                                                  bestHRMaxRawGap: aggregate.hrMaxRawGap,
                                                  bestHRMaxAcceptedGap: aggregate.hrMaxAcceptedGap,
+                                                 bestHRRRMismatch: aggregate.hrRRMismatch,
+                                                 bestContactQualifiedElevatedSeconds: readiness.contactQualifiedElevatedSeconds,
+                                                 bestContactQualifiedLongestBout: readiness.contactQualifiedLongestBout,
+                                                 bestContactCompromised: readiness.contactCompromised,
+                                                 bestRRDisagreement: readiness.rrDisagreement,
                                                  restHR: rest,
                                                  maxHR: maxHR)
             if isBetterWorkoutReplaySummary(candidate, than: best) {
@@ -9839,6 +10118,7 @@ final class SessionStore: ObservableObject {
                                                                hrAcceptedGaps: stitchedCluster.hrAcceptedGaps,
                                                                hrMaxRawGap: stitchedCluster.hrMaxRawGap,
                                                                hrMaxAcceptedGap: stitchedCluster.hrMaxAcceptedGap,
+                                                               hrRRMismatch: stitchedCluster.hrRRMismatch,
                                                                readiness: stitchedCluster.readiness))
                 }
                 candidates.append(contentsOf: windowedWorkoutCandidates(day: day,
@@ -9936,7 +10216,8 @@ final class SessionStore: ObservableObject {
                                      hrRawGaps: ordered.reduce(0) { $0 + $1.hrRawGapsValue },
                                      hrAcceptedGaps: ordered.reduce(0) { $0 + $1.hrAcceptedGapsValue },
                                      hrMaxRawGap: ordered.map(\.hrMaxRawGapValue).max() ?? 0,
-                                     hrMaxAcceptedGap: ordered.map(\.hrMaxAcceptedGapValue).max() ?? 0)
+                                     hrMaxAcceptedGap: ordered.map(\.hrMaxAcceptedGapValue).max() ?? 0,
+                                     hrRRMismatch: ordered.reduce(0) { $0 + $1.hrRRMismatchValue })
         let readiness = aggregate.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
         return AggregateWorkoutCandidate(id: aggregate.id,
                                          source: source,
@@ -9960,6 +10241,7 @@ final class SessionStore: ObservableObject {
                                          hrAcceptedGaps: aggregate.hrAcceptedGapsValue,
                                          hrMaxRawGap: aggregate.hrMaxRawGapValue,
                                          hrMaxAcceptedGap: aggregate.hrMaxAcceptedGapValue,
+                                         hrRRMismatch: aggregate.hrRRMismatchValue,
                                          readiness: readiness)
     }
 
@@ -10073,7 +10355,7 @@ final class SessionStore: ObservableObject {
                                       historicalMotionPolicy: historicalMotionPolicy)
     }
 
-    private nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
+    nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
                                                              rest: Int,
                                                              maxHR: Int,
                                                              calendar: Calendar = .current,
@@ -10121,6 +10403,9 @@ final class SessionStore: ObservableObject {
                 let peak = allHR.max() ?? 0
                 let hrStandardDeviation = standardDeviation(allHR.map(Double.init))
                 let resting = Self.percentileHR(0.05, values: allHR)
+                let medianHR = Self.percentileHR(0.50, values: allHR)
+                let hrP90 = Self.percentileHR(0.90, values: allHR)
+                let elevatedSampleFraction = Double(allHR.filter { $0 >= resting + 35 }.count) / Double(allHR.count)
                 let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                 let fragmentedFallbackReady = cluster.count > 1
                     && span >= AggregateSleepCandidate.fragmentedMinimumSpan
@@ -10191,6 +10476,9 @@ final class SessionStore: ObservableObject {
                                                avgHR: avg,
                                                peakHR: peak,
                                                hrStandardDeviation: hrStandardDeviation,
+                                               medianHR: medianHR,
+                                               hrP90: hrP90,
+                                               elevatedSampleFraction: elevatedSampleFraction,
                                                restingHR: resting,
                                                confidence: confidence,
                                                reason: reason,
@@ -14433,6 +14721,7 @@ struct SleepHistorySnapshot: Equatable {
             "manual_sleep",
             "auto_sleep",
             "auto_confirmed_sleep",
+            "auto_confirmed_sleep_hr_only",
             "aggregate_sleep",
             "sleep_window",
             "validated_sleep_window",

@@ -696,8 +696,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "@Published private(set) var dailyMetricSparklines = DailyMetricSparklineCache.empty",
             "private nonisolated static func makeSavedDailyMetrics(",
             "private nonisolated static func makeDailyMetricSparklines(from history: [SavedDailyMetric]) -> DailyMetricSparklineCache",
-            "private nonisolated static func mergeDailyMetricHistory(",
-            "private nonisolated static func makeMorningFrozenDailyMetric(",
+            # 2026-07-05: mergeDailyMetricHistory and makeMorningFrozenDailyMetric
+            # dropped `private` (now plain `nonisolated static func`) so the
+            # HR-only-sleep + today-rollup-from-wear unit tests can call them
+            # directly, matching the existing partitionSessionsForPersist
+            # pure-static-testing pattern.
+            "nonisolated static func mergeDailyMetricHistory(",
+            "nonisolated static func makeMorningFrozenDailyMetric(",
             "private nonisolated static func morningMetricDay(for night: SleepHistorySnapshot.Night,",
             "private nonisolated static func morningMetricDay(for session: SavedSession,",
             "merged.removeValue(forKey: today)",
@@ -3101,10 +3106,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "bestPeakHR - restHR >= Self.reviewMinimumModerateStrengthPeakOverRest",
             "p95OverRest >= Self.reviewMinimumModerateStrengthP95OverRest",
             "bestP95HR - restHR >= Self.reviewMinimumModerateStrengthP95OverRest",
-            "elevatedSeconds >= Self.reviewMinimumElevatedSeconds",
-            "bestElevatedSeconds >= Self.reviewMinimumElevatedSeconds",
-            "longestElevatedBout >= Self.reviewMinimumElevatedBout",
-            "bestLongestBout >= Self.reviewMinimumElevatedBout",
+            # 2026-07-05: contact-artifact hardening (Sessions.swift WorkoutReadiness)
+            # gates reviewWorthyCandidate/bestReviewWorthyCandidate's near-miss branch
+            # on contact/RR-qualified evidence instead of the raw elevated seconds, so
+            # a loose-contact blip alone can't promote a candidate.
+            "contactQualifiedElevatedSeconds >= Self.reviewMinimumElevatedSeconds",
+            "bestContactQualifiedElevatedSeconds >= Self.reviewMinimumElevatedSeconds",
+            "contactQualifiedLongestBout >= Self.reviewMinimumElevatedBout",
+            "bestContactQualifiedLongestBout >= Self.reviewMinimumElevatedBout",
             "borderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds",
             "bestBorderlineElevatedSeconds >= Self.reviewMinimumBorderlineSeconds",
             "borderlineLongestBout >= Self.reviewMinimumBorderlineBout",
@@ -3675,10 +3684,22 @@ class HandoffStaticChecks(unittest.TestCase):
             "scheduleSleepReadinessRetryIfUseful(reason: \"deferred_session_load\")",
             "@discardableResult\n    private func autoConfirmStrongSleepCandidates(reason: String, limit: Int = 2) -> Bool",
             ".filter(Self.isStrongAutoConfirmableSleepCandidate)",
-            'let sleepSource = candidate.kind == "nap_candidate" ? "auto_nap" : "auto_confirmed_sleep"',
-            'confidence: hrOnlyAutoConfirmed ? "hr_only" : candidate.confidence.rawValue',
-            "private nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
-            "guard candidate.motionEvidenceValidated, candidate.confidence != .low else { return false }",
+            # 2026-07-05: HR-only degraded auto-confirm tier (WHOOP parity for a
+            # fragmented/artifact-inflated overnight). The per-candidate
+            # source/confidence/motion decision was factored out of the
+            # autoConfirmStrongSleepCandidates loop into a single
+            # `autoSleepClassification(for:)` static (source string now branches on
+            # unambiguous-HR-only vs degraded-HR-only vs motion-validated, adding
+            # "auto_confirmed_sleep_hr_only"), and isStrongAutoConfirmableSleepCandidate
+            # dropped `private` so unit tests can call it directly.
+            "let classification = Self.autoSleepClassification(for: candidate)",
+            "confidence: classification.confidence,",
+            "nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
+            "if candidate.motionEvidenceValidated, candidate.confidence != .low {",
+            "return isDegradedHROnlyOvernightSleepCandidate(candidate)",
+            "nonisolated static func isDegradedHROnlyOvernightSleepCandidate(_ candidate: AggregateSleepCandidate,",
+            "nonisolated static func autoSleepClassification(for candidate: AggregateSleepCandidate) -> AutoSleepClassification",
+            '"auto_confirmed_sleep_hr_only"',
             "private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool",
             '"auto_nap"',
             '"auto_sleep"',
