@@ -7478,3 +7478,58 @@ Gate: checks OK, sim visual verified, Release installed. Laggy complaint:
 partially addressed earlier (KVO storm, synchronize purge, thrash fix — the
 reset thrash WAS a main-thread hog); a body-probe measurement pass on real
 interaction remains queued for daytime.
+
+## 24. Product-owner directive mega-run (2026-07-05 ~04:00-05:00)
+
+User directive list executed in a research + two-wave workflow (haiku research
+per model-tiering policy, sonnet implementation, sim visual verification).
+Gate: checks OK (128), Release installed, unit suite TEST SUCCEEDED.
+
+SHIPPED:
+- Essentials visible by default (separate commit d766bf1d): 13-tile default
+  glance grid incl. VO2 max, skin temp, sleep consistency/efficiency, charts,
+  calories — user read hidden-behind-Customize as "missing".
+- Ring hero: sleep is HOURS-first everywhere ("8h 12m" primary, "% of need"
+  caption); under/optimal/over zone colors (sleep amber/green/blue,
+  strain-vs-target blue/green/amber/red) with chip dots; share button moved to
+  a compact icon top-right of the hero; Apple-Fitness scroll shrink
+  (onScrollGeometryChange, reduce-motion aware); time-of-day nickname greeting.
+- Onboarding: nickname step (atria.user.nickname), ring-picker step (3 slots +
+  center, writes the real persistence keys), womens-health cycle opt-in step
+  (honest copy, default OFF) — order: profile → nickname → rings → womens
+  health → sharing. Agent also FIXED a real fullScreenCover-stale-state bug
+  (onAppear seeding → init seeding).
+- Chrome: Chat tab renamed Assistant ("ATRIA Intelligent Assistant · Coming
+  Soon!"); header-button crop fixed (removed the hard .clipped() that cut the
+  pressed-state glass glow); strap screen auto-identity ("WHOOP 4.0 · <name>"
+  from the real Device Information service reads) + ownership line ("Your
+  strap, your data — Atria reads it over Bluetooth. Nothing is sent to
+  WHOOP."). Native tab bar size: no legitimate API to shrink; skipped honestly.
+- Settings: six collapsible DisclosureGroup sections (Profile/Strap/
+  Notifications/Data/Sharing/Developer), Profile+Strap expanded by default,
+  per-section persistence, all pinned literals preserved.
+- Vitals education: every Health row + vitals card taps into a compact
+  "What it is / Your typical range / How to improve" sheet; suboptimal-zone
+  hint chips only when a trusted comparison exists; animated body-age delta
+  reveal (count-up, younger=green/older=amber, reduce-motion static).
+  (Agent errored on its final REPORT call only; work verified present, checks
+  green, taken into the tree.)
+- Detail sheets: progressive disclosure — hero + one chart, everything else
+  under a collapsed "More detail" group (user: strain sheet "wayyy too much").
+- ~20 bounds-overflow fixes (lineLimit + minimumScaleFactor on dynamic values).
+- Journal: Tinder-style swipe deck for boolean cards (right=yes/left=no,
+  tilt + fly-off + haptic, buttons remain for accessibility, non-boolean cards
+  keep controls; ghosting bug found and fixed via screenshot iteration).
+
+RESEARCH (r/NOOPApp + competitors, key takeaways recorded for roadmap):
+subscription fatigue is THE draw to alternatives; local-first is a top-2
+differentiator (we already lead); sleep-data-loss on sync failure is the #1
+trust killer (our checkpoint/promotion architecture already guards this);
+pairing complexity is a major barrier (our guide + auto-reconnect cover much);
+users expect all-day HR trend visible (we have charts tile now default-on);
+battery visibility matters (we surface it in 3 places); transparency about
+reverse-engineering status builds trust (docs already honest; consider an
+in-app "how this works" page). Full listings in the workflow output.
+
+DEFERRED from the directive: HR-zones daily tile, workout-list tile, strain
+comparison card (new tiles — next run); tab bar shrink (no native API).

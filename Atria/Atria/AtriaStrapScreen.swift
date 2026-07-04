@@ -155,24 +155,52 @@ struct AtriaStrapScreen: View {
     #endif
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Strap")
-                    .font(.title2.weight(.bold))
-                Text(coreLiveStore.state.displayDeviceName.isEmpty ? "WHOOP strap" : coreLiveStore.state.displayDeviceName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Strap")
+                        .font(.title2.weight(.bold))
+                    Text(identitySubtitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(primaryState)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(connectionTint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
             }
 
-            Spacer(minLength: 8)
+            Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-            Text(primaryState)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(connectionTint)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
+    /// Enriches the sanitized `displayDeviceName` (which already strips "WHOOP"
+    /// to a generic "Strap" for the always-on chrome) with the detected
+    /// generation from the strap's own Device Information service, when known.
+    /// Falls back to the plain identity — never a guess.
+    private var identitySubtitle: String {
+        let identity = coreLiveStore.state.displayDeviceName.isEmpty ? "Strap" : coreLiveStore.state.displayDeviceName
+        let rawName = coreLiveStore.state.deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let looksLikeWhoop = rawName.uppercased().contains("WHOOP") || ble.strapModel != .unknown
+        guard looksLikeWhoop else { return identity }
+
+        switch ble.strapModel {
+        case .strapMG: return "WHOOP MG · \(identity)"
+        case .strap5: return "WHOOP 5.0 · \(identity)"
+        case .strap4: return "WHOOP 4.0 · \(identity)"
+        case .strap4Class: return "WHOOP-class strap · \(identity)"
+        case .strap3: return "WHOOP 3.0 · \(identity)"
+        case .unknown: return identity
         }
     }
 

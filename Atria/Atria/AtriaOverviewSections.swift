@@ -921,9 +921,13 @@ private struct AtriaSleepReviewCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Text(rangeText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                     Text(subtitleText)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -3418,9 +3422,13 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(pulse.heartRateText)
                         .font(.subheadline.weight(.bold).monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .layoutPriority(1)
                     Text("bpm")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             } icon: {
                 Image(systemName: "waveform.path.ecg")
@@ -3453,6 +3461,8 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
             Label {
                 Text(live.batteryText)
                     .font(.caption.weight(.bold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             } icon: {
                 Image(systemName: live.batterySymbol)
                     .font(.caption.weight(.bold))
@@ -3818,6 +3828,8 @@ struct AtriaMonthlyReportSheet: View {
                         Text(monthTitleText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
@@ -6121,6 +6133,8 @@ private struct AtriaPlanReadinessMark: View, Equatable {
                 Text(baselineText)
                     .font(.caption2.weight(.bold).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                     .background(
@@ -6863,9 +6877,12 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                     Text(title)
                         .font(.subheadline.weight(.bold))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Text(timeText)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
 
                 Spacer(minLength: 0)
@@ -6873,9 +6890,13 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(strainText)
                         .font(.headline.monospacedDigit().weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .layoutPriority(1)
                     Text("strain")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
@@ -6894,6 +6915,8 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                 Text(heartRateText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
                 Text(zoneMinutesSummary)
                     .font(.caption.weight(.bold))
@@ -6930,6 +6953,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     let contributors: Contributors
     let chart: ChartContent
     let about: About
+    @State private var showingMoreDetail = false
 
     init(heroValue: String,
          heroState: String,
@@ -6963,13 +6987,31 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     var body: some View {
+        // Progressive disclosure: hero + the single most useful chart are always
+        // visible up top; everything else (contributor breakdowns, workout/hypnogram
+        // detail, "Learn") is tiered into a collapsed "More detail" group so the
+        // sheet doesn't dump every stat on the user at once.
         VStack(alignment: .leading, spacing: 16) {
             hero
-            betweenHeroAndContributors
-            contributors
             chart
-            about
+            moreDetail
         }
+    }
+
+    private var moreDetail: some View {
+        DisclosureGroup(isExpanded: $showingMoreDetail) {
+            VStack(alignment: .leading, spacing: 16) {
+                betweenHeroAndContributors
+                contributors
+                about
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("More detail", systemImage: "chevron.down.circle")
+                .font(.subheadline.weight(.semibold))
+        }
+        .padding(14)
+        .atriaInsetCard(tint: tint)
     }
 
     private var hero: some View {
@@ -7279,6 +7321,8 @@ private struct AtriaRecoveryContributorMap: View {
                 Text(balanceText)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(balanceTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(balanceTint.opacity(0.12), in: Capsule(style: .continuous))
@@ -7354,9 +7398,12 @@ private struct AtriaRecoveryContributorMap: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(titleForContributor(contributor))
                         .font(.caption.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Text(noteForContributor(contributor))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
 
                 Spacer(minLength: 8)
@@ -7369,6 +7416,8 @@ private struct AtriaRecoveryContributorMap: View {
                     Text(contributor.displayValue)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
             }
 
@@ -7801,10 +7850,15 @@ private struct AtriaDetailRangeLensCard: View, Equatable {
                     .font(.caption2.weight(.bold))
                 Text("Vs prior \(comparison.deltaText)")
                     .font(.caption2.weight(.bold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
                 Text(comparison.priorText)
                     .font(.caption2.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .layoutPriority(1)
             }
             .foregroundStyle(tint)
 
@@ -7840,10 +7894,14 @@ private struct AtriaDetailComparisonSeesaw: View, Equatable {
                 Label("This vs prior", systemImage: comparison.changeDirection.symbolName)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 Text(comparison.deltaText)
                     .font(.caption2.weight(.black).monospacedDigit())
                     .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .layoutPriority(1)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -7884,9 +7942,12 @@ private struct AtriaDetailComparisonSeesaw: View, Equatable {
                 Text(title)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Text(value)
                     .font(.caption2.weight(.bold).monospacedDigit())
                     .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 if alignment == .leading { Spacer(minLength: 0) }
             }
 
@@ -8007,6 +8068,8 @@ private struct AtriaDetailPeriodSummaryStrip: View {
                     Text(summary.latestText)
                         .font(.title3.weight(.bold).monospacedDigit())
                         .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
 
                 Spacer(minLength: 0)
@@ -8016,11 +8079,14 @@ private struct AtriaDetailPeriodSummaryStrip: View {
                         .font(.caption.weight(.bold))
                     Text(summary.changeText)
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
                 .foregroundStyle(tint)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(tint.opacity(0.12), in: Capsule())
+                .layoutPriority(1)
             }
 
             summaryRangeRail
@@ -8225,12 +8291,16 @@ private struct AtriaDetailComparisonCard: View, Equatable {
                 Label("Vs prior", systemImage: comparison.changeDirection.symbolName)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
 
                 Spacer(minLength: 0)
 
                 Text(comparison.deltaText)
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .layoutPriority(1)
             }
 
             comparisonRow(label: "This", value: comparison.currentText, share: comparison.currentShare, isCurrent: true)
@@ -8488,10 +8558,14 @@ private struct AtriaSleepHypnogramCard: View {
             HStack {
                 Text("Sleep estimate")
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                 Spacer()
                 Text(night.durationText)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.cyan)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .layoutPriority(1)
             }
 
             if night.displayStageSegments.isEmpty {
@@ -8651,8 +8725,11 @@ private struct AtriaSleepHypnogramCard: View {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
             Text(value)
                 .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -10066,6 +10143,8 @@ private struct AtriaJournalImpactFocus: View, Equatable {
                 Text(summary.impactToneText)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.cyan)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.cyan.opacity(0.10), in: Capsule())

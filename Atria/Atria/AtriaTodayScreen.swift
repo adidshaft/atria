@@ -34,8 +34,17 @@ struct AtriaTodayScreen: View {
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
     @State private var ringShareImage: UIImage?
+    /// Apple-Fitness-style scroll shrink: 0 at rest (full size), 1 once the
+    /// user has scrolled up past `Self.heroShrinkDistance`. Reduce Motion
+    /// keeps this pinned to full size (see `heroScale`/`heroOpacity`)
+    /// regardless of this value -- the hero simply never shrinks.
+    @State private var heroShrinkProgress: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
+    /// Optional display name set elsewhere in the app. Empty -- the default
+    /// -- means no greeting is shown; never a fabricated name.
+    @AtriaDefault("atria.user.nickname") private var nickname: String = ""
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
@@ -57,6 +66,14 @@ struct AtriaTodayScreen: View {
             // sleep/recovery/strain numbers a second time -- pure
             // duplication -- and was removed; the ring hero plus its legend
             // chips are now the single source of truth for those values.
+            if let greetingText {
+                HStack {
+                    Text(greetingText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+            }
             topActionMenu
             triRingHero
             if layoutConfig.showLiveStrip {
@@ -171,6 +188,48 @@ struct AtriaTodayScreen: View {
             }
             #endif
         }
+        // Apple-Fitness-style hero shrink: reads the *ancestor* ScrollView's
+        // (owned by the Overview/Home screen this is embedded in) live
+        // content offset without any prop-drilling, and drives
+        // `heroShrinkProgress` from it. Reduce Motion is honored in
+        // `heroScale`/`heroOpacity` themselves, not by skipping this update,
+        // so the state stays consistent if the setting changes mid-scroll.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { _, newValue in
+            let clamped = min(max(newValue, 0), Self.heroShrinkDistance)
+            heroShrinkProgress = clamped / Self.heroShrinkDistance
+        }
+    }
+
+    /// Scroll distance (points) over which the hero fully shrinks/fades.
+    private static let heroShrinkDistance: CGFloat = 140
+    private static let heroMinScale: CGFloat = 0.6
+
+    private var heroScale: CGFloat {
+        guard !reduceMotion else { return 1.0 }
+        return 1.0 - (1.0 - Self.heroMinScale) * heroShrinkProgress
+    }
+
+    private var heroOpacity: CGFloat {
+        guard !reduceMotion else { return 1.0 }
+        return 1.0 - 0.35 * heroShrinkProgress
+    }
+
+    /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
+    /// above the ring hero -- nil (and simply omitted) whenever no nickname
+    /// has been set, never a placeholder greeting.
+    private var greetingText: String? {
+        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let hour = Calendar.current.component(.hour, from: Date())
+        let timeOfDay: String
+        switch hour {
+        case 5..<12: timeOfDay = "morning"
+        case 12..<17: timeOfDay = "afternoon"
+        default: timeOfDay = "evening"
+        }
+        return "Good \(timeOfDay), \(trimmed)"
     }
 
     private var glanceColumns: [GridItem] {
@@ -189,8 +248,9 @@ struct AtriaTodayScreen: View {
     }
 
     private var topActionMenu: some View {
-        HStack {
+        HStack(spacing: 4) {
             Spacer(minLength: 0)
+            ringShareToolbarButton
             Menu {
                 Button(action: onCustomizeToday) {
                     Label("Customize Today", systemImage: "slider.horizontal.3")
@@ -246,12 +306,17 @@ struct AtriaTodayScreen: View {
                          centerDelta: centerDeltaText,
                          accessibilitySummary: accessibilitySummary,
                          actions: ringActions)
+                // Apple-Fitness-style scroll shrink -- scales/fades toward
+                // the top edge only (never sideways) so the rings visually
+                // recede as the user scrolls further content up over them.
+                // Reduce Motion pins both to their resting values (see
+                // `heroScale`/`heroOpacity`).
+                .scaleEffect(heroScale, anchor: .top)
+                .opacity(heroOpacity)
 
             AtriaStrainTargetCard(currentStrain: displayHero.strain,
                                   target: displayHero.guidance.target,
                                   tint: Metrics.electricStrain)
-
-            ringShareButton
         }
     }
 
@@ -279,31 +344,36 @@ struct AtriaTodayScreen: View {
          .rhr: { metricDetail = .restingHeartRate }]
     }
 
-    /// Small, discoverable "share as picture" affordance hosted right under
-    /// the ring hero -- same idea as the Face-Off story-image share button,
-    /// just local to this card instead of a separate sheet.
+    /// Compact "share as picture" icon button hosted top-right of the ring
+    /// hero card, alongside the ⋯ menu -- same idea as the Face-Off
+    /// story-image share button, just an icon-only affordance here instead
+    /// of a labeled pill under the hero.
     @ViewBuilder
-    private var ringShareButton: some View {
+    private var ringShareToolbarButton: some View {
         // Rendered on demand: rasterizing the 1080x1350 card is main-thread
         // work, so it happens once per tap, never per live metric tick.
         if let ringShareImage {
             ShareLink(item: Image(uiImage: ringShareImage),
                       preview: SharePreview("Atria \(ringShareContent.dateText)",
                                             image: Image(uiImage: ringShareImage))) {
-                Label("Share as picture", systemImage: "square.and.arrow.up")
-                    .font(.caption.weight(.semibold))
+                Image(systemName: "square.and.arrow.up")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 32)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .accessibilityLabel("Share ring as picture")
         } else {
             Button {
                 ringShareImage = AtriaRingShare.renderImage(ringShareContent)
             } label: {
-                Label("Share as picture", systemImage: "square.and.arrow.up")
-                    .font(.caption.weight(.semibold))
+                Image(systemName: "square.and.arrow.up")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 32)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .accessibilityLabel("Share ring as picture")
             .onChange(of: ringShareSignature) { _, _ in
                 ringShareImage = nil
             }
@@ -626,15 +696,44 @@ struct AtriaTodayScreen: View {
         store.sleepHistorySnapshot.latest
     }
 
+    /// Real nightly need in hours, computed the same way the sleep-history
+    /// screen's "Slept X of Y needed" line is (`sleepNeedHours`, which
+    /// factors in yesterday's strain and any running sleep debt) -- only
+    /// reachable when there's an actual `Night` on record. Nil otherwise, so
+    /// callers fall back to the plainer stored `sleepPerformance` percent.
+    private var sleepNeedHoursValue: Double? {
+        guard let latestSleep else { return nil }
+        return store.sleepHistorySnapshot.sleepNeedHours(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+    }
+
+    /// Legend-chip-style "of 8h 58m need" detail. Sleep is always shown
+    /// hours-first (never a bare percent as the primary number) -- this is
+    /// only ever the small secondary caption. Falls back to the plainer
+    /// "X% need" whenever a real hours need can't be computed (no `Night`
+    /// on record yet), and to "Sleep" when there's no data at all.
+    private func sleepNeedDetailText(performance: Int?) -> String {
+        if let needHours = sleepNeedHoursValue {
+            return "of \(AtriaMetricFormat.sleepHours(needHours)) need"
+        }
+        if let performance {
+            return "\(performance)% need"
+        }
+        return "Sleep"
+    }
+
     private var sleepMetric: AtriaTriRingMetric {
         let performance = latestRollup?.sleepPerformance
-        let value = latestSleep?.durationText ?? performance.map { "\($0)%" } ?? "Building"
-        let detail = performance.map { "\($0)% need" } ?? "Sleep"
+        // Hours-first, always: falls back to the rollup's stored duration
+        // before ever falling back to a bare percent as the primary number.
+        let value = latestSleep?.durationText
+            ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
+            ?? "Building"
+        let tint = performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) } ?? Metrics.electricSleep
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
-                                  detail: detail,
+                                  detail: sleepNeedDetailText(performance: performance),
                                   systemImage: "moon.fill",
-                                  tint: Metrics.electricSleep,
+                                  tint: tint,
                                   fill: performance.map { min(max(Double($0) / 100.0, 0), 1) })
     }
 
@@ -674,17 +773,19 @@ struct AtriaTodayScreen: View {
                                   value: display.value,
                                   detail: display.detail,
                                   systemImage: "arrow.clockwise.heart.fill",
-                                  tint: display.percent.map(Metrics.recoveryColor) ?? .secondary,
+                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? .secondary,
                                   fill: display.percent.map { Double($0) / 100.0 })
     }
 
     private var strainMetric: AtriaTriRingMetric {
         let target = displayHero.guidance.target ?? 15
+        let percentOfTarget = displayHero.guidance.target.map { displayHero.strain / $0 * 100 }
+        let tint = percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) } ?? Metrics.electricStrain
         return AtriaTriRingMetric(title: "Strain",
                                   value: displayHero.strainValue,
                                   detail: displayHero.guidance.target.map { String(format: "of %.1f", $0) } ?? "Strain",
                                   systemImage: "flame.fill",
-                                  tint: Metrics.electricStrain,
+                                  tint: tint,
                                   fill: min(max(displayHero.strain / max(target, 0.1), 0), 1.2))
     }
 
@@ -748,7 +849,11 @@ struct AtriaTodayScreen: View {
         case .recovery:
             return displayRecovery.percent != nil ? displayRecovery.value : "Day 1"
         case .sleep:
-            return latestRollup?.sleepPerformance.map { "\($0)%" } ?? sleepMetric.value
+            // Hours-first: never the bare "82%" this used to show -- the
+            // percent moves to `centerState` as a small "82% of need"
+            // caption instead. `sleepMetric.value` already resolves to
+            // duration text with a non-percent "Building" fallback.
+            return sleepMetric.value
         case .strain:
             return strainMetric.value
         }
@@ -760,7 +865,7 @@ struct AtriaTodayScreen: View {
             if displayRecovery.detail == "yesterday" { return "yesterday" }
             return displayRecovery.percent.map(recoveryState) ?? "Building"
         case .sleep:
-            return latestRollup?.sleepPerformance != nil ? "sleep need" : sleepMetric.detail
+            return latestRollup?.sleepPerformance.map { "\($0)% of need" } ?? sleepMetric.detail
         case .strain:
             return strainMetric.detail
         }
