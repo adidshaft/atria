@@ -3664,7 +3664,7 @@ struct AtriaWeeklyReportSheet: View {
                         Label("Share week", systemImage: "square.and.arrow.up")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .atriaCardAction()
                 }
                 .padding(18)
             }
@@ -4407,7 +4407,7 @@ struct AtriaGlanceTargetEditorSheet: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(18)
             .navigationTitle("Target")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -8575,8 +8575,7 @@ private struct AtriaSleepHypnogramCard: View {
                 } label: {
                     Label(wakeAlarmEnabled ? "On" : "Set", systemImage: wakeAlarmEnabled ? "checkmark.circle.fill" : "alarm")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.cyan)
+                .atriaCardAction(tint: .cyan)
             }
 
             Text(alarmStatusText ?? "Phone alarm uses AlarmKit. Smart window can wake early during light or awake sleep; hard wake-by remains the fallback.")

@@ -291,6 +291,12 @@ struct AtriaHealthScreen: View {
 private struct AtriaHealthFitnessAgeCard: View, Equatable {
     let summary: BiologicalAgeSummary
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaHealthFitnessAgeCard, rhs: AtriaHealthFitnessAgeCard) -> Bool {
+        lhs.summary == rhs.summary
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -311,7 +317,9 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                 Spacer(minLength: 8)
 
                 Text(summary.valueText)
-                    .font(.title3.weight(.black).monospacedDigit())
+                    .font(.system(.title3, design: .rounded, weight: .black))
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
                     .foregroundStyle(tint)
             }
 
@@ -411,6 +419,8 @@ private struct AtriaHealthMetricRow: View, Equatable {
     let tint: Color
     var rangeText: String? = nil
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     static func == (lhs: AtriaHealthMetricRow, rhs: AtriaHealthMetricRow) -> Bool {
         lhs.title == rhs.title
             && lhs.value == rhs.value
@@ -434,13 +444,16 @@ private struct AtriaHealthMetricRow: View, Equatable {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                if let rangeText {
-                    Text(rangeText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
+                // Fixed-height slot rendered on every row (even when this
+                // metric has no trusted range yet) so all six rows share
+                // one height and every reference-range line that does
+                // appear lands on the same baseline across rows.
+                Text(rangeText ?? " ")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .opacity(rangeText == nil ? 0 : 1)
             }
 
             Spacer(minLength: 8)
@@ -448,14 +461,16 @@ private struct AtriaHealthMetricRow: View, Equatable {
             Text(value)
                 .font(.headline.weight(.bold))
                 .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText())
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
         }
-        .frame(minHeight: 54)
+        .frame(minHeight: 64)
         .padding(.horizontal, 12)
-        .padding(.vertical, rangeText != nil ? 6 : 0)
+        .padding(.vertical, 8)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: tint)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(rangeText.map { "\(title), \(value), \(detail). \($0)." } ?? "\(title), \(value), \(detail)")
     }

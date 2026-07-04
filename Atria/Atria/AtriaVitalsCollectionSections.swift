@@ -344,6 +344,10 @@ private struct AtriaHealthMonitorCard: View {
     let onOpenDetail: (AtriaMetricDetailKind) -> Void
 
     var body: some View {
+        // Computed once per body eval: `rows` re-sorts the rollup history to
+        // build each vital's sparkline/range, so evaluating it twice (badge +
+        // ForEach) doubled that work on every render for no benefit.
+        let rows = rows
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Health Monitor", subtitle: "Versus your typical range")

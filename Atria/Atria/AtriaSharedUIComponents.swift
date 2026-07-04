@@ -557,7 +557,7 @@ struct AtriaMetricTile: View, Equatable {
                minHeight: tileHeight,
                maxHeight: tileHeight,
                alignment: .leading)
-        .padding(13)
+        .padding(12)
         .atriaInsetCard(tint: tint)
         .modifier(AtriaMetricTileTargetEditorModifier(targetMetric: targetMetric,
                                                       editingTargetMetric: $editingTargetMetric))
