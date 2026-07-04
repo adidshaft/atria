@@ -6,16 +6,20 @@ struct AtriaTriRingMetric: Equatable {
     let value: String
     let detail: String
     let systemImage: String
+    /// Single coherent identity hue for this metric -- paints the ring
+    /// track, the ring fill, the legend-chip icon, the legend-chip value,
+    /// and the matching glance tile. Color-coherence pass (2026-07-05): one
+    /// hue per metric, everywhere, so the ring never disagrees with the
+    /// number underneath it. Zone/state (under/optimal/over) is carried
+    /// separately by `stateTint` below, never by swapping this hue.
     let tint: Color
     let fill: Double?
-    /// Fixed per-metric identity hue (sleep violet / recovery heart-green /
-    /// strain electric blue) -- always-colorful-rings pass (2026-07-05): the
-    /// ring's track and learning-state cap arc paint in this hue so the trio
-    /// reads like Apple Activity even before a real zone-graded `tint` can be
-    /// computed. Nil falls back to `tint` itself, so call sites that predate
-    /// this (AtriaOverviewSections.swift, AtriaCustomizeSheet.swift) keep
-    /// their prior single-tint look unchanged.
-    var identityTint: Color? = nil
+    /// Under/optimal/over ZONE color for the small legend dot and the radial
+    /// target marker only -- never routed to the fill/track hue. Nil means
+    /// "no zone dot" (the identity hue already carries the meaning, e.g.
+    /// recovery, whose hue IS its 0-100 grade, or HRV/RHR, which only have a
+    /// personal-baseline ratio, not a zone).
+    var stateTint: Color? = nil
     /// Fractional position (0...1, same 0-at-top/clockwise scale `fill`
     /// sweeps) of a REAL target/recommendation to notch onto the ring -- e.g.
     /// the coach's recovery-derived strain target, or "sleep need met" at
@@ -196,10 +200,10 @@ struct AtriaTriRing: View, Equatable {
     // each ring inward is exactly `lineWidth + gap` narrower (per side) than
     // the one outside it, so the empty space between any two adjacent rings
     // is identical.
-    private static let outerDiameter: CGFloat = 214
-    private static let lineWidth: CGFloat = 12
-    private static let gap: CGFloat = 10
-    private static let centerContentWidth: CGFloat = 96
+    private static let outerDiameter: CGFloat = 226
+    private static let lineWidth: CGFloat = 19
+    private static let gap: CGFloat = 3
+    private static let centerContentWidth: CGFloat = 104
 
     private static func diameter(at index: Int) -> CGFloat {
         outerDiameter - CGFloat(index) * (lineWidth + gap) * 2
@@ -275,7 +279,7 @@ struct AtriaTriRing: View, Equatable {
             Text(centerValue)
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .minimumScaleFactor(0.58)
+                .minimumScaleFactor(0.80)
                 .lineLimit(1)
                 .contentTransition(reduceMotion ? .identity : .numericText())
             Text(centerState)
@@ -303,16 +307,14 @@ struct AtriaTriRing: View, Equatable {
                             diameter: CGFloat,
                             lineWidth: CGFloat,
                             fill: Double) -> some View {
-        // Always-colorful-rings pass (2026-07-05): the track and the
-        // learning-state cap paint in the metric's fixed IDENTITY hue --
-        // never gray -- so the trio always reads as three distinct rings
-        // (Apple-Activity-style), independent of whether a real zone-graded
-        // `tint` has been computed yet. The fill itself keeps `tint` (the
-        // under/optimal/over zone color) so state still shows.
-        let identity = metric.identityTint ?? metric.tint
+        // Color-coherence pass (2026-07-05): track AND fill both paint in the
+        // metric's single identity hue (`tint`) -- the ring never disagrees
+        // with the chip/tile underneath it. Zone/state (under/optimal/over)
+        // is carried only by `stateTint`, applied to the small legend dot
+        // and the radial target marker, never to the fill hue itself.
         return ZStack {
             Circle()
-                .stroke(identity.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(metric.tint.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
 
             if metric.fill != nil {
                 Circle()
@@ -340,28 +342,31 @@ struct AtriaTriRing: View, Equatable {
                 // never fabricate progress).
                 Circle()
                     .trim(from: 0.06, to: 0.16)
-                    .stroke(identity.opacity(0.5),
+                    .stroke(metric.tint.opacity(0.5),
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
 
             if let targetFraction = metric.targetFraction {
-                targetMarker(diameter: diameter, lineWidth: lineWidth, tint: identity, fraction: targetFraction)
+                targetMarker(diameter: diameter, lineWidth: lineWidth, tint: metric.stateTint ?? metric.tint, fraction: targetFraction)
             }
         }
         .frame(width: diameter, height: diameter)
     }
 
-    /// A small tangential notch marking a REAL target/recommendation on the
+    /// A small RADIAL clock-tick marking a REAL target/recommendation on the
     /// ring (e.g. the coach's recovery-derived strain target, or "sleep need
     /// met"). Positioned at the same angle convention the fill arc above
     /// uses (`-90deg + 360 * fraction`, i.e. 0 at the top, sweeping
     /// clockwise) so it always lines up with where the fill arc's edge would
-    /// sit at that fraction. The identity tint plus a thin contrasting
-    /// border keeps it legible over both the faint track and a bright fill.
+    /// sit at that fraction. The capsule's long axis is rotated to the
+    /// POSITION angle + 90deg so it points along the ring's radius (like a
+    /// clock tick) rather than tangent to the ring. The tint plus a thin
+    /// contrasting border keeps it legible over both the faint track and a
+    /// bright fill.
     private func targetMarker(diameter: CGFloat, lineWidth: CGFloat, tint: Color, fraction: Double) -> some View {
         let clamped = min(max(fraction, 0), 1)
-        let theta = Angle.degrees(-90 + 360 * clamped)
+        let theta = Angle.degrees(-90 + 360 * clamped) // position: 0 at top, CW
         let radius = diameter / 2
         let length = lineWidth + 6
         let width: CGFloat = 3
@@ -369,7 +374,7 @@ struct AtriaTriRing: View, Equatable {
             .fill(tint)
             .overlay(Capsule().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1))
             .frame(width: width, height: length)
-            .rotationEffect(theta)
+            .rotationEffect(theta + .degrees(90)) // radial, not tangential
             .offset(x: radius * cos(theta.radians), y: radius * sin(theta.radians))
             .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 0)
     }
@@ -386,22 +391,26 @@ struct AtriaTriRing: View, Equatable {
                     HStack(spacing: 4) {
                         // Tiny zone-tint dot -- an at-a-glance under/optimal/
                         // over cue that doesn't depend on reading the number.
-                        Circle()
-                            .fill(metric.tint)
-                            .frame(width: 5, height: 5)
+                        // Nil (e.g. recovery, HRV, RHR) omits the dot -- the
+                        // identity hue above already carries the meaning.
+                        if let stateTint = metric.stateTint {
+                            Circle()
+                                .fill(stateTint)
+                                .frame(width: 5, height: 5)
+                        }
                         Text(metric.value)
                             .font(.caption.weight(.bold))
                             .monospacedDigit()
                             .foregroundStyle(metric.tint)
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .lineLimit(1)
-                            .minimumScaleFactor(0.65)
+                            .minimumScaleFactor(0.80)
                     }
                     Text(metric.detail)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.65)
+                        .minimumScaleFactor(0.80)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

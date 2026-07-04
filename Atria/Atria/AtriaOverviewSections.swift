@@ -699,7 +699,7 @@ private struct AtriaAutoSleepLoggedBanner: View {
                     adjustment = banner
                 }
                 .font(.caption.weight(.bold))
-                .buttonStyle(.bordered)
+                .atriaCardAction(prominent: false, tint: .green)
                 .controlSize(.small)
 
                 Button {
@@ -707,9 +707,8 @@ private struct AtriaAutoSleepLoggedBanner: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
-                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .atriaGlassIconAction(tint: .secondary, size: 28)
                 .accessibilityLabel("Dismiss sleep logged banner")
             }
             .padding(14)
@@ -806,8 +805,7 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
                     Text(protectsLiveStream ? "Keep wearing. Atria will sync the gap after recording is safe." : "Pull missed strap data. If Atria finds sleep, review it next.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -5601,7 +5599,6 @@ private struct AtriaLaunchChecklistRow: View {
                 Text(item.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -5837,7 +5834,6 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
                     Text(planHintText)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -5960,15 +5956,17 @@ private struct AtriaDayPlanLane: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack {
+            HStack(alignment: .top) {
                 Label("Day lane", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Text(detailText)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(tint)
-                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             GeometryReader { proxy in
@@ -6113,8 +6111,7 @@ private struct AtriaSleepPlanStrip: View, Equatable {
                               systemImage: wakeAlarmEnabled ? "alarm.fill" : "alarm")
                             .font(.caption2.weight(.bold))
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.cyan)
+                    .atriaCardAction(prominent: false, tint: .cyan)
 
                     Menu {
                         Picker("Wake mode", selection: $wakeAlarmMode) {
@@ -6125,10 +6122,8 @@ private struct AtriaSleepPlanStrip: View, Equatable {
                     } label: {
                         Image(systemName: "chevron.up.chevron.down.circle")
                             .font(.caption.weight(.bold))
-                            .padding(7)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.cyan)
+                    .atriaGlassIconAction(tint: .cyan, size: 30)
                     .onChange(of: wakeAlarmMode) { _, _ in
                         if wakeAlarmEnabled { scheduleWakeAlarm() }
                     }
@@ -9104,7 +9099,6 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                         Text(sleepActionText)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -9703,7 +9697,7 @@ private struct AtriaJournalImpactStrip: View, Equatable {
                     Text(taggedDays > 0 ? "Keep tagging for next-day impact." : "Tags unlock next-day impact.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -10463,7 +10457,6 @@ struct AtriaOverviewCollectionSection: View, Equatable {
                     Text(backupDetail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -10613,7 +10606,6 @@ struct AtriaOverviewBackupSection: View, Equatable {
             Text(stats.backupDetail)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
@@ -10757,8 +10749,6 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
                     Text(item)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.78)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

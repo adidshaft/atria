@@ -954,11 +954,8 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
                     onOpenEducation(topic, row.numericRangeText)
                 } label: {
                     Image(systemName: "info.circle")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .atriaGlassIconAction(tint: .secondary, size: 28)
                 .accessibilityLabel("\(topic.title) meaning and coaching")
             }
         }
@@ -1479,7 +1476,6 @@ private struct AtriaCollectionCaptureCardHost: View {
                 Text(collectionLiveStore.state.captureSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
             } label: {
@@ -1812,8 +1808,6 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
             Text("Early sensor rows show evidence counts, not measurements. Atria shows skin temperature only as a sleep-baseline deviation, never as an absolute body-temperature value.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
-                .minimumScaleFactor(0.78)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
@@ -2086,8 +2080,6 @@ private struct AtriaCollectionIMUAuditCard: View, Equatable {
             Text("Early motion signals stay separate until the strap motion layout is checked.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
@@ -2164,8 +2156,6 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
             Text("Markers stay on device and help compare probe timing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
@@ -3089,12 +3079,10 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             VStack(alignment: .leading, spacing: 8) {
                 Text(hero.guidance.headline)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(hero.loadSignalSummaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -4169,8 +4157,6 @@ private struct AtriaCollectionToggleCard: View {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

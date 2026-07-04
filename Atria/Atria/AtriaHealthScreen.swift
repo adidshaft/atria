@@ -505,7 +505,6 @@ private struct AtriaHealthTimelineProofCard: View, Equatable {
                     Text(rangeText)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

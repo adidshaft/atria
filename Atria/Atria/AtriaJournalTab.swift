@@ -66,8 +66,7 @@ private struct AtriaJournalCycleCard: View {
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.pink)
+            .atriaCardAction(tint: .pink)
         }
     }
 
@@ -113,8 +112,7 @@ private struct AtriaJournalCycleCard: View {
                     Label("Log period", systemImage: "drop.fill")
                         .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .tint(.pink)
+                .atriaCardAction(prominent: false, tint: .pink)
 
                 if store.isPeriodOngoing {
                     Button {
@@ -123,7 +121,7 @@ private struct AtriaJournalCycleCard: View {
                         Label("Ended today", systemImage: "checkmark")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
+                    .atriaCardAction(prominent: false, tint: .secondary)
                 }
 
                 Spacer(minLength: 0)
@@ -289,8 +287,7 @@ private struct AtriaJournalCheckInDeck: View {
                         Label("Same as yesterday", systemImage: "arrow.uturn.backward")
                             .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
+                    .atriaCardAction(prominent: false, tint: .secondary)
                 }
             }
 
@@ -559,8 +556,7 @@ private struct AtriaJournalCheckInDeck: View {
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(answeredYes ? .cyan : .accentColor)
+                .atriaCardAction(tint: answeredYes ? .cyan : .accentColor)
 
                 Button {
                     recordNo(tag: tag, followUp: followUp)
@@ -570,7 +566,7 @@ private struct AtriaJournalCheckInDeck: View {
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .atriaCardAction(prominent: false, tint: .secondary)
             }
 
             if answeredYes, let followUp {
@@ -619,8 +615,7 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 }
                 .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
+                .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
                 if let existing = store.journalAnswers.answer(questionID: question.rawValue, day: Date())?
@@ -645,8 +640,7 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 }
                 .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
+                .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
                 if let existing = store.journalAnswers.answer(questionID: question.rawValue, day: Date())?

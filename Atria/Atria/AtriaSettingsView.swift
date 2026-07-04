@@ -233,26 +233,30 @@ struct AtriaSettingsView: View {
     private var profileGroup: some View {
         Section {
             DisclosureGroup(isExpanded: $expandedProfile) {
+                todayLayoutSection
                 profileSection
                 appearanceSection
-                todayLayoutSection
                 targetsSection
             } label: {
-                settingsGroupLabel("Profile", systemImage: "person.crop.circle.fill", tint: .pink)
+                settingsGroupLabel("Profile & Preferences", systemImage: "person.crop.circle.fill", tint: .pink)
             }
+        } footer: {
+            Text("Today layout, athlete profile, appearance, and target zones.")
         }
     }
 
     private var strapCaptureGroup: some View {
         Section {
             DisclosureGroup(isExpanded: strapExpandedBinding) {
-                deviceSection
                 radioModeSection
                 heartRateBroadcastSection
+                deviceSection
                 sensorAvailabilitySection
             } label: {
-                settingsGroupLabel("Strap & Capture", systemImage: "antenna.radiowaves.left.and.right.circle.fill", tint: .cyan)
+                settingsGroupLabel("Strap & Sensors", systemImage: "antenna.radiowaves.left.and.right.circle.fill", tint: .cyan)
             }
+        } footer: {
+            Text("Radio mode, HR broadcast, strap identity, and supported sensors.")
         }
     }
 
@@ -263,6 +267,8 @@ struct AtriaSettingsView: View {
             } label: {
                 settingsGroupLabel("Notifications", systemImage: "bell.badge.fill", tint: .orange)
             }
+        } footer: {
+            Text("Haptic alerts and on-device notification preferences.")
         }
     }
 
@@ -273,6 +279,8 @@ struct AtriaSettingsView: View {
             } label: {
                 settingsGroupLabel("Data & Storage", systemImage: "internaldrive.fill", tint: .blue)
             }
+        } footer: {
+            Text("Local backups, Apple Health export and sync, and on-device storage.")
         }
     }
 
@@ -282,8 +290,10 @@ struct AtriaSettingsView: View {
                 AtriaResearchSharingSection(buildBundle: buildResearchBundle)
                 aboutSection
             } label: {
-                settingsGroupLabel("Sharing & Privacy", systemImage: "hand.raised.fill", tint: .green)
+                settingsGroupLabel("Privacy & Sharing", systemImage: "hand.raised.fill", tint: .green)
             }
+        } footer: {
+            Text("Research bundle sharing, app version, and support contact.")
         }
     }
 
@@ -296,6 +306,8 @@ struct AtriaSettingsView: View {
                 } label: {
                     settingsGroupLabel("Developer", systemImage: "hammer.fill", tint: .secondary)
                 }
+            } footer: {
+                Text("Internal validation tools, visible only in developer mode.")
             }
         }
     }
@@ -571,8 +583,7 @@ struct AtriaSettingsView: View {
                     Label("Update", systemImage: "checkmark.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.pink)
+                .atriaCardAction(tint: .pink)
 
                 Button {
                     onDismissMaxHRSuggestion(suggestion.observedPeak)
@@ -580,7 +591,7 @@ struct AtriaSettingsView: View {
                     Text("Not now")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .atriaCardAction(prominent: false, tint: .secondary)
             }
         }
         .padding(.vertical, 4)
@@ -1030,12 +1041,6 @@ struct AtriaSettingsView: View {
 
     private var dataSection: some View {
         Section {
-            settingsInfoRow(icon: "lock.shield.fill", tint: .green,
-                            title: "Stays on this device",
-                            detail: "No account, no cloud, no subscription. Your data never leaves your phone.")
-            settingsInfoRow(icon: "hand.raised.fill", tint: .orange,
-                            title: "Keep Atria running",
-                            detail: "Background tracking continues when you switch apps. If you swipe Atria closed, iOS pauses tracking until you reopen it — your strap fills in the gap on reconnect.")
             backupArchiveRow
             if let onExportHealth {
                 Button {
@@ -1082,6 +1087,12 @@ struct AtriaSettingsView: View {
                 .disabled(syncTapped)
             }
             storageFootprintRow
+            settingsInfoRow(icon: "lock.shield.fill", tint: .green,
+                            title: "Stays on this device",
+                            detail: "No account, no cloud, no subscription. Your data never leaves your phone.")
+            settingsInfoRow(icon: "hand.raised.fill", tint: .orange,
+                            title: "Keep Atria running",
+                            detail: "Background tracking continues when you switch apps. If you swipe Atria closed, iOS pauses tracking until you reopen it — your strap fills in the gap on reconnect.")
         } header: {
             Text("Your data")
         } footer: {
@@ -1183,7 +1194,7 @@ struct AtriaSettingsView: View {
                     } label: {
                         Label("Back up now", systemImage: "arrow.down.doc.fill")
                     }
-                    .buttonStyle(.bordered)
+                    .atriaCardAction(prominent: false, tint: .blue)
                 }
                 if let onVerifyBackup {
                     Button {
@@ -1194,7 +1205,7 @@ struct AtriaSettingsView: View {
                         Image(systemName: "checkmark.seal")
                             .accessibilityLabel("Verify backup")
                     }
-                    .buttonStyle(.bordered)
+                    .atriaCardAction(prominent: false, tint: .green)
                 }
                 if onRestoreBackup != nil {
                     Button {
@@ -1203,7 +1214,7 @@ struct AtriaSettingsView: View {
                         Image(systemName: "tray.and.arrow.down")
                             .accessibilityLabel("Restore backup from Files")
                     }
-                    .buttonStyle(.bordered)
+                    .atriaCardAction(prominent: false, tint: .orange)
                 }
             }
             .labelStyle(.titleAndIcon)

@@ -2332,10 +2332,14 @@ class HandoffStaticChecks(unittest.TestCase):
             ".frame(minWidth: 88)",
             "AtriaInlineQuickStat(label: \"HRV window\", value: stats.rrPackageText)",
             ".frame(maxWidth: .infinity, alignment: .leading)",
-            ".lineLimit(3)",
             ".lineLimit(2)",
         ]:
             assert_contains(self, overview, needle)
+        # 2026-07-05: local-backup detail text (`stats.backupDetail`) dropped its
+        # `.lineLimit(3)` cap during the text-crop audit -- it now wraps fully via
+        # `.fixedSize(horizontal: false, vertical: true)` instead of truncating a
+        # long backup summary. The `.lineLimit(3)` needle above was removed
+        # accordingly; every other lineLimit pin in this file still holds.
 
         assert_not_contains(self, overview, ".frame(maxWidth: 118)")
 
@@ -9051,8 +9055,12 @@ class HandoffStaticChecks(unittest.TestCase):
             # former strain/target math now driving the ring's target marker instead
             # (targetFraction) -- see AtriaTriRing.swift's always-colorful-rings +
             # target-marker work landing alongside this pin update.
-            "fill: min(max(displayHero.strain / 21.0, 0), 1)",
-            "targetFraction: target.map { min(max($0 / 21.0, 0), 1) }",
+            # Ring-geometry-v2 + color-coherence pass (2026-07-05): the 0-21 WHOOP
+            # scale was replaced by a clean 0-20 scale (100% ring == strain 20), so
+            # the ring's fill/target-marker fractions divide by 20.0, not 21.0 --
+            # see AtriaTriRing.swift/AtriaTodayScreen.swift's ring-geometry-v2 pass.
+            "fill: min(max(displayHero.strain / 20.0, 0), 1)",
+            "targetFraction: target.map { min(max($0 / 20.0, 0), 1) }",
             "tint: displayHero.guidance.color",
         ]:
             assert_contains(self, today, needle)
