@@ -298,6 +298,7 @@ struct AtriaTriRing: View, Equatable {
                     Text(metric.value)
                         .font(.caption.weight(.bold))
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
                     Text(metric.detail)

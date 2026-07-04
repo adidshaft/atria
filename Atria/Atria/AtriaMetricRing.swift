@@ -78,7 +78,7 @@ struct AtriaMetricRing: View, Equatable {
                 Text(value)
                     .font(.system(size: size * 0.27, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .contentTransition(.numericText())
+                    .contentTransition(reduceMotion ? .identity : .numericText())
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
                     .foregroundStyle(fraction == nil ? Color.secondary : Color.primary)

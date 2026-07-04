@@ -1114,6 +1114,15 @@ private struct AtriaTodayLivePill: View, Equatable {
     let systemImage: String
     let tint: Color
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaTodayLivePill, rhs: AtriaTodayLivePill) -> Bool {
+        lhs.title == rhs.title
+            && lhs.value == rhs.value
+            && lhs.systemImage == rhs.systemImage
+            && lhs.tint == rhs.tint
+    }
+
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
@@ -1126,6 +1135,8 @@ private struct AtriaTodayLivePill: View, Equatable {
                     .foregroundStyle(.secondary)
                 Text(value)
                     .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -1201,6 +1212,14 @@ private struct AtriaStrainTargetCard: View, Equatable {
     let target: Double?
     let tint: Color
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaStrainTargetCard, rhs: AtriaStrainTargetCard) -> Bool {
+        lhs.currentStrain == rhs.currentStrain
+            && lhs.target == rhs.target
+            && lhs.tint == rhs.tint
+    }
+
     private var progress: Double {
         guard let target, target > 0 else { return 0 }
         return min(max(currentStrain / target, 0), 1.2)
@@ -1216,6 +1235,7 @@ private struct AtriaStrainTargetCard: View, Equatable {
                 if let target {
                     Text(String(format: "%.1f / %.1f", currentStrain, target))
                         .font(.caption.weight(.bold).monospacedDigit())
+                        .contentTransition(reduceMotion ? .identity : .numericText())
                         .foregroundStyle(tint)
                 }
             }
@@ -1247,8 +1267,16 @@ private struct AtriaStrainTargetCard: View, Equatable {
             }
         }
         .padding(12)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground),
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            // Same secondary-surface + tint-stroke chrome as the glance
+            // tiles and weekly-plan card it sits beside, instead of the
+            // flatter tertiary card the info rows use -- this is a live
+            // metric widget, not a passive row.
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(target.map { "Strain target. \(String(format: "%.1f of %.1f", currentStrain, $0))." }
                              ?? "Strain target. Target appears once recovery is trusted.")
@@ -1372,6 +1400,12 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
 private struct AtriaTodayGlanceTile: View, Equatable {
     let item: AtriaTodayGlanceItem
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaTodayGlanceTile, rhs: AtriaTodayGlanceTile) -> Bool {
+        lhs.item == rhs.item
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Image(systemName: item.systemImage)
@@ -1380,6 +1414,8 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .frame(width: 24, height: 24)
             Text(item.value)
                 .font(.subheadline.weight(.bold))
+                .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText())
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)

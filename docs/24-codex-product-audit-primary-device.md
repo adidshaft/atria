@@ -7418,3 +7418,26 @@ explicit local-first network-ban exemption), Face-Off page publish (user's
 GitHub), duty-cycle default-ON flip (Gate E), compaction first real run
 (mid-July), Overview advice card (needs accumulated insights), overnight
 validation of tonight's stack.
+
+## 22. Overnight defect fix + premium UI pass (2026-07-05 early)
+
+**DEFECT (live, user wearing strap)**: `warming` for an hour with the link
+connected — strap streaming HR with rrnum=0 (loose contact) drove watchdog
+notify RESETS every 2-6 s (reset thrash), throttling capture to ~10 samples/90 s
+despite 111k raw notifications. FIX: resets paced (30 s min; 10-min backoff
+after 3 consecutive ineffective attempts) — HR-only streams are accepted, not
+reset to death. Proven live: 90 samples/90 s, notify-offs 30→2. Second defect in
+the same console: fit_check burned the whole shared attention budget (6/6),
+silencing the journal check-in + morning summary — now own-capped (2/day, 4 h).
+Commit f8d23dbf.
+
+**Premium UI pass** (3 Sonnet + Opus review, review returned ZERO issues):
+sheet/tile padding normalized to token scale; last two borderedProminent CTAs
+migrated to atriaCardAction; reduce-motion-gated numericText transitions on
+every live numeral (ring center, legend chips, live pills, glance tiles, strain
+target, fitness age); Health rows equalized (fixed-height range slot, aligned
+baselines, eased tint transitions); AtriaHealthMonitorCard double-evaluation of
+its 9-sort rows property fixed; strain-target card re-chromed to sibling
+tokens. Documented leave-alones: Radius.concentric adoption, chip-fill token
+migration (~50 sites), tight-rail bordered buttons — all need visual
+verification, queued for a screenshot-driven pass.
