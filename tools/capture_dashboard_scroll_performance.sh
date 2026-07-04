@@ -4,18 +4,20 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--xctrace-stop-grace 45] [--measured-fps FPS] [--final]
+  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--attach-name NAME] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--xctrace-stop-grace 45] [--auto-scroll] [--bundle-id ID] [--measured-fps FPS] [--measured-fps-source PATH] [--final]
 
-Captures physical-device dashboard scroll evidence without installing, launching,
-or terminating Atria:
+Captures physical-device dashboard scroll evidence without installing Atria. By default
+it attaches to the already-running process; --auto-scroll launches the DEBUG fixture:
   - Combined SwiftUI/Core Animation FPS/Hitches/Time Profiler trace attached to
     the already-running Atria process.
   - Device screen recording covering the scroll window.
 
 During the countdown, put Atria's Today dashboard on screen. During the capture
-window, manually scroll the dashboard continuously. This script exports the
-Core Animation FPS table and uses the measured max FPS. --measured-fps remains
-available only as an explicit override after reading trace/video evidence.
+window, manually scroll the dashboard continuously. Pass --auto-scroll to launch the
+DEBUG dashboard-autoscroll fixture and generate a repeatable on-device scroll workload.
+This script exports the Core Animation FPS table and uses the measured max FPS.
+--measured-fps remains available only as an explicit override after reading trace/video
+evidence; final override runs must also pass --measured-fps-source PATH.
 Final mode requires measured FPS from the trace or override and writes summary.json through
 prepare_accessibility_performance_evidence.py.
 EOF
@@ -27,8 +29,12 @@ app_commit=""
 duration="12"
 countdown="5"
 measured_fps=""
+measured_fps_source=""
 final=0
 xctrace_stop_grace="45"
+attach_name="Atria"
+bundle_id=${ATRIA_BUNDLE_ID:-com.adidshaft.atria}
+auto_scroll=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +45,18 @@ while [[ $# -gt 0 ]]; do
     --pid)
       pid=${2:?--pid requires a value}
       shift 2
+      ;;
+    --attach-name)
+      attach_name=${2:?--attach-name requires a value}
+      shift 2
+      ;;
+    --bundle-id)
+      bundle_id=${2:?--bundle-id requires a value}
+      shift 2
+      ;;
+    --auto-scroll)
+      auto_scroll=1
+      shift
       ;;
     --app-commit)
       app_commit=${2:?--app-commit requires a value}
@@ -54,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --measured-fps)
       measured_fps=${2:?--measured-fps requires a value}
+      shift 2
+      ;;
+    --measured-fps-source)
+      measured_fps_source=${2:?--measured-fps-source requires a value}
       shift 2
       ;;
     --final)
@@ -81,6 +103,16 @@ if [[ -z "$device_id" ]]; then
   usage >&2
   exit 64
 fi
+if [[ "$final" -eq 1 && -n "$measured_fps" ]]; then
+  if [[ -z "$measured_fps_source" ]]; then
+    printf 'Final measured FPS override requires --measured-fps-source PATH.\n' >&2
+    exit 64
+  fi
+  if [[ ! -e "$measured_fps_source" ]]; then
+    printf 'Final measured FPS source does not exist: %s\n' "$measured_fps_source" >&2
+    exit 64
+  fi
+fi
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence_root="$repo_root/docs/evidence/accessibility-performance/dashboard-scroll-${stamp}"
@@ -93,6 +125,20 @@ xctrace_device_id=$(
 )
 if [[ -z "$xctrace_device_id" ]]; then
   xctrace_device_id="$device_id"
+fi
+
+if [[ "$auto_scroll" -eq 1 ]]; then
+  xcrun devicectl device process launch \
+    --device "$device_id" \
+    --terminate-existing \
+    --environment-variables '{"ATRIA_UI_SCREEN":"today","ATRIA_UI_FIXTURE":"dashboard-autoscroll","ATRIA_DASHBOARD_AUTOSCROLL":"1"}' \
+    "$bundle_id" \
+    --atria-ui-screen today \
+    --atria-ui-fixture dashboard-autoscroll >"$log_root/autoscroll-launch.log" 2>&1 || {
+      printf 'Failed to launch dashboard-autoscroll fixture. See %s\n' "$log_root/autoscroll-launch.log" >&2
+      exit 65
+    }
+  sleep 3
 fi
 
 if [[ -z "$pid" ]]; then
@@ -119,12 +165,18 @@ if [[ "$xctrace_stop_grace_int" -lt 5 ]]; then
 fi
 existing_xctrace=$(
   ps -axo pid=,command= |
-    awk '/xctrace record/ && $1 != "'"$$"'" { print $1 ":" substr($0, index($0,$2)); exit }'
+    awk '/xctrace record/ && $1 != "'"$$"'" && $0 !~ /awk .*xctrace record/ { print $1 ":" substr($0, index($0,$2)); exit }'
 )
 if [[ -n "$existing_xctrace" ]]; then
   printf 'Another xctrace record process is already running: %s\n' "$existing_xctrace" >&2
   printf 'Stop stale Instruments captures before starting dashboard scroll proof.\n' >&2
   exit 67
+fi
+
+if [[ "$auto_scroll" -eq 1 ]]; then
+  interaction_text="DEBUG dashboard-autoscroll fixture; manual scrolling not required."
+else
+  interaction_text="manual continuous Today dashboard scroll during capture window"
 fi
 
 wait_with_timeout() {
@@ -155,10 +207,12 @@ cat > "$evidence_root/README.md" <<EOF
 - Captured at: ${stamp}
 - Device: ${device_id}
 - Atria PID: ${pid}
+- xctrace fallback attach name: ${attach_name:-disabled}
 - Duration seconds: ${duration_int}
 - xctrace stop grace seconds: ${xctrace_stop_grace_int}
+- Auto-scroll fixture: ${auto_scroll}
 - App commit: ${app_commit:-pending}
-- Interaction: manual continuous Today dashboard scroll during capture window
+- Interaction: ${interaction_text}
 
 Artifacts:
 - \`dashboard-scroll.trace\`
@@ -195,6 +249,29 @@ if ! wait_with_timeout "$xctrace_pid" "$((duration_int + xctrace_stop_grace_int)
   if [[ -e "$evidence_root/dashboard-scroll.trace" ]]; then
     printf 'xctrace reported run issues but saved the trace; continuing. See %s\n' "$log_root/xctrace.log"
     printf '\nxctrace reported run issues while stopping, but dashboard-scroll.trace was saved.\n' >> "$evidence_root/README.md"
+  elif [[ -n "$attach_name" ]] && grep -q "Cannot find process for provided pid" "$log_root/xctrace.log"; then
+    printf 'xctrace could not resolve CoreDevice pid %s; retrying attach by process name %s.\n' "$pid" "$attach_name"
+    printf '\nPID attach failed; retried xctrace with --attach %s. See xctrace-name-attach.log.\n' "$attach_name" >> "$evidence_root/README.md"
+    xcrun xctrace record \
+      --template 'SwiftUI' \
+      --instrument 'Core Animation FPS' \
+      --instrument 'Hitches' \
+      --instrument 'Time Profiler' \
+      --device "$xctrace_device_id" \
+      --attach "$attach_name" \
+      --time-limit "${duration_int}s" \
+      --output "$evidence_root/dashboard-scroll.trace" \
+      --no-prompt >"$log_root/xctrace-name-attach.log" 2>&1 &
+    xctrace_name_pid=$!
+    if ! wait_with_timeout "$xctrace_name_pid" "$((duration_int + xctrace_stop_grace_int))" "xctrace name attach"; then
+      if [[ -e "$evidence_root/dashboard-scroll.trace" ]]; then
+        printf 'xctrace name attach reported run issues but saved the trace; continuing. See %s\n' "$log_root/xctrace-name-attach.log"
+        printf '\nxctrace name attach reported run issues while stopping, but dashboard-scroll.trace was saved.\n' >> "$evidence_root/README.md"
+      else
+        printf 'xctrace failed by pid and by name without saving dashboard-scroll.trace. See %s and %s\n' "$log_root/xctrace.log" "$log_root/xctrace-name-attach.log" >&2
+        exit 66
+      fi
+    fi
   else
     printf 'xctrace failed and did not save dashboard-scroll.trace. See %s\n' "$log_root/xctrace.log" >&2
     exit 66
@@ -205,11 +282,16 @@ if ! wait "$recording_pid"; then
   printf '\nScreen recording unavailable on this CoreDevice path; Instruments trace remains the required artifact.\n' >> "$evidence_root/README.md"
 fi
 
-xcrun xctrace export --input "$evidence_root/dashboard-scroll.trace" --toc --output "$evidence_root/dashboard-scroll.trace.toc.xml" >/dev/null || true
+xcrun xctrace export \
+  --input "$evidence_root/dashboard-scroll.trace" \
+  --toc \
+  --output "$evidence_root/dashboard-scroll.trace.toc.xml" \
+  >"$log_root/xctrace-export-toc.log" 2>&1 || true
 xcrun xctrace export \
   --input "$evidence_root/dashboard-scroll.trace" \
   --xpath '/trace-toc/run[@number="1"]/data/table[@schema="core-animation-fps-estimate"]' \
-  --output "$evidence_root/dashboard-scroll.fps.xml" >/dev/null || true
+  --output "$evidence_root/dashboard-scroll.fps.xml" \
+  >"$log_root/xctrace-export-fps.log" 2>&1 || true
 
 extracted_fps=""
 if [[ -s "$evidence_root/dashboard-scroll.fps.xml" ]]; then
@@ -242,8 +324,9 @@ if not values:
 else:
     fps_max = max(values)
     fps_mean = statistics.mean(values)
+    status = "zero" if fps_max <= 0 else "ok"
     out_path.write_text(
-        "fps_status=ok\n"
+        f"fps_status={status}\n"
         + "fps_values=" + ",".join(f"{value:g}" for value in values) + "\n"
         + f"fps_max={fps_max:g}\n"
         + f"fps_mean={fps_mean:.2f}\n",
@@ -255,6 +338,9 @@ PY
 fi
 if [[ -n "$extracted_fps" ]]; then
   printf '\nExtracted Core Animation FPS max: %s\n' "$extracted_fps" >> "$evidence_root/README.md"
+  if [[ "$extracted_fps" == "0" || "$extracted_fps" == "0.0" || "$extracted_fps" == "0.00" ]]; then
+    printf 'FPS table exported, but all rows were zero; this is not accepted VIS-1 scroll evidence.\n' >> "$evidence_root/README.md"
+  fi
 fi
 
 if [[ -s "$evidence_root/screen-recording.mp4" ]] && command -v ffprobe >/dev/null 2>&1; then
@@ -285,9 +371,27 @@ fps_for_summary="${measured_fps:-$extracted_fps}"
 if [[ -n "$fps_for_summary" ]]; then
   prepare_args+=(--dashboard-scroll-fps "$fps_for_summary")
 fi
+if [[ "$final" -eq 1 && -n "$measured_fps" ]]; then
+  measured_fps_source_copy="$evidence_root/measured-fps-source$(basename "$measured_fps_source" | sed 's/^[^.]*//')"
+  cp "$measured_fps_source" "$measured_fps_source_copy"
+  printf '\nMeasured FPS override source: %s\n' "$measured_fps_source" >> "$evidence_root/README.md"
+  printf 'Measured FPS override source copy: %s\n' "$measured_fps_source_copy" >> "$evidence_root/README.md"
+fi
 if [[ "$final" -eq 1 && -z "$fps_for_summary" ]]; then
   printf 'Final mode requires measured FPS from the xctrace FPS table or --measured-fps override.\n' >&2
   exit 64
+fi
+if [[ "$final" -eq 1 && -n "$fps_for_summary" ]]; then
+  if ! python3 - "$fps_for_summary" <<'PY'
+import sys
+value = float(sys.argv[1])
+if value < 58:
+    raise SystemExit(1)
+PY
+  then
+    printf 'Final mode requires measured FPS >= 58; got %s.\n' "$fps_for_summary" >&2
+    exit 64
+  fi
 fi
 if [[ "$final" -eq 1 ]]; then
   prepare_args+=(--final)

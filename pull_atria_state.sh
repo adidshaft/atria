@@ -4,6 +4,7 @@ set -euo pipefail
 device_id=${ATRIA_DEVICE_ID:-${WHOOP_DEVICE_ID:-}}
 bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 evidence_dir=""
+devicectl_cmd=()
 
 usage() {
   cat <<'EOF'
@@ -16,9 +17,13 @@ running BLE session matters.
 
 Pulled files, when present:
   - sessions.json
+  - daily-rollups.json
   - atria-active-session.json
   - atria-active-session.segments/
   - historical-archive.jsonl
+  - historical-archive.diagnostics.json
+  - historical-archive.manifest.json
+  - historical-archive-segments/
   - app preferences plist
   - process-check.txt
   - pull-summary.txt
@@ -61,6 +66,19 @@ if [[ -z "$evidence_dir" ]]; then
   exit 2
 fi
 
+if [[ -n "${ATRIA_DEVICETCL:-}" ]]; then
+  devicectl_cmd=("$ATRIA_DEVICETCL")
+elif xcrun --find devicectl >/dev/null 2>&1; then
+  devicectl_cmd=(xcrun devicectl)
+elif command -v devicectl >/dev/null 2>&1; then
+  devicectl_cmd=(devicectl)
+elif [[ -x /Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl ]]; then
+  devicectl_cmd=(/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl)
+else
+  printf 'Unable to find devicectl via xcrun, PATH, or CoreDevice framework fallback.\n' >&2
+  exit 69
+fi
+
 mkdir -p "$evidence_dir"
 summary="$evidence_dir/pull-summary.txt"
 : > "$summary"
@@ -70,7 +88,7 @@ copy_from_container() {
   local destination_path=$2
   local label=$3
 
-  if xcrun devicectl device copy from \
+  if "${devicectl_cmd[@]}" device copy from \
     --device "$device_id" \
     --domain-type appDataContainer \
     --domain-identifier "$bundle_id" \
@@ -93,7 +111,7 @@ copy_first_from_container() {
 
   local source_path
   for source_path in "$@"; do
-    if xcrun devicectl device copy from \
+    if "${devicectl_cmd[@]}" device copy from \
       --device "$device_id" \
       --domain-type appDataContainer \
       --domain-identifier "$bundle_id" \
@@ -115,7 +133,7 @@ printf 'device_id=%s\n' "$device_id" | tee -a "$summary"
 printf 'bundle_id=%s\n' "$bundle_id" | tee -a "$summary"
 printf 'evidence_dir=%s\n' "$evidence_dir" | tee -a "$summary"
 
-if xcrun devicectl device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
+if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
   whoop_widget_pattern='/Whoop\.app/PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension)'
   if grep -E "Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
     printf 'process_status=running\n' | tee -a "$summary"
@@ -161,8 +179,10 @@ else
 fi
 
 copy_from_container "Documents/sessions.json" "$evidence_dir/sessions.json" "sessions" || true
+copy_from_container "Documents/sessions-cold.json" "$evidence_dir/sessions-cold.json" "sessions_cold" || true
+copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
 
-if xcrun devicectl device copy from \
+if "${devicectl_cmd[@]}" device copy from \
   --device "$device_id" \
   --domain-type appDataContainer \
   --domain-identifier "$bundle_id" \
@@ -186,6 +206,15 @@ fi
 copy_first_from_container "$evidence_dir/historical-archive.jsonl" "historical_archive" \
   "Documents/atria-historical/historical-archive.jsonl" \
   "Documents/whoop-historical/historical-archive.jsonl" || true
+copy_from_container "Documents/atria-historical/historical-archive.diagnostics.json" \
+  "$evidence_dir/historical-archive.diagnostics.json" \
+  "historical_archive_index" || true
+copy_from_container "Documents/atria-historical/historical-archive.manifest.json" \
+  "$evidence_dir/historical-archive.manifest.json" \
+  "historical_archive_manifest" || true
+copy_from_container "Documents/atria-historical/segments" \
+  "$evidence_dir/historical-archive-segments" \
+  "historical_archive_segments" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
 python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
@@ -201,6 +230,63 @@ from pathlib import Path
 evidence = Path(sys.argv[1])
 apple_epoch = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 ist = dt.timezone(dt.timedelta(hours=5, minutes=30), "IST")
+
+def emit_historical_archive_index_summary():
+    path = evidence / "historical-archive.diagnostics.json"
+    if not path.exists():
+        print("historical_archive_index_summary_status=missing")
+        return
+    try:
+        index = json.loads(path.read_text())
+    except Exception as exc:
+        print(f"historical_archive_index_summary_status=error:{type(exc).__name__}:{exc}")
+        return
+    print("historical_archive_index_summary_status=ok")
+    print(f"historical_archive_index_rows={int(index.get('rows') or 0)}")
+    print(f"historical_archive_index_file_size={int(index.get('fileSize') or 0)}")
+    print(f"historical_archive_index_metric_usable_rows={int(index.get('metricUsableRows') or 0)}")
+    print(f"historical_archive_index_current_session_usable_rows={int(index.get('currentSessionUsableRows') or 0)}")
+    print(f"historical_archive_index_gravity_validated_rows={int(index.get('gravityValidatedRows') or 0)}")
+
+def emit_historical_archive_rotation_summary():
+    manifest_path = evidence / "historical-archive.manifest.json"
+    segments_path = evidence / "historical-archive-segments"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            print("historical_archive_manifest_summary_status=ok")
+            print(f"historical_archive_active_segment={manifest.get('activeSegmentRelativePath') or 'missing'}")
+            print(f"historical_archive_rotation_threshold_bytes={int(manifest.get('rotationThresholdBytes') or 0)}")
+        except Exception as exc:
+            print(f"historical_archive_manifest_summary_status=error:{type(exc).__name__}:{exc}")
+    else:
+        print("historical_archive_manifest_summary_status=missing")
+
+    segment_files = sorted(segments_path.glob("*.jsonl")) if segments_path.exists() else []
+    print(f"historical_archive_segment_files={len(segment_files)}")
+    total_bytes = 0
+    total_rows = 0
+    active_rows = 0
+    for path in segment_files:
+        try:
+            total_bytes += path.stat().st_size
+            rows = sum(1 for line in path.open("r", encoding="utf-8", errors="replace") if line.strip())
+            total_rows += rows
+            if manifest_path.exists() and str(path.name) in (manifest_path.read_text(errors="replace")):
+                active_rows = rows
+        except Exception:
+            continue
+    print(f"historical_archive_segment_bytes={total_bytes}")
+    print(f"historical_archive_segment_rows={total_rows}")
+    print(f"historical_archive_active_segment_rows={active_rows}")
+    base_index_rows = 0
+    index_path = evidence / "historical-archive.diagnostics.json"
+    if index_path.exists():
+        try:
+            base_index_rows = int(json.loads(index_path.read_text()).get("rows") or 0)
+        except Exception:
+            base_index_rows = 0
+    print(f"historical_archive_aggregate_index_rows={base_index_rows + total_rows}")
 
 def app_time(value):
     if isinstance(value, (int, float)):
@@ -304,8 +390,434 @@ def emit_battery_preferences():
     print(f"battery_drop_delta={drop_delta}")
     print(f"battery_drop_age_s={drop_age:.1f}")
 
+def emit_hr_broadcast_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"hr_broadcast_summary_error={type(exc).__name__}:{exc}")
+        return
+    print(f"hr_broadcast_debug_status={pref(prefs, 'debug.hrBroadcast.status', 'missing') or 'missing'}")
+    print(f"hr_broadcast_debug_sent_count={int(pref(prefs, 'debug.hrBroadcast.sentCount', 0) or 0)}")
+    print(f"hr_broadcast_debug_last_bpm={int(pref(prefs, 'debug.hrBroadcast.lastBPM', 0) or 0)}")
+    print(f"hr_broadcast_debug_reason={pref(prefs, 'debug.hrBroadcast.reason', 'missing') or 'missing'}")
+    print("hr_broadcast_debug_interpretation=phone_ble_peripheral_broadcast_not_strap_connection")
+
+def emit_ble_link_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"ble_link_summary_error={type(exc).__name__}:{exc}")
+        return
+    print(f"ble_link_namespace={pref_namespace(prefs, 'link.lastStatus')}")
+    print(f"ble_link_attempts={int(pref(prefs, 'link.attempts', 0) or 0)}")
+    print(f"ble_link_disconnects={int(pref(prefs, 'link.disconnects', 0) or 0)}")
+    print(f"ble_link_successes={int(pref(prefs, 'link.successes', 0) or 0)}")
+    print(f"ble_link_failures={int(pref(prefs, 'link.failures', 0) or 0)}")
+    print(f"ble_link_last_status={pref(prefs, 'link.lastStatus', 'missing') or 'missing'}")
+    print(f"ble_link_last_reason={pref(prefs, 'link.lastReason', 'missing') or 'missing'}")
+    print(f"ble_link_last_error={pref(prefs, 'link.lastError', 'missing') or 'missing'}")
+    saved_uuid = pref(prefs, "link.savedPeripheralUUID", "missing") or "missing"
+    print(f"ble_link_saved_peripheral_present={bool_int(saved_uuid != 'missing')}")
+    print(f"ble_link_saved_peripheral_uuid={saved_uuid}")
+
+def emit_watchdog_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"watchdog_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    hr_at = pref(prefs, "hrContinuity.at")
+    rr_at = pref(prefs, "rrPresence.at")
+    watchdog_at = pref(prefs, "watchdog.lastAt")
+    hr_age = max(0.0, now - float(hr_at)) if isinstance(hr_at, (int, float)) and hr_at > 0 else -1.0
+    rr_age = max(0.0, now - float(rr_at)) if isinstance(rr_at, (int, float)) and rr_at > 0 else -1.0
+    watchdog_age = max(0.0, now - float(watchdog_at)) if isinstance(watchdog_at, (int, float)) and watchdog_at > 0 else -1.0
+    print(f"hr_continuity_status={pref(prefs, 'hrContinuity.status', 'missing') or 'missing'}")
+    print(f"hr_continuity_action={pref(prefs, 'hrContinuity.action', 'missing') or 'missing'}")
+    print(f"hr_continuity_raw_gap_s={float(pref(prefs, 'hrContinuity.rawGap', -1) or -1):.1f}")
+    print(f"hr_continuity_accepted_gap_s={float(pref(prefs, 'hrContinuity.acceptedGap', -1) or -1):.1f}")
+    print(f"hr_continuity_timeout_s={float(pref(prefs, 'hrContinuity.timeout', -1) or -1):.1f}")
+    print(f"hr_continuity_samples={int(pref(prefs, 'hrContinuity.samples', 0) or 0)}")
+    print(f"hr_continuity_notifying={pref(prefs, 'hrContinuity.notifying', 'missing')}")
+    print(f"hr_continuity_age_s={hr_age:.1f}")
+    print(f"rr_presence_status={pref(prefs, 'rrPresence.status', 'missing') or 'missing'}")
+    print(f"rr_presence_action={pref(prefs, 'rrPresence.action', 'missing') or 'missing'}")
+    print(f"rr_presence_rr_gap_s={float(pref(prefs, 'rrPresence.rrGap', -1) or -1):.1f}")
+    print(f"rr_presence_accepted_gap_s={float(pref(prefs, 'rrPresence.acceptedGap', -1) or -1):.1f}")
+    print(f"rr_presence_timeout_s={float(pref(prefs, 'rrPresence.timeout', -1) or -1):.1f}")
+    print(f"rr_presence_samples={int(pref(prefs, 'rrPresence.samples', 0) or 0)}")
+    print(f"rr_presence_rr_values={int(pref(prefs, 'rrPresence.rrValues', 0) or 0)}")
+    print(f"rr_presence_consecutive={int(pref(prefs, 'rrPresence.consecutive', 0) or 0)}")
+    print(f"rr_presence_age_s={rr_age:.1f}")
+    print(f"watchdog_no_data_count={int(pref(prefs, 'watchdog.noDataCount', 0) or 0)}")
+    print(f"watchdog_hr_continuity_count={int(pref(prefs, 'watchdog.hrContinuityCount', 0) or 0)}")
+    print(f"watchdog_accepted_hr_count={int(pref(prefs, 'watchdog.acceptedHRCount', 0) or 0)}")
+    print(f"watchdog_rr_presence_count={int(pref(prefs, 'watchdog.rrPresenceCount', 0) or 0)}")
+    print(f"watchdog_last_status={pref(prefs, 'watchdog.lastStatus', 'missing') or 'missing'}")
+    print(f"watchdog_last_source={pref(prefs, 'watchdog.lastSource', 'missing') or 'missing'}")
+    print(f"watchdog_last_action={pref(prefs, 'watchdog.lastAction', 'missing') or 'missing'}")
+    print(f"watchdog_last_raw_gap_s={float(pref(prefs, 'watchdog.lastRawGap', -1) or -1):.1f}")
+    print(f"watchdog_last_accepted_gap_s={float(pref(prefs, 'watchdog.lastAcceptedGap', -1) or -1):.1f}")
+    print(f"watchdog_last_samples={int(pref(prefs, 'watchdog.lastSamples', 0) or 0)}")
+    print(f"watchdog_last_checkpoint={pref(prefs, 'watchdog.lastCheckpoint', 'missing') or 'missing'}")
+    print(f"watchdog_last_age_s={watchdog_age:.1f}")
+
+def emit_sample_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"sample_summary_error={type(exc).__name__}:{exc}")
+        return
+    print(f"sample_raw_notifications={int(pref(prefs, 'sample.rawNotifications', 0) or 0)}")
+    print(f"sample_accepted_samples={int(pref(prefs, 'sample.acceptedSamples', 0) or 0)}")
+    print(f"sample_zero_samples={int(pref(prefs, 'sample.zeroSamples', 0) or 0)}")
+    print(f"sample_held_artifacts={int(pref(prefs, 'sample.heldArtifacts', 0) or 0)}")
+    print(f"sample_dropped_artifacts={int(pref(prefs, 'sample.droppedArtifacts', 0) or 0)}")
+    print(f"sample_raw_gaps={int(pref(prefs, 'sample.rawGaps', 0) or 0)}")
+    print(f"sample_accepted_gaps={int(pref(prefs, 'sample.acceptedGaps', 0) or 0)}")
+    print(f"sample_max_raw_gap_s={float(pref(prefs, 'sample.maxRawGap', 0) or 0):.1f}")
+    print(f"sample_max_accepted_gap_s={float(pref(prefs, 'sample.maxAcceptedGap', 0) or 0):.1f}")
+    print(f"sample_last_status={pref(prefs, 'sample.lastStatus', 'missing') or 'missing'}")
+    print(f"sample_last_reason={pref(prefs, 'sample.lastReason', 'missing') or 'missing'}")
+    last_raw_at = pref(prefs, "sample.lastRawNotificationAt")
+    last_raw_age = max(0.0, time.time() - float(last_raw_at)) if isinstance(last_raw_at, (int, float)) and last_raw_at > 0 else -1.0
+    print(f"sample_last_raw_notification_age_s={last_raw_age:.1f}")
+
+def emit_keepalive_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"keepalive_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    armed_at = pref(prefs, "keepalive.armedAt")
+    tick_started_at = pref(prefs, "keepalive.tickStartedAt")
+    tick_at = pref(prefs, "keepalive.lastTickAt")
+    timer_started_at = pref(prefs, "keepalive.timerStartedAt")
+    timer_fired_at = pref(prefs, "keepalive.timerFiredAt")
+    dispatch_timer_started_at = pref(prefs, "keepalive.dispatchTimerStartedAt")
+    dispatch_timer_fired_at = pref(prefs, "keepalive.dispatchTimerFiredAt")
+    sample_check_at = pref(prefs, "keepalive.lastSampleCheckAt")
+    armed_age = max(0.0, now - float(armed_at)) if isinstance(armed_at, (int, float)) and armed_at > 0 else -1.0
+    tick_started_age = max(0.0, now - float(tick_started_at)) if isinstance(tick_started_at, (int, float)) and tick_started_at > 0 else -1.0
+    tick_age = max(0.0, now - float(tick_at)) if isinstance(tick_at, (int, float)) and tick_at > 0 else -1.0
+    timer_started_age = max(0.0, now - float(timer_started_at)) if isinstance(timer_started_at, (int, float)) and timer_started_at > 0 else -1.0
+    timer_fired_age = max(0.0, now - float(timer_fired_at)) if isinstance(timer_fired_at, (int, float)) and timer_fired_at > 0 else -1.0
+    dispatch_timer_started_age = max(0.0, now - float(dispatch_timer_started_at)) if isinstance(dispatch_timer_started_at, (int, float)) and dispatch_timer_started_at > 0 else -1.0
+    dispatch_timer_fired_age = max(0.0, now - float(dispatch_timer_fired_at)) if isinstance(dispatch_timer_fired_at, (int, float)) and dispatch_timer_fired_at > 0 else -1.0
+    sample_check_age = max(0.0, now - float(sample_check_at)) if isinstance(sample_check_at, (int, float)) and sample_check_at > 0 else -1.0
+    print(f"keepalive_namespace={pref_namespace(prefs, 'keepalive.lastStatus')}")
+    print(f"keepalive_armed={bool_int(pref(prefs, 'keepalive.armed'))}")
+    print(f"keepalive_last_status={pref(prefs, 'keepalive.lastStatus', 'missing') or 'missing'}")
+    print(f"keepalive_last_reason={pref(prefs, 'keepalive.lastReason', 'missing') or 'missing'}")
+    print(f"keepalive_last_action={pref(prefs, 'keepalive.lastAction', 'missing') or 'missing'}")
+    print(f"keepalive_last_silence_s={float(pref(prefs, 'keepalive.lastSilence', -1) or -1):.1f}")
+    print(f"keepalive_last_peripheral_state={int(pref(prefs, 'keepalive.lastPeripheralState', -1) or -1)}")
+    print(f"keepalive_ticks={int(pref(prefs, 'keepalive.ticks', 0) or 0)}")
+    print(f"keepalive_armed_age_s={armed_age:.1f}")
+    print(f"keepalive_tick_started_age_s={tick_started_age:.1f}")
+    print(f"keepalive_last_tick_age_s={tick_age:.1f}")
+    print(f"keepalive_timer_started_age_s={timer_started_age:.1f}")
+    print(f"keepalive_timer_fired_age_s={timer_fired_age:.1f}")
+    print(f"keepalive_dispatch_timer_started_age_s={dispatch_timer_started_age:.1f}")
+    print(f"keepalive_dispatch_timer_fired_age_s={dispatch_timer_fired_age:.1f}")
+    print(f"keepalive_last_raw_notifications={int(pref(prefs, 'keepalive.lastRawNotifications', -1) or -1)}")
+    print(f"keepalive_last_raw_notification_delta={int(pref(prefs, 'keepalive.lastRawNotificationDelta', -1) or -1)}")
+    print(f"keepalive_last_sample_check_age_s={sample_check_age:.1f}")
+    print(f"keepalive_stall_reconnects={int(pref(prefs, 'keepalive.stallReconnects', 0) or 0)}")
+    stall_at = pref(prefs, "keepalive.lastStallReconnectAt")
+    stall_age = max(0.0, now - float(stall_at)) if isinstance(stall_at, (int, float)) and stall_at > 0 else -1.0
+    print(f"keepalive_last_stall_reconnect_age_s={stall_age:.1f}")
+    read_poll_at = pref(prefs, "keepalive.lastReadPollAt")
+    read_poll_age = max(0.0, now - float(read_poll_at)) if isinstance(read_poll_at, (int, float)) and read_poll_at > 0 else -1.0
+    print(f"keepalive_last_read_poll_age_s={read_poll_age:.1f}")
+    read_poll_result_at = pref(prefs, "keepalive.lastReadPollResultAt")
+    read_poll_result_age = max(0.0, now - float(read_poll_result_at)) if isinstance(read_poll_result_at, (int, float)) and read_poll_result_at > 0 else -1.0
+    print(f"keepalive_last_read_poll_result_age_s={read_poll_result_age:.1f}")
+    print(f"keepalive_last_read_poll_result_status={pref(prefs, 'keepalive.lastReadPollResultStatus', 'missing') or 'missing'}")
+    print(f"keepalive_last_read_poll_result_bpm={int(pref(prefs, 'keepalive.lastReadPollResultBPM', -1) or -1)}")
+    print(f"keepalive_last_read_poll_result_rr_values={int(pref(prefs, 'keepalive.lastReadPollResultRRValues', -1) or -1)}")
+
+def emit_strap_stream_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"strap_stream_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    updated_at = pref(prefs, "strapStream.updatedAt")
+    suppressed_at = pref(prefs, "strapStream.lowBatteryReconnectSuppressedAt")
+    rearmed_at = pref(prefs, "strapStream.lowBatteryReconnectRearmedAt")
+    updated_age = max(0.0, now - float(updated_at)) if isinstance(updated_at, (int, float)) and updated_at > 0 else -1.0
+    suppressed_age = max(0.0, now - float(suppressed_at)) if isinstance(suppressed_at, (int, float)) and suppressed_at > 0 else -1.0
+    rearmed_age = max(0.0, now - float(rearmed_at)) if isinstance(rearmed_at, (int, float)) and rearmed_at > 0 else -1.0
+    print(f"strap_stream_namespace={pref_namespace(prefs, 'strapStream.state')}")
+    print(f"strap_stream_state={pref(prefs, 'strapStream.state', 'missing') or 'missing'}")
+    print(f"strap_stream_reason={pref(prefs, 'strapStream.reason', 'missing') or 'missing'}")
+    print(f"strap_stream_packet_age_s={float(pref(prefs, 'strapStream.packetAge', -1) or -1):.1f}")
+    print(f"strap_stream_battery_level={int(pref(prefs, 'strapStream.batteryLevel', -1) or -1)}")
+    print(f"strap_stream_notifying={bool_int(pref(prefs, 'strapStream.notifying'))}")
+    print(f"strap_stream_gatt_reads_ok={bool_int(pref(prefs, 'strapStream.gattReadsOK'))}")
+    print(f"strap_stream_updated_age_s={updated_age:.1f}")
+    print(f"strap_stream_low_battery_reconnect_suppressed={bool_int(pref(prefs, 'strapStream.lowBatteryReconnectSuppressed'))}")
+    print(f"strap_stream_low_battery_reconnect_suppressed_age_s={suppressed_age:.1f}")
+    print(f"strap_stream_low_battery_reconnect_suppression_reason={pref(prefs, 'strapStream.lowBatteryReconnectSuppressionReason', 'missing') or 'missing'}")
+    print(f"strap_stream_low_battery_reconnect_suppression_count={int(pref(prefs, 'strapStream.lowBatteryReconnectSuppressionCount', 0) or 0)}")
+    print(f"strap_stream_low_battery_reconnect_rearmed_age_s={rearmed_age:.1f}")
+    print(f"strap_stream_accessibility_label={pref(prefs, 'strapStream.accessibilityLabel', 'missing') or 'missing'}")
+
+def emit_notification_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"notification_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    cleared_at = pref(prefs, "notification.battery.drainCycleClearedAt")
+    cleared_age = max(0.0, now - float(cleared_at)) if isinstance(cleared_at, (int, float)) and cleared_at > 0 else -1.0
+    print(f"notification_namespace={pref_namespace(prefs, 'notification.battery.warningDrainCycleScheduled')}")
+    print(f"notification_battery_warning_drain_cycle_scheduled={bool_int(pref(prefs, 'notification.battery.warningDrainCycleScheduled'))}")
+    print(f"notification_battery_shutoff_drain_cycle_scheduled={bool_int(pref(prefs, 'notification.battery.shutoffDrainCycleScheduled'))}")
+    print(f"notification_battery_drain_cycle_cleared_age_s={cleared_age:.1f}")
+
+def emit_scene_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"scene_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    updated_at = pref(prefs, "scene.updatedAt")
+    active_at = pref(prefs, "scene.lastActiveAt")
+    inactive_at = pref(prefs, "scene.lastInactiveAt")
+    background_at = pref(prefs, "scene.lastBackgroundAt")
+    fast_launch_at = pref(prefs, "scene.fastLaunchAt")
+    did_become_active_at = pref(prefs, "scene.lastDidBecomeActiveAt")
+    will_enter_foreground_at = pref(prefs, "scene.lastWillEnterForegroundAt")
+    updated_age = max(0.0, now - float(updated_at)) if isinstance(updated_at, (int, float)) and updated_at > 0 else -1.0
+    active_age = max(0.0, now - float(active_at)) if isinstance(active_at, (int, float)) and active_at > 0 else -1.0
+    inactive_age = max(0.0, now - float(inactive_at)) if isinstance(inactive_at, (int, float)) and inactive_at > 0 else -1.0
+    background_age = max(0.0, now - float(background_at)) if isinstance(background_at, (int, float)) and background_at > 0 else -1.0
+    fast_launch_age = max(0.0, now - float(fast_launch_at)) if isinstance(fast_launch_at, (int, float)) and fast_launch_at > 0 else -1.0
+    did_become_active_age = max(0.0, now - float(did_become_active_at)) if isinstance(did_become_active_at, (int, float)) and did_become_active_at > 0 else -1.0
+    will_enter_foreground_age = max(0.0, now - float(will_enter_foreground_at)) if isinstance(will_enter_foreground_at, (int, float)) and will_enter_foreground_at > 0 else -1.0
+    print(f"scene_namespace={pref_namespace(prefs, 'scene.phase')}")
+    print(f"scene_phase={pref(prefs, 'scene.phase', 'missing') or 'missing'}")
+    print(f"scene_reason={pref(prefs, 'scene.reason', 'missing') or 'missing'}")
+    print(f"scene_application_state={pref(prefs, 'scene.applicationState', 'missing') or 'missing'}")
+    print(f"scene_updated_age_s={updated_age:.1f}")
+    print(f"scene_last_active_age_s={active_age:.1f}")
+    print(f"scene_last_inactive_age_s={inactive_age:.1f}")
+    print(f"scene_last_background_age_s={background_age:.1f}")
+    print(f"scene_fast_launch_age_s={fast_launch_age:.1f}")
+    print(f"scene_last_did_become_active_age_s={did_become_active_age:.1f}")
+    print(f"scene_last_will_enter_foreground_age_s={will_enter_foreground_age:.1f}")
+
+def emit_strain_target_haptic_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"strain_target_haptic_summary_error={type(exc).__name__}:{exc}")
+        return
+    print(f"strain_target_haptic_debug_status={pref(prefs, 'debug.strainTargetHaptic.status', 'missing') or 'missing'}")
+    print(f"strain_target_haptic_debug_count={int(pref(prefs, 'debug.strainTargetHaptic.count', 0) or 0)}")
+    print(f"strain_target_haptic_debug_strain={float(pref(prefs, 'debug.strainTargetHaptic.strain', 0) or 0):.1f}")
+    print(f"strain_target_haptic_debug_target={float(pref(prefs, 'debug.strainTargetHaptic.target', 0) or 0):.1f}")
+
+def emit_session_backup_restore_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"session_backup_restore_summary_error={type(exc).__name__}:{exc}")
+        return
+    summary = {}
+    summary_text = pref(prefs, 'debug.sessionBackup.restore.summary')
+    if isinstance(summary_text, dict):
+        summary = summary_text
+    elif isinstance(summary_text, str):
+        try:
+            parsed = json.loads(summary_text)
+            if isinstance(parsed, dict):
+                summary = parsed
+        except Exception as exc:
+            print(f"session_backup_restore_summary_parse_error={type(exc).__name__}:{exc}")
+    def restore_value(name, suffix, default=None):
+        return summary.get(name, pref(prefs, f"debug.sessionBackup.restore.{suffix}", default))
+    print(f"session_backup_restore_debug_status={restore_value('status', 'status', 'missing') or 'missing'}")
+    print(f"session_backup_restore_debug_path={restore_value('path', 'path', 'missing') or 'missing'}")
+    print(f"session_backup_restore_debug_safety_path={restore_value('safetyPath', 'safetyPath', 'missing') or 'missing'}")
+    print(f"session_backup_restore_debug_schema={int(restore_value('schema', 'schema', 0) or 0)}")
+    print(f"session_backup_restore_debug_sessions={int(restore_value('sessions', 'sessions', 0) or 0)}")
+    print(f"session_backup_restore_debug_rollups={int(restore_value('rollups', 'rollups', 0) or 0)}")
+    print(f"session_backup_restore_debug_confirmed_sleeps={int(restore_value('confirmedSleeps', 'confirmedSleeps', 0) or 0)}")
+    print(f"session_backup_restore_debug_digest={restore_value('digest', 'digest', 'missing') or 'missing'}")
+    print(f"session_backup_restore_debug_reason={restore_value('reason', 'reason', 'missing') or 'missing'}")
+
+def emit_confirmed_workout_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"confirmed_workout_summary_error={type(exc).__name__}:{exc}")
+        return
+    raw = pref(prefs, "confirmedWorkouts.v1")
+    workouts = []
+    if isinstance(raw, bytes):
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+            workouts = decoded if isinstance(decoded, list) else []
+        except Exception as exc:
+            print(f"confirmed_workout_summary_status=error:{type(exc).__name__}:{exc}")
+    elif isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            workouts = decoded if isinstance(decoded, list) else []
+        except Exception as exc:
+            print(f"confirmed_workout_summary_status=error:{type(exc).__name__}:{exc}")
+
+    def workout_time(row, key):
+        value = row.get(key) if isinstance(row, dict) else None
+        if isinstance(value, (int, float)) and value > 0:
+            return app_time(value)
+        return "missing"
+
+    latest = max(
+        (row for row in workouts if isinstance(row, dict)),
+        key=lambda row: row.get("createdAt") or row.get("end") or row.get("start") or 0,
+        default=None,
+    )
+    print("confirmed_workout_summary_status=ok")
+    print(f"confirmed_workouts_count={len(workouts)}")
+    if latest:
+        print(f"latest_confirmed_workout_id={latest.get('id', 'missing') or 'missing'}")
+        print(f"latest_confirmed_workout_label={latest.get('label', 'missing') or 'missing'}")
+        print(f"latest_confirmed_workout_source={latest.get('source', 'missing') or 'missing'}")
+        print(f"latest_confirmed_workout_review_source={latest.get('reviewSource', 'missing') or 'missing'}")
+        print(f"latest_confirmed_workout_start={workout_time(latest, 'start')}")
+        print(f"latest_confirmed_workout_end={workout_time(latest, 'end')}")
+        print(f"latest_confirmed_workout_created={workout_time(latest, 'createdAt')}")
+        print(f"latest_confirmed_workout_peak={int(latest.get('peak', 0) or 0)}")
+        print(f"latest_confirmed_workout_samples={int(latest.get('samples', 0) or 0)}")
+    else:
+        print("latest_confirmed_workout_id=none")
+        print("latest_confirmed_workout_label=none")
+        print("latest_confirmed_workout_source=none")
+        print("latest_confirmed_workout_review_source=none")
+        print("latest_confirmed_workout_start=none")
+        print("latest_confirmed_workout_end=none")
+        print("latest_confirmed_workout_created=none")
+        print("latest_confirmed_workout_peak=0")
+        print("latest_confirmed_workout_samples=0")
+
+def emit_daily_rollups_summary():
+    rollups_path = evidence / "daily-rollups.json"
+    if not rollups_path.exists():
+        print("daily_rollups_summary_status=missing")
+        return
+    try:
+        rollups = json.loads(rollups_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"daily_rollups_summary_status=error:{type(exc).__name__}:{exc}")
+        return
+    if not isinstance(rollups, list):
+        print("daily_rollups_summary_status=error:not_array")
+        return
+
+    def has_value(row, key):
+        return isinstance(row, dict) and row.get(key) is not None
+
+    def has_vital(row, key):
+        if not isinstance(row, dict):
+            return False
+        vitals = row.get("vitals")
+        return isinstance(vitals, dict) and isinstance(vitals.get(key), dict) and vitals[key].get("n", 0)
+
+    today = dt.datetime.now().astimezone().date().isoformat()
+    days = [row.get("day") for row in rollups if isinstance(row, dict) and isinstance(row.get("day"), str)]
+    newest_day = max(days) if days else "none"
+    today_rows = sum(1 for row in rollups if isinstance(row, dict) and row.get("day") == today)
+    today_row = next((row for row in rollups if isinstance(row, dict) and row.get("day") == today), {})
+
+    def collection_count(row, key):
+        value = row.get(key) if isinstance(row, dict) else None
+        return len(value) if isinstance(value, list) else 0
+
+    print("daily_rollups_summary_status=ok")
+    print(f"daily_rollups_count={len(rollups)}")
+    print(f"daily_rollups_newest_day={newest_day}")
+    print(f"daily_rollups_today={today}")
+    print(f"daily_rollups_today_rows={today_rows}")
+    print(f"daily_rollups_today_activity_candidates={collection_count(today_row, 'activityCandidates')}")
+    print(f"daily_rollups_today_workouts={collection_count(today_row, 'workouts')}")
+    print(f"daily_rollups_today_confirmed_workouts={collection_count(today_row, 'confirmedWorkouts')}")
+    print(f"daily_rollups_activity_candidate_days={sum(1 for row in rollups if collection_count(row, 'activityCandidates') > 0)}")
+    print(f"daily_rollups_workout_days={sum(1 for row in rollups if collection_count(row, 'workouts') > 0)}")
+    print(f"daily_rollups_confirmed_workout_days={sum(1 for row in rollups if collection_count(row, 'confirmedWorkouts') > 0)}")
+    for key in ["recovery", "lnRMSSD", "rhr", "sleepSeconds", "sleepPerformance", "strain", "respiratoryRate", "bedtimeMinutes"]:
+        print(f"daily_rollups_{key}_count={sum(1 for row in rollups if has_value(row, key))}")
+    for key in ["rhr", "hrv", "resp"]:
+        print(f"daily_rollups_vitals_{key}_count={sum(1 for row in rollups if has_vital(row, key))}")
+
 emit_offline_sync_preferences()
 emit_battery_preferences()
+emit_hr_broadcast_preferences()
+emit_ble_link_preferences()
+emit_watchdog_preferences()
+emit_sample_preferences()
+emit_keepalive_preferences()
+emit_strap_stream_preferences()
+emit_notification_preferences()
+emit_scene_preferences()
+emit_strain_target_haptic_preferences()
+emit_session_backup_restore_preferences()
+emit_confirmed_workout_preferences()
+emit_daily_rollups_summary()
+emit_historical_archive_index_summary()
+emit_historical_archive_rotation_summary()
 
 def decode_historical_gravity(payload_hex):
     try:
@@ -707,6 +1219,16 @@ if sessions_path.exists():
         ]
         latest_phone = max(phone_sessions, key=lambda s: float(s.get("end", s.get("start", 0)))) if phone_sessions else None
         latest_phone_nonzero = max(phone_nonzero_sessions, key=lambda s: float(s.get("end", s.get("start", 0)))) if phone_nonzero_sessions else None
+        confirmed_sleeps_for_overlap = read_confirmed_sleeps_from_preferences()
+        def sleep_windows_overlap(record, candidate):
+            record_start = app_time(record.get("start"))
+            record_end = app_time(record.get("end"))
+            candidate_start = app_time(candidate.get("start"))
+            candidate_end = app_time(candidate.get("end"))
+            if not record_start or not record_end or not candidate_start or not candidate_end:
+                return False
+            overlap = min(record_end, candidate_end) - max(record_start, candidate_start)
+            return overlap.total_seconds() > 15 * 60
         print(f"sessions_count={len(sessions)}")
         print(f"phone_motion_sessions={len(phone_sessions)}")
         print(f"phone_motion_nonzero_sessions={len(phone_nonzero_sessions)}")
@@ -750,6 +1272,7 @@ if sessions_path.exists():
         if best_sleep_like:
             start_sleep_like = app_time(best_sleep_like["start"]).astimezone(ist)
             end_sleep_like = app_time(best_sleep_like["end"]).astimezone(ist)
+            pending_review = not any(sleep_windows_overlap(record, best_sleep_like) for record in confirmed_sleeps_for_overlap)
             print(f"best_sleep_like_raw_start={start_sleep_like.isoformat()}")
             print(f"best_sleep_like_raw_end={end_sleep_like.isoformat()}")
             print(f"best_sleep_like_raw_duration_s={int(best_sleep_like['duration'])}")
@@ -757,8 +1280,17 @@ if sessions_path.exists():
             print(f"best_sleep_like_raw_samples={best_sleep_like['points']}")
             print(f"best_sleep_like_raw_rr_values={best_sleep_like['rr']}")
             print(f"best_sleep_like_raw_reason={best_sleep_like['reason']}")
+            print(f"pending_sleep_review_status={'pending_user_confirmation' if pending_review else 'already_confirmed_overlap'}")
+            print("pending_sleep_review_kind=sleep")
+            print("pending_sleep_review_source=sleep_window")
+            print(f"pending_sleep_review_start={start_sleep_like.isoformat()}")
+            print(f"pending_sleep_review_end={end_sleep_like.isoformat()}")
+            print(f"pending_sleep_review_duration_s={int(best_sleep_like['duration'])}")
+            print(f"pending_sleep_review_samples={best_sleep_like['points']}")
+            print("pending_sleep_review_motion_policy=strap_hr_review_without_stage_fabrication")
         else:
             print("best_sleep_like_raw_status=missing")
+            print("pending_sleep_review_status=missing")
         if best_nap_like:
             start_nap_like = app_time(best_nap_like["start"]).astimezone(ist)
             end_nap_like = app_time(best_nap_like["end"]).astimezone(ist)
@@ -975,6 +1507,10 @@ if journal is not None:
         print(f"active_journal_samples={len(samples)}")
         print(f"active_journal_rr_values={len(rr)}")
         print(f"active_journal_rr_status={'rr_present' if rr else 'hr_only'}")
+        print(f"active_journal_thermal_state={journal.get('thermalState') or 'missing'}")
+        print(f"active_journal_low_power_mode={bool_int(journal.get('lowPowerMode'))}")
+        print(f"active_journal_power_mode={journal.get('powerMode') or 'missing'}")
+        print(f"active_journal_cadence_multiplier={float(journal.get('cadenceMultiplier') or -1):.2f}")
         print(f"active_journal_started={started.astimezone(ist).isoformat() if started else 'none'}")
         print(f"active_journal_updated={updated.astimezone(ist).isoformat() if updated else 'none'}")
         age = max(0, int((now - updated.astimezone(dt.timezone.utc)).total_seconds())) if updated else -1
@@ -999,7 +1535,16 @@ if journal is not None:
         print(f"active_journal_continuity_status={continuity}")
         print(f"active_journal_continuity_reason={continuity_reason}")
         if continuity == "stalled" and sessions_path.exists():
-            print("active_journal_interruption_class=live_stream_interrupted_saved_sessions_present")
+            backfill_reason = pref(prefs, "offlineSync.rangeLossBackfillReason", "") or ""
+            stream_state = pref(prefs, "strapStream.state", "") or ""
+            battery_level = int(pref(prefs, "strapStream.batteryLevel", -1) or -1)
+            if backfill_reason == "strap_low_battery_broadcast_off" or (
+                stream_state == "low_battery_shutoff" and battery_level >= 0 and battery_level <= 15
+            ):
+                interruption_class = "strap_low_battery_broadcast_off"
+            else:
+                interruption_class = "live_stream_interrupted_saved_sessions_present"
+            print(f"active_journal_interruption_class={interruption_class}")
             print("file_durability_status=saved_sessions_preserved")
             print("live_stream_consistency_status=interrupted_not_file_loss")
         print(f"active_journal_duration_s={max(0, int((updated - started).total_seconds())) if started and updated else 0}")

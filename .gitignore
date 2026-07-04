@@ -36,6 +36,12 @@ GOAL.md
 # Local physical-device diagnostics and generated screenshots.
 tmp/
 artifacts/
+!artifacts/
+artifacts/*
+!artifacts/visual-checks/
+artifacts/visual-checks/*
+!artifacts/visual-checks/share-cards/
+!artifacts/visual-checks/share-cards/**
 
 # Local design experiments; curated public assets live in assets/.
 design/

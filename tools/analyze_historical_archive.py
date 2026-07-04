@@ -237,13 +237,13 @@ def main() -> int:
     print(f"k_rr_values={k_rr_values}")
     print(f"candidate_rr_values={candidate_rr_values}")
     print(f"hist_versions={','.join(map(str, hist_versions)) if hist_versions else 'none'}")
-    print(f"noop_historical_gravity_rows={len(gravity)}")
-    print(f"noop_historical_gravity_validated_rows={len(gravity_validated)}")
+    print(f"historical_gravity_rows={len(gravity)}")
+    print(f"historical_gravity_validated_rows={len(gravity_validated)}")
     if gravity:
         magnitudes = [item[3] for item in gravity]
-        print(f"noop_historical_gravity_validated_percent={round(len(gravity_validated) / len(gravity) * 100)}")
-        print(f"noop_historical_gravity_mag_min={min(magnitudes):.3f}")
-        print(f"noop_historical_gravity_mag_max={max(magnitudes):.3f}")
+        print(f"historical_gravity_validated_percent={round(len(gravity_validated) / len(gravity) * 100)}")
+        print(f"historical_gravity_mag_min={min(magnitudes):.3f}")
+        print(f"historical_gravity_mag_max={max(magnitudes):.3f}")
     if unix_values:
         print(f"unix_first={min(unix_values)}")
         print(f"unix_last={max(unix_values)}")
