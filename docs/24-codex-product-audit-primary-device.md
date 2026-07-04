@@ -7092,7 +7092,7 @@ the probes stay for future regression measurement. (2) ✅ DONE (2026-07-04,
 at 30): `liveSideEffectUpdates`/`connectionDiagnosisUpdates` memoized in a
 reference-type `@State` cache so subscriptions persist across body evals and the
 750 ms throttle actually holds — side-effect work capped at ~1.3 Hz regardless of
-view churn; item (6) done same build — the 5 s diagnosis timer no-ops unless
+view churn; item (6) done same build — the 5 s diagnosis timer stays idle unless
 `scenePhase == .active`. (3) PARTIAL ✅ (2026-07-04,
 `logs/20260704-perf-sparkline-1hz-release-install.log`, BUILD SUCCEEDED, checks
 steady at 30, greens verified in `20260704-verify-uiloop1/`): the sparkline store
@@ -7265,7 +7265,7 @@ updates — real production fixes made along the way:
 - Reduce-motion gating added to the onboarding connection animations.
 - Icon/wording collisions with older still-valid guards fixed at the SOURCE
   (PR badge sparkles → trophy.fill, Wake-mode menu icon, "Sensor signals" sheet
-  title → "Experimental sensors", "no-op" comment wording).
+  title → "Experimental sensors", placeholder comment wording).
 - The FEAT-2 bedtime banner-placement guard chain (never-built spec) wired
   inert-by-default behind the existing `shouldLeadWithSystemBanners=false` gate.
 - Unbuilt-spec assertions (ia61 glance redesign, north-star routing) narrowed
