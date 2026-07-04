@@ -11,6 +11,7 @@ WhoopBLE.app/
 
 # Runtime transcripts from cabled iPhone WHOOPDBG sessions
 logs/live-device/
+logs/device-pulls/
 
 # Generated physical-device evidence can include private health/device data.
 # Keep curated evidence tracked only when explicitly staged with -f.
