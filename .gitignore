@@ -49,3 +49,4 @@ design/
 
 # macOS
 .DS_Store
+.build/
