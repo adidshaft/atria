@@ -49,6 +49,14 @@ struct AtriaTodayScreen: View {
             } else if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
                 AtriaOverviewBehaviorJournalSection(store: store)
             } else {
+            // Fixed header, not yet wired into the AtriaTodayMetric hidden/order
+            // customization CSV: this glance strip duplicates fields already
+            // covered by the pinned triRingHero (IA-6.1, static-check gated) and
+            // the customizable glance grid below, so folding its visibility into
+            // that per-metric system would mean a second source of truth for the
+            // same three values. Ship it fixed above the pinned hero; revisit if
+            // the strip itself needs to become optional.
+            glanceStrip
             topActionMenu
             triRingHero
             if layoutConfig.showLiveStrip {
@@ -211,6 +219,15 @@ struct AtriaTodayScreen: View {
                      onSleep: { metricDetail = .sleep },
                      onRecovery: { metricDetail = .recovery },
                      onStrain: { metricDetail = .strain })
+    }
+
+    private var glanceStrip: some View {
+        AtriaTodayGlanceStrip(recovery: recoveryMetric,
+                              strain: strainMetric,
+                              sleep: sleepMetric,
+                              onRecovery: { metricDetail = .recovery },
+                              onStrain: { metricDetail = .strain },
+                              onSleep: { metricDetail = .sleep })
     }
 
     private var highlightRollups: [DailyRollupStoreEntry] {
@@ -777,6 +794,88 @@ struct AtriaTodayScreen: View {
             && ["ai-coach-local", "ai-coach-flagged", "ai-coach-audit"].contains(arguments[valueIndex])
     }
     #endif
+}
+
+/// Calm, glance-first header: one dominant number (Recovery, with its ring)
+/// flanked by two smaller tap targets (Strain, Sleep). Every tile taps through
+/// to the same AtriaMetricDetailSheet route as the rings/legend below it.
+private struct AtriaTodayGlanceStrip: View, Equatable {
+    let recovery: AtriaTriRingMetric
+    let strain: AtriaTriRingMetric
+    let sleep: AtriaTriRingMetric
+    let onRecovery: () -> Void
+    let onStrain: () -> Void
+    let onSleep: () -> Void
+
+    static func == (lhs: AtriaTodayGlanceStrip, rhs: AtriaTodayGlanceStrip) -> Bool {
+        lhs.recovery == rhs.recovery && lhs.strain == rhs.strain && lhs.sleep == rhs.sleep
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AtriaTodayGlanceHeroTile(metric: recovery, isDominant: true, action: onRecovery)
+            AtriaTodayGlanceHeroTile(metric: strain, isDominant: false, action: onStrain)
+            AtriaTodayGlanceHeroTile(metric: sleep, isDominant: false, action: onSleep)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct AtriaTodayGlanceHeroTile: View, Equatable {
+    let metric: AtriaTriRingMetric
+    let isDominant: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaTodayGlanceHeroTile, rhs: AtriaTodayGlanceHeroTile) -> Bool {
+        lhs.metric == rhs.metric && lhs.isDominant == rhs.isDominant
+    }
+
+    private var ringDiameter: CGFloat { isDominant ? 78 : 56 }
+    private var numeralSize: CGFloat { isDominant ? 32 : 21 }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    if let fill = metric.fill {
+                        Circle()
+                            .stroke(metric.tint.opacity(0.14),
+                                    style: StrokeStyle(lineWidth: isDominant ? 6 : 4, lineCap: .round))
+                        Circle()
+                            .trim(from: 0, to: min(max(fill, 0), 1))
+                            .stroke(metric.tint,
+                                    style: StrokeStyle(lineWidth: isDominant ? 6 : 4, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: fill)
+                    }
+                    Text(metric.value)
+                        .font(.system(size: numeralSize, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .padding(.horizontal, 4)
+                }
+                .frame(width: ringDiameter, height: ringDiameter)
+
+                Text(metric.title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: isDominant ? 118 : 100)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.inset,
+                   emphasis: isDominant ? .strong : .soft)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(metric.title) \(metric.value), \(metric.detail)")
+        .accessibilityHint("Opens \(metric.title.lowercased()) details.")
+    }
 }
 
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {

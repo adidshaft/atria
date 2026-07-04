@@ -3891,8 +3891,26 @@ final class SessionStore: ObservableObject {
 
         if let frozenToday = existing.first(where: { calendar.isDate($0.day, inSameDayAs: today) }) {
             // Once today's morning reading settles, preserve that frozen readiness
-            // snapshot for the rest of the day instead of recomputing on refresh.
-            merged[today] = frozenToday
+            // snapshot (HRV/RHR/sleep) for the rest of the day instead of recomputing
+            // on refresh. Strain is a cumulative, all-day total (not an overnight
+            // readiness reading) and must keep accruing as later sessions land, or the
+            // displayed number silently stops climbing after the first refresh of the
+            // day — recompute it fresh each time from the same-day computed rollup.
+            let freshStrainToday = computed.first { calendar.isDate($0.day, inSameDayAs: today) }?.strain
+            merged[today] = SavedDailyMetric(day: frozenToday.day,
+                                             recoveryPercent: frozenToday.recoveryPercent,
+                                             recoveryConfidence: frozenToday.recoveryConfidence,
+                                             hrv: frozenToday.hrv,
+                                             restingHR: frozenToday.restingHR,
+                                             respiratoryRate: frozenToday.respiratoryRate,
+                                             sleepDuration: frozenToday.sleepDuration,
+                                             sleepSpan: frozenToday.sleepSpan,
+                                             sleepStart: frozenToday.sleepStart,
+                                             sleepEnd: frozenToday.sleepEnd,
+                                             sleepSource: frozenToday.sleepSource,
+                                             sleepStageSegments: frozenToday.sleepStageSegments,
+                                             sleepConsistencyPercent: frozenToday.sleepConsistencyPercent,
+                                             strain: freshStrainToday ?? frozenToday.strain)
         } else if let settledMorning = makeMorningFrozenDailyMetric(for: today,
                                                                     computed: computed,
                                                                     sessions: sessions,
