@@ -242,6 +242,7 @@ struct AtriaHomeView: View {
         case overview
         case vitals
         case journal
+        case chat
         case collection
 
         var id: String { rawValue }
@@ -251,6 +252,7 @@ struct AtriaHomeView: View {
             case .overview: return "overview"
             case .vitals: return "vitals"
             case .journal: return "journal"
+            case .chat: return "chat"
             case .collection: return "strap"
             }
         }
@@ -264,6 +266,7 @@ struct AtriaHomeView: View {
             case "overview", "today": return .overview
             case "vitals": return .vitals
             case "journal": return .journal
+            case "chat": return .chat
             // Static handoff compatibility marker for the previous aliases:
             // case "data", "collection": return .collection
             case "strap", "data", "collection": return .collection
@@ -276,6 +279,7 @@ struct AtriaHomeView: View {
             case .overview: return "Overview"
             case .vitals: return "Vitals"
             case .journal: return "Journal"
+            case .chat: return "Chat"
             case .collection: return "Strap"
             }
         }
@@ -285,6 +289,7 @@ struct AtriaHomeView: View {
             case .overview: return "house.fill"
             case .vitals: return "heart.text.square"
             case .journal: return "square.and.pencil"
+            case .chat: return "bubble.left.and.bubble.right.fill"
             case .collection: return "applewatch.radiowaves.left.and.right"
             }
         }
@@ -344,6 +349,7 @@ struct AtriaHomeView: View {
     @State private var hasUnlockedSecondarySections = false
     @State private var showConnectionGuide = false
     @State private var showSettings = false
+    @State private var showStrapScreen = false
     @State private var showShareSheet = false
     @State private var incomingFaceOff: AtriaFaceOffPayload?
     // Plain read, not @AppStorage: this key has dots, which is the exact
@@ -571,16 +577,11 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
 
-                tabNavigation(title: "Strap", showsHero: false) {
-                    if hasUnlockedPrimaryContent {
-                        collectionContent
-                    } else {
-                        secondaryLoadingCard(title: "Preparing strap",
-                                             subtitle: "")
-                    }
+                tabNavigation(title: "Chat", showsHero: false) {
+                    chatComingSoonContent
                 }
-                .tabItem { Label(HomeTab.collection.title, systemImage: HomeTab.collection.systemImage) }
-                .tag(HomeTab.collection)
+                .tabItem { Label(HomeTab.chat.title, systemImage: HomeTab.chat.systemImage) }
+                .tag(HomeTab.chat)
             }
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory && (selectedTab != .overview || liveWorkoutMinimized)) {
@@ -766,6 +767,33 @@ struct AtriaHomeView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .fullScreenCover(isPresented: $showStrapScreen) {
+            NavigationStack {
+                ScrollView {
+                    if hasUnlockedPrimaryContent {
+                        collectionContent
+                            .padding(.horizontal, 16)
+                    } else {
+                        secondaryLoadingCard(title: "Preparing strap",
+                                             subtitle: "")
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .background {
+                    AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                        .ignoresSafeArea()
+                }
+                .navigationTitle("Strap")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            showStrapScreen = false
+                        }
+                    }
+                }
+            }
+        }
         .alert(item: $workoutEndNotice) { notice in
             Alert(title: Text(notice.title),
                   message: Text(notice.message),
@@ -802,7 +830,11 @@ struct AtriaHomeView: View {
             UserDefaults.standard.set(true, forKey: AtriaHealthScreen.debugOpenHeartRateTimelineKey)
         }
 #endif
-        selectedTab = tab
+        if tab == .collection {
+            showStrapScreen = true
+        } else {
+            selectedTab = tab
+        }
         hasUnlockedPrimaryContent = true
         if tab != .overview {
             hasUnlockedSecondarySections = true
@@ -967,7 +999,7 @@ struct AtriaHomeView: View {
                 case .journal:
                     selectedTab = .journal
                 case .collection:
-                    selectedTab = .collection
+                    showStrapScreen = true
                 }
             }
         case .capture(let command):
@@ -977,7 +1009,7 @@ struct AtriaHomeView: View {
                 ble.toggleRecording()
             }
             performMotionAwareUpdate {
-                selectedTab = .collection
+                showStrapScreen = true
             }
         case .focus(let mode):
             AtriaIntentCommandStore.persistFocusMode(mode)
@@ -994,7 +1026,7 @@ struct AtriaHomeView: View {
                 ble.setLongWearModeEnabled(true, rest: rest, maxHR: maxHR)
             }
             performMotionAwareUpdate {
-                selectedTab = .collection
+                showStrapScreen = true
             }
         }
     }
@@ -2009,6 +2041,29 @@ struct AtriaHomeView: View {
 #endif
     }
 
+    private var chatComingSoonContent: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 44, weight: .semibold))
+                .foregroundStyle(.tint)
+                .padding(.top, 48)
+            Text("LLM Chat")
+                .font(.title2.weight(.bold))
+            Text("Coming Soon!")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Ask your recovery, sleep and strain anything — answered from your own data, on this phone.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .atriaCard()
+        .padding(.horizontal, 16)
+    }
+
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
                            coreLiveStore: model.coreLiveStore,
@@ -2020,6 +2075,9 @@ struct AtriaHomeView: View {
                            },
                            onShowSettings: {
                                showSettings = true
+                           },
+                           onShowStrap: {
+                               showStrapScreen = true
                            },
                            onTapStatusWhenNotConnected: {
                                ble.startScan(reason: "home_status_chip")
@@ -7009,6 +7067,7 @@ private struct AtriaHomeTopChrome: View {
     let showHelp: Bool
     let onShowHelp: () -> Void
     let onShowSettings: () -> Void
+    let onShowStrap: () -> Void
     let onTapStatusWhenNotConnected: () -> Void
 
     var body: some View {
@@ -7019,6 +7078,12 @@ private struct AtriaHomeTopChrome: View {
                                onTapWhenNotConnected: onTapStatusWhenNotConnected)
 
             Spacer(minLength: 8)
+
+            Button(action: onShowStrap) {
+                AtriaToolbarIcon(symbol: "applewatch.radiowaves.left.and.right")
+            }
+            .buttonStyle(AtriaHeaderActionButtonStyle())
+            .accessibilityLabel("Strap")
 
             Button(action: showHelp ? onShowHelp : onShowSettings) {
                 AtriaToolbarIcon(symbol: showHelp ? "questionmark.circle" : "gearshape")
