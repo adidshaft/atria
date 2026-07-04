@@ -7441,3 +7441,40 @@ its 9-sort rows property fixed; strain-target card re-chromed to sibling
 tokens. Documented leave-alones: Radius.concentric adoption, chip-fill token
 migration (~50 sites), tight-rail bordered buttons — all need visual
 verification, queued for a screenshot-driven pass.
+
+## 23. Eyes-on UI session (2026-07-05 ~02:00) — screenshot-driven fixes + the AOD red herring
+
+User: "UI is still out and weird, super laggy, isn't accurate." First-ever
+SCREENSHOT-DRIVEN pass (devicectl capture + simulator fixture loop):
+
+REAL DEFECTS SEEN AND FIXED:
+- "Learning learning" recovery chip copy; center "82% / 82% need" duplication
+  (now "82% / sleep need"); strain chip "0.0 of 15" vs card "0.0 / 11.4"
+  disagreeing targets (chip now uses the coach target, one decimal, or plain
+  "Strain" when untrusted).
+- Same three metrics rendered 3-4x on one screen (ring + chips + glance
+  cards): default glance grid now leads with NON-ring metrics
+  (hrv/stress/rhr/respiratory/load/steps); ring trio moved to "more". A stored
+  order CSV exactly matching the OLD default is treated as unset (migration
+  helper) so never-customized installs get the dedup.
+- ACCURACY: post-midnight the hero recomputed recovery live (62 → 43
+  provisional at 1 AM) and reconnects flashed "Learning" over a number the
+  user already had. displayRecovery now carries: yesterday's stored score
+  labeled "yesterday" until today's morning reading exists; today's stored
+  reading labeled "this morning" during estimate warm-ups. WHOOP-like.
+- Ring fill/track contrast bumped (track 0.16, gradient 0.85→1.0).
+
+THE RED HERRING (documented so nobody chases it again): phone screenshots at
+~midnight showed washed-out pastel rings with fills logged at 0.82 — two
+instrumented builds + pixel sampling later, the cause was the iPhone 15 Pro
+ALWAYS-ON DISPLAY: devicectl captures the AOD-dimmed frame (black surround,
+color-flattened). The SIMULATOR fixture loop (--atria-developer-mode
+--atria-complete-onboarding --atria-ui-fixture north-star-highlights +
+simctl screenshot) shows the truth: rings render vivid Activity-style.
+Visual verification protocol going forward: simulator loop, not nighttime
+device captures.
+
+Gate: checks OK, sim visual verified, Release installed. Laggy complaint:
+partially addressed earlier (KVO storm, synchronize purge, thrash fix — the
+reset thrash WAS a main-thread hog); a body-probe measurement pass on real
+interaction remains queued for daytime.

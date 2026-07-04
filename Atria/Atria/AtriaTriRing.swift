@@ -250,13 +250,13 @@ struct AtriaTriRing: View, Equatable {
                             fill: Double) -> some View {
         ZStack {
             Circle()
-                .stroke(metric.tint.opacity(0.12), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(metric.tint.opacity(0.16), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
 
             if metric.fill != nil {
                 Circle()
                     .trim(from: 0, to: min(max(fill, 0), 1))
                     .stroke(
-                        AngularGradient(gradient: Gradient(colors: [metric.tint.opacity(0.55), metric.tint]),
+                        AngularGradient(gradient: Gradient(colors: [metric.tint.opacity(0.85), metric.tint]),
                                         center: .center,
                                         startAngle: .degrees(-90),
                                         endAngle: .degrees(-90 + 360 * min(max(fill, 0), 1))),

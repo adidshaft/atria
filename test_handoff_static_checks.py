@@ -9080,8 +9080,10 @@ class HandoffStaticChecks(unittest.TestCase):
             'case "recovery-after-nap":',
             'arguments[valueIndex] == "recovery-after-nap" ? 68 : 50',
             'recoveryLiftedAfterNap: arguments[valueIndex] == "recovery-after-nap"',
-            "value: displayHero.recoveryValue",
-            'detail: displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail',
+            # displayRecovery carry-forward wrapper (2026-07-05) keeps the same
+            # nap-lift detail inside the live path.
+            "value: display.value",
+            'let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail',
         ]:
             assert_contains(self, today, needle)
 

@@ -1553,12 +1553,15 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         return Set(metrics.map(\.rawValue))
     }
 
+    // Recovery/strain/sleep already headline the ring hero + legend chips, so
+    // the default glance grid leads with the metrics the rings DON'T show —
+    // no triple-representation of the same three numbers on one screen.
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.recovery, .strain, .sleep, .hrv, .rhr, .steps, .load, .stress, .sleepHistory, .sleepEfficiency, .respiratoryRate, .calories, .vo2max, .trend, .insights, .bloodOxygen, .bodyTemp, .bioAge]
+        [.hrv, .stress, .rhr, .respiratoryRate, .load, .steps, .recovery, .strain, .sleep, .sleepHistory, .sleepEfficiency, .calories, .vo2max, .trend, .insights, .bloodOxygen, .bodyTemp, .bioAge]
     }
 
-    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep, .hrv, .rhr, .steps]
-    static let moreMetrics: [AtriaTodayMetric] = [.load, .stress, .sleepHistory, .sleepEfficiency, .respiratoryRate, .calories, .vo2max, .trend, .insights]
+    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .load, .steps]
+    static let moreMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep, .sleepHistory, .sleepEfficiency, .calories, .vo2max, .trend, .insights]
     static let experimentalMetrics: [AtriaTodayMetric] = [.bloodOxygen, .bodyTemp, .bioAge]
 
     static func migratedRawValue(_ raw: String) -> String? {
@@ -1567,6 +1570,16 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case "backfill", "hapticAlerts", "workout": return nil
         default: return AtriaTodayMetric(rawValue: raw)?.rawValue
         }
+    }
+
+    /// The default order that shipped before the ring-dedup rearrangement
+    /// (2026-07-05). A stored CSV exactly matching it was written by old
+    /// defaults, not by a user's customization — treat it as unset.
+    static let preRingDedupDefaultOrderCSV =
+        "recovery,strain,sleep,hrv,rhr,steps,load,stress,sleepHistory,sleepEfficiency,respiratoryRate,calories,vo2max,trend,insights,bloodOxygen,bodyTemp,bioAge"
+
+    static func migratingStaleDefaultOrder(_ csv: String) -> String {
+        csv == preRingDedupDefaultOrderCSV ? "" : csv
     }
 
     static func hidden(from csv: String) -> Set<String> {
@@ -1612,6 +1625,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     static func ordered(from csv: String) -> [AtriaTodayMetric] {
+        let csv = migratingStaleDefaultOrder(csv)
         let decoded = csv.split(separator: ",")
             .compactMap { migratedRawValue(String($0)) }
             .compactMap { AtriaTodayMetric(rawValue: $0) }

@@ -638,21 +638,51 @@ struct AtriaTodayScreen: View {
                                   fill: performance.map { min(max(Double($0) / 100.0, 0), 1) })
     }
 
+    /// WHOOP-like DISPLAY carry: between midnight and today's first stored
+    /// morning reading (and during reconnect learning flickers) the hero keeps
+    /// showing the last stored daily recovery, labeled "yesterday", instead of
+    /// a live provisional recompute that jumps around pre-sleep. Once today's
+    /// rollup carries a recovery value, the live estimate takes over again.
+    private var displayRecovery: (value: String, detail: String, percent: Int?) {
+        let estimate = displayHero.recoveryEstimate
+        let newestStored = highlightRollups
+            .sorted(by: { $0.day > $1.day })
+            .first(where: { $0.recovery != nil })
+        let todayHasReading = newestStored.map {
+            Calendar.current.isDateInToday($0.day)
+        } ?? false
+        // Post-midnight before the new morning reading: yesterday's score.
+        if !todayHasReading, let carried = newestStored?.recovery {
+            return ("\(carried)%", "yesterday", carried)
+        }
+        if let percent = estimate.percent {
+            let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
+            return ("\(percent)%", detail, percent)
+        }
+        // Live estimate momentarily unavailable (reconnect warm-up): the
+        // stored morning reading is still today's truth — never flash
+        // "Learning" over a number the user already has.
+        if let stored = newestStored?.recovery {
+            return ("\(stored)%", todayHasReading ? "this morning" : "yesterday", stored)
+        }
+        return ("Learning", "Recovery", nil)
+    }
+
     private var recoveryMetric: AtriaTriRingMetric {
-        let percent = displayHero.recoveryEstimate.percent
+        let display = displayRecovery
         return AtriaTriRingMetric(title: "Recovery",
-                                  value: displayHero.recoveryValue,
-                                  detail: displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail,
+                                  value: display.value,
+                                  detail: display.detail,
                                   systemImage: "arrow.clockwise.heart.fill",
-                                  tint: percent.map(Metrics.recoveryColor) ?? .secondary,
-                                  fill: percent.map { Double($0) / 100.0 })
+                                  tint: display.percent.map(Metrics.recoveryColor) ?? .secondary,
+                                  fill: display.percent.map { Double($0) / 100.0 })
     }
 
     private var strainMetric: AtriaTriRingMetric {
         let target = displayHero.guidance.target ?? 15
         return AtriaTriRingMetric(title: "Strain",
                                   value: displayHero.strainValue,
-                                  detail: String(format: "of %.0f", target),
+                                  detail: displayHero.guidance.target.map { String(format: "of %.1f", $0) } ?? "Strain",
                                   systemImage: "flame.fill",
                                   tint: Metrics.electricStrain,
                                   fill: min(max(displayHero.strain / max(target, 0.1), 0), 1.2))
@@ -716,7 +746,7 @@ struct AtriaTodayScreen: View {
     private var centerValue: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            return displayHero.recoveryEstimate.percent.map { "\($0)%" } ?? "Day 1"
+            return displayRecovery.percent != nil ? displayRecovery.value : "Day 1"
         case .sleep:
             return latestRollup?.sleepPerformance.map { "\($0)%" } ?? sleepMetric.value
         case .strain:
@@ -727,9 +757,10 @@ struct AtriaTodayScreen: View {
     private var centerState: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            return displayHero.recoveryEstimate.percent.map(recoveryState) ?? "Building"
+            if displayRecovery.detail == "yesterday" { return "yesterday" }
+            return displayRecovery.percent.map(recoveryState) ?? "Building"
         case .sleep:
-            return latestRollup?.sleepPerformance.map { "\($0)% need" } ?? sleepMetric.detail
+            return latestRollup?.sleepPerformance != nil ? "sleep need" : sleepMetric.detail
         case .strain:
             return strainMetric.detail
         }
