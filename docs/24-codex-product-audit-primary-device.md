@@ -7365,3 +7365,56 @@ daily scores forever; confirmed sleeps/workouts raw permanently) — deliberatel
 NOT the "delete raw after a week" floated in the directive: the compactor
 already achieves the same footprint goal without losing confirmed-session
 fidelity. Flagged for the user in the turn summary.
+
+## 21. Full completion run — "make it functional" (2026-07-04 night)
+
+Opus thought, Sonnet implemented (per the standing model-tiering policy), I
+gated. Everything still implementable SHIPPED. Gate: checks OK (128/128),
+Release BUILD SUCCEEDED + installed, full unit suite TEST SUCCEEDED (after one
+real fix below).
+
+- **Stress Monitor (replacement blocker #1)**: new AtriaStressMonitor.swift —
+  pure score() (HR z-score 60% + suppressed-lnRMSSD z 40%, personal-baseline
+  normalized, calm/low/medium/high at 0.20/0.45/0.72), suppression during
+  workouts/zone>=2/sleep window/warm-up, HR-only mode capped at Medium (no
+  "High" without HRV corroboration), "Calibrating (n/14)" until the resting
+  baseline is trusted. Health screen row + unit tests. MY GATE CAUGHT A REAL
+  BUG the agent could not run to completion: score() read wall-clock
+  restingStats instead of the injected now (nondeterministic + test-failing);
+  added restingStats(now:) mirroring lnRMSSDStats(now:) and threaded now
+  through. One pinned line updated to match.
+- **Cycle tracking v1 (replacement blocker #2)**: AtriaCycleTracking.swift —
+  own JSON store (NOT in Sessions, excluded from research bundles by allowlist
+  construction, verified), opt-in DEFAULT OFF from a Journal deck card
+  ("Optional. Stays on this phone. Not in research bundles."), period logging,
+  phase estimate (calendar-default "estimating" tier until >=2 logged cycles →
+  personalized median), one labeled "cycle estimate" line in Coach guidance.
+- **Health reference ranges**: "Typical for you: X–Y" under RHR/HRV/respiration
+  rows (baseline mean ±1.5 SD, trusted-only).
+- **Monthly report**: AtriaMonthlyReport.swift, >=14-day honesty gate, Month
+  toggle beside the weekly report, month-over-month deltas + hardest week.
+- **Strain target card**: under the ring hero, reuses Coach.guide's target (no
+  second formula), live progress, honest learning placeholder.
+- **Ring metric picker (descope closed)**: AtriaTriRing generalized to 5-metric
+  slots (recovery/strain/sleep/hrv/rhr) with per-ring ⋯ submenu, honest
+  baseline-gated fills for hrv/rhr, CSV persistence with migration, share card
+  renders configured slots; IA-6.1 pin migrated in the same change.
+- **Deep/SWS (Opus decision)**: SWS folded into Deep at PRESENTATION layer only
+  (SWS is N3 deep sleep; the 6.3%/25.7% split was an artifact of arbitrary HR
+  delta cutoffs; taxonomy + persistence untouched — removing .sws would break
+  decode of stored confirmed sleeps). displayStageSegments folds + re-merges;
+  4-column legend; combined Deep ≈32% reads correctly vs the 15-25% norm.
+- **Nap credit (Opus verdict: partially wired, 2 real gaps)**: FIXED — (1)
+  day-key collision in SleepHistorySnapshot evicted the nap once the same-day
+  main sleep was logged (naps now live in napNights, never compete for the
+  nightsByDay key); (2) persisted rollup sleep performance hard-coded
+  sameDayNapHours=0 (now threaded through makeDailyRollupStoreEntries). New
+  regression tests for both.
+- **Steps honesty**: "Calibrating" → "Not available on this strap" (0/135
+  sessions ever had step data; permanent hardware state, not a learning state).
+
+Remaining (all external/data-gated): sharing transport (needs server + an
+explicit local-first network-ban exemption), Face-Off page publish (user's
+GitHub), duty-cycle default-ON flip (Gate E), compaction first real run
+(mid-July), Overview advice card (needs accumulated insights), overnight
+validation of tonight's stack.

@@ -15,12 +15,12 @@ enum AtriaRingShare {
     static let canvasSize = CGSize(width: 540, height: 675)
 
     struct Content {
-        let sleep: AtriaTriRingMetric
-        let recovery: AtriaTriRingMetric
-        let strain: AtriaTriRingMetric
+        /// Resolved ring content -- whichever metrics the user has assigned
+        /// to each ring position (ring-metric-picker migration), rendered
+        /// exactly as configured on Today.
+        let slots: [AtriaTriRingSlotContent]
         let centerValue: String
         let centerState: String
-        let ringOrder: [AtriaTriRingSlot]
         let dateText: String
     }
 
@@ -50,16 +50,11 @@ private struct ShareCard: View {
 
             Spacer(minLength: 0)
 
-            AtriaTriRing(sleep: content.sleep,
-                         recovery: content.recovery,
-                         strain: content.strain,
+            AtriaTriRing(slots: content.slots,
                          centerValue: content.centerValue,
                          centerState: content.centerState,
                          accessibilitySummary: "",
-                         ringOrder: content.ringOrder,
-                         onSleep: {},
-                         onRecovery: {},
-                         onStrain: {})
+                         actions: [:])
                 .scaleEffect(1.3)
 
             Spacer(minLength: 0)

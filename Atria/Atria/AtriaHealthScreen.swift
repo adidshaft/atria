@@ -17,6 +17,9 @@ struct AtriaHealthScreen: View {
     let horizontalSizeClass: UserInterfaceSizeClass?
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var isLoadingHistoricalHeartRatePoints = true
+    @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
+
+    private static let stressRecomputeTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     private var chartPoints: [AtriaHomeModel.HeartRateChartPoint] {
         AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: pulseSparklineStore.state.chartPoints,
@@ -44,6 +47,20 @@ struct AtriaHealthScreen: View {
                 await refreshHistoricalHeartRatePoints()
             }
         }
+        .onAppear { recomputeStress() }
+        .onReceive(Self.stressRecomputeTimer) { _ in recomputeStress() }
+    }
+
+    private func recomputeStress() {
+        stressMonitorStore.update(heartRate: pulseStore.state.heartRate,
+                                  hasContact: pulseStore.state.hasContact,
+                                  recentRRSamples: pulseStore.state.recentRRSamples,
+                                  isRecording: ble.isRecording,
+                                  zoneIndex: pulseStore.state.heartRateZone?.index,
+                                  hrvSnapshot: ble.hrvSnapshot,
+                                  baseline: store.baseline,
+                                  restingMaxHR: (rest: store.baseline.restingInt ?? 60,
+                                                max: profileStore.profile.maxHR))
     }
 
     private var healthMonitorCard: some View {
@@ -60,17 +77,25 @@ struct AtriaHealthScreen: View {
                                      value: restingHeartRateValue,
                                      detail: "overnight low",
                                      systemImage: "heart.text.square.fill",
-                                     tint: .cyan)
+                                     tint: .cyan,
+                                     rangeText: restingHeartRateRangeText)
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue,
                                      detail: "night signal",
                                      systemImage: "waveform.path.ecg",
-                                     tint: Metrics.electricGreen)
+                                     tint: Metrics.electricGreen,
+                                     rangeText: hrvRangeText)
+                AtriaHealthMetricRow(title: "Stress",
+                                     value: stressValue,
+                                     detail: stressDetail,
+                                     systemImage: "bolt.heart.fill",
+                                     tint: stressTint)
                 AtriaHealthMetricRow(title: "Respiration",
                                      value: respiratoryValue,
                                      detail: "sleep average",
                                      systemImage: "lungs.fill",
-                                     tint: .teal)
+                                     tint: .teal,
+                                     rangeText: respiratoryRangeText)
                 AtriaHealthMetricRow(title: "Sleep",
                                      value: sleepValue,
                                      detail: sleepDetail,
@@ -207,6 +232,52 @@ struct AtriaHealthScreen: View {
         return "last night"
     }
 
+    // MARK: Stress (AtriaStressMonitor)
+
+    private var stressValue: String {
+        stressMonitorStore.state.level?.title ?? stressMonitorStore.state.label
+    }
+
+    private var stressDetail: String {
+        stressMonitorStore.state.detail.isEmpty ? stressMonitorStore.state.label : stressMonitorStore.state.detail
+    }
+
+    private var stressTint: Color {
+        stressMonitorStore.state.level?.tint ?? .secondary
+    }
+
+    // MARK: Typical-for-you reference ranges (only shown once a baseline is trusted)
+
+    private var restingHeartRateRangeText: String? {
+        guard store.baseline.hasTrustedRestingBaseline(),
+              let stats = store.baseline.restingStats, stats.count > 1 else { return nil }
+        return Self.typicalRangeText(mean: stats.mean, sd: stats.sd, unit: "bpm", decimals: 0)
+    }
+
+    private var hrvRangeText: String? {
+        guard store.baseline.hasTrustedHRVBaseline(),
+              let stats = store.baseline.lnRMSSDStats, stats.count > 1 else { return nil }
+        let low = exp(stats.mean - 1.5 * stats.sd)
+        let high = exp(stats.mean + 1.5 * stats.sd)
+        return Self.typicalRangeText(low: max(low, 0), high: high, unit: "ms", decimals: 0)
+    }
+
+    private var respiratoryRangeText: String? {
+        guard let stats = store.sleepHistorySnapshot.respiratoryBaselineStats, stats.count > 1 else { return nil }
+        return Self.typicalRangeText(mean: stats.mean, sd: stats.sd, unit: "rpm", decimals: 1)
+    }
+
+    private static func typicalRangeText(mean: Double, sd: Double, unit: String, decimals: Int) -> String {
+        typicalRangeText(low: mean - 1.5 * sd, high: mean + 1.5 * sd, unit: unit, decimals: decimals)
+    }
+
+    private static func typicalRangeText(low: Double, high: Double, unit: String, decimals: Int) -> String {
+        let format = "%.\(decimals)f"
+        let lowText = String(format: format, max(low, 0))
+        let highText = String(format: format, max(high, low))
+        return "Typical for you: \(lowText)\u{2013}\(highText) \(unit)"
+    }
+
     private var statusValue: String {
         guard latestRollup != nil else { return "Learning" }
         return "Updated"
@@ -338,12 +409,14 @@ private struct AtriaHealthMetricRow: View, Equatable {
     let detail: String
     let systemImage: String
     let tint: Color
+    var rangeText: String? = nil
 
     static func == (lhs: AtriaHealthMetricRow, rhs: AtriaHealthMetricRow) -> Bool {
         lhs.title == rhs.title
             && lhs.value == rhs.value
             && lhs.detail == rhs.detail
             && lhs.systemImage == rhs.systemImage
+            && lhs.rangeText == rhs.rangeText
     }
 
     var body: some View {
@@ -361,6 +434,13 @@ private struct AtriaHealthMetricRow: View, Equatable {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let rangeText {
+                    Text(rangeText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
             }
 
             Spacer(minLength: 8)
@@ -373,9 +453,10 @@ private struct AtriaHealthMetricRow: View, Equatable {
         }
         .frame(minHeight: 54)
         .padding(.horizontal, 12)
+        .padding(.vertical, rangeText != nil ? 6 : 0)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title), \(value), \(detail)")
+        .accessibilityLabel(rangeText.map { "\(title), \(value), \(detail). \($0)." } ?? "\(title), \(value), \(detail)")
     }
 }

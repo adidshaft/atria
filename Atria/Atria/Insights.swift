@@ -162,7 +162,13 @@ struct PersonalBaseline: Codable {
     }
 
     var restingStats: (mean: Double, sd: Double, count: Int)? {
-        stats(freshSamples().map(\.restingHR))
+        restingStats(now: Date())
+    }
+
+    /// Testable variant with an explicit `now` — mirrors lnRMSSDStats(now:) so
+    /// callers that inject a clock (stress scoring, tests) stay deterministic.
+    func restingStats(now: Date) -> (mean: Double, sd: Double, count: Int)? {
+        stats(freshSamples(now: now).map(\.restingHR))
     }
 
     /// HRV baseline stats, preferring overnight/sleep-window samples (like WHOOP's

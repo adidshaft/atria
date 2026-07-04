@@ -65,6 +65,120 @@ final class AtriaAnalyticsTests: XCTestCase {
                       "expected HR-only sleep to produce labeled sleep-stage estimates")
     }
 
+    func testDisplayStagesFoldSWSIntoDeep() {
+        XCTAssertEqual(SleepStageKind.displayOrder, [.awake, .light, .rem, .deep])
+        XCTAssertEqual(SleepStageKind.sws.displayStage, .deep)
+        XCTAssertEqual(SleepStageKind.deep.displayStage, .deep)
+        XCTAssertEqual(SleepStageKind.light.displayStage, .light)
+
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let segments = [
+            SleepStageSegment(id: "1", start: start, end: start.addingTimeInterval(1_200), stage: .light),
+            SleepStageSegment(id: "2", start: start.addingTimeInterval(1_200), end: start.addingTimeInterval(2_400), stage: .sws),
+            SleepStageSegment(id: "3", start: start.addingTimeInterval(2_400), end: start.addingTimeInterval(3_600), stage: .deep),
+            SleepStageSegment(id: "4", start: start.addingTimeInterval(3_600), end: start.addingTimeInterval(4_200), stage: .rem)
+        ]
+        let night = SleepHistorySnapshot.Night(id: "night",
+                                               day: start,
+                                               start: start,
+                                               end: start.addingTimeInterval(4_200),
+                                               duration: 4_200,
+                                               restingHR: nil,
+                                               hrv: nil,
+                                               respiratoryRate: nil,
+                                               sleepEfficiency: nil,
+                                               confidence: "confirmed",
+                                               source: "manual_sleep",
+                                               confirmed: true,
+                                               stageSegments: segments)
+
+        XCTAssertFalse(night.displayStageSegments.contains { $0.stage == .sws })
+        let deepRuns = night.displayStageSegments.filter { $0.stage == .deep }
+        XCTAssertEqual(deepRuns.count, 1, "adjacent sws+deep runs should merge into a single deep run")
+        XCTAssertEqual(night.stageDuration(.deep), 2_400, accuracy: 0.001)
+        XCTAssertEqual(night.stageDuration(.sws), 0)
+    }
+
+    func testSameDayNapSurvivesAlongsideMainSleepOnSameCalendarDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+
+        let napStart = day.addingTimeInterval(13 * 60 * 60)
+        let nap = UserConfirmedSleep(id: "nap",
+                                    createdAt: napStart,
+                                    start: napStart,
+                                    end: napStart.addingTimeInterval(3_600),
+                                    source: "manual_nap",
+                                    confidence: "manual_user_entered",
+                                    sessions: 1,
+                                    samples: 10,
+                                    avgHR: 58,
+                                    peakHR: 62,
+                                    restingHR: 55,
+                                    hrv: 60,
+                                    hrvWindowCount: 3,
+                                    duration: 3_600,
+                                    span: 3_600,
+                                    reason: "manual",
+                                    motionSource: "manual",
+                                    motionValidated: false,
+                                    stageSegments: nil)
+
+        let mainStart = day.addingTimeInterval(23 * 60 * 60)
+        let main = UserConfirmedSleep(id: "main",
+                                     createdAt: mainStart,
+                                     start: mainStart,
+                                     end: mainStart.addingTimeInterval(7 * 60 * 60),
+                                     source: "manual_sleep",
+                                     confidence: "manual_user_entered",
+                                     sessions: 1,
+                                     samples: 10,
+                                     avgHR: 52,
+                                     peakHR: 58,
+                                     restingHR: 50,
+                                     hrv: 64,
+                                     hrvWindowCount: 4,
+                                     duration: 7 * 60 * 60,
+                                     span: 7 * 60 * 60,
+                                     reason: "manual",
+                                     motionSource: "manual",
+                                     motionValidated: false,
+                                     stageSegments: nil)
+
+        let snapshot = SleepHistorySnapshot(rollups: [], confirmedSleeps: [nap, main], calendar: calendar)
+
+        // Both records survive: the nap in napNights, the main sleep in nights.
+        XCTAssertTrue(snapshot.nights.contains { $0.id == "main" })
+        XCTAssertTrue(snapshot.napNights.contains { $0.id == "nap" })
+        XCTAssertFalse(snapshot.nights.contains { $0.id == "nap" })
+
+        guard let mainNight = snapshot.nights.first(where: { $0.id == "main" }) else {
+            return XCTFail("expected main sleep night")
+        }
+        let credited = snapshot.sleepNeedHours(for: mainNight,
+                                               baseNeedHours: 8,
+                                               yesterdayStrain: nil,
+                                               calendar: calendar)
+        XCTAssertEqual(credited, 8 - 1 * 0.9, accuracy: 0.001)
+    }
+
+    func testDailyRollupSleepPerformanceCreditsSameDayNap() {
+        let base = SessionStore.dailyRollupSleepPerformance(sleepDuration: 7 * 3_600,
+                                                            baseNeedHours: 8,
+                                                            yesterdayStrain: nil,
+                                                            priorNights: [])
+        let withNap = SessionStore.dailyRollupSleepPerformance(sleepDuration: 7 * 3_600,
+                                                               baseNeedHours: 8,
+                                                               yesterdayStrain: nil,
+                                                               priorNights: [],
+                                                               sameDayNapHours: 1)
+        XCTAssertNotNil(base)
+        XCTAssertNotNil(withNap)
+        XCTAssertGreaterThan(withNap ?? 0, base ?? 0,
+                             "a same-day nap should raise sleep performance vs. no nap credit")
+    }
+
     func testSleepClassifyAcceptsArchiveDerivedStillness() throws {
         try withCleanHistoricalArchive {
             let start = Date(timeIntervalSince1970: 1_800_000_000)
