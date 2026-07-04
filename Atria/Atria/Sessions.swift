@@ -2000,6 +2000,65 @@ struct TrainingLoadSummary: Equatable {
     }
 }
 
+/// Today's heart-rate zone minutes, bucketed the same way as
+/// `AtriaAnalytics.Strain.MaxHeartRateZoneSeconds` (rest / warmup / fatBurn
+/// Z2 / aerobic Z3 / anaerobic Z4 / max Z5). Computed off the main thread by
+/// `SessionStore.refreshTodayHRZoneMinutesCache`, mirroring the
+/// `TrainingLoadSummary` cache cadence.
+struct TodayHRZoneMinutes: Equatable {
+    let restMinutes: Int
+    let warmupMinutes: Int
+    let fatBurnMinutes: Int
+    let aerobicMinutes: Int
+    let anaerobicMinutes: Int
+    let maxMinutes: Int
+    /// True when at least one sample was recorded today (even if it was all
+    /// resting) — distinguishes "0m active" from "no wear today".
+    let hasSamples: Bool
+
+    static let empty = TodayHRZoneMinutes(restMinutes: 0,
+                                          warmupMinutes: 0,
+                                          fatBurnMinutes: 0,
+                                          aerobicMinutes: 0,
+                                          anaerobicMinutes: 0,
+                                          maxMinutes: 0,
+                                          hasSamples: false)
+
+    /// Z2 + Z3 + Z4 + Z5 — the "active" minutes shown as the glance value.
+    var activeMinutes: Int {
+        fatBurnMinutes + aerobicMinutes + anaerobicMinutes + maxMinutes
+    }
+
+    var valueText: String {
+        hasSamples ? "\(activeMinutes)m" : "--"
+    }
+
+    var detailText: String {
+        guard hasSamples else { return "No wear today" }
+        let parts: [String] = [
+            fatBurnMinutes > 0 ? "Z2 \(fatBurnMinutes)" : nil,
+            aerobicMinutes > 0 ? "Z3 \(aerobicMinutes)" : nil,
+            anaerobicMinutes > 0 ? "Z4 \(anaerobicMinutes)" : nil,
+            maxMinutes > 0 ? "Z5 \(maxMinutes)" : nil
+        ].compactMap { $0 }
+        guard !parts.isEmpty else { return "Resting" }
+        return parts.joined(separator: " · ")
+    }
+
+    var accessibilityDetailText: String {
+        guard hasSamples else { return "No heart rate zone data today." }
+        var parts: [String] = []
+        if restMinutes > 0 { parts.append("\(restMinutes) minutes at rest") }
+        if warmupMinutes > 0 { parts.append("\(warmupMinutes) minutes warmup") }
+        if fatBurnMinutes > 0 { parts.append("\(fatBurnMinutes) minutes in zone 2, fat burn") }
+        if aerobicMinutes > 0 { parts.append("\(aerobicMinutes) minutes in zone 3, aerobic") }
+        if anaerobicMinutes > 0 { parts.append("\(anaerobicMinutes) minutes in zone 4, anaerobic") }
+        if maxMinutes > 0 { parts.append("\(maxMinutes) minutes in zone 5, max effort") }
+        guard !parts.isEmpty else { return "No time in an elevated heart rate zone today." }
+        return "Heart rate zones today: " + parts.joined(separator: ", ") + "."
+    }
+}
+
 struct VO2MaxEstimateSummary: Equatable {
     let value: Double?
     let confidence: String
@@ -3145,6 +3204,7 @@ final class SessionStore: ObservableObject {
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
     @Published private(set) var dailyRollupHistory: [DailyRollupStoreEntry] = []
+    @Published private(set) var todayHRZoneMinutesSnapshot = TodayHRZoneMinutes.empty
     private let healthKitExporter = HealthKitExporter()
     private let dailyRollupStore = DailyRollupStore()
     private let weeklyReportStore = WeeklyReportStore()
@@ -3176,6 +3236,7 @@ final class SessionStore: ObservableObject {
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
     private var trainingLoadSummaryRevision = 0
+    private var todayHRZoneMinutesRevision = 0
     private var historicalArchiveStatusObserver: NSObjectProtocol?
     private var pendingHistoricalArchiveStatusRefresh: Task<Void, Never>?
     private var pendingSleepReadinessRetry: Task<Void, Never>?
@@ -3479,6 +3540,24 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Same cadence as `refreshTrainingLoadSummaryCache`: recompute off the
+    /// main thread (never scan today's HR points during a render), then
+    /// publish only if this is still the most recent revision requested.
+    private func refreshTodayHRZoneMinutesCache(deferred: Bool = true) {
+        todayHRZoneMinutesRevision &+= 1
+        let revision = todayHRZoneMinutesRevision
+        let source = sessions
+        let maxHR = profile.maxHR
+        let delay: TimeInterval = deferred ? 0.12 : 0
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+            let summary = Self.makeTodayHRZoneMinutes(sessions: source, maxHR: maxHR)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, revision == self.todayHRZoneMinutesRevision else { return }
+                self.todayHRZoneMinutesSnapshot = summary
+            }
+        }
+    }
+
     func refreshHistoricalArchiveStatus(reason: String = "manual") {
         DispatchQueue.global(qos: .utility).async {
             let diagnostics = HistoricalArchive.diagnostics()
@@ -3546,6 +3625,47 @@ final class SessionStore: ObservableObject {
                                             rest: rest,
                                             maxHR: maxHR,
                                             calendar: calendar)
+    }
+
+    /// Today's HR zone minutes, same day-grouping as `homeSavedAggregate`'s
+    /// `savedTodayTRIMP` (walks `sessions` newest-first, stopping at the
+    /// first session that isn't today). Excludes logged strength-log
+    /// intervals from each session the same way `trimp(rest:max:)` and
+    /// `timeInZone(maxHR:)` do, so the zone split matches the strain figure.
+    private nonisolated static func makeTodayHRZoneMinutes(sessions: [SavedSession],
+                                                           maxHR: Int,
+                                                           calendar: Calendar = .current) -> TodayHRZoneMinutes {
+        var totals = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty
+        var hasSamples = false
+        for session in sessions {
+            guard calendar.isDateInToday(session.start) else { break }
+            guard !session.points.isEmpty else { continue }
+            hasSamples = true
+            let activePoints = AtriaStrengthLog.pointsExcludingIntervals(session.points,
+                                                                         sessionStart: session.start,
+                                                                         excludedIntervals: session.excludedIntervals)
+            let summary = AtriaAnalytics.Strain.maxHeartRateZoneSeconds(activePoints.map { (t: $0.t, bpm: $0.bpm) },
+                                                                        maxHR: maxHR)
+            totals = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds(rest: totals.rest + summary.rest,
+                                                                   warmup: totals.warmup + summary.warmup,
+                                                                   fatBurn: totals.fatBurn + summary.fatBurn,
+                                                                   aerobic: totals.aerobic + summary.aerobic,
+                                                                   anaerobic: totals.anaerobic + summary.anaerobic,
+                                                                   max: totals.max + summary.max,
+                                                                   droppedGapSeconds: totals.droppedGapSeconds + summary.droppedGapSeconds)
+        }
+
+        guard hasSamples else { return .empty }
+        func minutes(_ seconds: TimeInterval) -> Int {
+            Int((seconds / 60).rounded())
+        }
+        return TodayHRZoneMinutes(restMinutes: minutes(totals.rest),
+                                  warmupMinutes: minutes(totals.warmup),
+                                  fatBurnMinutes: minutes(totals.fatBurn),
+                                  aerobicMinutes: minutes(totals.aerobic),
+                                  anaerobicMinutes: minutes(totals.anaerobic),
+                                  maxMinutes: minutes(totals.max),
+                                  hasSamples: true)
     }
 
     private nonisolated static func makeHistorySnapshots(sessions: [SavedSession],
@@ -4388,6 +4508,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         #if DEBUG
         if Self.shouldSeedDebugStrengthWorkoutProof(arguments: ProcessInfo.processInfo.arguments) {
             UserDefaults.standard.set("scheduled", forKey: Self.debugStrengthWorkoutProofStatusKey)
@@ -5369,6 +5490,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         if let detection = s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                               maxHR: profile.maxHR) {
             AtriaDebugLog("ATRIADBG activity_detect kind=%@ confidence=%@ duration_s=%.0f avg_hr=%d peak_hr=%d reason=%@ motion_source=%@ motion_hints=%d motion_hint_kinds=%@ motion_validated=%d",
@@ -5412,6 +5534,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         AtriaDebugLog("ATRIADBG resting_baseline_sample status=accepted reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
               evidence.reason,
               evidence.value,
@@ -5454,6 +5577,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         AtriaDebugLog("ATRIADBG baseline_rebuild status=ok reason=%@ accepted=%d skipped=%d old_rest=%@ new_rest=%@ old_samples=%d new_samples=%d hrv_baseline_samples=%d",
               reason,
               accepted,
@@ -5498,6 +5622,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
     }
@@ -5518,6 +5643,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         AtriaDebugLog("ATRIADBG strain_profile age=%d source=%@ max_hr=%d measured_max_hr=%d",
               profile.age, profile.maxHRSource.rawValue, profile.maxHR, profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "profile-update")
@@ -5583,6 +5709,7 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         AtriaDebugLog("ATRIADBG onboarding complete=1 age=%d source=%@ max_hr=%d measured_max_hr=%d",
               self.profile.age,
               self.profile.maxHRSource.rawValue,
@@ -13332,6 +13459,7 @@ final class SessionStore: ObservableObject {
         backfillConfirmedSleepStagesFromSessions(reason: "deferred_session_load")
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
         let savedStrongSleep = autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
         if !savedStrongSleep {
             scheduleSleepReadinessRetryIfUseful(reason: "deferred_session_load")

@@ -393,6 +393,7 @@ private struct AtriaCustomizePreview: View {
         case .recovery: return "64%"
         case .strain: return "8.4"
         case .load: return "0.9"
+        case .hrZones: return "47m"
         case .hrv: return "48 ms"
         case .stress: return "Low"
         case .sleep: return "7:42"
@@ -420,7 +421,7 @@ private struct AtriaCustomizePreview: View {
         case .hrv, .rhr, .respiratoryRate, .bloodOxygen: return .pink
         case .stress: return .cyan
         case .steps, .vo2max, .bioAge: return Metrics.electricGreen
-        case .bodyTemp: return .orange
+        case .bodyTemp, .hrZones: return .orange
         case .trend, .insights, nil: return config.accent.color
         }
     }

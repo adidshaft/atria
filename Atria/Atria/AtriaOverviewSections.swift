@@ -1426,13 +1426,14 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, load, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, load, hrZones, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recovery: return "Recovery"
         case .strain: return "Strain"
         case .load: return "Load"
+        case .hrZones: return "HR Zones"
         case .hrv: return "HRV"
         case .stress: return "Stress"
         case .sleep: return "Sleep"
@@ -1462,6 +1463,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .recovery: return "gauge.with.dots.needle.67percent"
         case .strain: return "figure.run"
         case .load: return "chart.bar.xaxis"
+        case .hrZones: return "chart.bar.fill"
         case .hrv: return "waveform.path.ecg"
         case .stress: return "bolt.heart.fill"
         case .sleep: return "bed.double.fill"
@@ -1563,10 +1565,10 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     // consistency, charts, calories) is VISIBLE by default — user feedback
     // 2026-07-05: hiding essentials behind Customize reads as "missing".
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
+        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
     }
 
-    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
+    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
     static let moreMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep]
     static let experimentalMetrics: [AtriaTodayMetric] = [.bloodOxygen, .bioAge]
 
@@ -1845,6 +1847,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.stressDetail == rhs.hero.stressDetail
             && lhs.hero.stressNarrative == rhs.hero.stressNarrative
             && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
+            && lhs.hero.hrZoneMinutes == rhs.hero.hrZoneMinutes
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.status == rhs.live.status
             && lhs.live.sessionSampleCount == rhs.live.sessionSampleCount
@@ -2752,6 +2755,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   ringFraction: loadReadinessFraction,
                                   zone: loadReadinessZone)
                 .accessibilityLabel("Training load readiness \(hero.loadReadinessText). \(hero.loadSignalSummaryText). \(hero.loadNarrative)")
+        case .hrZones:
+            AtriaGlanceMetricCard(title: "HR Zones",
+                                  value: hero.hrZoneMinutes.valueText,
+                                  detail: hero.hrZoneMinutes.detailText,
+                                  systemImage: metric.systemImage,
+                                  tint: .orange,
+                                  accessibilityDetail: hero.hrZoneMinutes.accessibilityDetailText)
         case .hrv:
             detailButton(.hrv) {
                 AtriaGlanceMetricCard(title: "HRV",
