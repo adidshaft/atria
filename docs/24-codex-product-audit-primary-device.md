@@ -7533,3 +7533,38 @@ in-app "how this works" page). Full listings in the workflow output.
 
 DEFERRED from the directive: HR-zones daily tile, workout-list tile, strain
 comparison card (new tiles — next run); tab bar shrink (no native API).
+
+## 25. Overnight improvement loop — remaining essentials + ring targets (2026-07-05 ~06:00-09:30)
+
+Loop-driven increments after §24, each gated (checks OK / build / unit suite /
+sim visual) and installed:
+
+- **HR Zones tile** (c654fd85): TodayHRZoneMinutes aggregate over today's
+  canonical sessions via maxHeartRateZoneSeconds, cached off the view layer on
+  the sibling revision cadence; tile shows active-zone total + Z2-Z5 split,
+  honest "--" with no wear. (Agent note: implementation solid; its structured
+  report came back as placeholder text — tree verified directly before commit.)
+- **Workouts + Strain-vs-typical tiles** (37778d6d): week count + latest
+  workout one-liner; today vs 14-day median with a 7-day building-baseline
+  gate. Legacy "workout" raw value now migrates to .workouts. Agent closed a
+  real dead-end: AtriaHomeLayoutConfig.validated() would have silently
+  stripped the new keys from the Customize catalog.
+- **Ring identity + target markers** (same commit, user directive): tracks and
+  learning caps use fixed identity hues (violet/green/electric blue — never
+  gray); strain ring moved to the ABSOLUTE 0-21 scale with a white-bordered
+  capsule tick at the target (user-set when it exists — none stored today —
+  else the Coach recovery-derived recommendation); sleep notch at need-met.
+  Sim-verified under the strain-target fixture (visible tick, three hues).
+- **The REAL essentials fix**: the LIVE Today deck is governed by
+  AtriaHomeLayoutConfig.default (was 7 cards, cap 8) — NOT the
+  AtriaTodayMetric defaults flipped in d766bf1d, which explains why the user
+  still saw essentials "missing" after that commit. Live default now 12 cards
+  (hrv, rhr, stress, respiration, steps, hrZones, workouts, strainCompare,
+  vo2max, bodyTemp, sleepHistory, trend), cap 8→14; validation cap unit test
+  updated. TWO parallel layout systems govern Today — recorded here so the
+  next change edits BOTH or consolidates them (follow-up candidate).
+
+Overnight watch: strap live all night (thrash fix held; battery 76→71),
+sessions 158→162, sharing outbox still empty (BG task never granted a window —
+six installs reset scheduling; one undisturbed night before adding a
+foreground-fallback build trigger). Morning validation pending user wake.
