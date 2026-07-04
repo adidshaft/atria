@@ -1,9 +1,10 @@
 import SwiftUI
 import CryptoKit
 
-/// Opt-in anonymous research sharing (docs/24 §14.3, phase 1 — zero infra).
+/// Anonymous research sharing (docs/24 §14.3 + §20 onboarding choice).
 ///
-/// Core stance: your data stays yours; sharing is a GIFT — default OFF,
+/// Core stance: your data stays yours. The choice is made explicitly during
+/// onboarding (toggle shown ON, inspectable, declinable) or in Settings —
 /// inspectable before it leaves, revocable anytime. The bundle is built from an
 /// explicit ALLOWLIST schema (a field not modeled here cannot leak by
 /// construction), identified only by a per-consent pseudonym that revocation
@@ -36,7 +37,8 @@ enum AtriaResearchSharing {
         defaults.set(false, forKey: optInKey)
         defaults.removeObject(forKey: pseudonymKey)
         defaults.removeObject(forKey: consentDateKey)
-        AtriaDebugLog("ATRIADBG research_sharing status=revoked pseudonym_destroyed=1")
+        AtriaResearchUploadQueue.clearOutbox(reason: "consent_revoked")
+        AtriaDebugLog("ATRIADBG research_sharing status=revoked pseudonym_destroyed=1 outbox_cleared=1")
     }
 
     static var pseudonym: String? {
@@ -262,11 +264,16 @@ enum AtriaResearchBundleBuilder {
         }
         let digest = SHA256.hash(data: json).map { String(format: "%02x", $0) }.joined()
         // Keep tmp tidy: stale bundles (incl. cancelled shares) are replaced,
-        // never accumulated.
+        // never accumulated. Only files older than an hour are removed so a
+        // concurrent build (nightly queue vs Send-now vs manual share) can
+        // never delete another caller's just-written output.
         let tmp = FileManager.default.temporaryDirectory
-        if let stale = try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
+        if let stale = try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.contentModificationDateKey]) {
             for file in stale where file.lastPathComponent.hasPrefix("atria-research-") {
-                try? FileManager.default.removeItem(at: file)
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if Date().timeIntervalSince(modified) > 3600 {
+                    try? FileManager.default.removeItem(at: file)
+                }
             }
         }
         let name = "atria-research-\(pseudonym.prefix(8))-day\(bundleDays.map(\.dayIndex).max() ?? 0).json.gz"
@@ -282,6 +289,211 @@ enum AtriaResearchBundleBuilder {
                       String(digest.prefix(12)))
         return Built(url: url, digest: digest, bytes: compressed.count, payload: payload)
     }
+}
+
+/// Nightly upload pipeline (docs/24 §14.3, phase 2 — piggybacks the existing
+/// BGProcessingTask; no dedicated infra of its own yet).
+///
+/// Bundles are built off `AtriaResearchBundleBuilder.build` and persisted to an
+/// on-disk outbox. Atria's core is deliberately local-first with no network or
+/// browser client anywhere in the app (enforced by
+/// `test_local_first_core_has_no_network_or_browser_clients`), so this queue
+/// never reaches for one either: the endpoint field only records *where a
+/// future transport would send bundles*. With no transport wired in (the
+/// state today, and the honest state until a server actually exists) this is
+/// queue-only — bundles accumulate on device and nothing is attempted over the
+/// network. No failure here is ever surfaced to the user; sharing is a
+/// background gift, not a task they need to babysit.
+enum AtriaResearchUploadQueue {
+    static let endpointURLKey = "atria.research.endpointURL"
+    private static let lastRunDayKey = "atria.research.upload.lastRunDay"
+    private static let retentionDays = 7
+
+    struct OutboxStats {
+        let count: Int
+        let totalBytes: Int
+    }
+
+    static var outboxDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("research-outbox", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    /// Empty (the default) means queue-only mode — no server has been
+    /// configured, let alone wired up to an actual transport.
+    static var configuredEndpoint: String? {
+        guard let raw = UserDefaults.standard.string(forKey: endpointURLKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        return raw
+    }
+
+    static var isEndpointConfigured: Bool { configuredEndpoint != nil }
+
+    static func outboxStats() -> OutboxStats {
+        let files = (try? FileManager.default.contentsOfDirectory(at: outboxDirectory,
+                                                                   includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        let totalBytes = files.reduce(0) { sum, file in
+            sum + ((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return OutboxStats(count: files.count, totalBytes: totalBytes)
+    }
+
+    /// True when `now` falls inside the learned sleep window
+    /// (atria.dutycycle.sleepWindowStartMin/EndMin), falling back to 03:00-05:00
+    /// local before that window has been learned.
+    static func isWithinSleepWindow(now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        let defaults = UserDefaults.standard
+        var startMin = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin)
+        var endMin = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+        if startMin <= 0 && endMin <= 0 {
+            startMin = 3 * 60
+            endMin = 5 * 60
+        }
+        let components = calendar.dateComponents([.hour, .minute], from: now)
+        let nowMin = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        if startMin <= endMin {
+            return nowMin >= startMin && nowMin < endMin
+        }
+        return nowMin >= startMin || nowMin < endMin
+    }
+
+    private static func dayKey(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+    }
+
+    static func hasRunToday(now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        UserDefaults.standard.string(forKey: lastRunDayKey) == dayKey(for: now, calendar: calendar)
+    }
+
+    private static func markRanToday(now: Date, calendar: Calendar) {
+        UserDefaults.standard.set(dayKey(for: now, calendar: calendar), forKey: lastRunDayKey)
+    }
+
+    /// Entry point piggybacked on the existing BGProcessingTask
+    /// (`AtriaApp.handleBackgroundTask`). Gated to the learned sleep window and
+    /// at most once per calendar day.
+    @MainActor
+    static func runNightlyIfDue(store: SessionStore, now: Date = Date(), calendar: Calendar = .current, reason: String) async {
+        guard AtriaResearchSharing.isOptedIn else {
+            // Not sharing right now: still honor retention on whatever is left
+            // in the outbox from before consent was revoked.
+            pruneOutbox(now: now, calendar: calendar)
+            return
+        }
+        guard isWithinSleepWindow(now: now, calendar: calendar) else {
+            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=outside_sleep_window", reason)
+            return
+        }
+        guard !hasRunToday(now: now, calendar: calendar) else {
+            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=already_ran_today", reason)
+            return
+        }
+        markRanToday(now: now, calendar: calendar)
+        if let built = await AtriaResearchBundleBuilder.build(store: store, now: now) {
+            _ = await enqueueAndAttemptTransport(built: built, now: now, reason: reason)
+        } else {
+            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=nothing_to_build", reason)
+        }
+        await attemptUploadOutstanding(now: now, reason: reason)
+        pruneOutbox(now: now, calendar: calendar)
+    }
+
+    /// Manual "send now" from Settings: builds/persists immediately (ignoring
+    /// the sleep-window and once-per-day gates, since the user explicitly
+    /// asked), then attempts the transport step below. Returns the outbox file
+    /// URL when the caller should fall back to the manual ShareLink flow (true
+    /// today, always — see the type-level note on why) — nil would mean a real
+    /// transport picked it up and it is fully handled.
+    @MainActor
+    static func sendNow(built: AtriaResearchBundleBuilder.Built, now: Date = Date()) async -> URL? {
+        await enqueueAndAttemptTransport(built: built, now: now, reason: "manual_send_now")
+    }
+
+    @MainActor
+    private static func enqueueAndAttemptTransport(built: AtriaResearchBundleBuilder.Built, now: Date, reason: String) async -> URL? {
+        let outboxURL = persist(built: built, now: now)
+        guard let configuredEndpoint else {
+            AtriaDebugLog("ATRIADBG research_upload status=queued reason=%@ why=no_endpoint_configured bytes=%d",
+                          reason, built.bytes)
+            return outboxURL
+        }
+        AtriaDebugLog("ATRIADBG research_upload status=queued reason=%@ why=transport_unavailable endpoint=%@ bytes=%d",
+                      reason, configuredEndpoint, built.bytes)
+        return outboxURL
+    }
+
+    /// Retries whatever is still sitting in the outbox. Since this build ships
+    /// no network client at all, this only ever re-confirms the queued state
+    /// and logs it — it becomes real once a transport exists to plug in here.
+    @MainActor
+    private static func attemptUploadOutstanding(now: Date, reason: String) async {
+        guard let configuredEndpoint else { return }
+        let stats = outboxStats()
+        guard stats.count > 0 else { return }
+        AtriaDebugLog("ATRIADBG research_upload status=queued reason=%@ why=transport_unavailable endpoint=%@ outbox=%d",
+                      reason, configuredEndpoint, stats.count)
+    }
+
+    /// Un-uploaded bundles older than 7 days are pruned; the newest bundle is
+    /// always kept even if it is old (there is never nothing in the outbox to
+    /// show while sharing is on).
+    static func clearOutbox(reason: String) {
+        let files = (try? FileManager.default.contentsOfDirectory(at: outboxDirectory,
+                                                                   includingPropertiesForKeys: nil)) ?? []
+        for file in files {
+            try? FileManager.default.removeItem(at: file)
+        }
+        if !files.isEmpty {
+            AtriaDebugLog("ATRIADBG research_upload status=outbox_cleared reason=%@ files=%d", reason, files.count)
+        }
+    }
+
+    static func pruneOutbox(now: Date = Date(), calendar: Calendar = .current) {
+        let files = (try? FileManager.default.contentsOfDirectory(at: outboxDirectory,
+                                                                   includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        guard AtriaResearchSharing.isOptedIn else {
+            clearOutbox(reason: "opted_out")
+            return
+        }
+        guard files.count > 1 else { return }
+        func modified(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        }
+        let sorted = files.sorted { modified($0) > modified($1) }
+        guard let cutoff = calendar.date(byAdding: .day, value: -retentionDays, to: now) else { return }
+        for file in sorted.dropFirst() where modified(file) < cutoff {
+            try? FileManager.default.removeItem(at: file)
+            AtriaDebugLog("ATRIADBG research_upload status=pruned file=%@", file.lastPathComponent)
+        }
+    }
+
+    private static func persist(built: AtriaResearchBundleBuilder.Built, now: Date) -> URL? {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month, .day], from: now)
+        let dateStamp = String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+        let prefix = "atria-research-\(dateStamp)-"
+        // One enqueue per day: replace any earlier bundle from the same day.
+        if let existing = try? FileManager.default.contentsOfDirectory(at: outboxDirectory, includingPropertiesForKeys: nil) {
+            for file in existing where file.lastPathComponent.hasPrefix(prefix) {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+        let name = "\(prefix)\(built.digest.prefix(8)).json.gz"
+        let dest = outboxDirectory.appendingPathComponent(name)
+        do {
+            try FileManager.default.copyItem(at: built.url, to: dest)
+        } catch {
+            AtriaDebugLog("ATRIADBG research_upload status=enqueue_failed error=%@", String(describing: error))
+            return nil
+        }
+        return dest
+    }
+
 }
 
 /// Full-screen consent flow. The Agree button stays disabled until the user has
@@ -435,6 +647,8 @@ struct AtriaResearchSharingSection: View {
     @AppStorage(AtriaResearchSharing.optInKey) private var optedIn = false
     @State private var showConsent = false
     @State private var shareURL: URL?
+    @State private var isSendingNow = false
+    @State private var outboxStats = AtriaResearchUploadQueue.outboxStats()
 
     var body: some View {
         Section {
@@ -465,19 +679,43 @@ struct AtriaResearchSharingSection: View {
                 }
                 .font(.subheadline)
 
+                Button {
+                    guard !isSendingNow else { return }
+                    isSendingNow = true
+                    Task {
+                        defer {
+                            isSendingNow = false
+                            outboxStats = AtriaResearchUploadQueue.outboxStats()
+                        }
+                        guard let built = await buildBundle() else { return }
+                        // Falls back to the same manual ShareLink flow whenever
+                        // there is no endpoint yet, or the upload attempt failed.
+                        shareURL = await AtriaResearchUploadQueue.sendNow(built: built)
+                    }
+                } label: {
+                    Label(isSendingNow ? "Sending…" : "Send now", systemImage: "paperplane")
+                }
+                .font(.subheadline)
+                .disabled(isSendingNow)
+
                 if let receipt = AtriaResearchSharing.lastReceipt {
                     Text("Last bundle: \(receipt.replacingOccurrences(of: "|", with: " · "))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+
+                Text(outboxSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Anonymous research sharing")
         } footer: {
             Text(optedIn
-                 ? "Identified only by a random code. Turning this off destroys the code — future shares cannot be linked to past ones."
-                 : "Off by default. Sharing is a gift: an anonymized, date-scrambled copy of your recordings, inspectable before anything leaves this phone.")
+                 ? "Uploads nightly during your sleep window. \(scheduleFooter)"
+                 : "On by default at onboarding. Sharing is a gift: an anonymized, date-scrambled copy of your recordings, inspectable before anything leaves this phone. You can decline any time.")
         }
+        .onAppear { outboxStats = AtriaResearchUploadQueue.outboxStats() }
         .sheet(isPresented: $showConsent) {
             AtriaResearchConsentSheet(buildPreview: buildBundle) { }
         }
@@ -486,6 +724,18 @@ struct AtriaResearchSharingSection: View {
                 AtriaResearchShareSheetHost(url: shareURL)
             }
         }
+    }
+
+    private var scheduleFooter: String {
+        AtriaResearchUploadQueue.isEndpointConfigured
+            ? "Identified only by a random code. Turning this off destroys the code — future shares cannot be linked to past ones."
+            : "Endpoint not configured yet — bundles queue on device until a server exists."
+    }
+
+    private var outboxSummary: String {
+        guard outboxStats.count > 0 else { return "Outbox: empty." }
+        let kb = max(1, outboxStats.totalBytes / 1024)
+        return "Outbox: \(outboxStats.count) bundle\(outboxStats.count == 1 ? "" : "s") queued, \(kb) KB on device."
     }
 }
 

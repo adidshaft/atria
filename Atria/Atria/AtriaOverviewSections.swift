@@ -6550,10 +6550,14 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         workout.activitySubtype ?? workout.activityType ?? "Workout"
     }
 
-    private var timeText: String {
+    private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
-        return "\(formatter.string(from: workout.start)) · \(durationText)"
+        return formatter
+    }()
+
+    private var timeText: String {
+        "\(Self.timeFormatter.string(from: workout.start)) · \(durationText)"
     }
 
     private var durationText: String {
