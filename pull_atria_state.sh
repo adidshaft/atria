@@ -428,6 +428,27 @@ def emit_ble_link_preferences():
     print(f"ble_link_saved_peripheral_present={bool_int(saved_uuid != 'missing')}")
     print(f"ble_link_saved_peripheral_uuid={saved_uuid}")
 
+def emit_duty_cycle_and_compaction_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"duty_cycle_summary_error={type(exc).__name__}:{exc}")
+        return
+    now = time.time()
+    last_run_at = pref(prefs, "archiveCompaction.lastRunAt")
+    last_run_age = max(0.0, now - float(last_run_at)) if isinstance(last_run_at, (int, float)) and last_run_at > 0 else -1.0
+    sleep_window_start = pref(prefs, "dutycycle.sleepWindowStartMin", -1)
+    sleep_window_end = pref(prefs, "dutycycle.sleepWindowEndMin", -1)
+    print(f"duty_cycle_enabled={bool_int(pref(prefs, 'dutycycle.enabled'))}")
+    print(f"duty_cycle_sleep_window_start_min={int(sleep_window_start) if isinstance(sleep_window_start, (int, float)) else -1}")
+    print(f"duty_cycle_sleep_window_end_min={int(sleep_window_end) if isinstance(sleep_window_end, (int, float)) else -1}")
+    print(f"archive_compaction_last_run_at={last_run_at if isinstance(last_run_at, (int, float)) and last_run_at > 0 else 'none'}")
+    print(f"archive_compaction_last_run_age_s={last_run_age:.1f}")
+
 def emit_watchdog_preferences():
     prefs_path = evidence / "preferences.plist"
     if not prefs_path.exists():
@@ -806,6 +827,7 @@ emit_offline_sync_preferences()
 emit_battery_preferences()
 emit_hr_broadcast_preferences()
 emit_ble_link_preferences()
+emit_duty_cycle_and_compaction_preferences()
 emit_watchdog_preferences()
 emit_sample_preferences()
 emit_keepalive_preferences()

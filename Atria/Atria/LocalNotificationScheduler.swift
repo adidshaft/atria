@@ -19,6 +19,11 @@ enum LocalNotificationScheduler {
     private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
     private static let healthDeviationLastScheduledKey = "atria.notification.healthDeviation.lastScheduledAt"
     private static let healthDeviationCooldown: TimeInterval = 48 * 60 * 60
+    private static let strapChargeReminderLastScheduledKey = "atria.notification.strapCharge.lastScheduled"
+    private static let strapChargeReminderCooldown: TimeInterval = 20 * 60 * 60
+    private static let strapChargeReminderLowBatteryThreshold = 30
+    private static let strapChargeReminderMinLearnedHours = 5
+    private static let strapChargeReminderHourTolerance = 1
 
     private enum Identifier {
         static let morningSummaryPrefix = "atria.morningSummary."
@@ -33,6 +38,7 @@ enum LocalNotificationScheduler {
         static let battery = "atria.battery.low"
         static let bluetoothOff = "atria.bluetooth.off"
         static let fitCheck = "atria.fitcheck.needed"
+        static let strapChargeReminder = "atria.strap.chargeReminder"
         static let diagnostic = "atria.diagnostic.delivery"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
@@ -516,6 +522,93 @@ enum LocalNotificationScheduler {
                               String(describing: error))
             }
         }
+    }
+
+    /// Charge-pattern nudge (docs/24 §14.2 deferred item): once Atria has
+    /// learned at least `strapChargeReminderMinLearnedHours` charge-start hours
+    /// from AtriaBLEManager's rolling history, remind the user near their usual
+    /// charge time whenever the strap is low and not currently charging. Reuses
+    /// the "battery" kind so it inherits the existing budget/quiet-hours
+    /// exemption for actionable device-health alerts.
+    static func scheduleStrapChargeReminder(batteryLevel: Int,
+                                            isCharging: Bool,
+                                            now: Date = Date(),
+                                            calendar: Calendar = .current) {
+        guard AtriaNotificationSettings.load().allows(kind: "battery") else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=strap_charge reason=user_disabled")
+            return
+        }
+        guard batteryLevel >= 0, batteryLevel < strapChargeReminderLowBatteryThreshold, !isCharging else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=strap_charge reason=not_low_or_charging level=%d charging=%d",
+                          batteryLevel,
+                          isCharging ? 1 : 0)
+            return
+        }
+
+        let hours = UserDefaults.standard.array(forKey: AtriaBLEManager.ChargePatternDefaults.hours) as? [Int] ?? []
+        guard hours.count >= strapChargeReminderMinLearnedHours else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=strap_charge reason=insufficient_learned_hours count=%d needed=%d",
+                          hours.count,
+                          strapChargeReminderMinLearnedHours)
+            return
+        }
+
+        let medianHour = medianChargeHour(hours)
+        let currentHour = calendar.component(.hour, from: now)
+        let rawDelta = abs(currentHour - medianHour)
+        let hourDelta = min(rawDelta, 24 - rawDelta)
+        guard hourDelta <= strapChargeReminderHourTolerance else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=strap_charge reason=outside_learned_window current_hour=%d median_hour=%d",
+                          currentHour,
+                          medianHour)
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let last = defaults.double(forKey: strapChargeReminderLastScheduledKey)
+        if last > 0, now.timeIntervalSince(Date(timeIntervalSince1970: last)) < strapChargeReminderCooldown {
+            AtriaDebugLog("ATRIADBG notification_skip kind=strap_charge reason=cooldown")
+            return
+        }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=strap_charge",
+                              status)
+                return
+            }
+
+            center.removePendingNotificationRequests(withIdentifiers: [Identifier.strapChargeReminder])
+            let decision = NotificationDecision(kind: "battery",
+                                                identifier: Identifier.strapChargeReminder,
+                                                title: "Strap charge window",
+                                                body: "Battery at \(batteryLevel)% — you usually charge around \(medianHour):00. Top up before tonight sleep tracking.",
+                                                reason: "learned_charge_hour_\(medianHour)_battery_\(batteryLevel)",
+                                                shouldSchedule: true,
+                                                delay: 5,
+                                                userInfo: ["deepLink": "atria://strap"])
+            do {
+                try await add(decision: decision, center: center)
+                defaults.set(now.timeIntervalSince1970, forKey: strapChargeReminderLastScheduledKey)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=strap_charge error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
+    private static func medianChargeHour(_ hours: [Int]) -> Int {
+        let sorted = hours.sorted()
+        let mid = sorted.count / 2
+        guard sorted.count % 2 == 0 else { return sorted[mid] }
+        return (sorted[mid - 1] + sorted[mid]) / 2
     }
 
     private static func configureDeliveryLogger() {
