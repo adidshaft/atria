@@ -783,8 +783,6 @@ struct AtriaHomeView: View {
                     AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
                         .ignoresSafeArea()
                 }
-                .navigationTitle("Strap")
-                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") {
@@ -1167,8 +1165,12 @@ struct AtriaHomeView: View {
             selectedTab = .vitals
         // Static handoff compatibility marker for the previous debug route:
         // case "data", "collection", "history":
+        case "journal":
+            selectedTab = .journal
+        case "chat":
+            selectedTab = .chat
         case "strap", "data", "collection", "history":
-            selectedTab = .collection
+            showStrapScreen = true
             model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
         case "settings":
             selectedTab = .overview

@@ -2076,7 +2076,20 @@ struct BiologicalAgeSummary: Equatable {
     }
 
     var blockerText: String {
-        blockers.isEmpty ? footnote : blockers.joined(separator: " · ")
+        blockers.isEmpty ? footnote : blockers.map(Self.humanBlocker).joined(separator: " · ")
+    }
+
+    /// The producer keeps machine tokens (pinned, log-friendly); the UI never
+    /// shows snake_case to a human.
+    private static func humanBlocker(_ raw: String) -> String {
+        switch raw {
+        case "vo2max_learning": return "VO₂ max learning"
+        case "resting_hr_learning": return "resting HR baseline"
+        case "hrv_learning": return "HRV baseline"
+        case "sleep_history_thin": return "3 sleep nights"
+        case "training_load_learning": return "training-load history"
+        default: return raw.replacingOccurrences(of: "_", with: " ")
+        }
     }
 }
 
