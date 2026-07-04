@@ -11316,5 +11316,39 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, trend, needle)
 
 
+    def test_duty_cycle_and_archive_compactor_are_wired_and_pulled(self):
+        ble_manager = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+        archive = source(ROOT / "Atria" / "Atria" / "HistoricalArchive.swift")
+        pull_script = source(ROOT / "pull_atria_state.sh")
+
+        for needle in [
+            "enum DutyCycleState",
+            "case sparseSentinel",
+            "sparse_expected_silence",
+            "duty_cycle state=",
+        ]:
+            assert_contains(self, ble_manager, needle)
+
+        for needle in [
+            "static func compactArchive",
+            "aborted_green_invariant",
+        ]:
+            assert_contains(self, archive, needle)
+
+        append_start = archive.index("private static func appendJSONLine<T: Encodable>(_ value: T) throws -> URL {")
+        append_end = archive.index("\n    }\n", append_start)
+        append_source = archive[append_start:append_end]
+        assert_contains(self, append_source, "promotionLock.lock()")
+
+        for needle in [
+            "def emit_duty_cycle_and_compaction_preferences():",
+            "duty_cycle_enabled=",
+            "duty_cycle_sleep_window_start_min=",
+            "duty_cycle_sleep_window_end_min=",
+            "archive_compaction_last_run_at=",
+        ]:
+            assert_contains(self, pull_script, needle)
+
+
 if __name__ == "__main__":
     unittest.main()

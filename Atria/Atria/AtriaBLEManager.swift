@@ -720,6 +720,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let dropAt = "atria.battery.dropAt"
         static let dropDelta = "atria.battery.dropDelta"
     }
+    /// Charge-pattern learning (docs/24 §14.2 deferred item): a rolling record of
+    /// the local hour-of-day whenever the strap is newly observed to start
+    /// charging, so LocalNotificationScheduler can nudge the user near their
+    /// usual charge time once a low-battery reading lands outside a charge.
+    enum ChargePatternDefaults {
+        static let hours = "atria.chargePattern.hours"
+        static let lastRecordedAt = "atria.chargePattern.lastRecordedAt"
+    }
+    private nonisolated static let chargePatternMaxEntries = 14
+    private nonisolated static let chargePatternDedupeWindow: TimeInterval = 4 * 60 * 60
     private nonisolated static let activeBatteryChargeEvidenceMaxAge: TimeInterval = 10 * 60
     private nonisolated static let activeBatteryChargeDisplayMaxAge: TimeInterval = 2 * 60
     private struct WorkoutCaptureEvidence {
@@ -10704,6 +10714,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         guard level >= 0 && level <= 100 else { return }
         let defaults = UserDefaults.standard
         let now = Date().timeIntervalSince1970
+        if let chargeStatus {
+            recordChargePatternHourIfTransitioning(to: chargeStatus, defaults: defaults)
+        }
         let previous = defaults.object(forKey: BatteryDefaults.level) as? Int
         if let previous, previous > level {
             defaults.set(previous, forKey: BatteryDefaults.previousLevel)
@@ -10719,10 +10732,49 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             defaults.set(now, forKey: BatteryDefaults.chargeAt)
         }
         updateStrapStreamState(reason: "battery_level", defaults: defaults)
+        let effectiveChargeStatus = chargeStatus ?? batteryChargeStatus
+        LocalNotificationScheduler.scheduleStrapChargeReminder(
+            batteryLevel: level,
+            isCharging: effectiveChargeStatus == .charging || effectiveChargeStatus == .full)
+    }
+
+    /// Records the local hour-of-day the first time a battery update observes a
+    /// transition INTO `.charging` (i.e. the previously persisted charge status
+    /// was something other than charging). Keeps at most the last 14 entries and
+    /// dedupes to at most one record per rolling 4 h window so a single long
+    /// charge session on the dock doesn't flood the sample with one hour value.
+    private func recordChargePatternHourIfTransitioning(to status: BatteryChargeStatus,
+                                                        defaults: UserDefaults,
+                                                        now: Date = Date(),
+                                                        calendar: Calendar = .current) {
+        guard status == .charging else { return }
+        let previousStatus = defaults.string(forKey: BatteryDefaults.chargeStatus)
+        guard previousStatus != BatteryChargeStatus.charging.rawValue else { return }
+
+        let lastRecordedAt = defaults.double(forKey: ChargePatternDefaults.lastRecordedAt)
+        if lastRecordedAt > 0,
+           now.timeIntervalSince1970 - lastRecordedAt < Self.chargePatternDedupeWindow {
+            AtriaDebugLog("ATRIADBG charge_pattern status=skipped reason=dedupe_window_active last_s_ago=%.0f",
+                          now.timeIntervalSince1970 - lastRecordedAt)
+            return
+        }
+
+        let hour = calendar.component(.hour, from: now)
+        var hours = defaults.array(forKey: ChargePatternDefaults.hours) as? [Int] ?? []
+        hours.append(hour)
+        if hours.count > Self.chargePatternMaxEntries {
+            hours.removeFirst(hours.count - Self.chargePatternMaxEntries)
+        }
+        defaults.set(hours, forKey: ChargePatternDefaults.hours)
+        defaults.set(now.timeIntervalSince1970, forKey: ChargePatternDefaults.lastRecordedAt)
+        AtriaDebugLog("ATRIADBG charge_pattern status=recorded hour=%d sample_count=%d",
+                      hour,
+                      hours.count)
     }
 
     private func persistBatteryChargeStatus(_ status: BatteryChargeStatus, source: String) {
         let defaults = UserDefaults.standard
+        recordChargePatternHourIfTransitioning(to: status, defaults: defaults)
         defaults.set(status.rawValue, forKey: BatteryDefaults.chargeStatus)
         defaults.set(Date().timeIntervalSince1970, forKey: BatteryDefaults.chargeAt)
         if status == .charging || status == .full {

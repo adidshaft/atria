@@ -45,6 +45,8 @@ struct AtriaSettingsView: View {
     @State private var backupStatus: SessionBackupStatus
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
+    @State private var storageFootprintTotal: String?
+    @State private var storageFootprintBreakdown: String?
     @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
     @AtriaDefault(AtriaNutritionContext.healthReadNutritionKey) private var useHealthNutrition = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
@@ -185,6 +187,7 @@ struct AtriaSettingsView: View {
                 }
             }
         }
+        .onAppear { computeStorageFootprint() }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: heartRateBroadcast) { _, value in onUpdateHeartRateBroadcast(value) }
@@ -983,11 +986,75 @@ struct AtriaSettingsView: View {
                 }
                 .disabled(syncTapped)
             }
+            storageFootprintRow
         } header: {
             Text("Your data")
         } footer: {
             Text("Local ownership, free export.")
         }
+    }
+
+    private var storageFootprintRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            settingsInfoRow(
+                icon: "internaldrive.fill",
+                tint: .blue,
+                title: "On-device storage" + (storageFootprintTotal.map { " · \($0)" } ?? ""),
+                detail: "Atria keeps every heartbeat on this phone: raw detail for recent days, then per-minute summaries, and daily scores forever. Workouts and sleeps you confirm keep full beat-by-beat data permanently and stay exportable. Nothing leaves your phone."
+            )
+            if let breakdown = storageFootprintBreakdown {
+                Text(breakdown)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 38)
+            }
+        }
+    }
+
+    /// Cheap `FileManager` attribute lookups only — never reads file contents.
+    /// Recomputed once per Settings appearance so the row reflects current disk usage.
+    private func computeStorageFootprint() {
+        let fileManager = FileManager.default
+        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+
+        func size(of url: URL) -> Int64 {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return 0 }
+            return (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        }
+
+        func directorySize(_ url: URL) -> Int64 {
+            guard let enumerator = fileManager.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { return 0 }
+            var total: Int64 = 0
+            for case let fileURL as URL in enumerator {
+                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
+                total += Int64(values?.fileSize ?? 0)
+            }
+            return total
+        }
+
+        let sessionsBytes = size(of: documents.appendingPathComponent("sessions.json"))
+        let coldSessionsBytes = size(of: documents.appendingPathComponent("sessions-cold.json"))
+        let archiveDirectory = documents.appendingPathComponent("atria-historical", isDirectory: true)
+        let archiveBaseBytes = size(of: archiveDirectory.appendingPathComponent("historical-archive.jsonl"))
+        let segmentsBytes = directorySize(archiveDirectory.appendingPathComponent("segments", isDirectory: true))
+        let rollupsBytes = size(of: documents.appendingPathComponent("daily-rollups.json"))
+
+        let totalBytes = sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let totalText = formatter.string(fromByteCount: totalBytes)
+        storageFootprintTotal = totalText
+        storageFootprintBreakdown = "Sessions \(formatter.string(fromByteCount: sessionsBytes + coldSessionsBytes)) · "
+            + "Strap archive \(formatter.string(fromByteCount: archiveBaseBytes + segmentsBytes)) · "
+            + "Daily scores \(formatter.string(fromByteCount: rollupsBytes))"
+
+        AtriaDebugLog("ATRIADBG settings_storage_footprint status=ok sessions_bytes=%d cold_sessions_bytes=%d archive_bytes=%d segments_bytes=%d rollups_bytes=%d total_bytes=%d",
+                       sessionsBytes, coldSessionsBytes, archiveBaseBytes, segmentsBytes, rollupsBytes, totalBytes)
     }
 
     private var backupArchiveRow: some View {

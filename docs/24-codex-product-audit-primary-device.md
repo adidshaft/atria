@@ -7206,3 +7206,38 @@ preparing") — retry works; and each test-run re-install drops developer trust,
 requiring the Settings re-trust before the next app launch. 🟡 The phone
 currently needs that re-trust (HARNESS_ERROR=developer_profile_not_trusted)
 before the sleep-stage-fix build launches.
+
+## 17. Remaining-items chunk (2026-07-04, tiered-agent parallel implementation)
+
+All previously data/decision-deferred implementable items landed in one pass
+(Release install `logs/20260704-remaining-items-release-install.log`, BUILD
+SUCCEEDED; static checks steady at 30 with ONE NEW PASSING guard test):
+
+- **Charge-pattern nudge (§14.2 final deferred item)**: the BLE battery paths now
+  record the local hour on every not-charging→charging transition (rolling 14
+  entries, ≥4 h apart); `scheduleStrapChargeReminder` fires only when battery <30%,
+  not charging, ≥5 learned hours exist, the current hour is within ±1 (circular) of
+  the MEDIAN learned charge hour, and a 20 h cooldown has passed. "battery" kind
+  stays budget/quiet-hours exempt. The pinned `Identifier.active` array was
+  deliberately left untouched (its literal is static-check pinned); the reminder
+  manages its own identifier.
+- **"On-device storage" settings row (§14.1 design deliverable)**: cheap
+  FileManager sizing of sessions.json / sessions-cold.json / archive + segments /
+  rollups computed onAppear, shown with ByteCountFormatter and the honesty copy
+  (raw recent → per-minute summaries → daily scores forever; confirmed
+  sleeps/workouts keep beat-level raw permanently; nothing leaves the phone).
+- **`docs/export-schema.md`**: the reviewable source of truth for the research
+  bundle — every field/type/unit, the day-0 relative time model, banding rules,
+  pseudonym lifecycle/unlinkability, the enforced denylist, schema-version bump
+  rules, and the quasi-identifiability caveat.
+- **Verification instrumentation**: pull_atria_state.sh now emits
+  `duty_cycle_enabled/duty_cycle_sleep_window_start_min/_end_min/
+  archive_compaction_last_run_at(+_age_s)`; a new static check pins the duty-cycle
+  and compactor tokens (incl. the append-path `promotionLock` fix from §15).
+
+Agent-ops note: two parallel agents raced a `git stash` mid-task and briefly reset
+each other's edits; both detected the regression via their check baselines and
+reapplied — final state verified coherent (all six files present, checks green).
+With this chunk, EVERY item in §12–§14 is implemented, reviewed, or explicitly
+external (GitHub Pages publish, upload endpoint) / data-gated (Overview advice
+card awaits real insights).
