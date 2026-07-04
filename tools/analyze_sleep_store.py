@@ -105,6 +105,13 @@ def percentile_nearest_rank(values: list[int], percentile: float) -> int:
     return ordered[min(len(ordered) - 1, rank - 1)]
 
 
+def standard_deviation(values: list[int]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+
 def sleep_day_for(session: dict[str, Any], timezone: str) -> dt.date:
     zone = timezone_for(timezone)
     end_local = (APPLE_EPOCH + dt.timedelta(seconds=session_end(session))).astimezone(zone)
@@ -128,14 +135,47 @@ def is_daytime_nap_window(session: dict[str, Any], timezone: str) -> bool:
     return start_hour >= 11 and end_hour <= 20
 
 
-def sleep_clusters(sessions: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+def should_split_post_wake_nap(current: list[dict[str, Any]], session: dict[str, Any], rest: int, timezone: str) -> bool:
+    if not current:
+        return False
+    start = min(session_start(item) for item in current)
+    end = max(session_end(item) for item in current)
+    duration = sum(session_duration(item) for item in current)
+    if duration < STRICT_MINIMUM_SECONDS:
+        return False
+    zone = timezone_for(timezone)
+    start_hour = (APPLE_EPOCH + dt.timedelta(seconds=start)).astimezone(zone).hour
+    end_hour = (APPLE_EPOCH + dt.timedelta(seconds=end)).astimezone(zone).hour
+    main_overnight = start_hour >= 20 or start_hour <= 5 or end_hour <= 11
+    if not main_overnight:
+        return False
+    next_start_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_start(session))).astimezone(zone).hour
+    next_end_hour = (APPLE_EPOCH + dt.timedelta(seconds=session_end(session))).astimezone(zone).hour
+    post_wake_window = next_start_hour >= 8 and next_end_hour <= 20
+    short_low_hr_rest = (
+        session_duration(session) >= NAP_MINIMUM_SECONDS
+        and session_duration(session) <= NAP_MAXIMUM_SPAN_SECONDS
+        and avg_hr(session) <= rest + 12
+        and peak_hr(session) <= rest + 55
+    )
+    return post_wake_window and short_low_hr_rest
+
+
+def sleep_clusters(sessions: list[dict[str, Any]], rest: int, timezone: str) -> list[list[dict[str, Any]]]:
     clusters: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_end: float | None = None
     for session in sorted(sessions, key=session_start):
         start = session_start(session)
         end = session_end(session)
-        if current and current_end is not None and start - current_end > SLEEP_CLUSTER_GAP_SECONDS:
+        if (
+            current
+            and current_end is not None
+            and (
+                start - current_end > SLEEP_CLUSTER_GAP_SECONDS
+                or should_split_post_wake_nap(current, session, rest, timezone)
+            )
+        ):
             clusters.append(current)
             current = []
         current.append(session)
@@ -143,6 +183,34 @@ def sleep_clusters(sessions: list[dict[str, Any]]) -> list[list[dict[str, Any]]]
     if current:
         clusters.append(current)
     return clusters
+
+
+def overlaps_sleep_core(start: float, end: float, timezone: str) -> bool:
+    zone = timezone_for(timezone)
+    local_start = (APPLE_EPOCH + dt.timedelta(seconds=start)).astimezone(zone)
+    day = local_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = APPLE_EPOCH + dt.timedelta(seconds=start)
+    end_dt = APPLE_EPOCH + dt.timedelta(seconds=end)
+    for offset in (-1, 0, 1):
+        core_start = day + dt.timedelta(days=offset)
+        core_end = core_start + dt.timedelta(hours=6)
+        if start_dt < core_end.astimezone(dt.timezone.utc) and end_dt > core_start.astimezone(dt.timezone.utc):
+            return True
+    return False
+
+
+def unambiguous_hr_only_main_sleep(candidate: dict[str, Any], timezone: str) -> bool:
+    if candidate["kind"] == "nap_candidate":
+        return False
+    if candidate["sessions"] != 1 or candidate["duration"] < 5 * 60 * 60 or candidate["max_gap"] > 60:
+        return False
+    if candidate["avg"] > candidate["sleep_rhr"] + 12 or candidate["hr_sd"] > 9.5:
+        return False
+    zone = timezone_for(timezone)
+    start_hour = (APPLE_EPOCH + dt.timedelta(seconds=candidate["start"])).astimezone(zone).hour
+    end_hour = (APPLE_EPOCH + dt.timedelta(seconds=candidate["end"])).astimezone(zone).hour
+    overnight = start_hour >= 20 or start_hour <= 3 or end_hour <= 10
+    return overnight and overlaps_sleep_core(candidate["start"], candidate["end"], timezone)
 
 
 def load_archive_range(path: Path | None) -> dict[str, Any]:
@@ -291,7 +359,7 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
 
     candidates: list[dict[str, Any]] = []
     for day, day_sessions in grouped.items():
-        for cluster in sleep_clusters(day_sessions):
+        for cluster in sleep_clusters(day_sessions, rest, timezone):
             start = min(session_start(session) for session in cluster)
             end = max(session_end(session) for session in cluster)
             duration = sum(session_duration(session) for session in cluster)
@@ -321,7 +389,7 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
                 continue
             values = [bpm for session in cluster for bpm in bpms(session)]
             motion = motion_status(start, end, archive)
-            candidates.append({
+            candidate = {
                 "day": day.isoformat(),
                 "sessions": len(cluster),
                 "start": start,
@@ -332,6 +400,7 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
                 "samples": len(values),
                 "avg": round(sum(values) / len(values)) if values else 0,
                 "peak": max(values) if values else 0,
+                "hr_sd": standard_deviation(values),
                 "sleep_rhr": percentile_nearest_rank(values, 0.05),
                 "strict_ready": strict_ready,
                 "fragmented_ready": fragmented_ready,
@@ -339,10 +408,12 @@ def aggregate_candidates(sessions: list[dict[str, Any]], rest: int, max_hr: int,
                 "fallback_source": "hr_only_fragmented_sleep" if len(cluster) > 1 else "hr_only_sleep",
                 "kind": "nap_candidate" if nap_ready else "overnight_sleep",
                 "motion": motion,
-                "ready": bool(motion.get("validated")),
-                "blocker": "none" if motion.get("validated") else candidate_blocker(motion),
                 "labels": ",".join(sorted({str(session.get("label", "")) for session in cluster if session.get("label")})),
-            })
+            }
+            hr_only_ready = unambiguous_hr_only_main_sleep(candidate, timezone)
+            candidate["ready"] = bool(motion.get("validated")) or hr_only_ready
+            candidate["blocker"] = "none" if candidate["ready"] else candidate_blocker(motion)
+            candidates.append(candidate)
     counts["candidates"] = len(candidates)
     return sorted(candidates, key=lambda item: (item["ready"], item["day"], item["duration"]), reverse=True), counts
 
