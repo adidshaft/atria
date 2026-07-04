@@ -39,6 +39,14 @@ struct AtriaTodayScreen: View {
     /// keeps this pinned to full size (see `heroScale`/`heroOpacity`)
     /// regardless of this value -- the hero simply never shrinks.
     @State private var heroShrinkProgress: CGFloat = 0
+    /// Read-through cache for glance-tile derivations that are expensive to
+    /// recompute (filters/sorts over rollup or workout history) but only
+    /// change when the underlying aggregate actually changes -- see
+    /// `AtriaTodayGlanceMemo` (measured-perf pass, 2026-07-05). Held in
+    /// `@State` (not a plain `let`) so the reference -- and therefore the
+    /// cache inside it -- survives AtriaTodayScreen being value-recreated by
+    /// AtriaHomeView on every live-pulse tick.
+    @State private var glanceMemo = AtriaTodayGlanceMemo()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
@@ -734,14 +742,15 @@ struct AtriaTodayScreen: View {
         let value = latestSleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
             ?? "Building"
-        let tint = performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) } ?? Metrics.electricSleep
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
                                   detail: sleepNeedDetailText(performance: performance),
                                   systemImage: "moon.fill",
-                                  tint: tint,
+                                  // Color-coherence pass (2026-07-05): identity hue always sleep
+                                  // violet -- zone state moved to `stateTint` (the legend dot).
+                                  tint: Metrics.electricSleep,
                                   fill: performance.map { min(max(Double($0) / 100.0, 0), 1) },
-                                  identityTint: Metrics.electricSleep,
+                                  stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) },
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
                                   // computed nightly need to close against -- never a fabricated
                                   // target when `sleepNeedHoursValue` can't be computed yet.
@@ -784,11 +793,13 @@ struct AtriaTodayScreen: View {
                                   value: display.value,
                                   detail: display.detail,
                                   systemImage: "arrow.clockwise.heart.fill",
-                                  // Always-colorful-rings pass (2026-07-05): fall back to the
-                                  // identity heart-green, never `.secondary` gray, while learning.
+                                  // EXCEPTION to the identity-hue rule (color-coherence pass,
+                                  // 2026-07-05): recovery's hue IS its value (WHOOP red/yellow/
+                                  // green over 0-100), so `tint` itself stays zone-graded. Falls
+                                  // back to identity heart-green, never `.secondary` gray, while
+                                  // learning. `stateTint` stays nil -- the dot would be redundant.
                                   tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? Metrics.electricGreen,
-                                  fill: display.percent.map { Double($0) / 100.0 },
-                                  identityTint: Metrics.electricGreen)
+                                  fill: display.percent.map { Double($0) / 100.0 })
                                   // No target marker: recovery has no separate "target" of its
                                   // own -- its value is already the 0-100 scale it's graded on.
     }
@@ -804,27 +815,29 @@ struct AtriaTodayScreen: View {
     private var userSetStrainTarget: Double? { nil }
 
     private var strainMetric: AtriaTriRingMetric {
-        // Strain-ring-semantics pass (2026-07-05): the ring FILL is now
-        // absolute strain against the fixed 0-21 WHOOP scale (never target-
-        // relative -- a 12 strain always fills the same ~57% of the ring no
-        // matter today's target), so the ring reads as "how much strain
-        // today", while the TARGET MARKER below is the separate "recommended
-        // by ATRIA based on recovery" cue the strain-relative math used to be
+        // Strain-ring-semantics pass (2026-07-05): the ring FILL is
+        // absolute strain against a clean 0-20 scale (never target-relative
+        // -- a 12 strain always fills the same 60% of the ring no matter
+        // today's target), so the ring reads as "how much strain today",
+        // while the TARGET MARKER below is the separate "recommended by
+        // ATRIA based on recovery" cue the strain-relative math used to be
         // folded into. Zone tinting (under/optimal/over) still compares
-        // strain against the target, unchanged.
+        // strain against the target, unchanged, but is routed to
+        // `stateTint` only -- color-coherence pass (2026-07-05): the fill/
+        // track hue always stays strain's one cool electric blue, matching
+        // the glance tile below it.
         let target = userSetStrainTarget ?? displayHero.guidance.target
         let percentOfTarget = target.map { displayHero.strain / $0 * 100 }
-        let tint = percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) } ?? Metrics.electricStrain
         return AtriaTriRingMetric(title: "Strain",
                                   value: displayHero.strainValue,
                                   detail: target.map { String(format: "of %.1f", $0) } ?? "Strain",
                                   systemImage: "flame.fill",
-                                  tint: tint,
-                                  fill: min(max(displayHero.strain / 21.0, 0), 1),
-                                  identityTint: Metrics.electricStrain,
+                                  tint: Metrics.strainColor(displayHero.strain),
+                                  fill: min(max(displayHero.strain / 20.0, 0), 1),
+                                  stateTint: percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) },
                                   // Honest: no marker unless there's a real target (a real
                                   // user-set value, or the coach's recovery-based recommendation).
-                                  targetFraction: target.map { min(max($0 / 21.0, 0), 1) })
+                                  targetFraction: target.map { min(max($0 / 20.0, 0), 1) })
     }
 
     /// HRV ring metric. Fill is nil (learning placeholder cap) unless the
@@ -1006,7 +1019,7 @@ struct AtriaTodayScreen: View {
     private var coachBaselines: [String: AtriaCoachPayload.VitalRange] {
         [
             "recovery": .init(low: 0, high: 100),
-            "strain": .init(low: 0, high: displayHero.guidance.target ?? 21),
+            "strain": .init(low: 0, high: displayHero.guidance.target ?? 20),
             "hrv": .init(low: nil, high: nil),
             "rhr": .init(low: nil, high: nil)
         ]
@@ -1214,10 +1227,17 @@ struct AtriaTodayScreen: View {
         AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
     }
 
+    /// Measured-perf pass (2026-07-05): `store.confirmedWorkouts` is already
+    /// stored start-descending (see `readConfirmedWorkouts`/
+    /// `saveConfirmedWorkouts`, Sessions.swift) and this and
+    /// `latestConfirmedWorkoutOneLiner` are read on every glance-tile body
+    /// eval, including every live-pulse re-render -- so both are memoized
+    /// together behind `store.confirmedWorkoutsRevision`, and the "this
+    /// week" scan stops as soon as it walks off the front of the window
+    /// instead of filtering the whole (unbounded, all-time) array.
     private var thisWeekConfirmedWorkoutsCount: Int {
-        let calendar = Calendar.current
-        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start ?? calendar.startOfDay(for: Date())
-        return store.confirmedWorkouts.filter { $0.start >= weekStart }.count
+        refreshWorkoutsGlanceCacheIfNeeded()
+        return glanceMemo.workoutsWeekCount ?? 0
     }
 
     private static let workoutDayFormatter: DateFormatter = {
@@ -1227,32 +1247,66 @@ struct AtriaTodayScreen: View {
     }()
 
     private var latestConfirmedWorkoutOneLiner: String {
-        guard let latest = store.confirmedWorkouts.max(by: { $0.start < $1.start }) else { return "No workouts yet" }
-        let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
-        let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
-        let dayText = Self.workoutDayFormatter.string(from: latest.start)
-        return [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+        refreshWorkoutsGlanceCacheIfNeeded()
+        return glanceMemo.workoutsOneLiner ?? "No workouts yet"
+    }
+
+    private func refreshWorkoutsGlanceCacheIfNeeded() {
+        let revision = store.confirmedWorkoutsRevision
+        guard glanceMemo.workoutsRevision != revision else { return }
+        let workouts = store.confirmedWorkouts
+        let calendar = Calendar.current
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start ?? calendar.startOfDay(for: Date())
+        // Sorted start-descending, so everything still "this week" is a
+        // contiguous run at the front -- no need to walk the rest of a
+        // years-long workout history every eval.
+        glanceMemo.workoutsWeekCount = workouts.prefix(while: { $0.start >= weekStart }).count
+        if let latest = workouts.first {
+            let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
+            let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
+            let dayText = Self.workoutDayFormatter.string(from: latest.start)
+            glanceMemo.workoutsOneLiner = [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            glanceMemo.workoutsOneLiner = "No workouts yet"
+        }
+        glanceMemo.workoutsRevision = revision
     }
 
     /// Strict 14-calendar-day window (excluding today, which is still live/incomplete).
+    /// `highlightRollups` is already day-descending (store.dailyRollupHistory
+    /// invariant; DEBUG fixture path matches it too), so this walks off the
+    /// front instead of filtering the full (up to 400-entry) history.
     private var strainCompareWindowStrains: [Double] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return [] }
         return highlightRollups
-            .filter { $0.day >= cutoff && $0.day < today }
+            .drop { $0.day >= today }
+            .prefix { $0.day >= cutoff }
             .compactMap { $0.strain }
     }
 
+    /// Measured-perf pass (2026-07-05): memoized behind
+    /// `store.dailyRollupHistoryRevision` so the filter+sort above only
+    /// actually runs when the rollups change (at most a few times a day),
+    /// not on every one of the many live-pulse body evals in between.
     private var strainCompareMedian: Double? {
-        let strains = strainCompareWindowStrains
-        guard strains.count >= 7 else { return nil }
-        let sorted = strains.sorted()
-        let mid = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[mid - 1] + sorted[mid]) / 2
+        let revision = store.dailyRollupHistoryRevision
+        if glanceMemo.strainMedianRevision == revision {
+            return glanceMemo.strainMedianValue
         }
-        return sorted[mid]
+        let strains = strainCompareWindowStrains
+        let median: Double?
+        if strains.count >= 7 {
+            let sorted = strains.sorted()
+            let mid = sorted.count / 2
+            median = sorted.count.isMultiple(of: 2) ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+        } else {
+            median = nil
+        }
+        glanceMemo.strainMedianRevision = revision
+        glanceMemo.strainMedianValue = median
+        return median
     }
 
     private func metricIsPending(_ value: String) -> Bool {
@@ -1302,6 +1356,24 @@ struct AtriaTodayScreen: View {
             && ["ai-coach-local", "ai-coach-flagged", "ai-coach-audit"].contains(arguments[valueIndex])
     }
     #endif
+}
+
+/// Read-through memo for the glance-tile derivations that are expensive to
+/// recompute but only change when their source aggregate does (measured-perf
+/// pass, 2026-07-05). A plain class (not `ObservableObject`/`@Published`)
+/// held behind a single `@State` on `AtriaTodayScreen`: mutating its fields
+/// during body evaluation is safe -- it isn't an observed property wrapper,
+/// so it neither triggers nor implies a re-render, it's a pure cache. Each
+/// cache entry is only valid when its paired revision still matches the
+/// store's current one (`dailyRollupHistoryRevision` / `confirmedWorkoutsRevision`,
+/// Sessions.swift), so a stale value is never served after the underlying
+/// data actually changes.
+private final class AtriaTodayGlanceMemo {
+    var strainMedianRevision: Int?
+    var strainMedianValue: Double?
+    var workoutsRevision: Int?
+    var workoutsWeekCount: Int?
+    var workoutsOneLiner: String?
 }
 
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {
@@ -1670,6 +1742,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     }
 
     var body: some View {
+        let _ = AtriaBodyEvalProbe.tick("AtriaTodayGlanceTile")
         VStack(alignment: .leading, spacing: 7) {
             Image(systemName: item.systemImage)
                 .font(.subheadline.weight(.bold))

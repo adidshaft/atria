@@ -3204,6 +3204,14 @@ final class SessionStore: ObservableObject {
     @Published private(set) var profile = AthleteProfile.load()
     @Published private(set) var dashboardRevision = 0
     @Published private(set) var dailyRollupHistory: [DailyRollupStoreEntry] = []
+    /// Bumped every time `dailyRollupHistory` is reassigned (measured-perf pass,
+    /// 2026-07-05). Lets read-only consumers such as AtriaTodayScreen's
+    /// glance-tile builders detect "did the underlying rollups actually
+    /// change" in O(1) so they can cache expensive per-eval derivations
+    /// (e.g. the strain-compare median) instead of recomputing on every
+    /// body evaluation, including the ones driven by live-pulse updates that
+    /// never touch the rollups at all.
+    private(set) var dailyRollupHistoryRevision = 0
     @Published private(set) var todayHRZoneMinutesSnapshot = TodayHRZoneMinutes.empty
     private let healthKitExporter = HealthKitExporter()
     private let dailyRollupStore = DailyRollupStore()
@@ -3223,6 +3231,10 @@ final class SessionStore: ObservableObject {
     private var pendingSessionPersistenceRevision = 0
     private var cachedLatestReferenceValidatedHRV: Int?
     private var cachedConfirmedWorkouts: [UserConfirmedWorkout]
+    /// Bumped whenever `cachedConfirmedWorkouts` is written (measured-perf
+    /// pass, 2026-07-05) -- same purpose as `dailyRollupHistoryRevision`,
+    /// for the Today workouts glance tile's memoization.
+    private(set) var confirmedWorkoutsRevision = 0
     private var cachedConfirmedSleeps: [UserConfirmedSleep]
     private var cachedBehaviorJournalEntries: [BehaviorJournalEntry]
     private var cachedResearchManeuverMarkers: [ResearchManeuverMarker]
@@ -3362,6 +3374,7 @@ final class SessionStore: ObservableObject {
             dailyRollupStore.upsert(entry)
         }
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        dailyRollupHistoryRevision &+= 1
         refreshMaxHRSuggestion(reason: "daily_rollup", force: false)
         refreshNutritionRollupFromHealthIfEnabled(for: Date(), reason: "daily_rollup")
         scheduleEveningNutritionRefreshIfNeeded()
@@ -3413,6 +3426,7 @@ final class SessionStore: ObservableObject {
                                            calendar: calendar)
         dailyRollupStore.upsert(merged)
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        dailyRollupHistoryRevision &+= 1
         let proteinBodyMassKg = healthBodyMassKg ?? (profile.weightKg > 0 ? profile.weightKg : nil)
         applyNutritionAutoTags(summary.autoJournalTags(bodyMassKg: proteinBodyMassKg),
                                day: normalizedDay,
@@ -7832,6 +7846,7 @@ final class SessionStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(sorted) else { return }
         UserDefaults.standard.set(data, forKey: ConfirmedWorkoutDefaults.key)
         cachedConfirmedWorkouts = sorted
+        confirmedWorkoutsRevision &+= 1
         refreshHistorySnapshotCache(deferred: true)
     }
 
@@ -12577,6 +12592,7 @@ final class SessionStore: ObservableObject {
             }
             if let dailyRollups = envelope.dailyRollups {
                 dailyRollupHistory = dailyRollups.sorted { $0.day > $1.day }
+                dailyRollupHistoryRevision &+= 1
                 dailyRollupStore.replaceAll(dailyRollupHistory)
             }
             if let confirmedSleeps = envelope.confirmedSleeps {
