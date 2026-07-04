@@ -93,6 +93,11 @@ struct AtriaTrendChartCard: View {
             } else {
                 chart
                     .frame(height: 168)
+                if let ghostCaptionText {
+                    Text(ghostCaptionText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(16)
@@ -132,7 +137,9 @@ struct AtriaTrendChartCard: View {
                                       baselineRestingHR: Int?,
                                       now: Date) -> AtriaTrendPreparedSeries {
         let cutoff = range.cutoffDate(now: now)
-        let previousCutoff = cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+        let previousCutoff = range.hasPriorPeriod
+            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            : .distantFuture
         var samples: [AtriaTrendPoint.Sample] = []
         samples.reserveCapacity(points.count)
         var previousSamples: [AtriaTrendPoint.Sample] = []
@@ -149,11 +156,20 @@ struct AtriaTrendChartCard: View {
                 previousSamples.append(sample)
             }
         }
+        // Time-shift the prior window forward onto the current window so it can
+        // be drawn as a dashed ghost line sharing the same x-axis (this-N vs
+        // previous-N, aligned by day-of-period rather than by date).
+        let shift = Double(range.days) * 86_400
+        let ghost: [AtriaTrendPoint.Sample] = range.hasPriorPeriod
+            ? previousSamples.map { AtriaTrendPoint.Sample(date: $0.date.addingTimeInterval(shift), value: $0.value) }
+            : []
+        domainValues.append(contentsOf: ghost.map(\.value))
         let referenceValue = metric == .restingHR ? baselineRestingHR.map(Double.init) : nil
         if let referenceValue {
             domainValues.append(referenceValue)
         }
         return AtriaTrendPreparedSeries(series: samples,
+                                        previousSeries: ghost,
                                         referenceValue: referenceValue,
                                         summary: AtriaTrendRangeSummary(series: samples,
                                                                         previousSeries: previousSamples,
@@ -172,7 +188,9 @@ struct AtriaTrendChartCard: View {
                                              range: AtriaTrendRange,
                                              now: Date) -> AtriaTrendPeriodReadout {
         let cutoff = range.cutoffDate(now: now)
-        let previousCutoff = cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+        let previousCutoff = range.hasPriorPeriod
+            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            : .distantFuture
         var currentHRV: [Double] = []
         var priorHRV: [Double] = []
         var currentRHR: [Double] = []
@@ -244,6 +262,19 @@ struct AtriaTrendChartCard: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+            }
+
+            if showGhost {
+                ForEach(prepared.previousSeries) { ghostSample in
+                    LineMark(
+                        x: .value("Date", ghostSample.date),
+                        y: .value("Prior \(metric.shortLabel)", ghostSample.value),
+                        series: .value("Series", "prior")
+                    )
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    .foregroundStyle(metric.tint.opacity(0.35))
+                }
             }
 
             ForEach(prepared.series) { sample in
@@ -322,10 +353,32 @@ struct AtriaTrendChartCard: View {
         .accessibilityLabel(chartAccessibilityLabel)
     }
 
+    /// Honest gating for the ghost overlay: only draw it when the prior window
+    /// has enough points to be a fair comparison (never fabricate a line from
+    /// a couple of stray samples), and never for `.all` (no prior period).
+    private var showGhost: Bool {
+        prepared.previousSeries.count >= max(3, prepared.series.count / 2)
+    }
+
     private var chartAccessibilityLabel: String {
         let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(prepared.series.count) days in view."
-        guard let summary = prepared.summary else { return base }
-        return "\(base) Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
+        var combined = base
+        if let summary = prepared.summary {
+            combined += " Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
+        }
+        if showGhost {
+            combined += " Prior \(range.narrativeLabel) shown as a dashed line."
+        }
+        return combined
+    }
+
+    /// Only surfaces new copy when the ghost line is actually drawn — the
+    /// "current period only" honesty copy for the non-ghost case already
+    /// lives in `AtriaTrendPeriodReadout.subtitle` / the comparison strip, and
+    /// `.all` never claims a prior period at all.
+    private var ghostCaptionText: String? {
+        guard showGhost else { return nil }
+        return "Dashed · prior \(range.narrativeLabel)"
     }
 
     private var emptyState: some View {
@@ -1823,6 +1876,10 @@ private struct AtriaTrendActionReadout: Equatable {
 
 private struct AtriaTrendPreparedSeries {
     let series: [AtriaTrendPoint.Sample]
+    /// Prior equal-length window, time-shifted forward onto the current
+    /// window's x-axis so it can be drawn as a dashed ghost line. Empty when
+    /// there is no prior period (`.all`) or no prior samples exist.
+    let previousSeries: [AtriaTrendPoint.Sample]
     let referenceValue: Double?
     let summary: AtriaTrendRangeSummary?
     let assessment: AtriaTrendRangeAssessment?
@@ -1830,6 +1887,7 @@ private struct AtriaTrendPreparedSeries {
     let yDomain: ClosedRange<Double>
 
     static let empty = AtriaTrendPreparedSeries(series: [],
+                                                previousSeries: [],
                                                 referenceValue: nil,
                                                 summary: nil,
                                                 assessment: nil,
@@ -2218,6 +2276,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
     case month
     case quarter
     case sixMonths
+    case year
+    case all
 
     var id: String { rawValue }
 
@@ -2228,6 +2288,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return 30
         case .quarter: return 90
         case .sixMonths: return 180
+        case .year: return 365
+        case .all: return 100_000
         }
     }
 
@@ -2238,6 +2300,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return "30 days"
         case .quarter: return "3 months"
         case .sixMonths: return "6 months"
+        case .year: return "12 months"
+        case .all: return "all history"
         }
     }
 
@@ -2248,6 +2312,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return "Month"
         case .quarter: return "3M"
         case .sixMonths: return "6M"
+        case .year: return "1Y"
+        case .all: return "All"
         }
     }
 
@@ -2258,6 +2324,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return "M"
         case .quarter: return "3M"
         case .sixMonths: return "6M"
+        case .year: return "1Y"
+        case .all: return "All"
         }
     }
 
@@ -2268,12 +2336,15 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return 12
         case .quarter: return 24
         case .sixMonths: return 36
+        case .year: return 48
+        case .all: return 60
         }
     }
 
     var headerLabel: String {
         switch self {
         case .day: return "Today"
+        case .all: return "All history"
         default: return "Last \(label)"
         }
     }
@@ -2285,6 +2356,18 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         case .month: return "month"
         case .quarter: return "3 months"
         case .sixMonths: return "6 months"
+        case .year: return "year"
+        case .all: return "all history"
+        }
+    }
+
+    /// Whether this range has a meaningful equal-length "prior period" to
+    /// compare against. `.all` spans everything available, so there is no
+    /// earlier window left to overlay or diff against.
+    var hasPriorPeriod: Bool {
+        switch self {
+        case .all: return false
+        default: return true
         }
     }
 
@@ -2292,8 +2375,10 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
         switch self {
         case .day:
             return calendar.startOfDay(for: now)
-        case .week, .month, .quarter, .sixMonths:
+        case .week, .month, .quarter, .sixMonths, .year:
             return calendar.startOfDay(for: now.addingTimeInterval(-Double(days) * 86_400))
+        case .all:
+            return .distantPast
         }
     }
 }

@@ -8110,6 +8110,8 @@ private struct AtriaDetailRangeRhythmCard: View {
         case .month: return "Month"
         case .quarter: return "3M"
         case .sixMonths: return "6M"
+        case .year: return "1Y"
+        case .all: return "All"
         }
     }
 
