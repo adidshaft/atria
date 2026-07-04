@@ -1554,15 +1554,17 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 
     // Recovery/strain/sleep already headline the ring hero + legend chips, so
-    // the default glance grid leads with the metrics the rings DON'T show —
-    // no triple-representation of the same three numbers on one screen.
+    // the default glance grid leads with the metrics the rings DON'T show.
+    // Everything else a health nerd expects (VO2, skin temp, sleep
+    // consistency, charts, calories) is VISIBLE by default — user feedback
+    // 2026-07-05: hiding essentials behind Customize reads as "missing".
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.hrv, .stress, .rhr, .respiratoryRate, .load, .steps, .recovery, .strain, .sleep, .sleepHistory, .sleepEfficiency, .calories, .vo2max, .trend, .insights, .bloodOxygen, .bodyTemp, .bioAge]
+        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
     }
 
-    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .load, .steps]
-    static let moreMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep, .sleepHistory, .sleepEfficiency, .calories, .vo2max, .trend, .insights]
-    static let experimentalMetrics: [AtriaTodayMetric] = [.bloodOxygen, .bodyTemp, .bioAge]
+    static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
+    static let moreMetrics: [AtriaTodayMetric] = [.recovery, .strain, .sleep]
+    static let experimentalMetrics: [AtriaTodayMetric] = [.bloodOxygen, .bioAge]
 
     static func migratedRawValue(_ raw: String) -> String? {
         switch raw {

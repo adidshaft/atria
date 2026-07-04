@@ -41,7 +41,7 @@ final class AtriaLayoutModelTests: XCTestCase {
     func testTodayMetricLegacyPreferenceMigrationDropsNonMetricsAndMergesSteps() {
         let legacyOrder = "workout,recovery,strapSteps,backfill,hapticAlerts,sleep,unknown,steps"
         XCTAssertEqual(AtriaTodayMetric.ordered(from: legacyOrder),
-                       [.recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .strain, .sleepHistory, .sleepEfficiency, .calories, .vo2max, .trend, .insights, .bloodOxygen, .bodyTemp, .bioAge])
+                       [.recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .strain, .bloodOxygen, .bioAge])
 
         let legacyHidden = AtriaTodayMetric.hiddenStorageValue(for: Set(["strapSteps", "backfill", "hapticAlerts", "unknown", "bloodOxygen"]))
         XCTAssertEqual(legacyHidden, "bloodOxygen,steps")
