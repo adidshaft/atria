@@ -35,7 +35,9 @@ Atria is an open-source iOS app and BLE research toolkit for using a compatible 
 This project is independent and unaffiliated with WHOOP. It does not bypass paid cloud features. It talks to your own hardware over Bluetooth LE and keeps data on device.
 
 <p align="center">
-  <img src="assets/atria-today.png" alt="Atria Today screen" width="360">
+  <img src="assets/atria-today.png" alt="Atria Today overview screen" width="260">
+  <img src="assets/atria-strain-detail.png" alt="Atria strain detail screen" width="260">
+  <img src="assets/atria-ai-coach.png" alt="Atria AI coach screen" width="260">
 </p>
 
 ## Current Status
