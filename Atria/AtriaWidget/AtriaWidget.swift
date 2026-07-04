@@ -8,6 +8,39 @@ private let appGroupID = "group.com.adidshaft.atria"
 private let atriaOverviewURL = URL(string: "atria://tab/overview")!
 private let atriaVitalsURL = URL(string: "atria://tab/vitals")!
 
+// Single source of truth for the recovery zone tint used by the ring gauges,
+// the header percent, and the Lock Screen accessory gauge. Gray/secondary
+// means "learning" — never a fabricated color for an unknown percent.
+private func atriaRecoveryZoneColor(_ percent: Int?) -> Color {
+    guard let percent else { return .secondary }
+    if percent >= 67 { return .green }
+    if percent >= 34 { return .yellow }
+    return .red
+}
+
+// Widget snapshots are local-only and can go stale if Atria hasn't been
+// opened in a while. Anything 6h+ old is called out honestly instead of
+// silently showing a number that may no longer be true.
+private func atriaSnapshotAgeMinutes(_ snapshot: AtriaWidgetSnapshot, now: Date = Date()) -> Int {
+    max(0, Int(now.timeIntervalSince(snapshot.createdAt) / 60))
+}
+
+private func atriaSnapshotIsStale(_ snapshot: AtriaWidgetSnapshot, now: Date = Date()) -> Bool {
+    atriaSnapshotAgeMinutes(snapshot, now: now) >= 6 * 60
+}
+
+private func atriaFormattedSleepHours(_ hours: Double?) -> String {
+    guard let hours, hours > 0 else { return "--" }
+    return String(format: "%.1fh", hours)
+}
+
+private let atriaTimeOfDayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .none
+    formatter.timeStyle = .short
+    return formatter
+}()
+
 struct AtriaWidgetSnapshot: Codable {
     let schema: Int
     let createdAt: Date
@@ -20,6 +53,7 @@ struct AtriaWidgetSnapshot: Codable {
     let hrvState: String
     let maxHR: Int
     // Optional so schema-1 payloads still decode (missing keys -> nil).
+    let sleepHours: Double?
     let steps: Int?
     let heartRate: Int?
     let batteryLevel: Int?
@@ -135,36 +169,55 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var systemMediumWidget: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                widgetHeader
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    widgetHeader
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
-                    .frame(width: 92, height: 92)
+                    AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
+                        .frame(width: 92, height: 92)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                Text(secondaryText)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(width: 108, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    widgetMetricLink(widgetMetrics[0])
-                    widgetMetricLink(widgetMetrics[1])
+                    Text(secondaryText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.75)
                 }
-                HStack(spacing: 8) {
-                    widgetMetricLink(widgetMetrics[2])
-                    widgetMetricLink(widgetMetrics[3])
+                .frame(width: 108, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        widgetMetricLink(widgetMetrics[0])
+                        widgetMetricLink(widgetMetrics[1])
+                    }
+                    HStack(spacing: 8) {
+                        widgetMetricLink(widgetMetrics[2])
+                        widgetMetricLink(widgetMetrics[3])
+                    }
                 }
             }
+
+            Text(freshnessFooterText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(entry.snapshot.map { atriaSnapshotIsStale($0) } ?? false ? .orange : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
+    }
+
+    /// "as of HH:mm" while the snapshot is fresh; honestly calls out staleness
+    /// (6h+ since the app last published) rather than implying a live reading.
+    private var freshnessFooterText: String {
+        guard let snapshot = entry.snapshot else { return "Open Atria to start local tracking" }
+        let age = atriaSnapshotAgeMinutes(snapshot)
+        if atriaSnapshotIsStale(snapshot) {
+            return "Stale · \(age / 60)h old, open Atria"
+        }
+        return "as of \(atriaTimeOfDayFormatter.string(from: snapshot.createdAt))"
     }
 
     private var systemLargeWidget: some View {
@@ -338,9 +391,7 @@ struct AtriaWidgetEntryView: View {
     }
 
     private func recoveryColor(_ percent: Int) -> Color {
-        if percent >= 67 { return .green }
-        if percent >= 34 { return .yellow }
-        return .red
+        atriaRecoveryZoneColor(percent)
     }
 
     private var controlButtons: some View {
@@ -361,32 +412,56 @@ struct AtriaWidgetEntryView: View {
         .labelStyle(.titleAndIcon)
     }
 
+    /// Recovery gauge for the Lock Screen. Falls back honestly to "--" and a
+    /// gray ring while recovery is still learning — never a fabricated percent.
     private var accessoryCircular: some View {
-        VStack(spacing: 2) {
-            Text("A")
-                .font(.caption2.weight(.semibold))
-            Text(accessoryCode)
-                .font(.caption2.monospacedDigit().weight(.bold))
+        Gauge(value: accessoryCircularProgress) {
+            Text("REC")
+        } currentValueLabel: {
+            Text(entry.snapshot?.recoveryPercent.map { "\($0)" } ?? "--")
         }
+        .gaugeStyle(.accessoryCircularCapacity)
+        .tint(atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent))
         .containerBackground(.background, for: .widget)
+        .accessibilityLabel(entry.snapshot?.recoveryPercent.map { "Recovery \($0) percent" } ?? "Recovery learning")
     }
 
+    private var accessoryCircularProgress: Double {
+        guard let percent = entry.snapshot?.recoveryPercent else { return 0 }
+        return min(1, max(0, Double(percent) / 100))
+    }
+
+    /// Recovery / Strain / HR three-line summary for the Lock Screen.
     private var accessoryRectangular: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Atria")
-                .font(.caption2.weight(.semibold))
-            Text(primaryText)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(accessoryRecoveryLine)
                 .font(.caption.monospacedDigit().weight(.bold))
-            Text(footerText)
+                .lineLimit(1)
+            Text(accessoryStrainLine)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(accessoryHRLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .containerBackground(.background, for: .widget)
     }
 
-    private var primaryText: String {
-        guard let snapshot = entry.snapshot else { return "Learning" }
+    private var accessoryRecoveryLine: String {
+        guard let snapshot = entry.snapshot else { return "Rec --" }
+        return "Rec " + (snapshot.recoveryPercent.map { "\($0)%" } ?? "--")
+    }
+
+    private var accessoryStrainLine: String {
+        guard let snapshot = entry.snapshot else { return "Strain --" }
         return "Strain \(String(format: "%.1f", snapshot.strain))"
+    }
+
+    private var accessoryHRLine: String {
+        guard let snapshot = entry.snapshot else { return "HR --" }
+        return "HR " + (snapshot.heartRate.map { "\($0) bpm" } ?? "--")
     }
 
     private var secondaryText: String {
@@ -398,29 +473,30 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var footerText: String {
-        guard let snapshot = entry.snapshot else { return "HRV learning" }
-        if let hrv = snapshot.hrvRMSSD {
-            return "HRV \(hrv) ms · RHR \(snapshot.restingHR.map(String.init) ?? "learning")"
+        guard let snapshot = entry.snapshot else { return "Sleep learning" }
+        if atriaSnapshotIsStale(snapshot) {
+            return "Stale · \(atriaSnapshotAgeMinutes(snapshot) / 60)h old"
         }
-        return "\(snapshot.hrvState.replacingOccurrences(of: "_", with: " ")) · RHR \(snapshot.restingHR.map(String.init) ?? "learning")"
+        return "Sleep \(atriaFormattedSleepHours(snapshot.sleepHours)) · RHR \(snapshot.restingHR.map(String.init) ?? "learning")"
     }
 
+    /// "Rec 64% · 12.3 strain" — honestly falls back to "--" while recovery
+    /// is still learning rather than fabricating a percent.
     private var inlineText: String {
         guard let snapshot = entry.snapshot else { return "Atria learning" }
-        return "Atria strain \(String(format: "%.1f", snapshot.strain))"
-    }
-
-    private var accessoryCode: String {
-        guard let snapshot = entry.snapshot else { return "LRN" }
-        return String(format: "%.0f", snapshot.strain)
+        let recovery = snapshot.recoveryPercent.map { "\($0)%" } ?? "--"
+        return "Rec \(recovery) · \(String(format: "%.1f", snapshot.strain)) strain"
     }
 
     private var largeFooterText: String {
         guard let snapshot = entry.snapshot else { return "Open Atria to start local tracking" }
-        let age = max(0, Int(Date().timeIntervalSince(snapshot.createdAt) / 60))
+        let age = atriaSnapshotAgeMinutes(snapshot)
         if age < 1 { return "Updated now · local snapshot" }
         if age < 60 { return "Updated \(age)m ago · local snapshot" }
-        return "Open Atria to refresh the local snapshot"
+        if atriaSnapshotIsStale(snapshot) {
+            return "Stale · updated \(age / 60)h ago, open Atria to refresh"
+        }
+        return "Updated \(age / 60)h ago · local snapshot"
     }
 }
 
@@ -433,10 +509,7 @@ private struct AtriaWidgetRecoveryGauge: View {
     }
 
     private var tint: Color {
-        guard let percent else { return .secondary }
-        if percent >= 67 { return .green }
-        if percent >= 34 { return .yellow }
-        return .red
+        atriaRecoveryZoneColor(percent)
     }
 
     var body: some View {
@@ -668,11 +741,14 @@ private func elapsedText(since start: Date) -> String {
 // MARK: - Single-metric widgets (Home Screen + Lock Screen)
 
 enum AtriaWidgetMetric: String, Identifiable {
-    case steps, strain, hrv, bpm
+    case steps, strain, hrv, bpm, sleep, rhr
 
     var id: String { rawValue }
 
-    static let fallbackOrder: [AtriaWidgetMetric] = [.strain, .bpm, .hrv, .steps]
+    // Strain, Sleep, and RHR are the default widget-overhaul column trio;
+    // BPM rounds out a 4th slot. Any explicit Today-screen customization
+    // (layoutGlanceMetrics) still wins via ordered(from:) below.
+    static let fallbackOrder: [AtriaWidgetMetric] = [.strain, .sleep, .rhr, .bpm]
 
     static func ordered(from layoutGlanceMetrics: [String]?) -> [AtriaWidgetMetric] {
         var ordered: [AtriaWidgetMetric] = []
@@ -694,7 +770,11 @@ enum AtriaWidgetMetric: String, Identifiable {
             return .hrv
         case "steps":
             return .steps
-        case "heartRate", "bpm", "rhr", "respiratoryRate":
+        case "sleep":
+            return .sleep
+        case "rhr":
+            return .rhr
+        case "heartRate", "bpm", "respiratoryRate":
             return .bpm
         default:
             return nil
@@ -707,6 +787,10 @@ enum AtriaWidgetMetric: String, Identifiable {
             return atriaOverviewURL
         case .hrv, .bpm:
             return atriaVitalsURL
+        case .sleep:
+            return atriaOverviewURL
+        case .rhr:
+            return atriaVitalsURL
         }
     }
 
@@ -716,6 +800,8 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .strain: return "Strain"
         case .hrv: return "HRV"
         case .bpm: return "BPM"
+        case .sleep: return "Sleep"
+        case .rhr: return "RHR"
         }
     }
 
@@ -725,6 +811,8 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .strain: return "bolt.fill"
         case .hrv: return "waveform.path.ecg"
         case .bpm: return "heart.fill"
+        case .sleep: return "bed.double.fill"
+        case .rhr: return "heart.circle.fill"
         }
     }
 
@@ -734,6 +822,8 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .strain: return .orange
         case .hrv: return .pink
         case .bpm: return .red
+        case .sleep: return .indigo
+        case .rhr: return .mint
         }
     }
 
@@ -743,6 +833,8 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .strain: return "day load"
         case .hrv: return "ms"
         case .bpm: return "live"
+        case .sleep: return "hrs"
+        case .rhr: return "resting"
         }
     }
 
@@ -758,6 +850,10 @@ enum AtriaWidgetMetric: String, Identifiable {
             return s.hrvRMSSD.map(String.init) ?? "--"
         case .bpm:
             return s.heartRate.map(String.init) ?? "--"
+        case .sleep:
+            return atriaFormattedSleepHours(s.sleepHours)
+        case .rhr:
+            return s.restingHR.map(String.init) ?? "--"
         }
     }
 }
@@ -906,10 +1002,13 @@ struct AtriaMetricWidgetEntryView: View {
 
     private var metricFooterText: String {
         guard let snapshot = entry.snapshot else { return "Open Atria" }
-        let age = max(0, Int(Date().timeIntervalSince(snapshot.createdAt) / 60))
+        let age = atriaSnapshotAgeMinutes(snapshot)
         if age < 1 { return "Updated now" }
         if age < 60 { return "Updated \(age)m ago" }
-        return "Open Atria to refresh"
+        if atriaSnapshotIsStale(snapshot) {
+            return "Stale · \(age / 60)h ago"
+        }
+        return "Updated \(age / 60)h ago"
     }
 }
 

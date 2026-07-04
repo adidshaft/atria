@@ -7273,3 +7273,49 @@ updates — real production fixes made along the way:
   deleted.
 
 The suite is now a real regression gate: any future failure is a NEW problem.
+
+## 19. WHOOP-replacement push (2026-07-04 evening, 4-agent ultracode run)
+
+Directive: make Atria a 100% replacement for the official WHOOP app (and future
+subscription-locked products). Gate: checks OK (128/128), Release BUILD SUCCEEDED
++ installed, unit suite TEST SUCCEEDED.
+
+**Accuracy validation on REAL last-night data** (pre-sidecar snapshot, 32.6k-point
+overnight session), Python replicas of the exact Swift formulas:
+- HRV 67 ms recomputed vs 67 ms stored — EXACT. RHR 53 vs 53 — EXACT.
+- Sleep staging: coverage sane (7.68 h vs 8.20 h stored) but Deep biased LOW
+  (6.3% vs 15-25% typical; SWS 25.7% separate) and REM borderline-high (29.1%).
+  Known HR-only staging bias — flagged for a calibration pass (stage() Deep/SWS
+  thresholds), NOT auto-tuned.
+- **STRAIN BUG FOUND AND FIXED**: `mergeDailyMetricHistory` froze the whole
+  SavedDailyMetric for today at first computation — correct for HRV/RHR/sleep
+  (overnight readings) but WRONG for strain, a cumulative all-day total: stored
+  today-strain read ~2x low by evening (8.41 vs 16.6 recomputed; historical
+  settled days match EXACTLY, proving the formula right). Fix: today's frozen
+  snapshot now takes strain fresh from the same-day rollup.
+- Steps: genuinely dead on this hardware (0/135 sessions carry
+  strapStepResearchCount; protocol_imu_frames=0 forever) — honest "--" already,
+  but "Calibrating" copy overpromises; follow-up: "Not available on this strap".
+
+**WHOOP parity matrix** (WebSearch-confirmed 2025-26 surface): strong/ahead on
+dials, sleep planner+alarm, journal+behavior insights (statistically ahead),
+weekly report, fitness age, HR broadcast, export/local-first/Face-Off.
+REPLACEMENT-BLOCKING gaps: (1) real-time Stress Monitor (no computed ANS score),
+(2) menstrual/cycle tracking + phase coaching. Secondary: health-monitor numeric
+reference ranges (S), monthly report (M), dedicated strain-target card (M),
+nap-credit end-to-end verification (S-M). Ranked top-10 in the agent report.
+
+**Widget overhaul (shipped)**: snapshot schema 4 adds sleepHours end-to-end;
+accessoryCircular = real recovery Gauge (zone-tinted, honest "--"),
+accessoryRectangular = Recovery/Strain/HR, accessoryInline; systemSmall footer
+now Sleep+RHR; systemMedium freshness footer ("as of HH:mm" / "Stale · Nh old");
+fixed a pre-existing bug where the "rhr" layout key rendered live BPM instead of
+resting HR; default column order now Strain/Sleep/RHR/BPM.
+
+**Glance-first Today header (shipped)**: fixed 3-tile strip above the pinned
+hero — dominant Recovery ring tile + Strain + Sleep, monospaced digits,
+numericText transitions (reduce-motion aware), each tile reusing the existing
+metricDetail sheet routes. Additive only; pinned composition untouched.
+
+Next-run queue (user-ranked): stress monitor, cycle tracking, reference ranges,
+monthly report, strain-target card, Deep/SWS calibration, steps copy honesty.

@@ -14,6 +14,9 @@ struct WidgetSnapshot: Codable {
     let hrvRMSSD: Int?
     let hrvState: String
     let maxHR: Int
+    // Sleep duration for the Sleep h chip/column on Home Screen widgets. Optional
+    // so widgets built against schema <4 payloads still decode (missing key -> nil).
+    let sleepHours: Double?
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
     let steps: Int?
     let heartRate: Int?
@@ -106,7 +109,7 @@ enum WidgetSnapshotPublisher {
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
-        let snapshot = WidgetSnapshot(schema: 3,
+        let snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: Date(),
                                       recoveryPercent: recovery.percent,
                                       recoveryConfidence: recovery.confidence.rawValue,
@@ -116,6 +119,7 @@ enum WidgetSnapshotPublisher {
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
+                                      sleepHours: latestSleep?.durationHours,
                                       steps: store.imuAuditSummary.strapStepCount > 0 ? store.imuAuditSummary.strapStepCount : nil,
                                       heartRate: ble.heartRate > 0 ? ble.heartRate : nil,
                                       batteryLevel: ble.batteryLevel >= 0 ? ble.batteryLevel : nil,
@@ -185,6 +189,7 @@ enum WidgetSnapshotPublisher {
         parts.append(String(format: "%.1f", snapshot.strain))
         parts.append(snapshot.restingHR.map(String.init) ?? "-")
         parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
+        parts.append(snapshot.sleepHours.map { String(format: "%.1f", $0) } ?? "-")
         // Steps and heart rate are bucketed like battery: they tick continuously,
         // and an unbucketed value would defeat this throttle while walking.
         parts.append(snapshot.steps.map { String(($0 / 100) * 100) } ?? "-")
