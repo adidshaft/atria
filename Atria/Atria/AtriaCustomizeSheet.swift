@@ -394,6 +394,8 @@ private struct AtriaCustomizePreview: View {
         case .strain: return "8.4"
         case .load: return "0.9"
         case .hrZones: return "47m"
+        case .workouts: return "3"
+        case .strainCompare: return "4.2"
         case .hrv: return "48 ms"
         case .stress: return "Low"
         case .sleep: return "7:42"
@@ -416,12 +418,13 @@ private struct AtriaCustomizePreview: View {
     private func tint(for metric: AtriaTodayMetric?) -> Color {
         switch metric {
         case .recovery: return Metrics.recoveryColor(64)
-        case .strain, .load, .calories: return Metrics.electricStrain
+        case .strain, .load, .calories, .strainCompare: return Metrics.electricStrain
         case .sleep, .sleepHistory, .sleepEfficiency: return Metrics.electricSleep
         case .hrv, .rhr, .respiratoryRate, .bloodOxygen: return .pink
         case .stress: return .cyan
         case .steps, .vo2max, .bioAge: return Metrics.electricGreen
         case .bodyTemp, .hrZones: return .orange
+        case .workouts: return .mint
         case .trend, .insights, nil: return config.accent.color
         }
     }

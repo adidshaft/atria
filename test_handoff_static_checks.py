@@ -9046,7 +9046,13 @@ class HandoffStaticChecks(unittest.TestCase):
             'case "strain-target-over":',
             "let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)",
             "value: displayHero.strainValue",
-            "fill: min(max(displayHero.strain / max(target, 0.1), 0), 1.2)",
+            # Strain-ring-semantics pass (2026-07-05): the ring fill switched from
+            # strain-relative-to-target to absolute strain/21 (WHOOP scale), with the
+            # former strain/target math now driving the ring's target marker instead
+            # (targetFraction) -- see AtriaTriRing.swift's always-colorful-rings +
+            # target-marker work landing alongside this pin update.
+            "fill: min(max(displayHero.strain / 21.0, 0), 1)",
+            "targetFraction: target.map { min(max($0 / 21.0, 0), 1) }",
             "tint: displayHero.guidance.color",
         ]:
             assert_contains(self, today, needle)

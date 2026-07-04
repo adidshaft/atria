@@ -21,7 +21,9 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     }
 
     static let storageKey = "atria.home.layout.v1"
-    static let maxTodayCards = 8
+    // Raised 8 -> 14 (2026-07-05): the user reads hidden metrics as missing;
+    // the default deck now surfaces the full essentials set.
+    static let maxTodayCards = 14
 
     var glanceMetrics: [String]
     var sizeOverrides: [String: String]
@@ -34,7 +36,7 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     var accent: Accent
 
     static var `default`: AtriaHomeLayoutConfig {
-        AtriaHomeLayoutConfig(glanceMetrics: ["recovery", "strain", "sleep", "hrv", "rhr", "steps", "hrZones"],
+        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "respiratoryRate", "steps", "hrZones", "workouts", "strainCompare", "vo2max", "bodyTemp", "sleepHistory", "trend"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
                               showHighlights: true,
@@ -96,6 +98,8 @@ enum AtriaHomeLayoutCatalog {
         "respiratoryRate",
         "steps",
         "hrZones",
+        "workouts",
+        "strainCompare",
         "calories",
         "vo2max",
         "bioAge",

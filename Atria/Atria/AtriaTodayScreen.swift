@@ -735,7 +735,12 @@ struct AtriaTodayScreen: View {
                                   detail: sleepNeedDetailText(performance: performance),
                                   systemImage: "moon.fill",
                                   tint: tint,
-                                  fill: performance.map { min(max(Double($0) / 100.0, 0), 1) })
+                                  fill: performance.map { min(max(Double($0) / 100.0, 0), 1) },
+                                  identityTint: Metrics.electricSleep,
+                                  // A marker at 1.0 (ring closure) exactly when there's a real,
+                                  // computed nightly need to close against -- never a fabricated
+                                  // target when `sleepNeedHoursValue` can't be computed yet.
+                                  targetFraction: sleepNeedHoursValue != nil ? 1.0 : nil)
     }
 
     /// WHOOP-like DISPLAY carry: between midnight and today's first stored
@@ -774,20 +779,47 @@ struct AtriaTodayScreen: View {
                                   value: display.value,
                                   detail: display.detail,
                                   systemImage: "arrow.clockwise.heart.fill",
-                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? .secondary,
-                                  fill: display.percent.map { Double($0) / 100.0 })
+                                  // Always-colorful-rings pass (2026-07-05): fall back to the
+                                  // identity heart-green, never `.secondary` gray, while learning.
+                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? Metrics.electricGreen,
+                                  fill: display.percent.map { Double($0) / 100.0 },
+                                  identityTint: Metrics.electricGreen)
+                                  // No target marker: recovery has no separate "target" of its
+                                  // own -- its value is already the 0-100 scale it's graded on.
     }
 
+    /// Real, user-set absolute strain target if one is ever wired up in
+    /// AtriaMetricTargets -- currently there is none (only the green/yellow
+    /// *band widths* around the coach's own target are user-editable there,
+    /// via AtriaSettingsView's strainGreenBand/strainYellowBand), so this is
+    /// nil today and the ring marker/absolute-strain semantics below fall
+    /// through to the coach's recovery-derived recommendation. Kept as its
+    /// own hook so a future real per-user strain target slots in here
+    /// without touching the ring math again.
+    private var userSetStrainTarget: Double? { nil }
+
     private var strainMetric: AtriaTriRingMetric {
-        let target = displayHero.guidance.target ?? 15
-        let percentOfTarget = displayHero.guidance.target.map { displayHero.strain / $0 * 100 }
+        // Strain-ring-semantics pass (2026-07-05): the ring FILL is now
+        // absolute strain against the fixed 0-21 WHOOP scale (never target-
+        // relative -- a 12 strain always fills the same ~57% of the ring no
+        // matter today's target), so the ring reads as "how much strain
+        // today", while the TARGET MARKER below is the separate "recommended
+        // by ATRIA based on recovery" cue the strain-relative math used to be
+        // folded into. Zone tinting (under/optimal/over) still compares
+        // strain against the target, unchanged.
+        let target = userSetStrainTarget ?? displayHero.guidance.target
+        let percentOfTarget = target.map { displayHero.strain / $0 * 100 }
         let tint = percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) } ?? Metrics.electricStrain
         return AtriaTriRingMetric(title: "Strain",
                                   value: displayHero.strainValue,
-                                  detail: displayHero.guidance.target.map { String(format: "of %.1f", $0) } ?? "Strain",
+                                  detail: target.map { String(format: "of %.1f", $0) } ?? "Strain",
                                   systemImage: "flame.fill",
                                   tint: tint,
-                                  fill: min(max(displayHero.strain / max(target, 0.1), 0), 1.2))
+                                  fill: min(max(displayHero.strain / 21.0, 0), 1),
+                                  identityTint: Metrics.electricStrain,
+                                  // Honest: no marker unless there's a real target (a real
+                                  // user-set value, or the coach's recovery-based recommendation).
+                                  targetFraction: target.map { min(max($0 / 21.0, 0), 1) })
     }
 
     /// HRV ring metric. Fill is nil (learning placeholder cap) unless the
@@ -1042,6 +1074,22 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric))
+        case .workouts:
+            return AtriaTodayGlanceItem(title: metric.label,
+                                        metricKey: metric.rawValue,
+                                        value: "\(thisWeekConfirmedWorkoutsCount)",
+                                        detail: legendDetail(latestConfirmedWorkoutOneLiner),
+                                        systemImage: metric.systemImage,
+                                        tint: .mint,
+                                        layoutSize: layoutSize(for: metric))
+        case .strainCompare:
+            return AtriaTodayGlanceItem(title: metric.label,
+                                        metricKey: metric.rawValue,
+                                        value: displayHero.strainValue,
+                                        detail: legendDetail(strainCompareDetailText),
+                                        systemImage: metric.systemImage,
+                                        tint: Metrics.electricStrain,
+                                        layoutSize: layoutSize(for: metric))
         case .hrv:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -1159,6 +1207,71 @@ struct AtriaTodayScreen: View {
 
     private func layoutSize(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem.LayoutSize {
         AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
+    }
+
+    private var thisWeekConfirmedWorkoutsCount: Int {
+        let calendar = Calendar.current
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start ?? calendar.startOfDay(for: Date())
+        return store.confirmedWorkouts.filter { $0.start >= weekStart }.count
+    }
+
+    private static let workoutDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE")
+        return formatter
+    }()
+
+    private var latestConfirmedWorkoutOneLiner: String {
+        guard let latest = store.confirmedWorkouts.max(by: { $0.start < $1.start }) else { return "No workouts yet" }
+        let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
+        let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
+        let dayText = Self.workoutDayFormatter.string(from: latest.start)
+        return [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Strict 14-calendar-day window (excluding today, which is still live/incomplete).
+    private var strainCompareWindowStrains: [Double] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return [] }
+        return highlightRollups
+            .filter { $0.day >= cutoff && $0.day < today }
+            .compactMap { $0.strain }
+    }
+
+    private var strainCompareMedian: Double? {
+        let strains = strainCompareWindowStrains
+        guard strains.count >= 7 else { return nil }
+        let sorted = strains.sorted()
+        let mid = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[mid - 1] + sorted[mid]) / 2
+        }
+        return sorted[mid]
+    }
+
+    private func metricIsPending(_ value: String) -> Bool {
+        value.localizedCaseInsensitiveContains("learning")
+            || value.localizedCaseInsensitiveContains("prepar")
+            || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var strainCompareDetailText: String {
+        guard let median = strainCompareMedian else { return "Building baseline" }
+        let medianText = String(format: "%.1f", median)
+        guard !metricIsPending(displayHero.strainValue) else {
+            return "14-day median \(medianText)"
+        }
+        let delta = displayHero.strain - median
+        let comparison: String
+        if abs(delta) < 0.5 {
+            comparison = "in line"
+        } else if delta < 0 {
+            comparison = "below typical"
+        } else {
+            comparison = "above typical"
+        }
+        return "14-day median \(medianText) · \(comparison)"
     }
 
     private func legendDetail(_ detail: String) -> String {
