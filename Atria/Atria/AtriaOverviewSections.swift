@@ -1796,6 +1796,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     @State private var showWidgetManager = false
     @State private var showManualSleepSheet = false
     @State private var showWeeklyReport = false
+    @State private var showMonthlyReport = false
+    @State private var reportPeriod: AtriaReportPeriod = .week
     @State private var targetEditorMetric: AtriaTodayMetric?
     @State private var metricDetail: AtriaMetricDetailKind?
     @State private var showBreathworkSession = false
@@ -1902,13 +1904,42 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
             AtriaDailyFocusRail(items: dailyFocusItems)
 
-            if let report = weeklyReportHighlight {
-                Button {
-                    showWeeklyReport = true
-                } label: {
-                    AtriaWeeklyReportHighlightRow(report: report)
+            if weeklyReportHighlight != nil || monthlyReportHighlight != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    if weeklyReportHighlight != nil && monthlyReportHighlight != nil {
+                        Picker("Report period", selection: $reportPeriod) {
+                            Text("Week").tag(AtriaReportPeriod.week)
+                            Text("Month").tag(AtriaReportPeriod.month)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    switch reportPeriod {
+                    case .week:
+                        if let report = weeklyReportHighlight {
+                            Button {
+                                showWeeklyReport = true
+                            } label: {
+                                AtriaWeeklyReportHighlightRow(report: report)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    case .month:
+                        if let report = monthlyReportHighlight {
+                            Button {
+                                showMonthlyReport = true
+                            } label: {
+                                AtriaMonthlyReportHighlightRow(report: report)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
+                .onAppear {
+                    if weeklyReportHighlight == nil, monthlyReportHighlight != nil {
+                        reportPeriod = .month
+                    }
+                }
             }
 
             if visibleMetrics.isEmpty {
@@ -1997,6 +2028,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory))
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showMonthlyReport) {
+            AtriaMonthlyReportSheet(report: monthlyReportHighlight ?? MonthlyReport(rollups: dailyRollupHistory))
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -2305,6 +2341,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         guard weekday == 2 || weekday == 3 else { return nil }
         let report = WeeklyReport(rollups: dailyRollupHistory, calendar: calendar)
         guard report.recoveryAvg != nil else { return nil }
+        return report
+    }
+
+    // Surfaced during the first few days of a new calendar month, recapping the
+    // just-completed month — same "recap at the start of the next period" idea as
+    // the weekly highlight above. Honesty gate lives in MonthlyReport.isBuilding;
+    // this never fabricates a partial-month average.
+    private var monthlyReportHighlight: MonthlyReport? {
+        let calendar = Calendar.current
+        let day = calendar.component(.day, from: Date())
+        guard day <= 5 else { return nil }
+        guard let priorMonthDate = calendar.date(byAdding: .month, value: -1, to: Date()) else { return nil }
+        let report = MonthlyReport(rollups: dailyRollupHistory, now: priorMonthDate, calendar: calendar)
+        guard !report.isBuilding else { return nil }
         return report
     }
 
@@ -2755,13 +2805,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .steps:
             AtriaGlanceMetricCard(title: "Strap steps",
                                   value: sensorSummary.strapStepText,
-                                  detail: sensorSummary.strapStepCount > 0 ? "Strap movement" : "Calibrating",
+                                  detail: sensorSummary.strapStepCount > 0 ? "Strap movement" : "Not available on this strap",
                                   systemImage: metric.systemImage,
                                   tint: stepsZone?.tint ?? (sensorSummary.strapStepCount > 0 ? .green : .orange),
                                   zone: stepsZone,
                                   accessibilityDetail: sensorSummary.strapStepCount > 0
                                     ? "Strap movement estimate \(sensorSummary.strapStepText), goal \(stepsGoal) steps."
-                                    : "Strap steps are waiting for movement evidence.")
+                                    : "Strap steps are not available — this strap's motion stream has never been decodable.")
         case .calories:
             AtriaGlanceMetricCard(title: "Calories",
                                   value: live.liveActiveCaloriesText,
@@ -3497,6 +3547,11 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
     }
 }
 
+private enum AtriaReportPeriod {
+    case week
+    case month
+}
+
 private struct AtriaWeeklyReportHighlightRow: View, Equatable {
     let report: WeeklyReport
 
@@ -3675,6 +3730,200 @@ struct AtriaWeeklyReportSheet: View {
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.setLocalizedDateFormatFromTemplate("EEE d")
+        return formatter
+    }()
+}
+
+private struct AtriaMonthlyReportHighlightRow: View, Equatable {
+    let report: MonthlyReport
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "calendar")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(Color.cyan)
+                .frame(width: 34, height: 34)
+                .background(Color.cyan.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Monthly report")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Text(heroText)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(consistencyText)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .atriaInsetCard(cornerRadius: 16, tint: .cyan)
+        .accessibilityLabel("Monthly report. \(heroText). \(consistencyText).")
+    }
+
+    private var heroText: String {
+        guard let recovery = report.recoveryAvg else { return "Recovery building" }
+        guard let delta = report.recoveryDeltaVsPriorMonth else { return "Recovery \(recovery)%" }
+        return delta >= 0 ? "Recovery \(recovery)% up \(delta)" : "Recovery \(recovery)% down \(abs(delta))"
+    }
+
+    private var consistencyText: String {
+        report.consistencyScore.map { "Routine \($0)%" } ?? "Routine building"
+    }
+}
+
+struct AtriaMonthlyReportSheet: View {
+    let report: MonthlyReport
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Monthly report")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Text(heroText)
+                            .font(.system(size: 42, weight: .bold, design: .rounded).monospacedDigit())
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.72)
+                        Text(monthTitleText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .atriaInsetCard(cornerRadius: 18, tint: .cyan)
+
+                    VStack(spacing: 10) {
+                        AtriaWeeklyReportStatRow(title: "Recovery average",
+                                                 value: recoveryAverageText,
+                                                 detail: recoveryDeltaText,
+                                                 systemImage: "heart.fill",
+                                                 tint: .green)
+                        AtriaWeeklyReportStatRow(title: "Total strain",
+                                                 value: totalStrainText,
+                                                 detail: hardestWeekText,
+                                                 systemImage: "flame.fill",
+                                                 tint: Metrics.electricStrain)
+                        AtriaWeeklyReportStatRow(title: "Sleep performance",
+                                                 value: sleepPerformanceText,
+                                                 detail: sleepPerformanceDeltaText,
+                                                 systemImage: "moon.zzz.fill",
+                                                 tint: .indigo)
+                        AtriaWeeklyReportStatRow(title: "Resting heart rate",
+                                                 value: rhrText,
+                                                 detail: rhrDeltaText,
+                                                 systemImage: "waveform.path.ecg",
+                                                 tint: .pink)
+                        AtriaWeeklyReportStatRow(title: "HRV",
+                                                 value: hrvText,
+                                                 detail: hrvDeltaText,
+                                                 systemImage: "waveform.path.ecg.rectangle",
+                                                 tint: .teal)
+                        AtriaWeeklyReportStatRow(title: "Bedtime consistency",
+                                                 value: consistencyText,
+                                                 detail: "Bedtime routine from daily rollups",
+                                                 systemImage: "clock.fill",
+                                                 tint: .yellow)
+                    }
+                }
+                .padding(18)
+            }
+            .navigationTitle("Monthly report")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
+                }
+            }
+        }
+    }
+
+    private var heroText: String {
+        guard let recovery = report.recoveryAvg else { return "Recovery building" }
+        guard let delta = report.recoveryDeltaVsPriorMonth else { return "\(recovery)%" }
+        return delta >= 0 ? "\(recovery)% +\(delta)" : "\(recovery)% \(delta)"
+    }
+
+    private var monthTitleText: String {
+        Self.monthFormatter.string(from: report.generatedAt)
+    }
+
+    private var recoveryAverageText: String {
+        report.recoveryAvg.map { "\($0)%" } ?? "--"
+    }
+
+    private var recoveryDeltaText: String {
+        guard let delta = report.recoveryDeltaVsPriorMonth else { return "Prior month comparison building" }
+        return delta >= 0 ? "+\(delta) vs prior month" : "\(delta) vs prior month"
+    }
+
+    private var totalStrainText: String {
+        report.totalStrain.map { String(format: "%.1f", $0) } ?? "--"
+    }
+
+    private var hardestWeekText: String {
+        guard let hardestWeek = report.hardestWeek, let strain = hardestWeek.totalStrain else {
+            return "Hardest week building"
+        }
+        return "Hardest week \(Self.weekFormatter.string(from: hardestWeek.weekStart)) · \(String(format: "%.1f", strain)) strain"
+    }
+
+    private var sleepPerformanceText: String {
+        report.sleepPerformanceAvg.map { "\($0)%" } ?? "--"
+    }
+
+    private var sleepPerformanceDeltaText: String {
+        guard let delta = report.sleepPerformanceDeltaVsPriorMonth else { return "Prior month comparison building" }
+        return delta >= 0 ? "+\(delta) vs prior month" : "\(delta) vs prior month"
+    }
+
+    private var rhrText: String {
+        report.rhrAvg.map { "\($0) bpm" } ?? "--"
+    }
+
+    private var rhrDeltaText: String {
+        guard let delta = report.rhrDeltaVsPriorMonth else { return "Prior month comparison building" }
+        return delta >= 0 ? "+\(delta) bpm vs prior month" : "\(delta) bpm vs prior month"
+    }
+
+    private var hrvText: String {
+        report.hrvAvgMs.map { "\(Int($0.rounded())) ms" } ?? "--"
+    }
+
+    private var hrvDeltaText: String {
+        guard let delta = report.hrvDeltaVsPriorMonthMs else { return "Prior month comparison building" }
+        let rounded = Int(delta.rounded())
+        return rounded >= 0 ? "+\(rounded) ms vs prior month" : "\(rounded) ms vs prior month"
+    }
+
+    private var consistencyText: String {
+        report.consistencyScore.map { "\($0)%" } ?? "--"
+    }
+
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        return formatter
+    }()
+
+    private static let weekFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
         return formatter
     }()
 }
@@ -4862,7 +5111,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     private var stageLegend: some View {
         if let latest, !latest.displayStageSegments.isEmpty {
             HStack(spacing: 5) {
-                ForEach(SleepStageKind.allCases) { stage in
+                ForEach(SleepStageKind.displayOrder) { stage in
                     HStack(spacing: 3) {
                         Image(systemName: AtriaSleepStageGlyph.symbol(for: stage))
                             .font(.system(size: 8, weight: .bold))
@@ -4874,7 +5123,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                     }
                     .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .accessibilityLabel("\(stage.label) \(latest.stageText(stage))")
+                    .accessibilityLabel("\(stage == .deep ? "Deep (SWS)" : stage.label) \(latest.stageText(stage))")
                 }
             }
             .frame(height: 14, alignment: .center)
@@ -4912,7 +5161,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                     .minimumScaleFactor(0.62)
 
                 HStack(alignment: .center, spacing: 2) {
-                    ForEach(Array(SleepStageKind.allCases.enumerated()), id: \.element) { index, stage in
+                    ForEach(Array(SleepStageKind.displayOrder.enumerated()), id: \.element) { index, stage in
                         Capsule(style: .continuous)
                             .fill(AtriaSleepStageGlyph.color(for: stage).opacity(0.28))
                             .frame(width: index == 1 ? 18 : 12,
@@ -4944,9 +5193,9 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             return "Sleep history building. Wear the strap overnight or during a nap. Morning status \(morningStatus.accessibilityText)."
         }
         guard !latest.displayStageSegments.isEmpty else {
-            return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Stages building: Awake, Light, REM, SWS, and Deep are not ready yet."
+            return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Stages building: Awake, Light, REM, and Deep are not ready yet."
         }
-        return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), SWS \(latest.stageText(.sws)), Deep \(latest.stageText(.deep))."
+        return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
     }
 }
 

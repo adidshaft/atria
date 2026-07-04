@@ -1470,7 +1470,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "if let latest, !latest.displayStageSegments.isEmpty",
             "AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,",
             "Text(\"Stages calibrating\")",
-            "ForEach(Array(SleepStageKind.allCases.enumerated()), id: \\.element)",
+            "ForEach(Array(SleepStageKind.displayOrder.enumerated()), id: \\.element)",
             "AtriaSleepStageGlyph.color(for: stage).opacity(0.28)",
             "private func fallbackStageHeight(_ stage: SleepStageKind) -> CGFloat",
             "private struct AtriaSleepMiniHypnogram: View, Equatable",
@@ -1490,9 +1490,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Respiratory rate is building from sleep-only evidence.",
             "AtriaGlanceMetricCard(title: \"Strap steps\"",
             "value: sensorSummary.strapStepText",
-            "detail: sensorSummary.strapStepCount > 0 ? \"Strap movement\" : \"Calibrating\"",
+            "detail: sensorSummary.strapStepCount > 0 ? \"Strap movement\" : \"Not available on this strap\"",
             "Strap movement estimate",
-            "Strap steps are waiting for movement evidence.",
+            "Strap steps are not available — this strap's motion stream has never been decodable.",
             "accessibilityDetail: sensorSummary.strapStepCount > 0",
             # TODO(superseded by consolidation, ac1a820f): pre-merge there were separate
             # .steps (iPhone motion) and .strapSteps (strap-based, bound to
@@ -3740,7 +3740,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let stageEvidence: SleepStageEvidence",
             "let stageDurationsByStage: [SleepStageKind: TimeInterval]",
             "Self.stageEvidence(source: source,",
-            "self.displayStageSegments = evidence == .none ? [] : stageSegments",
+            "self.displayStageSegments = evidence == .none ? [] : Self.foldedDisplaySegments(from: stageSegments)",
             "private static func stageEvidence(source: String,",
             "if source == \"validated_sleep_stages\"",
             "return .sensorResearch",
@@ -3946,7 +3946,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "showManualSleepSheet = false",
             "Image(systemName: \"moon.zzz.badge.plus\")",
             ".accessibilityLabel(\"Add sleep manually\")",
-            "Stages building: Awake, Light, REM, SWS, and Deep are not ready yet.",
+            "Stages building: Awake, Light, REM, and Deep are not ready yet.",
             "guard !latest.displayStageSegments.isEmpty else",
             "Consistency \\(snapshot.sleepConsistencyText)",
             "Debt \\(snapshot.sleepDebtText(goalHours: sleepGoalHours))",
@@ -7677,7 +7677,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "freshRestingSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)",
             "func hasTrustedHRVBaseline(now: Date = Date()) -> Bool",
             "freshHRVSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)",
-            "stats(freshSamples().map(\\.restingHR))",
+            "stats(freshSamples(now: now).map(\\.restingHR))",
             # HRV baseline is sleep-window-preferred (WHOOP-like): overnight samples
             # only once >=7 exist, else fall back to all fresh samples. Still local,
             # never fabricated.
@@ -8735,12 +8735,25 @@ class HandoffStaticChecks(unittest.TestCase):
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
 
+        # Ring-metric-picker migration (coordinated pin update): the tri-ring
+        # hero used to be constructed via the fixed literal
+        # "AtriaTriRing(sleep: sleepMetric," call -- AtriaTriRing now takes a
+        # `slots: [AtriaTriRingSlotContent]` array (any of sleep/recovery/
+        # strain/hrv/rhr per ring position) plus an `actions:` dictionary
+        # instead of the old onSleep/onRecovery/onStrain closures, so Today
+        # can let each ring show any of the five supported metrics. The
+        # backward-compatible sleep/recovery/strain initializer is preserved
+        # in AtriaTriRing.swift for the call sites that were not part of
+        # this migration (AtriaOverviewSections.swift, AtriaCustomizeSheet.swift).
         for needle in [
-            "AtriaTriRing(sleep: sleepMetric,",
+            "AtriaTriRing(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },",
             "accessibilitySummary: accessibilitySummary",
-            "onSleep: { metricDetail = .sleep }",
-            "onRecovery: { metricDetail = .recovery }",
-            "onStrain: { metricDetail = .strain }",
+            "actions: ringActions",
+            ".sleep: { metricDetail = .sleep }",
+            ".recovery: { metricDetail = .recovery }",
+            ".strain: { metricDetail = .strain }",
+            ".hrv: { metricDetail = .hrv }",
+            ".rhr: { metricDetail = .restingHeartRate }",
         ]:
             assert_contains(self, today, needle)
 
@@ -8792,9 +8805,14 @@ class HandoffStaticChecks(unittest.TestCase):
             ".sheet(item: $metricDetail)",
             "AtriaMetricDetailSheet(metric: detail,",
             "confirmedWorkouts: debugMetricDetailWorkouts ?? store.confirmedWorkouts",
-            "onSleep: { metricDetail = .sleep }",
-            "onRecovery: { metricDetail = .recovery }",
-            "onStrain: { metricDetail = .strain }",
+            # Ring-metric-picker migration: metricDetail routing for the tri-ring
+            # hero now lives in the `ringActions` dictionary (any of five
+            # metrics per ring position) instead of dedicated onSleep/
+            # onRecovery/onStrain closures -- see the coordinated pin update
+            # in test_ia61 above.
+            ".sleep: { metricDetail = .sleep }",
+            ".recovery: { metricDetail = .recovery }",
+            ".strain: { metricDetail = .strain }",
             "case \"strain-detail\": return .strain",
             "case \"hrv-detail\": return .hrv",
             "case \"rhr-detail\": return .restingHeartRate",
@@ -10188,9 +10206,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaGlanceMetricCard(title: \"Strap steps\"",
             "value: sensorSummary.strapStepText",
-            "detail: sensorSummary.strapStepCount > 0 ? \"Strap movement\" : \"Calibrating\"",
+            "detail: sensorSummary.strapStepCount > 0 ? \"Strap movement\" : \"Not available on this strap\"",
             "Strap movement estimate",
-            "Strap steps are waiting for movement evidence.",
+            "Strap steps are not available — this strap's motion stream has never been decodable.",
             "Source: \\(sensorSummary.agreementText).",
         ]:
             assert_contains(self, overview, needle)

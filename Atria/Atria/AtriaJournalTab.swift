@@ -14,7 +14,184 @@ struct AtriaJournalTab: View {
             AtriaJournalTypedInsightsSection(store: store)
             AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
             AtriaOverviewBehaviorJournalSection(store: store)
+            AtriaJournalCycleCard()
         }
+    }
+}
+
+/// Opt-in menstrual cycle tracking card (v1, docs handoff: bounded, privacy-
+/// first). Reads/writes go through `AtriaCycleTrackingStore` only — its own
+/// JSON file in Documents, entirely separate from the behavior-journal store
+/// above and from the research-bundle allowlist. Default OFF; enabling is an
+/// explicit, one-tap opt-in from here, never implied by anything else in the
+/// app.
+private struct AtriaJournalCycleCard: View {
+    // Dotted UserDefaults key: must use @AtriaDefault, not @AppStorage — see
+    // AtriaDefault.swift for why plain @AppStorage on a dotted key storms the
+    // whole view tree under high-frequency sibling writes.
+    @AtriaDefault(AtriaCycleTracking.enabledKey) private var isEnabled: Bool = false
+    @StateObject private var store = AtriaCycleTrackingStore()
+    @State private var showLogSheet = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Cycle",
+                                    subtitle: isEnabled ? "Phase estimate from your logged dates" : "Optional, off by default")
+            if isEnabled {
+                enabledContent
+            } else {
+                disabledContent
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+        .sheet(isPresented: $showLogSheet) {
+            AtriaCyclePeriodLogSheet(store: store)
+        }
+    }
+
+    private var disabledContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Log period dates to see a phase-aware note alongside your recovery and strain — menstrual, follicular, ovulatory, luteal.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Optional. Stays on this phone. Not in research bundles.")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Button {
+                isEnabled = true
+            } label: {
+                Label("Turn on cycle tracking", systemImage: "calendar.badge.plus")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.pink)
+        }
+    }
+
+    @ViewBuilder
+    private var enabledContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let estimate = store.currentEstimate() {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: estimate.phase.symbolName)
+                        .font(.system(size: 26, weight: .medium))
+                        .foregroundStyle(.pink)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(estimate.phase.title) \u{00B7} day \(estimate.cycleDay)")
+                            .font(.headline)
+                        Text(confidenceLabel(estimate.confidence))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(estimate.phase.coachNote)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                Text("No period logged yet. Log your first start date to begin estimating your phase.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if store.completedCycleCount < 2 {
+                Text("Estimating from calendar averages until 2 cycles are logged (\(store.completedCycleCount)/2 so far). Not medical advice.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    showLogSheet = true
+                } label: {
+                    Label("Log period", systemImage: "drop.fill")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(.pink)
+
+                if store.isPeriodOngoing {
+                    Button {
+                        store.logPeriodEnd()
+                    } label: {
+                        Label("Ended today", systemImage: "checkmark")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Spacer(minLength: 0)
+
+                Button("Turn off") {
+                    isEnabled = false
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func confidenceLabel(_ confidence: AtriaCycleConfidence) -> String {
+        switch confidence {
+        case .estimating: return "Estimating \u{2014} calendar average, not yet personalized"
+        case .personalized: return "Personalized to your logged cycles"
+        }
+    }
+}
+
+/// Log-a-period sheet: start date (required) and an optional end date for a
+/// period that has already finished. Both dates are clamped to "not in the
+/// future" so this can never fabricate a date that hasn't happened.
+private struct AtriaCyclePeriodLogSheet: View {
+    @ObservedObject var store: AtriaCycleTrackingStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var startDate = Date()
+    @State private var hasEndDate = false
+    @State private var endDate = Date()
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Period start") {
+                    DatePicker("Start date", selection: $startDate, in: ...Date(), displayedComponents: .date)
+                }
+                Section("Period end") {
+                    Toggle("Already ended", isOn: $hasEndDate.animation())
+                    if hasEndDate {
+                        DatePicker("End date", selection: $endDate, in: startDate...Date(), displayedComponents: .date)
+                    }
+                }
+                Section {
+                    Text("Stays on this phone. Not included in research bundles.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Log period")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        store.logPeriodStart(startDate)
+                        if hasEndDate { store.logPeriodEnd(max(endDate, startDate)) }
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .onChange(of: endDate) { _, newValue in
+            if newValue < startDate { endDate = startDate }
+        }
+        .presentationDetents([.medium])
     }
 }
 

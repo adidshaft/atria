@@ -198,6 +198,25 @@ struct AtriaTodayScreen: View {
                 Button(action: onOpenShare) {
                     Label("Share Today", systemImage: "square.and.arrow.up")
                 }
+                Menu {
+                    ForEach(Array(ringSlots.enumerated()), id: \.offset) { position, current in
+                        Menu(Self.ringPositionLabels[position]) {
+                            ForEach(AtriaTriRingSlot.allCases, id: \.self) { slot in
+                                Button {
+                                    assignRingSlot(slot, toPosition: position)
+                                } label: {
+                                    if slot == current {
+                                        Label(slot.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(slot.label)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Ring Metrics", systemImage: "circle.grid.3x3")
+                }
                 Button(action: rotateRingOrder) {
                     Label("Rotate Ring Order", systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -214,20 +233,50 @@ struct AtriaTodayScreen: View {
 
     private var triRingHero: some View {
         VStack(spacing: 10) {
-            AtriaTriRing(sleep: sleepMetric,
-                         recovery: recoveryMetric,
-                         strain: strainMetric,
+            // Ring-metric-picker migration: each ring position resolves
+            // through `ringSlots`/`metric(for:)` to whichever of the five
+            // supported metrics (sleep/recovery/strain/hrv/rhr) the user
+            // assigned it, via AtriaTriRing's new slots array API
+            // (coordinated with the IA-6.1 static-check pin update in
+            // test_handoff_static_checks.py -- see that file for the note
+            // citing this migration).
+            AtriaTriRing(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
                          centerValue: centerValue,
                          centerState: centerState,
                          centerDelta: centerDeltaText,
                          accessibilitySummary: accessibilitySummary,
-                         ringOrder: ringOrder,
-                         onSleep: { metricDetail = .sleep },
-                         onRecovery: { metricDetail = .recovery },
-                         onStrain: { metricDetail = .strain })
+                         actions: ringActions)
+
+            AtriaStrainTargetCard(currentStrain: displayHero.strain,
+                                  target: displayHero.guidance.target,
+                                  tint: Metrics.electricStrain)
 
             ringShareButton
         }
+    }
+
+    /// Resolves whichever metric a ring slot currently carries. Reused by
+    /// the hero, the share-as-picture render, and the accessibility
+    /// summary so all three always agree.
+    private func metric(for slot: AtriaTriRingSlot) -> AtriaTriRingMetric {
+        switch slot {
+        case .sleep: return sleepMetric
+        case .recovery: return recoveryMetric
+        case .strain: return strainMetric
+        case .hrv: return hrvMetric
+        case .rhr: return restingHeartRateMetric
+        }
+    }
+
+    /// Tap routing for every possible ring slot -- whichever three are
+    /// actually on screen tap through to the matching metric detail sheet;
+    /// unused entries are simply never invoked.
+    private var ringActions: [AtriaTriRingSlot: () -> Void] {
+        [.sleep: { metricDetail = .sleep },
+         .recovery: { metricDetail = .recovery },
+         .strain: { metricDetail = .strain },
+         .hrv: { metricDetail = .hrv },
+         .rhr: { metricDetail = .restingHeartRate }]
     }
 
     /// Small, discoverable "share as picture" affordance hosted right under
@@ -262,18 +311,14 @@ struct AtriaTodayScreen: View {
     }
 
     private var ringShareContent: AtriaRingShare.Content {
-        AtriaRingShare.Content(sleep: sleepMetric,
-                               recovery: recoveryMetric,
-                               strain: strainMetric,
+        AtriaRingShare.Content(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
                                centerValue: centerValue,
                                centerState: centerState,
-                               ringOrder: ringOrder,
                                dateText: Self.ringShareDateFormatter.string(from: Date()))
     }
 
     private var ringShareSignature: String {
-        [sleepMetric.value, recoveryMetric.value, strainMetric.value,
-         centerValue, centerState, ringOrder.map(\.rawValue).joined(separator: ",")]
+        (ringSlots.map { slot in "\(slot.rawValue):\(metric(for: slot).value)" } + [centerValue, centerState])
             .joined(separator: "|")
     }
 
@@ -283,17 +328,27 @@ struct AtriaTodayScreen: View {
         return formatter
     }()
 
-    /// Which of the three known ring metrics draws on the outer/middle/inner
-    /// band. Persisted the same way other single-value layout prefs are
-    /// (an `@AtriaDefault`-backed comma-joined string), independent of the
-    /// separate `AtriaHomeLayoutConfig` JSON blob so this stays inside this
-    /// screen's own file. Defaults to the original sleep/recovery/strain
-    /// (outer to inner) layout.
+    /// Legacy key: originally just an *order* of the fixed sleep/recovery/
+    /// strain trio (pre-ring-metric-picker). Its CSV format (slot raw
+    /// values) is identical to the new `ringMetricsRaw` key below, so it
+    /// only ever serves as a one-time migration seed now.
     @AtriaDefault("atria.today.ringOrder") private var ringOrderRaw: String = "sleep,recovery,strain"
 
-    private var ringOrder: [AtriaTriRingSlot] {
+    /// Which of the five supported metrics (sleep/recovery/strain/hrv/rhr)
+    /// each ring position (outer -> inner) shows -- the ring-metric-picker
+    /// generalization of the old fixed-trio `ringOrder`. Persisted the same
+    /// way other single-value layout prefs are (an `@AtriaDefault`-backed
+    /// comma-joined string), independent of the separate
+    /// `AtriaHomeLayoutConfig` JSON blob so this stays inside this screen's
+    /// own file. Empty means "never explicitly set on this device", in
+    /// which case the legacy `ringOrderRaw` value (itself defaulting to
+    /// sleep/recovery/strain) is adopted as the seed.
+    @AtriaDefault("atria.today.ringMetrics") private var ringMetricsRaw: String = ""
+
+    private var ringSlots: [AtriaTriRingSlot] {
+        let raw = ringMetricsRaw.isEmpty ? ringOrderRaw : ringMetricsRaw
         var seen = Set<AtriaTriRingSlot>()
-        var result = ringOrderRaw
+        var result = raw
             .split(separator: ",")
             .compactMap { AtriaTriRingSlot(rawValue: String($0)) }
             .filter { seen.insert($0).inserted }
@@ -303,14 +358,35 @@ struct AtriaTodayScreen: View {
         return Array(result.prefix(3))
     }
 
+    private func persistRingSlots(_ slots: [AtriaTriRingSlot]) {
+        ringMetricsRaw = slots.map(\.rawValue).joined(separator: ",")
+    }
+
     private func rotateRingOrder() {
-        var order = ringOrder
+        var order = ringSlots
         guard order.count == 3 else {
-            ringOrderRaw = AtriaTriRingSlot.defaultOrder.map(\.rawValue).joined(separator: ",")
+            persistRingSlots(AtriaTriRingSlot.defaultOrder)
             return
         }
         order.append(order.removeFirst())
-        ringOrderRaw = order.map(\.rawValue).joined(separator: ",")
+        persistRingSlots(order)
+    }
+
+    private static let ringPositionLabels = ["Outer Ring", "Middle Ring", "Inner Ring"]
+
+    /// Ring-metric-picker: assigns `slot` to ring position `position`
+    /// (0 = outer ... 2 = inner). If `slot` already occupies a different
+    /// position, the two positions swap rather than leaving a duplicate
+    /// metric on two rings.
+    private func assignRingSlot(_ slot: AtriaTriRingSlot, toPosition position: Int) {
+        var slots = ringSlots
+        guard slots.indices.contains(position) else { return }
+        if let existing = slots.firstIndex(of: slot), existing != position {
+            slots.swapAt(existing, position)
+        } else {
+            slots[position] = slot
+        }
+        persistRingSlots(slots)
     }
 
     private var highlightRollups: [DailyRollupStoreEntry] {
@@ -582,6 +658,49 @@ struct AtriaTodayScreen: View {
                                   fill: min(max(displayHero.strain / max(target, 0.1), 0), 1.2))
     }
 
+    /// HRV ring metric. Fill is nil (learning placeholder cap) unless the
+    /// current reading parses AND the personal HRV baseline is trusted --
+    /// never a fabricated ratio against an unproven baseline. Higher HRV is
+    /// better, so fill climbs toward/above the trusted baseline.
+    private var hrvMetric: AtriaTriRingMetric {
+        let baseline = AtriaBaselineTargetSnapshot(store.baseline)
+        let current = Int(displayHero.hrvValue)
+        let fill: Double?
+        if let current, let base = baseline.hrvBaseline, baseline.hrvTrusted, base > 0 {
+            fill = min(max(Double(current) / (Double(base) * 1.15), 0), 1.15)
+        } else {
+            fill = nil
+        }
+        return AtriaTriRingMetric(title: "HRV",
+                                  value: current.map { "\($0)" } ?? displayHero.hrvValue,
+                                  detail: legendDetail(displayHero.hrvDetail),
+                                  systemImage: "waveform.path.ecg",
+                                  tint: .pink,
+                                  fill: fill)
+    }
+
+    /// Resting heart rate ring metric. Fill is nil (learning placeholder
+    /// cap) unless the personal resting-HR baseline is trusted. Lower RHR
+    /// is better, so the fill is baseline/current -- a reading at or below
+    /// baseline reads as full+ -- never a raw ratio that would reward a
+    /// higher bpm.
+    private var restingHeartRateMetric: AtriaTriRingMetric {
+        let baseline = AtriaBaselineTargetSnapshot(store.baseline)
+        let current = displayHero.restingHeartRate
+        let fill: Double?
+        if current > 0, let base = baseline.restingBaseline, baseline.restingTrusted, base > 0 {
+            fill = min(max(Double(base) / Double(current), 0), 1.15)
+        } else {
+            fill = nil
+        }
+        return AtriaTriRingMetric(title: "RHR",
+                                  value: current > 0 ? "\(current)" : displayHero.restingHeartRateText,
+                                  detail: legendDetail("bpm"),
+                                  systemImage: "heart.fill",
+                                  tint: .pink,
+                                  fill: fill)
+    }
+
     private var latestRollup: DailyRollupStoreEntry? {
         highlightRollups.sorted { $0.day > $1.day }.first
     }
@@ -652,8 +771,15 @@ struct AtriaTodayScreen: View {
         return "\(delta > 0 ? "+" : "-")\(abs(delta))\(unit) vs yesterday"
     }
 
+    /// Describes whichever three metrics are actually configured on the ring
+    /// hero right now (ring-metric-picker), not a hard-coded sleep/recovery/
+    /// strain trio.
     private var accessibilitySummary: String {
-        "Sleep \(sleepMetric.value), Recovery \(recoveryMetric.value) \(recoveryMetric.detail), Strain \(strainMetric.value) \(strainMetric.detail)."
+        let parts = ringSlots.map { slot -> String in
+            let m = metric(for: slot)
+            return m.detail.isEmpty ? "\(m.title) \(m.value)" : "\(m.title) \(m.value) \(m.detail)"
+        }
+        return parts.joined(separator: ", ") + "."
     }
 
     private var healthValue: String {
@@ -1061,6 +1187,71 @@ private struct AtriaTodayPlanCard: View, Equatable {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Today's Plan. \(title). \(detail). \(target).")
+    }
+}
+
+/// Compact strain-target progress card hosted directly under the ring hero.
+/// The target itself is never computed here -- it is `Coach.guide`'s
+/// existing recovery -> strain-target number (`displayHero.guidance.target`,
+/// the same value already driving `strainMetric`'s ring fill, the ring's
+/// legend chip, and the AI Coach narrative) passed straight through, so
+/// there is exactly one strain-target formula in the app.
+private struct AtriaStrainTargetCard: View, Equatable {
+    let currentStrain: Double
+    let target: Double?
+    let tint: Color
+
+    private var progress: Double {
+        guard let target, target > 0 else { return 0 }
+        return min(max(currentStrain / target, 0), 1.2)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Strain Target", systemImage: "flame.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if let target {
+                    Text(String(format: "%.1f / %.1f", currentStrain, target))
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(tint)
+                }
+            }
+
+            if let target {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(tint.opacity(0.15))
+                        Capsule()
+                            .fill(tint)
+                            .frame(width: geometry.size.width * progress)
+                    }
+                }
+                .frame(height: 8)
+
+                Text(progress >= 1
+                     ? "Target reached for today."
+                     : String(format: "%.1f to go.", max(target - currentStrain, 0)))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else {
+                // Honest learning state: recovery isn't trusted yet, so
+                // there is no real target to show progress against --
+                // never a fabricated placeholder bar.
+                Text("Target appears once recovery is trusted")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(target.map { "Strain target. \(String(format: "%.1f of %.1f", currentStrain, $0))." }
+                             ?? "Strain target. Target appears once recovery is trusted.")
     }
 }
 

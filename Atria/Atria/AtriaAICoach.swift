@@ -272,9 +272,17 @@ struct AtriaLocalCoachProvider: AtriaCoachProvider {
 
     func answer(payload: AtriaCoachPayload, context: AtriaCoachContext) async -> AtriaCoachAnswer {
         let target = context.guidance.target.map { String(format: "%.1f", $0) } ?? "learning"
+        var detail = "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), stress \(context.stressText). \(context.guidance.detail)"
+        // Cycle tracking is opt-in and off by default (AtriaCycleTracking.swift);
+        // this line only appears when the user enabled it AND a phase estimate
+        // exists, and is always labeled "Cycle estimate" — never presented as a
+        // diagnosed fact.
+        if let cycleLine = AtriaCycleTracking.coachGuidanceLine() {
+            detail += " \(cycleLine)"
+        }
         return AtriaCoachAnswer(
             title: context.guidance.headline,
-            detail: "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), stress \(context.stressText). \(context.guidance.detail)",
+            detail: detail,
             disclosure: "\(payload.receiptSummary). Local mode uses only on-device Atria metrics. No data leaves this iPhone.",
             networkPolicy: networkPolicy
         )

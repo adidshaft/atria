@@ -9,19 +9,44 @@ struct AtriaTriRingMetric: Equatable {
     let fill: Double?
 }
 
-/// Which ring band (outer/middle/inner) a metric draws on. The metric's
-/// identity, tap target, and detail-sheet routing never change with this --
-/// it only decides draw order, so a user can put e.g. Sleep on the outer
-/// ring and Recovery on the middle one, the way Apple Activity lets you
-/// re-prioritize which ring is biggest.
+/// Which ring band (outer/middle/inner) a slot draws on, AND -- since the
+/// ring-metric-picker migration -- which of the five supported metrics a
+/// slot can carry. A slot's position only decides paint/hit-test priority
+/// (the way Apple Activity lets you re-prioritize which ring is biggest);
+/// its metric assignment is independent and user-configurable.
 enum AtriaTriRingSlot: String, CaseIterable, Equatable {
-    case sleep, recovery, strain
+    case sleep, recovery, strain, hrv, rhr
 
-    /// Original visual order: outer -> inner.
+    /// Original visual order: outer -> inner. Also the fixed trio the
+    /// backward-compatible sleep/recovery/strain initializer below still
+    /// assumes, and the fallback used to pad out any incomplete/legacy
+    /// persisted slot list.
     static let defaultOrder: [AtriaTriRingSlot] = [.sleep, .recovery, .strain]
+
+    var label: String {
+        switch self {
+        case .sleep: return "Sleep"
+        case .recovery: return "Recovery"
+        case .strain: return "Strain"
+        case .hrv: return "HRV"
+        case .rhr: return "RHR"
+        }
+    }
 }
 
-/// Apple-Activity-style concentric progress rings for Sleep/Recovery/Strain.
+/// One ring position's fully-resolved content: which metric fills it. This
+/// is the "slots array" `AtriaTriRing` was generalized to (ring-metric-
+/// picker migration, coordinated with the IA-6.1 static-check pin update in
+/// test_handoff_static_checks.py) -- each of the three ring positions can
+/// now carry any of the five supported metrics, not just the original fixed
+/// sleep/recovery/strain trio.
+struct AtriaTriRingSlotContent: Equatable {
+    let slot: AtriaTriRingSlot
+    let metric: AtriaTriRingMetric
+}
+
+/// Apple-Activity-style concentric progress rings, generalized to any of
+/// five metrics (sleep/recovery/strain/hrv/rhr) per ring position.
 ///
 /// HIG guidelines applied here (developer.apple.com/design/human-interface-guidelines):
 /// - "Charting data": encode magnitude consistently -- equal stroke widths
@@ -37,9 +62,8 @@ enum AtriaTriRingSlot: String, CaseIterable, Equatable {
 /// - Reduce Motion: the fill sweep is skipped entirely (values snap to
 ///   final state) when the system accessibility setting is on.
 struct AtriaTriRing: View, Equatable {
-    let sleep: AtriaTriRingMetric
-    let recovery: AtriaTriRingMetric
-    let strain: AtriaTriRingMetric
+    /// Canonical, ordered (outer -> inner) ring content, capped at 3.
+    let slots: [AtriaTriRingSlotContent]
     let centerValue: String
     let centerState: String
     /// Tiny, honest delta vs. the prior day (e.g. "+4% vs yesterday").
@@ -47,25 +71,70 @@ struct AtriaTriRing: View, Equatable {
     /// value to compare against.
     var centerDelta: String? = nil
     let accessibilitySummary: String
-    var ringOrder: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder
-    let onSleep: () -> Void
-    let onRecovery: () -> Void
-    let onStrain: () -> Void
+    /// Tap handler per slot. A slot with no entry is inert (used by the
+    /// off-screen share-card render, where taps are never delivered).
+    let actions: [AtriaTriRingSlot: () -> Void]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var animatedSleepFill = 0.0
-    @State private var animatedRecoveryFill = 0.0
-    @State private var animatedStrainFill = 0.0
+    @State private var animatedFills: [AtriaTriRingSlot: Double] = [:]
+
+    init(slots: [AtriaTriRingSlotContent],
+         centerValue: String,
+         centerState: String,
+         centerDelta: String? = nil,
+         accessibilitySummary: String,
+         actions: [AtriaTriRingSlot: () -> Void]) {
+        self.slots = Array(slots.prefix(3))
+        self.centerValue = centerValue
+        self.centerState = centerState
+        self.centerDelta = centerDelta
+        self.accessibilitySummary = accessibilitySummary
+        self.actions = actions
+    }
+
+    /// Backward-compatible fixed sleep/recovery/strain convenience, kept so
+    /// pre-existing call sites that predate the ring-metric-picker work
+    /// (AtriaOverviewSections, AtriaCustomizeSheet) keep compiling
+    /// unchanged. Internally this just builds the same `slots` array the
+    /// designated initializer above takes.
+    init(sleep: AtriaTriRingMetric,
+         recovery: AtriaTriRingMetric,
+         strain: AtriaTriRingMetric,
+         centerValue: String,
+         centerState: String,
+         centerDelta: String? = nil,
+         accessibilitySummary: String,
+         ringOrder: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder,
+         onSleep: @escaping () -> Void,
+         onRecovery: @escaping () -> Void,
+         onStrain: @escaping () -> Void) {
+        var seen = Set<AtriaTriRingSlot>()
+        var order = ringOrder.filter { AtriaTriRingSlot.defaultOrder.contains($0) && seen.insert($0).inserted }
+        for slot in AtriaTriRingSlot.defaultOrder where !order.contains(slot) {
+            order.append(slot)
+        }
+        func metric(for slot: AtriaTriRingSlot) -> AtriaTriRingMetric {
+            switch slot {
+            case .sleep: return sleep
+            case .recovery: return recovery
+            case .strain: return strain
+            case .hrv, .rhr: return sleep // unreachable: `order` is filtered to the fixed trio above.
+            }
+        }
+        self.init(slots: order.prefix(3).map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
+                  centerValue: centerValue,
+                  centerState: centerState,
+                  centerDelta: centerDelta,
+                  accessibilitySummary: accessibilitySummary,
+                  actions: [.sleep: onSleep, .recovery: onRecovery, .strain: onStrain])
+    }
 
     static func == (lhs: AtriaTriRing, rhs: AtriaTriRing) -> Bool {
-        lhs.sleep == rhs.sleep
-            && lhs.recovery == rhs.recovery
-            && lhs.strain == rhs.strain
+        lhs.slots == rhs.slots
             && lhs.centerValue == rhs.centerValue
             && lhs.centerState == rhs.centerState
             && lhs.centerDelta == rhs.centerDelta
             && lhs.accessibilitySummary == rhs.accessibilitySummary
-            && lhs.ringOrder == rhs.ringOrder
     }
 
     // Even-gap concentric geometry: every ring shares the same stroke width;
@@ -91,37 +160,8 @@ struct AtriaTriRing: View, Equatable {
         return (max(0, radius - pad), radius + pad)
     }
 
-    private var orderedSlots: [AtriaTriRingSlot] {
-        var seen = Set<AtriaTriRingSlot>()
-        var slots = ringOrder.filter { seen.insert($0).inserted }
-        for slot in AtriaTriRingSlot.defaultOrder where !slots.contains(slot) {
-            slots.append(slot)
-        }
-        return Array(slots.prefix(3))
-    }
-
-    private func metric(for slot: AtriaTriRingSlot) -> AtriaTriRingMetric {
-        switch slot {
-        case .sleep: return sleep
-        case .recovery: return recovery
-        case .strain: return strain
-        }
-    }
-
-    private func animatedFill(for slot: AtriaTriRingSlot) -> Double {
-        switch slot {
-        case .sleep: return animatedSleepFill
-        case .recovery: return animatedRecoveryFill
-        case .strain: return animatedStrainFill
-        }
-    }
-
     private func action(for slot: AtriaTriRingSlot) -> () -> Void {
-        switch slot {
-        case .sleep: return onSleep
-        case .recovery: return onRecovery
-        case .strain: return onStrain
-        }
+        actions[slot] ?? {}
     }
 
     var body: some View {
@@ -130,11 +170,11 @@ struct AtriaTriRing: View, Equatable {
                 // Visual layer: purely decorative rendering, in outer-to-inner
                 // paint order so the front-most (smallest) ring's shadow reads
                 // correctly against the ones behind it.
-                ForEach(Array(orderedSlots.enumerated()), id: \.offset) { index, slot in
-                    ringVisual(metric: metric(for: slot),
+                ForEach(Array(slots.enumerated()), id: \.offset) { index, content in
+                    ringVisual(metric: content.metric,
                               diameter: Self.diameter(at: index),
                               lineWidth: Self.lineWidth,
-                              fill: animatedFill(for: slot))
+                              fill: animatedFills[content.slot] ?? 0)
                         .allowsHitTesting(false)
                 }
 
@@ -142,12 +182,12 @@ struct AtriaTriRing: View, Equatable {
                 // to the full hero canvas so a tap anywhere under a ring's
                 // band -- including the shared gap -- resolves to exactly
                 // that ring, regardless of paint order.
-                ForEach(Array(orderedSlots.enumerated()), id: \.offset) { index, slot in
+                ForEach(Array(slots.enumerated()), id: \.offset) { index, content in
                     let radii = Self.hitRadii(at: index)
                     Color.clear
                         .frame(width: Self.outerDiameter, height: Self.outerDiameter)
                         .contentShape(AtriaRingBandShape(innerRadius: radii.inner, outerRadius: radii.outer), eoFill: true)
-                        .onTapGesture(perform: action(for: slot))
+                        .onTapGesture(perform: action(for: content.slot))
                 }
 
                 centerContent
@@ -158,16 +198,21 @@ struct AtriaTriRing: View, Equatable {
             .accessibilityLabel(accessibilitySummary)
 
             HStack(spacing: 8) {
-                legendChip(metric: sleep, action: onSleep)
-                legendChip(metric: recovery, action: onRecovery)
-                legendChip(metric: strain, action: onStrain)
+                ForEach(slots, id: \.slot) { content in
+                    legendChip(metric: content.metric, action: action(for: content.slot))
+                }
             }
         }
         .frame(maxWidth: .infinity)
         .onAppear(perform: animateToFinalValues)
-        .onChange(of: sleep.fill) { _, _ in animateToFinalValues() }
-        .onChange(of: recovery.fill) { _, _ in animateToFinalValues() }
-        .onChange(of: strain.fill) { _, _ in animateToFinalValues() }
+        .onChange(of: fillSignature) { _, _ in animateToFinalValues() }
+    }
+
+    /// Flattened fill snapshot (slot-order-stable since `slots` is fixed for
+    /// the view's lifetime) used solely to detect "some fill value changed"
+    /// for the re-animate trigger below.
+    private var fillSignature: [Double] {
+        slots.map { $0.metric.fill ?? -1 }
     }
 
     private var centerContent: some View {
@@ -274,28 +319,24 @@ struct AtriaTriRing: View, Equatable {
     /// is skipped entirely under Reduce Motion (values snap straight to
     /// their final state).
     private func animateToFinalValues() {
-        let sleepFinal = min(max(sleep.fill ?? 0, 0), 1)
-        let recoveryFinal = min(max(recovery.fill ?? 0, 0), 1)
-        let strainFinal = min(max(strain.fill ?? 0, 0), 1)
+        var finals: [AtriaTriRingSlot: Double] = [:]
+        for content in slots {
+            finals[content.slot] = min(max(content.metric.fill ?? 0, 0), 1)
+        }
 
         if reduceMotion {
-            animatedSleepFill = sleepFinal
-            animatedRecoveryFill = recoveryFinal
-            animatedStrainFill = strainFinal
+            animatedFills = finals
             return
         }
 
-        animatedSleepFill = 0
-        animatedRecoveryFill = 0
-        animatedStrainFill = 0
-        withAnimation(.spring(duration: 0.8)) {
-            animatedSleepFill = sleepFinal
+        for content in slots {
+            animatedFills[content.slot] = 0
         }
-        withAnimation(.spring(duration: 0.8).delay(0.15)) {
-            animatedRecoveryFill = recoveryFinal
-        }
-        withAnimation(.spring(duration: 0.8).delay(0.30)) {
-            animatedStrainFill = strainFinal
+        for (index, content) in slots.enumerated() {
+            let target = finals[content.slot] ?? 0
+            withAnimation(.spring(duration: 0.8).delay(Double(index) * 0.15)) {
+                animatedFills[content.slot] = target
+            }
         }
     }
 }

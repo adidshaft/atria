@@ -691,6 +691,17 @@ enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
         case .deep: return "Deep"
         }
     }
+
+    /// User-facing stage order: SWS is folded into Deep at the presentation layer
+    /// (SWS is N3/deep sleep; the algorithm's separate `.sws`/`.deep` HR-delta bands
+    /// are an artifact of stage() thresholds, not two physiologically distinct stages).
+    static let displayOrder: [SleepStageKind] = [.awake, .light, .rem, .deep]
+
+    /// Maps `.sws` -> `.deep` for display; all other cases pass through unchanged.
+    /// The stored/algorithm taxonomy (stage(), persisted segments) is untouched.
+    var displayStage: SleepStageKind {
+        self == .sws ? .deep : self
+    }
 }
 
 enum SleepStageEvidence: String, Codable, Equatable {
@@ -3249,11 +3260,18 @@ final class SessionStore: ObservableObject {
     }
 
     private func persistDailyRollups(from metrics: [SavedDailyMetric]) {
+        let calendar = Calendar.current
+        var napHoursByDay: [Date: Double] = [:]
+        for nap in sleepHistorySnapshot.napNights {
+            let day = calendar.startOfDay(for: nap.day)
+            napHoursByDay[day, default: 0] += nap.durationHours
+        }
         let entries = Self.makeDailyRollupStoreEntries(metrics: metrics,
                                                        sessions: sessions,
                                                        rest: baseline.restingInt ?? 60,
                                                        maxHR: profile.maxHR,
-                                                       calendar: .current)
+                                                       napHoursByDay: napHoursByDay,
+                                                       calendar: calendar)
         let respiratoryRows = entries.filter { $0.respiratoryRate != nil }.count
         let rrSessionCandidates = sessions.filter {
             ($0.rrPoints?.isEmpty == false)
@@ -3933,6 +3951,7 @@ final class SessionStore: ObservableObject {
                                                                 sessions: [SavedSession] = [],
                                                                 rest: Int = 60,
                                                                 maxHR: Int = 190,
+                                                                napHoursByDay: [Date: Double] = [:],
                                                                 calendar: Calendar = .current) -> [DailyRollupStoreEntry] {
         let sorted = metrics.sorted { $0.day < $1.day }
         let baseNeedHours = configuredSleepBaseNeedHours()
@@ -3958,6 +3977,7 @@ final class SessionStore: ObservableObject {
             }
             let hrvMilliseconds = metric.hrv.flatMap { $0 > 0 ? Double($0) : nil }
             let resolvedRespRate = resolvedRespiratoryRate(for: metric)
+            let sameDayNapHours = napHoursByDay[calendar.startOfDay(for: metric.day)] ?? 0
             return DailyRollupStoreEntry(day: metric.day,
                                          recovery: metric.recoveryPercent,
                                          lnRMSSD: hrvMilliseconds.map(log),
@@ -3966,7 +3986,8 @@ final class SessionStore: ObservableObject {
                                          sleepPerformance: dailyRollupSleepPerformance(sleepDuration: metric.sleepDuration,
                                                                                        baseNeedHours: baseNeedHours,
                                                                                        yesterdayStrain: yesterdayStrain,
-                                                                                       priorNights: priorSleepNights),
+                                                                                       priorNights: priorSleepNights,
+                                                                                       sameDayNapHours: sameDayNapHours),
                                          bedtimeMinutes: metric.sleepStart.map { bedtimeMinutes(from: $0, calendar: calendar) },
                                          strain: metric.strain,
                                          respiratoryRate: resolvedRespRate,
@@ -3982,13 +4003,14 @@ final class SessionStore: ObservableObject {
     nonisolated static func dailyRollupSleepPerformance(sleepDuration: TimeInterval?,
                                                         baseNeedHours: Double,
                                                         yesterdayStrain: Double?,
-                                                        priorNights: [(needed: Double, slept: Double)]) -> Int? {
+                                                        priorNights: [(needed: Double, slept: Double)],
+                                                        sameDayNapHours: Double = 0) -> Int? {
         guard let sleepDuration, sleepDuration > 0 else { return nil }
         let debt = AtriaSleepBudget.sleepDebt(nights: priorNights)
         let need = AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
                                               yesterdayStrain: yesterdayStrain,
                                               debtHours: debt,
-                                              sameDayNapHours: 0)
+                                              sameDayNapHours: sameDayNapHours)
         return AtriaSleepBudget.performancePercent(slept: sleepDuration / 3_600, needed: need)
     }
 
@@ -14090,8 +14112,33 @@ struct SleepHistorySnapshot: Equatable {
                                               confirmed: confirmed,
                                               hasSegments: !stageSegments.isEmpty)
             self.stageEvidence = evidence
-            self.displayStageSegments = evidence == .none ? [] : stageSegments
+            self.displayStageSegments = evidence == .none ? [] : Self.foldedDisplaySegments(from: stageSegments)
             self.stageDurationsByStage = Self.stageDurations(from: displayStageSegments)
+        }
+
+        /// Collapses `.sws` into `.deep` for display and re-merges adjacent runs of the
+        /// same displayed stage so the hypnogram/legend never show a stray `.sws` segment.
+        /// `stageSegments` (raw, for storage/HealthKit) is left untouched by this transform.
+        private static func foldedDisplaySegments(from segments: [SleepStageSegment]) -> [SleepStageSegment] {
+            guard !segments.isEmpty else { return [] }
+            var merged: [SleepStageSegment] = []
+            for segment in segments {
+                let displayStage = segment.stage.displayStage
+                if let last = merged.last,
+                   last.stage == displayStage,
+                   segment.start.timeIntervalSince(last.end) <= 1 {
+                    merged[merged.count - 1] = SleepStageSegment(id: last.id,
+                                                                 start: last.start,
+                                                                 end: max(last.end, segment.end),
+                                                                 stage: displayStage)
+                } else {
+                    merged.append(SleepStageSegment(id: segment.id,
+                                                    start: segment.start,
+                                                    end: segment.end,
+                                                    stage: displayStage))
+                }
+            }
+            return merged
         }
 
         var durationHours: Double {
@@ -14251,6 +14298,9 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     let nights: [Night]
+    /// Confirmed naps kept out of `nights`'s day-keyed dictionary so a same-calendar-day
+    /// main sleep never evicts a nap (and vice versa). See sameDayNapHours(for:).
+    let napNights: [Night]
     let confirmedCount: Int
     let candidateCount: Int
     let respiratoryBaselineMean: Double?
@@ -14272,6 +14322,7 @@ struct SleepHistorySnapshot: Equatable {
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
         self.nights = nights
+        self.napNights = nights.filter(\.isNapEvidence)
         self.confirmedCount = confirmedCount
         self.candidateCount = candidateCount
         self.respiratoryBaselineCount = baselineValues.count
@@ -14292,26 +14343,35 @@ struct SleepHistorySnapshot: Equatable {
 
     init(rollups: [DailyRollup], confirmedSleeps: [UserConfirmedSleep], calendar: Calendar = .current) {
         var nightsByDay: [Date: Night] = [:]
+        var napNightsList: [Night] = []
         for sleep in confirmedSleeps {
             let day = calendar.startOfDay(for: sleep.start)
             let stageSegments = sleep.stageSegments
                 ?? Self.legacyConfirmedSleepStageCompatibility(start: sleep.start,
                                                                end: sleep.end,
                                                                source: sleep.source)
-            nightsByDay[day] = Night(id: sleep.id,
-                                     day: day,
-                                     start: sleep.start,
-                                     end: sleep.end,
-                                     duration: sleep.duration,
-                                     restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
-                                     hrv: sleep.hrv,
-                                     hrvWindowCount: sleep.hrvWindowCount ?? 0,
-                                     respiratoryRate: nil,
-                                     sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span),
-                                     confidence: sleep.confidence,
-                                     source: sleep.source,
-                                     confirmed: true,
-                                     stageSegments: stageSegments)
+            let night = Night(id: sleep.id,
+                              day: day,
+                              start: sleep.start,
+                              end: sleep.end,
+                              duration: sleep.duration,
+                              restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
+                              hrv: sleep.hrv,
+                              hrvWindowCount: sleep.hrvWindowCount ?? 0,
+                              respiratoryRate: nil,
+                              sleepEfficiency: Self.efficiency(duration: sleep.duration, span: sleep.span),
+                              confidence: sleep.confidence,
+                              source: sleep.source,
+                              confirmed: true,
+                              stageSegments: stageSegments)
+            // Route confirmed naps into their own list, bypassing the day-keyed dict.
+            // A same-calendar-day main sleep would otherwise last-writer-wins evict the
+            // nap (or vice versa), silently dropping the nap credit from sameDayNapHours.
+            if Night.explicitNapSources.contains(sleep.source) {
+                napNightsList.append(night)
+            } else {
+                nightsByDay[day] = night
+            }
         }
 
         for rollup in rollups where rollup.sleepReady > 0 || rollup.sleepCandidates > 0 {
@@ -14344,6 +14404,7 @@ struct SleepHistorySnapshot: Equatable {
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
         self.nights = clippedNights
+        self.napNights = napNightsList.sorted { $0.day > $1.day }
         self.confirmedCount = confirmedSleeps.count
         self.candidateCount = rollups.reduce(0) { $0 + $1.sleepCandidates }
         self.respiratoryBaselineCount = baselineValues.count
@@ -14468,10 +14529,6 @@ struct SleepHistorySnapshot: Equatable {
         nights.filter { !$0.isNapEvidence }
     }
 
-    private static func recentNapNights(_ nights: [Night]) -> [Night] {
-        nights.filter(\.isNapEvidence)
-    }
-
     func sleepBudgetDebtHours(baseNeedHours: Double, excluding excludedNightID: String? = nil) -> Double {
         let records = Self.recentSleepNights(nights)
             .filter { night in
@@ -14486,7 +14543,7 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     func sameDayNapHours(for night: Night, calendar: Calendar = .current) -> Double {
-        Self.recentNapNights(nights)
+        napNights
             .filter { calendar.isDate($0.day, inSameDayAs: night.day) }
             .reduce(0) { $0 + $1.durationHours }
     }
@@ -14499,7 +14556,7 @@ struct SleepHistorySnapshot: Equatable {
             return AtriaNapRecovery.Result(percent: morningRecovery, lifted: false)
         }
         let morningLnRMSSD = night.hrv.flatMap { $0 > 0 ? log(Double($0)) : nil }
-        let bestNap = Self.recentNapNights(nights)
+        let bestNap = napNights
             .filter { nap in
                 nap.confirmed
                     && nap.durationHours >= AtriaNapRecovery.minimumNapHours
