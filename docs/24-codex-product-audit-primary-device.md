@@ -7175,3 +7175,34 @@ still review_worthy, checks steady at 30). Highlights:
 - REFUTED by verifiers (left unchanged): budget-consumed-on-throw, sparkline
   final-state drop (1.5 s upstream throttle prevents it), inspector toggle
   flicker (synchronous main-thread defer), launch-arg double-restore.
+
+## 16. Unit-test suite brought to green (2026-07-04, tiered-subagent chunk, commit 7400c895)
+
+The AtriaTests target was EXECUTED FOR THE FIRST TIME (physical device + a
+clean-container iPhone 17 Pro iOS 26.2 simulator). Sequence: 24 new tests written
+by parallel agents (journal store 8, research-sharing privacy invariants 7,
+hot/cold partition + quiet-hours/budget policy math 9) — ALL passed first run;
+9 pre-existing tests failed and were repaired by model-tiered agents (Opus/high
+for the recovery-semantics judgment, Sonnet for the archive/analytics clusters,
+Haiku for the mechanical layout fix):
+
+- **Production bug found and fixed by a test**: `AtriaSleepWakeResearch.merge()`
+  destroyed all but the final sleep-stage run via destructive `popLast()` — the
+  hypnogram would degrade to near-empty breakdowns. Peek-and-extend fix; verified
+  by the stage-breakdown tests.
+- Archive fixture tests were writing INTO the real on-device container and
+  colliding with 7k+ real rows — now XCTSkip pre-mutation when real data exists
+  (assertions unchanged for clean containers).
+- Recovery thin/stale test updated to the deliberate honest-but-present
+  `.unverified` semantics (traced to commit ac1a820f), with a new fail-closed
+  sub-case proving nil/.learning survives when no baseline exists.
+- Training-load fixture recomputed (monotony 12.5 → 1.74 keeping ACWR 1.0);
+  copy-drift expectations updated (COPY-1 wording, `index_ok` aggregate reason).
+
+**FINAL: 111/111 green on the clean simulator.** Device runs skip the archive
+fixtures by design (real data present). Static checks steady at 30. Known
+infra quirk: device test runs intermittently fail bootstrap ("signal kill while
+preparing") — retry works; and each test-run re-install drops developer trust,
+requiring the Settings re-trust before the next app launch. 🟡 The phone
+currently needs that re-trust (HARNESS_ERROR=developer_profile_not_trusted)
+before the sleep-stage-fix build launches.
