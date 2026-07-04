@@ -582,7 +582,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .strain: return Metrics.electricStrain",
             "func cutoffDate(now: Date = Date(), calendar: Calendar = .current) -> Date",
             "return calendar.startOfDay(for: now)",
-            "case .week, .month, .quarter, .sixMonths:",
+            # 2026-07-05: cutoffDate's shared branch grew .year alongside the
+            # existing week/month/quarter/sixMonths cases when the trends
+            # range picker extended to 1Y/All; .all now has its own
+            # `.distantPast` branch instead of falling through this one.
+            "case .week, .month, .quarter, .sixMonths, .year:",
             "Picker(\"Range\", selection: $range)",
             "Text(item.segmentedLabel)",
             ".accessibilityLabel(item.menuLabel)",
@@ -658,7 +662,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var prepared = AtriaTrendPreparedSeries.empty",
             "private static func prepareSeries(points: [AtriaTrendPoint]",
             "let cutoff = range.cutoffDate(now: now)",
-            "let previousCutoff = cutoff.addingTimeInterval(-Double(range.days) * 86_400)",
+            # 2026-07-05: previousCutoff now gates on `range.hasPriorPeriod`
+            # (`.all` has no earlier window to overlay/diff against) instead
+            # of always subtracting `range.days`; the unconditional form
+            # below is still present in the guarded expression.
+            "range.hasPriorPeriod",
             "var previousSamples: [AtriaTrendPoint.Sample] = []",
             "private struct AtriaTrendRangeSummary: Equatable",
             "private struct AtriaTrendRangeSummaryStrip: View",
@@ -5701,7 +5709,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "private static func prepareSeries(points: [AtriaTrendPoint]",
             "private static func preparePeriodReadout(points: [AtriaTrendPoint]",
             "let cutoff = range.cutoffDate(now: now)",
-            "let previousCutoff = cutoff.addingTimeInterval(-Double(range.days) * 86_400)",
+            # 2026-07-05: previousCutoff now gates on `range.hasPriorPeriod`
+            # (see prepareSeries pin above) instead of unconditionally
+            # subtracting `range.days`.
+            "range.hasPriorPeriod",
             "previousSeries: previousSamples",
             "AtriaTrendRangeDock(selectedRange: $range,",
             "private struct AtriaTrendRangeDock: View",

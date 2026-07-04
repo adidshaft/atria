@@ -38,6 +38,14 @@ struct AtriaHealthScreen: View {
                 VStack(spacing: 12) {
                     healthMonitorCard
                     AtriaHealthFitnessAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
+                    // History surface (2026-07-05): memoized on the two revisions so
+                    // live-pulse re-renders of this screen never rebuild it.
+                    AtriaHistorySection(rollups: store.dailyRollupHistory,
+                                        rollupRevision: store.dailyRollupHistoryRevision,
+                                        workouts: store.confirmedWorkouts,
+                                        sleeps: store.confirmedSleeps,
+                                        workoutsRevision: store.confirmedWorkoutsRevision)
+                        .equatable()
                 }
             }
         }
