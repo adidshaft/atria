@@ -1825,15 +1825,53 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason)
     }
 
+    /// Off/on notify resets destroy in-flight samples, so they are paced: at
+    /// most one per 30 s, and after 3 consecutive ineffective resets (the
+    /// watchdogs immediately asking again) the reset path goes quiet for
+    /// 10 min. A strap that streams HR without RR (loose contact) is served
+    /// better by accepting the HR-only stream than by resetting it to death —
+    /// observed live 2026-07-05: resets every 2-6 s throttled 111k-notification
+    /// capture down to ~10 accepted samples/90 s.
+    private var lastHRNotifyResetAt: Date?
+    private var hrNotifyResetStreak = 0
+    private var hrNotifyResetBackoffUntil: Date?
+    static let hrNotifyResetMinInterval: TimeInterval = 30
+    static let hrNotifyResetStreakLimit = 3
+    static let hrNotifyResetBackoff: TimeInterval = 10 * 60
+
     private func resetHeartRateNotifyIfNeeded(peripheral: CBPeripheral, characteristic: CBCharacteristic, reason: String) {
         guard characteristic.properties.contains(.notify) else { return }
+        let now = Date()
+        if let backoffUntil = hrNotifyResetBackoffUntil, now < backoffUntil {
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=reset_backoff reason=%@ remaining_s=%.0f",
+                          reason, backoffUntil.timeIntervalSince(now))
+            return
+        }
+        if let last = lastHRNotifyResetAt, now.timeIntervalSince(last) < Self.hrNotifyResetMinInterval {
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=reset_paced reason=%@ since_last_s=%.0f",
+                          reason, now.timeIntervalSince(last))
+            return
+        }
+        // A long healthy gap means the last reset worked; start a fresh streak.
+        if let last = lastHRNotifyResetAt, now.timeIntervalSince(last) > Self.hrNotifyResetBackoff {
+            hrNotifyResetStreak = 0
+        }
+        lastHRNotifyResetAt = now
+        hrNotifyResetStreak += 1
+        if hrNotifyResetStreak >= Self.hrNotifyResetStreakLimit {
+            hrNotifyResetBackoffUntil = now.addingTimeInterval(Self.hrNotifyResetBackoff)
+            hrNotifyResetStreak = 0
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=reset_backoff_armed reason=%@ quiet_s=%.0f",
+                          reason, Self.hrNotifyResetBackoff)
+        }
         if characteristic.isNotifying {
             peripheral.setNotifyValue(false, for: characteristic)
         }
         peripheral.setNotifyValue(true, for: characteristic)
-        AtriaDebugLog("ATRIADBG ble_notify_reassert status=reset_requested reason=%@ notifying_before=%d",
+        AtriaDebugLog("ATRIADBG ble_notify_reassert status=reset_requested reason=%@ notifying_before=%d streak=%d",
                       reason,
-                      characteristic.isNotifying ? 1 : 0)
+                      characteristic.isNotifying ? 1 : 0,
+                      hrNotifyResetStreak)
     }
 
     // MARK: - Duty cycle (daytime power saver)
