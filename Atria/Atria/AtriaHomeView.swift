@@ -1910,6 +1910,7 @@ struct AtriaHomeView: View {
         // the natural morning trigger; the store rate-limits and does nothing when the
         // newest confirmed sleep is already recent.
         store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground")
+        Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
         LocalNotificationScheduler.scheduleEveningJournalCheckIn(
             lastJournalActivity: [store.behaviorJournalEntries.map(\.day).max(),
                                   store.journalAnswers.latestActivityDay()]
