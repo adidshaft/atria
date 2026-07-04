@@ -198,7 +198,12 @@ struct AtriaTodayScreen: View {
             geometry.contentOffset.y + geometry.contentInsets.top
         } action: { _, newValue in
             let clamped = min(max(newValue, 0), Self.heroShrinkDistance)
-            heroShrinkProgress = clamped / Self.heroShrinkDistance
+            // Quantized to 5% steps: a raw per-frame write re-evaluates the
+            // whole screen ~60x/s during scroll — the "hanging" the user felt.
+            let quantized = (clamped / Self.heroShrinkDistance * 20).rounded() / 20
+            if quantized != heroShrinkProgress {
+                heroShrinkProgress = quantized
+            }
         }
     }
 
