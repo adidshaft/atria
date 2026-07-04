@@ -335,6 +335,209 @@ private struct AtriaConditionalVitalsStringDraggable: ViewModifier {
     }
 }
 
+// MARK: - Vitals education (tap-to-learn + suboptimal-range hints)
+
+/// Shared "what it is / your typical range / how to improve" topics for the
+/// six Health Monitor vitals surfaced on both the Vitals tab card
+/// (`AtriaHealthMonitorCard`) and the Health screen (`AtriaHealthScreen`).
+/// Copy stays in general-guidance language deliberately -- no medical claims.
+enum AtriaVitalsEducationTopic: String, Identifiable {
+    case recovery
+    case restingHeartRate
+    case hrv
+    case respiration
+    case stress
+    case sleep
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recovery: return "Recovery"
+        case .restingHeartRate: return "Resting heart rate"
+        case .hrv: return "HRV"
+        case .respiration: return "Respiratory rate"
+        case .stress: return "Stress"
+        case .sleep: return "Sleep"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .recovery: return Metrics.electricGreen
+        case .restingHeartRate, .hrv: return .pink
+        case .respiration: return .teal
+        case .stress: return .orange
+        case .sleep: return Metrics.electricSleep
+        }
+    }
+
+    var whatItIs: String {
+        switch self {
+        case .recovery:
+            return "Recovery blends your overnight HRV, resting heart rate, sleep, and respiration against your own baseline into one readiness read. It answers \u{201c}how ready am I today\u{201d} rather than being a score to max out every day."
+        case .restingHeartRate:
+            return "Resting heart rate is how many times your heart beats per minute at full rest, usually measured overnight. It tracks cardiovascular fitness over months and day-to-day strain in the short term."
+        case .hrv:
+            return "Heart rate variability measures the tiny timing differences between heartbeats, driven mostly by your autonomic nervous system. Higher HRV generally reflects more recovery capacity, though the \u{201c}right\u{201d} number is highly individual."
+        case .respiration:
+            return "Respiratory rate is how many breaths you take per minute while asleep. It is normally quite stable night to night, so shifts outside your own usual range are often the first sign something is off."
+        case .stress:
+            return "This stress read estimates autonomic load right now from heart rate and beat-to-beat timing, not a lab cortisol measurement. Treat it as a rough signal for how activated your system currently is."
+        case .sleep:
+            return "Sleep tracks how long you slept against your personal goal, plus how consistent your recent sleep timing has been. It is a duration and consistency estimate, not a clinical sleep study."
+        }
+    }
+
+    var howToImprove: [String] {
+        switch self {
+        case .recovery:
+            return [
+                "Sleep is the single biggest lever -- consistent bed and wake times build a steadier baseline.",
+                "Scale today's effort to the score -- treat a low recovery as a cue for easier movement, not a verdict.",
+                "Give it time -- the underlying baseline gets more accurate over your first few weeks of wear."
+            ]
+        case .restingHeartRate:
+            return [
+                "Build a consistent aerobic base -- regular easy-effort training tends to lower resting heart rate over weeks, not days.",
+                "Protect sleep and hydration -- a single poor night or dehydration can temporarily raise resting HR.",
+                "Watch the trend, not one reading -- a sustained rise versus your own baseline matters more than any single morning."
+            ]
+        case .hrv:
+            return [
+                "Prioritize consistent, sufficient sleep -- HRV is most sensitive to sleep quality and timing.",
+                "Manage training load -- hard sessions temporarily suppress HRV, and easier days typically let it rebound.",
+                "Limit late alcohol and heavy evening meals -- both are commonly linked with lower overnight HRV."
+            ]
+        case .respiration:
+            return [
+                "Rule out simple causes first -- illness, altitude, and a warm room can all shift breathing rate.",
+                "Favor nasal breathing and a consistent sleep position where you can.",
+                "Track the trend for a few nights -- one blip is common; several nights outside range is worth noting."
+            ]
+        case .stress:
+            return [
+                "Try slow paced breathing, roughly 5-6 breaths a minute, for a few minutes to bring it down.",
+                "Short walks and daylight exposure are consistently linked with lower perceived stress.",
+                "If it stays elevated for days, treat that as a cue to lighten training and protect sleep, not push harder."
+            ]
+        case .sleep:
+            return [
+                "Anchor a consistent wake time -- it is one of the strongest levers for regulating your body clock.",
+                "Wind down earlier if you're carrying sleep debt -- small nightly top-ups add up faster than one long catch-up night.",
+                "Keep the bedroom cool, dark, and screen-free in the last 30 minutes to help sleep onset."
+            ]
+        }
+    }
+
+    /// Used only when no numeric baseline range exists yet for this metric --
+    /// either because the metric isn't range-based (recovery, stress, sleep)
+    /// or because the trusted baseline hasn't formed yet.
+    func rangeFallback(sleepGoalHours: Double) -> String {
+        switch self {
+        case .recovery:
+            return "Recovery already compares today with your own rolling baseline, so there's no separate range -- read the percent itself: 67-100% high, 34-66% moderate, 1-33% low."
+        case .stress:
+            return "Stress is a live Calm / Low / Medium / High read rather than a numeric range -- compare the label day to day."
+        case .sleep:
+            return String(format: "Sleep is compared with your %.1f hour goal and your recent timing consistency rather than a numeric typical range.", sleepGoalHours)
+        case .restingHeartRate, .hrv, .respiration:
+            return "Still building your typical range -- Atria needs a few more days of trusted overnight data before comparing today with your own normal."
+        }
+    }
+}
+
+/// Compact three-section education sheet: what it is, your typical range
+/// (when a trusted baseline comparison exists), and how to improve. Reused by
+/// both the Vitals tab's Health Monitor card and the Health screen's monitor.
+struct AtriaVitalsEducationSheet: View {
+    let topic: AtriaVitalsEducationTopic
+    var numericRangeText: String? = nil
+    var sleepGoalHours: Double = 8.0
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    detailBlock(title: "What it is", body: topic.whatItIs)
+                    detailBlock(title: "Your typical range",
+                                body: numericRangeText ?? topic.rangeFallback(sleepGoalHours: sleepGoalHours))
+                    improveBlock
+
+                    Text("General guidance, not medical advice.")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(18)
+            }
+            .navigationTitle(topic.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var improveBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("How to improve")
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(topic.howToImprove.enumerated()), id: \.offset) { _, bullet in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(topic.tint)
+                        .padding(.top, 2)
+                    Text(bullet)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .atriaInsetCard(tint: topic.tint)
+    }
+
+    private func detailBlock(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(body)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .atriaInsetCard(tint: topic.tint)
+    }
+}
+
+/// Small inline hint chip shown on a vitals row only when a real
+/// trusted-baseline comparison places today's value in a suboptimal zone.
+struct AtriaVitalsHintChip: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.14), in: Capsule(style: .continuous))
+    }
+}
+
 private struct AtriaHealthMonitorCard: View {
     let rollups: [DailyRollupStoreEntry]
     let sleepHistory: SleepHistorySnapshot
@@ -342,6 +545,8 @@ private struct AtriaHealthMonitorCard: View {
     let bloodOxygenEnabled: Bool
     let skinTemperatureEnabled: Bool
     let onOpenDetail: (AtriaMetricDetailKind) -> Void
+    @State private var educationTopic: AtriaVitalsEducationTopic?
+    @State private var educationRangeText: String?
 
     var body: some View {
         // Computed once per body eval: `rows` re-sorts the rollup history to
@@ -358,12 +563,19 @@ private struct AtriaHealthMonitorCard: View {
             VStack(spacing: 10) {
                 ForEach(rows) { row in
                     AtriaHealthMonitorRowView(row: row,
-                                              onOpenDetail: onOpenDetail)
+                                              onOpenDetail: onOpenDetail,
+                                              onOpenEducation: { topic, rangeText in
+                        educationRangeText = rangeText
+                        educationTopic = topic
+                    })
                 }
             }
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
+        .sheet(item: $educationTopic) { topic in
+            AtriaVitalsEducationSheet(topic: topic, numericRangeText: educationRangeText)
+        }
         .accessibilityElement(children: .contain)
     }
 
@@ -478,7 +690,24 @@ private struct AtriaHealthMonitorCard: View {
         return AtriaHealthMonitorRow(kind: kind,
                                      valueText: kind.valueText(today),
                                      points: sparklineValues,
-                                     rangeState: rangeState)
+                                     rangeState: rangeState,
+                                     numericRangeText: Self.numericRangeText(kind: kind, stat: stat))
+    }
+
+    private static func numericRangeText(kind: AtriaHealthMonitorVitalKind, stat: DailyRollupVitals.Stat?) -> String? {
+        guard let stat, stat.n >= 3, stat.sd > 0 else { return nil }
+        let low = max(stat.mean - 1.5 * stat.sd, 0)
+        let high = max(stat.mean + 1.5 * stat.sd, low)
+        switch kind {
+        case .restingHeartRate:
+            return "\(Int(low.rounded()))\u{2013}\(Int(high.rounded())) bpm"
+        case .hrv:
+            return "\(Int(low.rounded()))\u{2013}\(Int(high.rounded())) ms"
+        case .respiratoryRate:
+            return String(format: "%.1f\u{2013}%.1f/min", low, high)
+        case .bloodOxygen, .skinTemperature:
+            return nil
+        }
     }
 
     private func makeResearchRow(kind: AtriaHealthMonitorVitalKind,
@@ -517,8 +746,16 @@ private struct AtriaHealthMonitorRow: Identifiable, Equatable {
     let valueText: String
     let points: [AtriaHealthMonitorSparkPoint]
     let rangeState: AtriaHealthMonitorRangeState
+    /// "48-62 bpm"-style numeric typical range, only populated once the
+    /// baseline stat is trusted (n >= 3, sd > 0). Feeds the education sheet's
+    /// "Your typical range" section.
+    var numericRangeText: String? = nil
 
     var id: AtriaHealthMonitorVitalKind { kind }
+
+    var hintText: String? {
+        kind.hintText(rangeState: rangeState)
+    }
 }
 
 private struct AtriaHealthMonitorSparkPoint: Identifiable, Equatable {
@@ -571,6 +808,35 @@ private enum AtriaHealthMonitorVitalKind: String, CaseIterable {
         case .hrv: return .hrv
         case .respiratoryRate: return .respiratoryRate
         case .bloodOxygen, .skinTemperature: return nil
+        }
+    }
+
+    /// Which shared education topic this row's info affordance opens. `nil`
+    /// for the experimental research rows, which keep their own info sheet.
+    var educationTopic: AtriaVitalsEducationTopic? {
+        switch self {
+        case .restingHeartRate: return .restingHeartRate
+        case .hrv: return .hrv
+        case .respiratoryRate: return .respiration
+        case .bloodOxygen, .skinTemperature: return nil
+        }
+    }
+
+    /// A suboptimal-direction hint only makes sense for some vitals: an
+    /// elevated resting HR or respiratory rate, or a depressed HRV.
+    func hintText(rangeState: AtriaHealthMonitorRangeState) -> String? {
+        switch self {
+        case .restingHeartRate:
+            guard case .aboveTypical = rangeState else { return nil }
+            return "\u{2191} elevated -- try earlier bedtime"
+        case .hrv:
+            guard case .belowTypical = rangeState else { return nil }
+            return "\u{2193} below typical -- ease today's training"
+        case .respiratoryRate:
+            guard case .aboveTypical = rangeState else { return nil }
+            return "\u{2191} elevated -- track how you feel"
+        case .bloodOxygen, .skinTemperature:
+            return nil
         }
     }
 
@@ -662,25 +928,48 @@ private enum AtriaHealthMonitorDeviationSeverity: Equatable {
 private struct AtriaHealthMonitorRowView: View, Equatable {
     let row: AtriaHealthMonitorRow
     let onOpenDetail: (AtriaMetricDetailKind) -> Void
+    let onOpenEducation: (AtriaVitalsEducationTopic, String?) -> Void
 
     static func == (lhs: AtriaHealthMonitorRowView, rhs: AtriaHealthMonitorRowView) -> Bool {
         lhs.row == rhs.row
     }
 
     var body: some View {
-        Button {
-            if let detailKind = row.kind.detailKind {
-                onOpenDetail(detailKind)
+        HStack(alignment: .center, spacing: 6) {
+            Button {
+                if let detailKind = row.kind.detailKind {
+                    onOpenDetail(detailKind)
+                }
+            } label: {
+                rowContent
             }
-        } label: {
-            rowContent
+            .buttonStyle(.plain)
+            .disabled(row.kind.detailKind == nil)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(accessibilityLabelText)
+            .accessibilityHint(row.kind.detailKind == nil ? "Detail view is not available yet." : "Opens this vital detail.")
+
+            if let topic = row.kind.educationTopic {
+                Button {
+                    onOpenEducation(topic, row.numericRangeText)
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(topic.title) meaning and coaching")
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(row.kind.detailKind == nil)
         .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.kind.title), \(row.valueText), \(row.rangeState.label)")
-        .accessibilityHint(row.kind.detailKind == nil ? "Detail view is not available yet." : "Opens this vital detail.")
+    }
+
+    private var accessibilityLabelText: String {
+        if let hintText = row.hintText {
+            return "\(row.kind.title), \(row.valueText), \(row.rangeState.label). \(hintText)"
+        }
+        return "\(row.kind.title), \(row.valueText), \(row.rangeState.label)"
     }
 
     private var rowContent: some View {
@@ -703,6 +992,10 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
 
                 AtriaHealthMonitorSparkline(points: row.points, tint: row.kind.tint)
                     .frame(height: 18)
+
+                if let hintText = row.hintText {
+                    AtriaVitalsHintChip(text: hintText, tint: row.rangeState.tint)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

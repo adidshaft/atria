@@ -8420,7 +8420,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaStrapScreen(statusStore:",
             "coreLiveStore: model.coreLiveStore",
             "pulseLiveStore: model.pulseLiveStore",
-            'tabNavigation(title: "Chat", showsHero: false)',
+            # Chat tab renamed to "Assistant" (2026-07-05, chrome-fixes pass).
+            'tabNavigation(title: "Assistant", showsHero: false)',
             '"sleep-plan-bedtime", "north-star-highlights"',
             'ProcessInfo.processInfo.environment["ATRIA_UI_SCREEN"]',
             "--atria-open-connection-guide",
@@ -9198,7 +9199,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaHealthFitnessAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)",
             "private struct AtriaHealthFitnessAgeCard: View, Equatable",
             'Text("Fitness age")',
-            'Text(summary.isReady ? summary.detailText : "Calibrating 28-day baseline")',
+            # Migrated: the static "Ny younger/older" subtitle was replaced by
+            # an animated arrow + count-up delta reveal (spring, reduce-motion
+            # aware); "Calibrating 28-day baseline" still renders unchanged
+            # while not ready.
+            'Text("Calibrating 28-day baseline")',
             "Text(summary.footnote)",
             '"Fitness age. \\(summary.valueText).',
         ]:

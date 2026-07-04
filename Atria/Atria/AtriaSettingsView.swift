@@ -84,6 +84,16 @@ struct AtriaSettingsView: View {
     @AtriaDefault("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
     @AtriaDefault("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
 
+    // Section-group expansion state. Dotted keys go through @AtriaDefault, not
+    // @AppStorage — see AtriaDefault.swift for the dotted-key UserDefaults KVO
+    // storm this avoids (documented against AtriaHomeView's 0x8BADF00D crash).
+    @AtriaDefault("atria.settings.expanded.profile") private var expandedProfile = true
+    @AtriaDefault("atria.settings.expanded.strap") private var expandedStrap = true
+    @AtriaDefault("atria.settings.expanded.notifications") private var expandedNotifications = false
+    @AtriaDefault("atria.settings.expanded.data") private var expandedData = false
+    @AtriaDefault("atria.settings.expanded.sharing") private var expandedSharing = false
+    @AtriaDefault("atria.settings.expanded.developer") private var expandedDeveloper = false
+
     /// Support destinations are shown as text only. Atria's core stays local-first
     /// with no in-app network/browser clients, so contact details are surfaced for
     /// the user to open themselves rather than launched in-app.
@@ -155,28 +165,21 @@ struct AtriaSettingsView: View {
         NavigationStack {
             Form {
                 if debugPrioritizesDeviceSection {
-                    deviceSection
+                    strapCaptureGroup
                 }
                 if debugPrioritizesDataSection {
-                    dataSection
+                    dataStorageGroup
                 }
-                profileSection
-                appearanceSection
-                todayLayoutSection
-                targetsSection
+                profileGroup
                 if !debugPrioritizesDeviceSection {
-                    deviceSection
+                    strapCaptureGroup
                 }
-                radioModeSection
-                heartRateBroadcastSection
-                sensorAvailabilitySection
-                alertsSection
+                notificationsGroup
                 if !debugPrioritizesDataSection {
-                    dataSection
+                    dataStorageGroup
                 }
-                AtriaResearchSharingSection(buildBundle: buildResearchBundle)
-                researchValidationSection
-                aboutSection
+                sharingPrivacyGroup
+                developerGroup
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -202,6 +205,98 @@ struct AtriaSettingsView: View {
                       allowedContentTypes: backupArchiveTypes,
                       allowsMultipleSelection: false) { result in
             handleBackupImport(result)
+        }
+    }
+
+    // MARK: Collapsible section groups
+    //
+    // Regrouping only — each xxxSection below still owns its original rows,
+    // header and footer verbatim. These groups just fold multiple existing
+    // Sections under one DisclosureGroup so the settings list isn't one long
+    // flat scroll. Expansion state is remembered per section via @AtriaDefault
+    // (dotted keys, so no @AppStorage KVO storm).
+
+    private func settingsGroupLabel(_ title: String, systemImage: String, tint: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(tint)
+    }
+
+    private var strapExpandedBinding: Binding<Bool> {
+        debugPrioritizesDeviceSection ? .constant(true) : $expandedStrap
+    }
+
+    private var dataExpandedBinding: Binding<Bool> {
+        debugPrioritizesDataSection ? .constant(true) : $expandedData
+    }
+
+    private var profileGroup: some View {
+        Section {
+            DisclosureGroup(isExpanded: $expandedProfile) {
+                profileSection
+                appearanceSection
+                todayLayoutSection
+                targetsSection
+            } label: {
+                settingsGroupLabel("Profile", systemImage: "person.crop.circle.fill", tint: .pink)
+            }
+        }
+    }
+
+    private var strapCaptureGroup: some View {
+        Section {
+            DisclosureGroup(isExpanded: strapExpandedBinding) {
+                deviceSection
+                radioModeSection
+                heartRateBroadcastSection
+                sensorAvailabilitySection
+            } label: {
+                settingsGroupLabel("Strap & Capture", systemImage: "antenna.radiowaves.left.and.right.circle.fill", tint: .cyan)
+            }
+        }
+    }
+
+    private var notificationsGroup: some View {
+        Section {
+            DisclosureGroup(isExpanded: $expandedNotifications) {
+                alertsSection
+            } label: {
+                settingsGroupLabel("Notifications", systemImage: "bell.badge.fill", tint: .orange)
+            }
+        }
+    }
+
+    private var dataStorageGroup: some View {
+        Section {
+            DisclosureGroup(isExpanded: dataExpandedBinding) {
+                dataSection
+            } label: {
+                settingsGroupLabel("Data & Storage", systemImage: "internaldrive.fill", tint: .blue)
+            }
+        }
+    }
+
+    private var sharingPrivacyGroup: some View {
+        Section {
+            DisclosureGroup(isExpanded: $expandedSharing) {
+                AtriaResearchSharingSection(buildBundle: buildResearchBundle)
+                aboutSection
+            } label: {
+                settingsGroupLabel("Sharing & Privacy", systemImage: "hand.raised.fill", tint: .green)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var developerGroup: some View {
+        if researchValidationContent != nil, AtriaDeveloperMode.isEnabled {
+            Section {
+                DisclosureGroup(isExpanded: $expandedDeveloper) {
+                    researchValidationSection
+                } label: {
+                    settingsGroupLabel("Developer", systemImage: "hammer.fill", tint: .secondary)
+                }
+            }
         }
     }
 

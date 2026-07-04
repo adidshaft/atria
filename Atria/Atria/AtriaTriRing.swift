@@ -137,6 +137,46 @@ struct AtriaTriRing: View, Equatable {
             && lhs.accessibilitySummary == rhs.accessibilitySummary
     }
 
+    /// Which of the three metrics that have a defined "how good is this
+    /// number" zone semantic (as opposed to HRV/RHR, which only have a
+    /// personal-baseline ratio, not a zone) `zoneTint(_:percent:)` is being
+    /// asked to grade.
+    enum ZoneMetric {
+        case sleep, strain, recovery
+    }
+
+    /// Shared under/optimal/over color semantics -- deliberately independent
+    /// of each metric's identity hue (`Metrics.electricSleep` purple,
+    /// `Metrics.electricStrain` blue): this is about whether *this reading*
+    /// is good, not which ring it lives on. `percent` is always "actual as a
+    /// percent of the reference" (100 == exactly on target/need):
+    /// - sleep: percent of sleep need (the same number `sleepPerformance`
+    ///   already carries).
+    /// - strain: percent of the coach's strain target for today.
+    /// - recovery: the recovery percent itself (0-100), which has no
+    ///   separate "target" -- its own value is already the 0-100 scale the
+    ///   existing 33/66 red/yellow/green bands (`Metrics.recoveryColor`)
+    ///   grade directly.
+    static func zoneTint(_ metric: ZoneMetric, percent: Double) -> Color {
+        switch metric {
+        case .sleep:
+            switch percent {
+            case ..<85: return Metrics.electricYellow
+            case 85...110: return Metrics.electricGreen
+            default: return Metrics.electricStrain // oversleep: cool blue-ish, not a warning color
+            }
+        case .strain:
+            switch percent {
+            case ..<90: return Metrics.electricStrain
+            case 90...110: return Metrics.electricGreen
+            case 110...140: return Metrics.electricYellow
+            default: return Metrics.electricRed
+            }
+        case .recovery:
+            return Metrics.recoveryColor(Int(percent.rounded()))
+        }
+    }
+
     // Even-gap concentric geometry: every ring shares the same stroke width;
     // each ring inward is exactly `lineWidth + gap` narrower (per side) than
     // the one outside it, so the empty space between any two adjacent rings
@@ -295,12 +335,20 @@ struct AtriaTriRing: View, Equatable {
                     .frame(width: 14)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(metric.value)
-                        .font(.caption.weight(.bold))
-                        .monospacedDigit()
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.65)
+                    HStack(spacing: 4) {
+                        // Tiny zone-tint dot -- an at-a-glance under/optimal/
+                        // over cue that doesn't depend on reading the number.
+                        Circle()
+                            .fill(metric.tint)
+                            .frame(width: 5, height: 5)
+                        Text(metric.value)
+                            .font(.caption.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(metric.tint)
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                    }
                     Text(metric.detail)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)

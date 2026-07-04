@@ -238,6 +238,19 @@ private struct AtriaJournalCheckInDeck: View {
     // every wheel/stepper tick would fire a full insights recompute per tick.
     @State private var pendingCaffeineMinutes: Int = 15 * 60
     @State private var pendingDrinks: Int = 1
+    // Tinder-style swipe deck: live drag offset for the top card, plus a
+    // dedicated haptic tick that fires on every committed swipe (yes or no),
+    // independent of the existing deckIndex-driven selection tick.
+    @State private var dragOffset: CGSize = .zero
+    @State private var swipeHapticTick: Int = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum SwipeDirection {
+        case yes
+        case no
+    }
+
+    private static let cardHeight: CGFloat = 250
 
     private var todayEntry: BehaviorJournalEntry {
         store.behaviorJournalEntry(for: Date())
@@ -284,20 +297,7 @@ private struct AtriaJournalCheckInDeck: View {
             if deckComplete {
                 completedCard
             } else {
-                TabView(selection: $deckIndex) {
-                    ForEach(Array(tags.enumerated()), id: \.element.id) { index, tag in
-                        questionCard(for: tag)
-                            .tag(index)
-                    }
-                    ForEach(Array(scaleQuestions.enumerated()), id: \.element.id) { index, question in
-                        scaleCard(for: question)
-                            .tag(tags.count + index)
-                    }
-                    completedCard
-                        .tag(cardCount)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 250)
+                swipeDeck
 
                 HStack(spacing: 6) {
                     ForEach(Array(tags.enumerated()), id: \.element.id) { index, tag in
@@ -318,6 +318,7 @@ private struct AtriaJournalCheckInDeck: View {
         .padding(16)
         .atriaCard(emphasis: .soft)
         .sensoryFeedback(.selection, trigger: deckIndex)
+        .sensoryFeedback(.impact(weight: .medium), trigger: swipeHapticTick)
         .onAppear {
             // Completion is persisted state, not transient UI state: resume at
             // the first unanswered card (or the done card) after any view reset.
@@ -355,6 +356,182 @@ private struct AtriaJournalCheckInDeck: View {
         return .primary.opacity(0.18)
     }
 
+    // MARK: - Swipe deck
+
+    /// Only the boolean tag cards (indices 0..<tags.count) are swipeable.
+    /// Typed follow-up cards (time/amount) and the mood/stress scale cards
+    /// keep their existing tap-only controls.
+    private var isCurrentCardSwipeable: Bool {
+        deckIndex < tags.count
+    }
+
+    @ViewBuilder
+    private func card(at index: Int) -> some View {
+        Group {
+            if index < tags.count {
+                questionCard(for: tags[index])
+            } else if index < cardCount {
+                scaleCard(for: scaleQuestions[index - tags.count])
+            } else {
+                completedCard
+            }
+        }
+        // Clamp every card to the deck's fixed height (a plain ZStack, unlike
+        // TabView, won't do this for us) so the peeking card behind is mostly
+        // covered by the front card instead of both showing full content.
+        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight)
+        .clipped()
+        // Each card needs its own opaque surface — the deck stacks the next
+        // card behind the current one in a ZStack, and without a background
+        // here the "peeking" card would show straight through the front card.
+        .atriaInsetCard(cornerRadius: 20, tint: .cyan)
+    }
+
+    private var swipeDeck: some View {
+        ZStack {
+            if deckIndex + 1 < cardCount {
+                // A plain hint, not the next card's real content: the deck's
+                // surfaces are translucent Liquid Glass, so stacking the actual
+                // (duplicate) text/buttons behind the front card would show
+                // through as illegible ghosting. A flat peeking shape avoids
+                // that while still reading as "there's another card back here."
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.cyan.opacity(0.10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight)
+                    .scaleEffect(0.94)
+                    .offset(y: 14)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+
+            if deckIndex < cardCount {
+                Group {
+                    if isCurrentCardSwipeable {
+                        card(at: deckIndex).gesture(swipeGesture)
+                    } else {
+                        card(at: deckIndex)
+                    }
+                }
+                .offset(dragOffset)
+                .rotationEffect(.degrees(reduceMotion ? 0 : min(max(Double(dragOffset.width / 18), -14), 14)))
+                .overlay(alignment: .topTrailing) {
+                    if isCurrentCardSwipeable, dragOffset.width > 24 {
+                        swipeBadge(text: "YES", tint: .cyan)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    if isCurrentCardSwipeable, dragOffset.width < -24 {
+                        swipeBadge(text: "NO", tint: .red)
+                    }
+                }
+            }
+        }
+        .frame(height: Self.cardHeight)
+    }
+
+    private func swipeBadge(text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.caption.weight(.heavy))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(tint.opacity(0.14), in: Capsule())
+            .overlay(Capsule().stroke(tint.opacity(0.5), lineWidth: 1))
+            .padding(14)
+            .accessibilityHidden(true)
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 15)
+            .onChanged { value in
+                dragOffset = value.translation
+            }
+            .onEnded { value in
+                let threshold: CGFloat = 110
+                if value.translation.width > threshold {
+                    commitSwipe(.yes)
+                } else if value.translation.width < -threshold {
+                    commitSwipe(.no)
+                } else {
+                    snapBack()
+                }
+            }
+    }
+
+    private func commitSwipe(_ direction: SwipeDirection) {
+        guard deckIndex < tags.count else { return }
+        let tag = tags[deckIndex]
+        let followUp = AtriaJournalTypedQuestion.allCases.first { $0.linkedTag == tag }
+        swipeHapticTick += 1
+        switch direction {
+        case .yes:
+            recordYes(tag: tag)
+            // Mirrors the Yes button: only advance immediately when there is no
+            // typed follow-up to collect first (caffeine time, drink count).
+            if followUp == nil {
+                flyOffAndAdvance(direction: .yes)
+            } else {
+                snapBack()
+            }
+        case .no:
+            recordNo(tag: tag, followUp: followUp)
+            flyOffAndAdvance(direction: .no)
+        }
+    }
+
+    private func flyOffAndAdvance(direction: SwipeDirection) {
+        guard !reduceMotion else {
+            advance()
+            dragOffset = .zero
+            return
+        }
+        let flyX: CGFloat = direction == .yes ? 640 : -640
+        withAnimation(.easeOut(duration: 0.22)) {
+            dragOffset = CGSize(width: flyX, height: -16)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            advance()
+            dragOffset = .zero
+        }
+    }
+
+    private func snapBack() {
+        if reduceMotion {
+            dragOffset = .zero
+        } else {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                dragOffset = .zero
+            }
+        }
+    }
+
+    /// Exact recording calls the existing Yes button used — reused by both the
+    /// button and the swipe-right gesture so behavior stays identical.
+    private func recordYes(tag: BehaviorJournalEntry.Tag) {
+        if !todayEntry.tags.contains(tag) {
+            store.toggleBehaviorTag(tag)
+        }
+        // Explicit answers are also recorded typed, so "answered No" is
+        // distinguishable from "skipped" (skips record nothing).
+        store.recordJournalAnswer(questionID: Self.booleanQuestionID(for: tag), value: .yes)
+    }
+
+    /// Exact recording calls the existing No button used — reused by both the
+    /// button and the swipe-left gesture so behavior stays identical.
+    private func recordNo(tag: BehaviorJournalEntry.Tag, followUp: AtriaJournalTypedQuestion?) {
+        if todayEntry.tags.contains(tag) {
+            store.toggleBehaviorTag(tag)
+        }
+        if let followUp {
+            store.removeJournalAnswer(questionID: followUp.rawValue)
+        }
+        store.recordJournalAnswer(questionID: Self.booleanQuestionID(for: tag), value: .no)
+    }
+
     private func questionCard(for tag: BehaviorJournalEntry.Tag) -> some View {
         let answeredYes = todayEntry.tags.contains(tag)
         let isAutoTag = todayEntry.healthAutoTags.contains(tag)
@@ -375,12 +552,7 @@ private struct AtriaJournalCheckInDeck: View {
 
             HStack(spacing: 10) {
                 Button {
-                    if !answeredYes {
-                        store.toggleBehaviorTag(tag)
-                    }
-                    // Explicit answers are also recorded typed, so "answered No"
-                    // is distinguishable from "skipped" (skips record nothing).
-                    store.recordJournalAnswer(questionID: Self.booleanQuestionID(for: tag), value: .yes)
+                    recordYes(tag: tag)
                     if followUp == nil { advance() }
                 } label: {
                     Text("Yes")
@@ -391,13 +563,7 @@ private struct AtriaJournalCheckInDeck: View {
                 .tint(answeredYes ? .cyan : .accentColor)
 
                 Button {
-                    if answeredYes {
-                        store.toggleBehaviorTag(tag)
-                    }
-                    if let followUp {
-                        store.removeJournalAnswer(questionID: followUp.rawValue)
-                    }
-                    store.recordJournalAnswer(questionID: Self.booleanQuestionID(for: tag), value: .no)
+                    recordNo(tag: tag, followUp: followUp)
                     advance()
                 } label: {
                     Text("No")

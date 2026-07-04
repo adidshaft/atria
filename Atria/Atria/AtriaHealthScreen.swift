@@ -18,6 +18,8 @@ struct AtriaHealthScreen: View {
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var isLoadingHistoricalHeartRatePoints = true
     @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
+    @State private var educationTopic: AtriaVitalsEducationTopic?
+    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
 
     private static let stressRecomputeTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
@@ -49,6 +51,11 @@ struct AtriaHealthScreen: View {
         }
         .onAppear { recomputeStress() }
         .onReceive(Self.stressRecomputeTimer) { _ in recomputeStress() }
+        .sheet(item: $educationTopic) { topic in
+            AtriaVitalsEducationSheet(topic: topic,
+                                      numericRangeText: typicalRangeText(for: topic),
+                                      sleepGoalHours: sleepGoalHours)
+        }
     }
 
     private func recomputeStress() {
@@ -72,35 +79,47 @@ struct AtriaHealthScreen: View {
                                      value: recoveryValue,
                                      detail: recoveryDetail,
                                      systemImage: "heart.fill",
-                                     tint: recoveryTint)
+                                     tint: recoveryTint,
+                                     hint: recoveryHint,
+                                     onTap: { educationTopic = .recovery })
                 AtriaHealthMetricRow(title: "Resting HR",
                                      value: restingHeartRateValue,
                                      detail: "overnight low",
                                      systemImage: "heart.text.square.fill",
                                      tint: .cyan,
-                                     rangeText: restingHeartRateRangeText)
+                                     rangeText: restingHeartRateRangeText,
+                                     hint: restingHeartRateHint,
+                                     onTap: { educationTopic = .restingHeartRate })
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue,
                                      detail: "night signal",
                                      systemImage: "waveform.path.ecg",
                                      tint: Metrics.electricGreen,
-                                     rangeText: hrvRangeText)
+                                     rangeText: hrvRangeText,
+                                     hint: hrvHint,
+                                     onTap: { educationTopic = .hrv })
                 AtriaHealthMetricRow(title: "Stress",
                                      value: stressValue,
                                      detail: stressDetail,
                                      systemImage: "bolt.heart.fill",
-                                     tint: stressTint)
+                                     tint: stressTint,
+                                     hint: stressHint,
+                                     onTap: { educationTopic = .stress })
                 AtriaHealthMetricRow(title: "Respiration",
                                      value: respiratoryValue,
                                      detail: "sleep average",
                                      systemImage: "lungs.fill",
                                      tint: .teal,
-                                     rangeText: respiratoryRangeText)
+                                     rangeText: respiratoryRangeText,
+                                     hint: respiratoryHint,
+                                     onTap: { educationTopic = .respiration })
                 AtriaHealthMetricRow(title: "Sleep",
                                      value: sleepValue,
                                      detail: sleepDetail,
                                      systemImage: "moon.fill",
-                                     tint: Metrics.electricSleep)
+                                     tint: Metrics.electricSleep,
+                                     hint: sleepHint,
+                                     onTap: { educationTopic = .sleep })
             }
         }
         .padding(16)
@@ -278,6 +297,62 @@ struct AtriaHealthScreen: View {
         return "Typical for you: \(lowText)\u{2013}\(highText) \(unit)"
     }
 
+    /// Feeds the tap-education sheet's "Your typical range" section. `nil`
+    /// falls back to the topic's honest "still building" copy inside the
+    /// sheet itself -- recovery, stress, and sleep are never range-based.
+    private func typicalRangeText(for topic: AtriaVitalsEducationTopic) -> String? {
+        switch topic {
+        case .restingHeartRate: return restingHeartRateRangeText
+        case .hrv: return hrvRangeText
+        case .respiration: return respiratoryRangeText
+        case .recovery, .stress, .sleep: return nil
+        }
+    }
+
+    // MARK: Suboptimal-zone hint chips (only when a trusted comparison exists)
+
+    private var recoveryHint: String? {
+        guard let value = latestRollup?.recovery, value < 34 else { return nil }
+        return "Low \u{2014} prioritize rest today"
+    }
+
+    private var restingHeartRateHint: String? {
+        guard store.baseline.hasTrustedRestingBaseline(),
+              let stats = store.baseline.restingStats, stats.count > 1, stats.sd > 0,
+              let today = latestRollup?.rhr else { return nil }
+        let z = (Double(today) - stats.mean) / stats.sd
+        guard z > 1.5 else { return nil }
+        return "\u{2191} elevated \u{2014} try earlier bedtime"
+    }
+
+    private var hrvHint: String? {
+        guard store.baseline.hasTrustedHRVBaseline(),
+              let stats = store.baseline.lnRMSSDStats, stats.count > 1, stats.sd > 0,
+              let lnRMSSD = latestRollup?.lnRMSSD else { return nil }
+        let z = (lnRMSSD - stats.mean) / stats.sd
+        guard z < -1.5 else { return nil }
+        return "\u{2193} below typical \u{2014} ease today's training"
+    }
+
+    private var respiratoryHint: String? {
+        guard let stats = store.sleepHistorySnapshot.respiratoryBaselineStats, stats.count > 1, stats.sd > 0,
+              let value = latestRollup?.respiratoryRate ?? store.sleepHistorySnapshot.latest?.respiratoryRate else { return nil }
+        let z = (value - stats.mean) / stats.sd
+        guard z > 1.5 else { return nil }
+        return "\u{2191} elevated \u{2014} track how you feel"
+    }
+
+    private var stressHint: String? {
+        guard stressMonitorStore.state.level == .high else { return nil }
+        return "High \u{2014} try a few slow breaths"
+    }
+
+    private var sleepHint: String? {
+        let debtText = store.sleepHistorySnapshot.sleepDebtText(goalHours: sleepGoalHours)
+        guard debtText != "--", debtText != "Met" else { return nil }
+        return "\u{2193} \(debtText) debt \u{2014} earlier bedtime tonight"
+    }
+
     private var statusValue: String {
         guard latestRollup != nil else { return "Learning" }
         return "Updated"
@@ -292,6 +367,11 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
     let summary: BiologicalAgeSummary
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Counts up from 0 to |ageDelta| on reveal via a spring-driven
+    /// `.numericText()` transition. Static (set directly, no animation) when
+    /// Reduce Motion is on. Whole years only -- `ageDelta` is an `Int`, so no
+    /// decimal is fabricated.
+    @State private var animatedDeltaMagnitude: Int = 0
 
     static func == (lhs: AtriaHealthFitnessAgeCard, rhs: AtriaHealthFitnessAgeCard) -> Bool {
         lhs.summary == rhs.summary
@@ -309,9 +389,13 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Fitness age")
                         .font(.headline.weight(.bold))
-                    Text(summary.isReady ? summary.detailText : "Calibrating 28-day baseline")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    if summary.isReady {
+                        deltaRevealRow
+                    } else {
+                        Text("Calibrating 28-day baseline")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -338,11 +422,52 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Fitness age. \(summary.valueText). \(summary.isReady ? summary.detailText : "Calibrating 28-day baseline"). \(summary.footnote)")
+        .onAppear { syncAnimatedDelta() }
+        .onChange(of: summary) { _, _ in syncAnimatedDelta() }
     }
 
+    private var deltaRevealRow: some View {
+        let ageDelta = summary.ageDelta ?? 0
+        return HStack(spacing: 4) {
+            if ageDelta != 0 {
+                Image(systemName: ageDelta < 0 ? "arrow.down.right" : "arrow.up.right")
+                    .font(.caption2.weight(.bold))
+            }
+            Text(deltaLineText(ageDelta: ageDelta))
+                .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText(value: Double(animatedDeltaMagnitude)))
+        }
+        .font(.caption.weight(.bold))
+        .foregroundStyle(tint)
+    }
+
+    private func deltaLineText(ageDelta: Int) -> String {
+        guard ageDelta != 0 else { return "Matches your age" }
+        return "\(animatedDeltaMagnitude)y \(ageDelta < 0 ? "younger" : "older")"
+    }
+
+    private func syncAnimatedDelta() {
+        let target = abs(summary.ageDelta ?? 0)
+        guard summary.isReady else {
+            animatedDeltaMagnitude = 0
+            return
+        }
+        guard !reduceMotion else {
+            animatedDeltaMagnitude = target
+            return
+        }
+        animatedDeltaMagnitude = 0
+        withAnimation(.spring(response: 0.7, dampingFraction: 0.75)) {
+            animatedDeltaMagnitude = target
+        }
+    }
+
+    /// Green when at or below chronological age ("younger"), amber
+    /// (electric-yellow) when above ("older") -- matches the app-wide
+    /// green/amber/red vocabulary. Orange only while still calibrating.
     private var tint: Color {
         guard summary.isReady else { return .orange }
-        return (summary.ageDelta ?? 0) <= 0 ? .green : .purple
+        return (summary.ageDelta ?? 0) <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 }
 
@@ -418,6 +543,12 @@ private struct AtriaHealthMetricRow: View, Equatable {
     let systemImage: String
     let tint: Color
     var rangeText: String? = nil
+    /// Shown only when a real trusted-baseline comparison places today's
+    /// value in a suboptimal zone (e.g. elevated RHR, depressed HRV).
+    var hint: String? = nil
+    /// Opens the compact "what it is / your typical range / how to improve"
+    /// education sheet for this metric.
+    var onTap: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -427,9 +558,30 @@ private struct AtriaHealthMetricRow: View, Equatable {
             && lhs.detail == rhs.detail
             && lhs.systemImage == rhs.systemImage
             && lhs.rangeText == rhs.rangeText
+            && lhs.hint == rhs.hint
     }
 
     var body: some View {
+        Button {
+            onTap?()
+        } label: {
+            rowContent
+        }
+        .buttonStyle(.plain)
+        .disabled(onTap == nil)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityHint(onTap == nil ? "" : "Opens what this means and how to improve it.")
+    }
+
+    private var accessibilityLabelText: String {
+        var parts = ["\(title), \(value), \(detail)."]
+        if let rangeText { parts.append("\(rangeText).") }
+        if let hint { parts.append(hint) }
+        return parts.joined(separator: " ")
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.subheadline.weight(.bold))
@@ -458,12 +610,18 @@ private struct AtriaHealthMetricRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            Text(value)
-                .font(.headline.weight(.bold))
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .identity : .numericText())
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(value)
+                    .font(.headline.weight(.bold))
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+
+                if let hint {
+                    AtriaVitalsHintChip(text: hint, tint: Metrics.electricYellow)
+                }
+            }
         }
         .frame(minHeight: 64)
         .padding(.horizontal, 12)
@@ -471,7 +629,5 @@ private struct AtriaHealthMetricRow: View, Equatable {
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: tint)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rangeText.map { "\(title), \(value), \(detail). \($0)." } ?? "\(title), \(value), \(detail)")
     }
 }

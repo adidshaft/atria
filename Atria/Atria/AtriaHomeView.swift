@@ -279,7 +279,7 @@ struct AtriaHomeView: View {
             case .overview: return "Overview"
             case .vitals: return "Vitals"
             case .journal: return "Journal"
-            case .chat: return "Chat"
+            case .chat: return "Assistant"
             case .collection: return "Strap"
             }
         }
@@ -577,7 +577,7 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
 
-                tabNavigation(title: "Chat", showsHero: false) {
+                tabNavigation(title: "Assistant", showsHero: false) {
                     chatComingSoonContent
                 }
                 .tabItem { Label(HomeTab.chat.title, systemImage: HomeTab.chat.systemImage) }
@@ -2049,7 +2049,7 @@ struct AtriaHomeView: View {
                 .font(.system(size: 44, weight: .semibold))
                 .foregroundStyle(.tint)
                 .padding(.top, 48)
-            Text("LLM Chat")
+            Text("ATRIA Intelligent Assistant")
                 .font(.title2.weight(.bold))
             Text("Coming Soon!")
                 .font(.headline)
@@ -7097,7 +7097,11 @@ private struct AtriaHomeTopChrome: View {
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height,
                alignment: .center)
-        .clipped()
+        // No .clipped() here: the status chip already draws its own bounded
+        // capsule background, so nothing overflows that needs clipping — and
+        // clipping this HStack at an exact 44pt height cropped the header
+        // buttons' Liquid Glass press/glow effect (AtriaGlassIconButtonStyle),
+        // which paints slightly outside its own frame when pressed.
     }
 }
 
