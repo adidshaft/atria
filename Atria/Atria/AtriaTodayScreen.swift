@@ -688,7 +688,8 @@ struct AtriaTodayScreen: View {
                                            loadACWRDetailText: TrainingLoadSummary.learning.acwrDetailText,
                                            loadMonotonyDetailText: TrainingLoadSummary.learning.monotonyDetailText,
                                            loadSignalSummaryText: "Learning",
-                                           loadNarrative: "Training load appears after local strain history builds.")
+                                           loadNarrative: "Training load appears after local strain history builds.",
+                                           hrZoneMinutes: .empty)
     }
     #endif
 
@@ -1032,6 +1033,14 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displayHero.loadReadinessText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
+                                        layoutSize: layoutSize(for: metric))
+        case .hrZones:
+            return AtriaTodayGlanceItem(title: metric.label,
+                                        metricKey: metric.rawValue,
+                                        value: displayHero.hrZoneMinutes.valueText,
+                                        detail: legendDetail(displayHero.hrZoneMinutes.detailText),
+                                        systemImage: metric.systemImage,
+                                        tint: .orange,
                                         layoutSize: layoutSize(for: metric))
         case .hrv:
             return AtriaTodayGlanceItem(title: metric.label,

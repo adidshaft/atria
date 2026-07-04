@@ -5436,6 +5436,7 @@ final class AtriaHomeModel {
         let loadMonotonyDetailText: String
         let loadSignalSummaryText: String
         let loadNarrative: String
+        let hrZoneMinutes: TodayHRZoneMinutes
 
         var recoveryValue: String {
             recoveryEstimate.percent.map { "\($0)%" } ?? "Learning"
@@ -5491,6 +5492,7 @@ final class AtriaHomeModel {
                 && lhs.loadMonotonyDetailText == rhs.loadMonotonyDetailText
                 && lhs.loadSignalSummaryText == rhs.loadSignalSummaryText
                 && lhs.loadNarrative == rhs.loadNarrative
+                && lhs.hrZoneMinutes == rhs.hrZoneMinutes
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
         }
 
@@ -6431,7 +6433,8 @@ final class AtriaHomeModel {
                             loadACWRDetailText: load.acwrDetailText,
                             loadMonotonyDetailText: load.monotonyDetailText,
                             loadSignalSummaryText: load.signalSummaryText,
-                            loadNarrative: load.detail)
+                            loadNarrative: load.detail,
+                            hrZoneMinutes: store.todayHRZoneMinutesSnapshot)
     }
 
     #if DEBUG
@@ -6511,7 +6514,8 @@ final class AtriaHomeModel {
                             loadACWRDetailText: TrainingLoadSummary.learning.acwrDetailText,
                             loadMonotonyDetailText: TrainingLoadSummary.learning.monotonyDetailText,
                             loadSignalSummaryText: "Learning",
-                            loadNarrative: "Training load appears after local strain history builds.")
+                            loadNarrative: "Training load appears after local strain history builds.",
+                            hrZoneMinutes: .empty)
     }
     #endif
 
@@ -6726,7 +6730,8 @@ final class AtriaHomeModel {
                             loadACWRDetailText: TrainingLoadSummary.learning.acwrDetailText,
                             loadMonotonyDetailText: TrainingLoadSummary.learning.monotonyDetailText,
                             loadSignalSummaryText: "Learning",
-                            loadNarrative: "Training load appears after local strain history builds.")
+                            loadNarrative: "Training load appears after local strain history builds.",
+                            hrZoneMinutes: .empty)
     }
 
     private static func makeSnapshot(store: SessionStore,

@@ -30,7 +30,7 @@ final class AtriaLayoutModelTests: XCTestCase {
                                                before: .hrv,
                                                in: order,
                                                hiddenCSV: hidden),
-                       "recovery,respiratoryRate,stress,hrv,sleep,rhr,steps,load,vo2max,sleepHistory,sleepEfficiency,bodyTemp,calories,trend,insights,strain,bloodOxygen,bioAge")
+                       "recovery,respiratoryRate,stress,hrv,sleep,rhr,steps,load,hrZones,vo2max,sleepHistory,sleepEfficiency,bodyTemp,calories,trend,insights,strain,bloodOxygen,bioAge")
     }
 
     func testTodayMetricDragPayloadRejectsRawValues() {
@@ -41,7 +41,7 @@ final class AtriaLayoutModelTests: XCTestCase {
     func testTodayMetricLegacyPreferenceMigrationDropsNonMetricsAndMergesSteps() {
         let legacyOrder = "workout,recovery,strapSteps,backfill,hapticAlerts,sleep,unknown,steps"
         XCTAssertEqual(AtriaTodayMetric.ordered(from: legacyOrder),
-                       [.recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .strain, .bloodOxygen, .bioAge])
+                       [.recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .hrZones, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .strain, .bloodOxygen, .bioAge])
 
         let legacyHidden = AtriaTodayMetric.hiddenStorageValue(for: Set(["strapSteps", "backfill", "hapticAlerts", "unknown", "bloodOxygen"]))
         XCTAssertEqual(legacyHidden, "bloodOxygen,steps")

@@ -34,7 +34,7 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     var accent: Accent
 
     static var `default`: AtriaHomeLayoutConfig {
-        AtriaHomeLayoutConfig(glanceMetrics: ["recovery", "strain", "sleep", "hrv", "rhr", "steps"],
+        AtriaHomeLayoutConfig(glanceMetrics: ["recovery", "strain", "sleep", "hrv", "rhr", "steps", "hrZones"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
                               showHighlights: true,
@@ -95,6 +95,7 @@ enum AtriaHomeLayoutCatalog {
         "rhr",
         "respiratoryRate",
         "steps",
+        "hrZones",
         "calories",
         "vo2max",
         "bioAge",
