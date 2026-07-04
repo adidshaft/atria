@@ -1,10 +1,10 @@
 # Codex Handoff — Advanced metrics (steps, calories, VO₂, temp, IMU, SpO₂, BP, ECG)
 
 Date: 2026-06-25
-Hard constraint: **There is NO external reference device.** Just one WHOOP 4.0
-strap that connects and streams over BLE, plus the iPhone. Every metric below is
-judged against that reality. Do not fabricate physiology. Atria stays local-first
-(no cloud, no account); keep the static suite green (`python3
+Hard constraint: **WHOOP strap is the product data source.** The iPhone is only
+the BLE host, display, storage, and notification surface. Do not calculate product
+metrics from handset motion/steps. Do not fabricate physiology. Atria stays
+local-first (no cloud, no account); keep the static suite green (`python3
 test_handoff_static_checks.py`, no `https://` clients).
 
 ## 2026-06-25 implementation status
@@ -12,9 +12,9 @@ test_handoff_static_checks.py`, no `https://` clients).
 - Profile prerequisites: **shipped in code**. `AthleteProfile` now stores
   `biologicalSex`, `weightKg`, and `heightCm` with `decodeIfPresent` migration.
   Onboarding and Settings expose compact controls for the same fields.
-- Phone steps: **shipped in code**. Atria queries `CMPedometer` from start of day,
-  publishes `phoneStepsToday`, distance, and floors, and shows a single `Steps`
-  tile in Today. Strap-derived steps are research-only in developer surfaces.
+- Handset step/motion path: **removed**. Steps must come only from strap IMU
+  research once the strap layout is validated. Today/widgets label this explicitly
+  as strap steps; no handset motion permission or HealthKit step read is used.
 - Active calories: **estimate-gated**. Keytel HR→EE estimate is implemented and
   persisted on saved sessions as `activeCalories`/`caloriesConfidence`. It only
   produces `kcal` when sex + weight are set; otherwise the UI stays learning.
@@ -28,11 +28,9 @@ test_handoff_static_checks.py`, no `https://` clients).
   is now scanned for explicit, redacted generation tokens and only then promotes
   the visible label to WHOOP 4.0/5.0/MG; unknown metadata keeps the honest generic
   label. ECG/BP gates remain false unless MG is explicitly detected.
-- HealthKit additions: **scaffolded and gated**. Export authorization now includes
-  read-only Apple steps, sleeping wrist temperature, and cuff BP types; Apple
-  steps are audited via a read-only `HKStatisticsQuery`, sleeping wrist
-  temperature and cuff BP are audited via read-only `HKSampleQuery` calls, and
-  none of those read-only types are written. It never writes BP/ECG/SpO₂. Active
+- HealthKit additions: **scaffolded and gated**. Export authorization includes
+  sleeping wrist temperature and cuff BP read-only audit types only; handset step
+  reads are not requested. It never writes BP/ECG/SpO₂. Active
   energy writes only for ready workout sessions with a complete sex+weight
   profile, and VO₂ max writes only with measured max HR plus 7 resting baselines.
   Both are ledgered/idempotent like existing exports. Static checks now pin those
@@ -114,11 +112,12 @@ test_handoff_static_checks.py`, no `https://` clients).
 You will run for hours without a human in the loop. Four non-negotiables, in
 priority order. When any change risks one of these, stop and pick the safe option.
 
-1. **No external reference.** There is exactly ONE WHOOP 4.0 strap + the iPhone.
-   Never assume a lab device, a second wearable, a cuff, or cloud truth. Your only
-   references are the iPhone's own sensors (`CMPedometer`, `CMMotionManager`) and
-   physics (gravity = 1 g). If a metric can't be validated against those, it ships
-   research-gated, baseline-only, or not at all (§0). Never fabricate from HR/HRV.
+1. **Strap-only product data.** There is exactly ONE WHOOP 4.0 strap connected to
+   the iPhone. Never assume a lab device, a second wearable, a cuff, cloud truth,
+   or handset motion as product input. Your only movement reference is the strap's
+   own IMU plus physics (gravity = 1 g). If a metric cannot be validated from the
+   strap path, it ships research-gated, baseline-only, or not at all (§0). Never
+   fabricate from HR/HRV.
 2. **No lag.** The UI must stay scroll-smooth like the native WHOOP app. Hard
    rules: NO `.shadow`/`.blur`/Material on scrolling content; NO `ViewThatFits` in
    list cells (it renders every candidate); every list cell `Equatable` and
@@ -145,12 +144,10 @@ visually verified, smooth scroll, honest label, and added to this doc's status.
 Without a lab reference you cannot prove absolute accuracy. So every metric ships
 in exactly ONE of four tiers, and the tier is part of the feature:
 
-- **SHIP** — derivable from already-validated inputs. Two free references exist:
-  1. **The iPhone's own sensors.** `CMPedometer` (Apple-calibrated steps),
-     `CMMotionManager` (phone IMU), `CMAltimeter`. These are ground truth you
-     already own. Steps and IMU-decoding can be validated against the phone.
-  2. **Physics.** At rest the accelerometer magnitude MUST equal **1 g**. That
-     single fact self-calibrates the IMU scale with no external device.
+- **SHIP** — derivable from already-validated strap inputs.
+- **STRAP-IMU-VALIDATED** — movement features whose strap IMU layout has passed
+  gravity/self-consistency checks. At rest the accelerometer magnitude MUST equal
+  **1 g**; that fact self-calibrates the IMU scale with no external device.
 - **BASELINE-ONLY** — the raw value can't be calibrated to absolute units, but a
   *personal-baseline deviation* is still honest (e.g. "+0.3 vs your 14-night
   baseline"). Skin temperature lives here IF the byte is even found.
@@ -170,8 +167,9 @@ ECG fundamentally CANNOT on 4.0 (correctly excluded, gated to a future MG model)
 Rule of thumb: **if you'd have to estimate it from HR/HRV, it's fake — don't.**
 Everything fails closed: no confident input → show "learning", never a guess.
 
-Free reference you DO have, restated, because it unlocks most of the list:
-- **Steps / IMU** → validate against `CMPedometer` + gravity.
+Reference you DO have, restated, because it unlocks most of the list:
+- **Steps / IMU** → validate from strap IMU gravity, stillness, repeatability, and
+  manually marked controlled-walk windows. Do not use handset motion as product data.
 - **Calories / VO₂** → population formulas (no per-user reference needed; label as
   estimate).
 - **Temp / SpO₂ field discovery** → self-induced maneuvers (sauna, cold plunge,
@@ -185,12 +183,10 @@ Free reference you DO have, restated, because it unlocks most of the list:
     already counts 0x33; `logIMUCandidate(payload:)` ~line 7015 already sees them.
   - `sendCommand(_ cmd: UInt8, _ data: [UInt8], mode:)` ~line 6417 — how to ask the
     strap for a stream (existing probes send `0x21` selector sweeps, `0x16`).
-  - CoreMotion is ALREADY imported: `phoneMotionManager = CMMotionManager()` (~390),
-    `phonePedometer = CMPedometer()` (~399), `recordPhoneStepEvidence(_:)` (~8288),
-    `CMPedometer.isStepCountingAvailable()`. Steps are half-wired already.
+  - Handset motion/step plumbing has been removed. Do not reintroduce it.
   - Battery/HR/RR parsing patterns to copy for new characteristics.
 - `Insights.swift` → `struct AthleteProfile` (add sex/weight/height here).
-- `HealthKitExporter.swift` → add `activeEnergyBurned`, `stepCount`,
+- `HealthKitExporter.swift` → add `activeEnergyBurned`,
   `bodyTemperature`/`appleSleepingWristTemperature`, `vo2Max`, gated like the
   existing `heartRateVariabilitySDNN` export.
 - `VO2MaxEstimateSummary` already exists (Vitals profile section) — extend, don't
@@ -321,30 +317,17 @@ flags first. Until the `0x31` decode lands, treat a strap that speaks the
 `61080001…` service as "assume 4.0-class capabilities for probing, label honestly
 as WHOOP strap in UI."
 
-## 3. Steps — **SHIP (phone) + RESEARCH (strap)**  ← the important one
+## 3. Strap steps — **RESEARCH (strap only)**  ← the important one
 
-Two sources, clearly distinguished. Never blend silently.
+One source: the WHOOP strap. Do not blend handset movement into this product.
 
-### 3a. Phone steps (ship now)
-The honest, Apple-validated source. `CMPedometer` is already instantiated.
-- **Today total:** `phonePedometer.queryPedometerData(from: startOfDay, to: now)`.
-- **Live:** `phonePedometer.startUpdates(from: startOfDay)` while foregrounded;
-  stop on background to save power (steps backfill on next query).
-- Store `phoneStepsToday: Int`, `phoneStepsSource = "CMPedometer"`,
-  `phoneDistanceMeters`, `phoneFloors` (from `CMPedometer`/`CMAltimeter`).
-- **UI:** a Steps tile/ring on Today or Vitals labeled **"Steps · phone"** with a
-  one-line caption "Counted by iPhone motion." Honest about phone-in-pocket gaps.
-- **HealthKit:** prefer to **READ** `HKQuantityType.stepCount` (iOS already logs
-  it) and display, rather than writing duplicates. Only write if reading is
-  unavailable. Never write strap-derived steps as if Apple-validated.
-
-### 3b. Strap steps from IMU (research-gated — depends on §6)
+### 3a. Strap steps from IMU (research-gated — depends on §6)
 Once 0x33 is decoded (§6): band-pass accel magnitude 0.5–3 Hz, count peaks with a
 refractory window (~250 ms) and an amplitude threshold above rest noise.
-- **Validation has a free reference:** compare strap-step count to
-  `CMPedometer` over the same window. Promote out of developer-gate only when the
-  strap count tracks phone steps within ~10 % across several controlled walks.
-- Until then: developer-mode only, labeled "strap steps (research)".
+- **Validation:** compare repeated controlled walks, manual start/stop marks,
+  gravity-validated IMU scale, and stillness/noise windows. Promote only when the
+  strap path is stable across several controlled walks.
+- Until then: developer-mode or clearly labeled "strap steps (research)".
 
 ## 4. Active calories / energy burn — **SHIP (estimate)**
 
@@ -389,8 +372,9 @@ VO2max ≈ 15.3 * (maxHR / restingHR)   // ml/kg/min
    (from frame timestamps).
 3. **Axes orientation:** tilt tests — gravity should move between axes as you
    rotate the strap 90°.
-4. **Cross-check:** strap the phone next to the WHOOP; compare WHOOP-IMU magnitude
-   to `CMMotionManager.deviceMotion.userAcceleration`. They should correlate.
+4. **Cross-check:** repeat rest, tilt, shake, and controlled-walk windows with
+   manual timestamps. The decoded strap movement should be repeatable and should
+   return to 1 g at rest.
 - Store epoch features (not raw): `imuStillnessRatio`, `imuMovementIntensity`,
   `imuActivityBursts`, plus `imuValidationState`. Keep raw frames out of the saved
   session (too large) — features only.
@@ -464,7 +448,7 @@ irregularity is not an ECG and must never be labeled AFib.
 | Gyroscope | ❔ (likely accel-only) | confirm during IMU probe; don't assume |
 | Blood pressure | ❌ (5.0/MG + cuff) | do-not-ship (§9) |
 | ECG / AFib | ❌ (MG only) | do-not-ship (§10) |
-| GPS / steps-on-band | ❌ no GPS | use phone `CMPedometer` (§3) |
+| GPS / steps-on-band | ❌ no GPS | no GPS; strap IMU steps stay research-gated (§3) |
 
 ## 11. Automatic sleep staging — **after §6 (sleep/wake only)**
 
@@ -476,8 +460,8 @@ weak label/reference.
 
 ## 12. HealthKit additions (all gated + idempotent, mirror existing exporter)
 
-`activeEnergyBurned` (workouts), `stepCount` (read, not write),
-`appleSleepingWristTemperature` (if §7 ships), `vo2Max` (if confident). Reuse the
+`activeEnergyBurned` (workouts), `appleSleepingWristTemperature` (if §7 ships),
+`vo2Max` (if confident). Reuse the
 existing ledger/idempotency + permission-separation pattern (`hrvType` export is
 the template). Never write SpO₂/BP/ECG.
 
@@ -485,8 +469,8 @@ the template). Never write SpO₂/BP/ECG.
 
 - **Physics:** unit-test that the IMU decoder yields |a| ≈ 1 g on a synthetic
   rest payload and ≈2 g on a synthetic shake payload.
-- **Phone-as-reference:** an on-device dev screen showing strap-steps vs
-  `CMPedometer` and WHOOP-IMU vs `CMMotionManager` side by side.
+- **Strap repeatability:** an on-device dev screen showing strap step estimates,
+  stillness ratio, and movement intensity for manually marked walk/rest windows.
 - **Self-consistency:** calories must be monotonic with TRIMP; VO₂ stable when
   inputs are stable; temp deviation ~0 at baseline.
 - **Self-induced maneuvers logged with timestamps** (breath-hold, sauna, walk) so a
@@ -497,7 +481,8 @@ the template). Never write SpO₂/BP/ECG.
 
 1. **Model detection** (§2b) — ship; easy; gates everything below.
 2. **Profile fields** (§2) — unblocks 4 & 5.
-3. **Phone steps** (§3a) — ship; already half-wired; highest user value.
+3. **Strap step source boundary** (§3a) — keep handset motion out; validate strap
+   IMU before promotion.
 4. **Active calories** (§4) — ship as estimate.
 5. **VO₂ max** (§5) — small win on existing code.
 6. **IMU decode** (§6) — research; unlocks strap-steps (§3b) + sleep (§11).

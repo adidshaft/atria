@@ -1,0 +1,621 @@
+HARNESS_DEVICE_PREFLIGHT status=ok tool=xcodebuild_showdestinations xcode_destination=id=3803F5B6-1666-56D3-A71A-62F131F6CE3B install_device=3803F5B6-1666-56D3-A71A-62F131F6CE3B
+Command line invocation:
+    /Applications/Xcode-beta.app/Contents/Developer/usr/bin/xcodebuild -project Atria/Atria.xcodeproj -scheme Atria -configuration Release -destination id=3803F5B6-1666-56D3-A71A-62F131F6CE3B -destination-timeout 10 -derivedDataPath build/DerivedData build
+
+ComputePackagePrebuildTargetDependencyGraph
+
+Prepare packages
+
+CreateBuildRequest
+
+SendProjectDescription
+
+CreateBuildOperation
+
+ComputeTargetDependencyGraph
+note: Building targets in dependency order
+note: Target dependency graph (2 targets)
+    Target 'Atria' in project 'Atria'
+        ➜ Explicit dependency on target 'AtriaWidget' in project 'Atria'
+    Target 'AtriaWidget' in project 'Atria' (no dependencies)
+
+GatherProvisioningInputs
+
+CreateBuildDescription
+
+ClangStatCache /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk /Users/amanpandey/projects/atria/build/DerivedData/SDKStatCaches.noindex/iphoneos27.0-24A5370g-ab8728d0c5b464cc751fe8b4b02b9db3.sdkstatcache
+    cd /Users/amanpandey/projects/atria/Atria/Atria.xcodeproj
+    /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk -o /Users/amanpandey/projects/atria/build/DerivedData/SDKStatCaches.noindex/iphoneos27.0-24A5370g-ab8728d0c5b464cc751fe8b4b02b9db3.sdkstatcache
+
+SwiftDriver Atria normal arm64 com.apple.xcode.tools.swift.compiler (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-SwiftDriver -- /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name Atria -O -whole-module-optimization @/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.SwiftFileList -enable-bare-slash-regex -enable-experimental-feature DebugDescriptionMacro -sdk /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk -target arm64-apple-ios26.1 -g -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -Xfrontend -serialize-debugging-options -swift-version 5 -I /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -F /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -emit-localized-strings -emit-localized-strings-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64 -c -num-threads 14 -Xcc -ivfsstatcache -Xcc /Users/amanpandey/projects/atria/build/DerivedData/SDKStatCaches.noindex/iphoneos27.0-24A5370g-ab8728d0c5b464cc751fe8b4b02b9db3.sdkstatcache -output-file-map /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-OutputFileMap.json -save-temps -no-color-diagnostics -explicit-module-build -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules -clang-scanner-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -sdk-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -emit-dependencies -emit-module -emit-module-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule -serialize-diagnostics -dependency-scan-serialize-diagnostics-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-dependency-scan.dia -validate-clang-modules-once -clang-build-session-file /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Session.modulevalidation -Xcc -fmodules-prune-interval\=86400 -Xcc -fmodules-prune-after\=345600 -emit-const-values -const-gather-protocols-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_const_extract_protocols.json -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-generated-files.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-own-target-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-all-target-headers.hmap -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-project-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/include -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources-normal/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources -emit-objc-header -emit-objc-header-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-Swift.h -working-directory /Users/amanpandey/projects/atria/Atria -no-emit-module-separately-wmo
+
+SwiftCompile normal arm64 Compiling\ ActiveSessionJournal.swift,\ AtriaAICoach.swift,\ AtriaAICoachCard.swift,\ AtriaAnalytics.swift,\ AtriaApp.swift,\ AtriaAppIntents.swift,\ AtriaBackupCompression.swift,\ AtriaBehaviorImpact.swift,\ AtriaBLEManager.swift,\ AtriaBreathworkSession.swift,\ AtriaCustomizeSheet.swift,\ AtriaDebugLogging.swift,\ AtriaDefault.swift,\ AtriaDesignTokens.swift,\ AtriaDeveloperMode.swift,\ AtriaEntitlements.swift,\ AtriaExerciseCatalog.swift,\ AtriaFaceOff.swift,\ AtriaFitnessAge.swift,\ AtriaHapticAlerts.swift,\ AtriaHealthScreen.swift,\ AtriaHeartRateBroadcaster.swift,\ AtriaHeroConnectionSections.swift,\ AtriaHighlights.swift,\ AtriaHomeLayoutConfig.swift,\ AtriaHomeShellSupport.swift,\ AtriaHomeView.swift,\ AtriaIMUDecoder.swift,\ AtriaJournalInsights.swift,\ AtriaJournalStore.swift,\ AtriaJournalTab.swift,\ AtriaLiveActivityAttributes.swift,\ AtriaLiveActivityCoordinator.swift,\ AtriaLiveWorkoutView.swift,\ AtriaManualSleepSheet.swift,\ AtriaMaxHRSuggestion.swift,\ AtriaMediaControls.swift,\ AtriaMetricRing.swift,\ AtriaMetricTargets.swift,\ AtriaNutritionContext.swift,\ AtriaOnboardingFlow.swift,\ AtriaOverviewSections.swift,\ AtriaRawExport.swift,\ AtriaResearchProbe.swift,\ AtriaSettingsView.swift,\ AtriaShareCard.swift,\ AtriaSharedChrome.swift,\ AtriaSharedUIComponents.swift,\ AtriaSleepBudget.swift,\ AtriaSleepWakeResearch.swift,\ AtriaStrapScreen.swift,\ AtriaStrapStepResearch.swift,\ AtriaStrengthLog.swift,\ AtriaTodayScreen.swift,\ AtriaTrendChart.swift,\ AtriaTriRing.swift,\ AtriaVitalsCollectionSections.swift,\ AtriaWakeAlarm.swift,\ AtriaWeeklyPlan.swift,\ AtriaWeeklyReport.swift,\ AtriaWidgetProofSheet.swift,\ AtriaWorkoutPromptEvaluator.swift,\ AtriaZipWriter.swift,\ ContentView.swift,\ DailyRollupStore.swift,\ Dashboard.swift,\ FrameParser.swift,\ HealthKitExporter.swift,\ HeartRate.swift,\ HistoricalArchive.swift,\ HRV.swift,\ Insights.swift,\ LocalNotificationScheduler.swift,\ Metrics.swift,\ Sessions.swift,\ WidgetSnapshot.swift,\ GeneratedAssetSymbols.swift /Users/amanpandey/projects/atria/Atria/Atria/ActiveSessionJournal.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaAICoach.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaAICoachCard.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaAnalytics.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaApp.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaAppIntents.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaBackupCompression.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaBehaviorImpact.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaBLEManager.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaBreathworkSession.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaCustomizeSheet.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaDebugLogging.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaDefault.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaDesignTokens.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaDeveloperMode.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaEntitlements.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaExerciseCatalog.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaFaceOff.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaFitnessAge.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHapticAlerts.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHealthScreen.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHeartRateBroadcaster.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHeroConnectionSections.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHighlights.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHomeLayoutConfig.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHomeShellSupport.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaHomeView.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaIMUDecoder.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaJournalInsights.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaJournalStore.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaJournalTab.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaLiveActivityAttributes.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaLiveActivityCoordinator.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaLiveWorkoutView.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaManualSleepSheet.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaMaxHRSuggestion.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaMediaControls.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaMetricRing.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaMetricTargets.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaNutritionContext.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaOnboardingFlow.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaOverviewSections.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaRawExport.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaResearchProbe.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaSettingsView.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaShareCard.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaSharedChrome.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaSharedUIComponents.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaSleepBudget.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaSleepWakeResearch.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaStrapScreen.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaStrapStepResearch.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaStrengthLog.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaTodayScreen.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaTrendChart.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaTriRing.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaVitalsCollectionSections.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaWakeAlarm.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaWeeklyPlan.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaWeeklyReport.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaWidgetProofSheet.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaWorkoutPromptEvaluator.swift /Users/amanpandey/projects/atria/Atria/Atria/AtriaZipWriter.swift /Users/amanpandey/projects/atria/Atria/Atria/ContentView.swift /Users/amanpandey/projects/atria/Atria/Atria/DailyRollupStore.swift /Users/amanpandey/projects/atria/Atria/Atria/Dashboard.swift /Users/amanpandey/projects/atria/Atria/Atria/FrameParser.swift /Users/amanpandey/projects/atria/Atria/Atria/HealthKitExporter.swift /Users/amanpandey/projects/atria/Atria/Atria/HeartRate.swift /Users/amanpandey/projects/atria/Atria/Atria/HistoricalArchive.swift /Users/amanpandey/projects/atria/Atria/Atria/HRV.swift /Users/amanpandey/projects/atria/Atria/Atria/Insights.swift /Users/amanpandey/projects/atria/Atria/Atria/LocalNotificationScheduler.swift /Users/amanpandey/projects/atria/Atria/Atria/Metrics.swift /Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift /Users/amanpandey/projects/atria/Atria/Atria/WidgetSnapshot.swift /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources/GeneratedAssetSymbols.swift /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Dispatch.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AVFAudio.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/RelevanceKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/UniformTypeIdentifiers.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/FileProvider.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AlarmKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AudioToolbox.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreMIDI.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CallKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/SwiftUI.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreSpotlight.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/WidgetKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/XPC.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreText.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/VideoToolbox.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/ExtensionKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Intents.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/HealthKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_DarwinFoundation1.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/UIKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Accessibility.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Foundation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreData.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Charts.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_Concurrency.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreFoundation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/LocalAuthentication.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Darwin.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/ImageIO.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/simd.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/SwiftUICore.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreMedia.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AppIntents.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreAudio.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_StringProcessing.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_DarwinFoundation3.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Network.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Compression.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_DarwinFoundation2.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Distributed.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/System.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreLocation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/DeveloperToolsSupport.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_Builtin_float.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreMotion.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CloudKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Spatial.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Metal.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/os.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreTransferable.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Symbols.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/MediaToolbox.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/DataDetection.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Swift.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/LightweightCodeRequirements.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/ActivityKit.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreVideo.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreGraphics.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_AppIntents_SwiftUI.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/ExtensionFoundation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/ObjectiveC.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Combine.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CoreImage.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/_PhotosUI_SwiftUI.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Observation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/OSLog.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/QuartzCore.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AVFoundation.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/PhotosUI.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/Photos.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/AppIntentsTypeSupport.swiftmodule/arm64e-apple-ios.swiftmodule /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/27.0/CryptoKit.swiftmodule/arm64e-apple-ios.swiftmodule /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Foundation-BJSHTG3L9HIFMKY6LOI6Y8LOG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/WidgetKit-7RNG3JIM3KZRX52WHGGAEVOON.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/simd-CZH0WF50K2903673J5M6M07MQ.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_LocationEssentials-C8LC88WGOHPZDCS1BXFADOP9U.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_stdatomic-8JT5CCDNDA9QNQWALO7VKAYH3.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreAudioTypes-1PR9KIZTPZRG51XDILKEPXRXV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreVideo-2E9T8KNRQ19M22WWXRDYC7CAQ.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/FileProvider-EZTF3W6B4QW121K1ZZAJSAUV1.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_tgmath-A3APQWBOJWVOJ7980L0Z7P0RD.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Dispatch-5POUQLFU22YRIMXY3JU9JS7ZV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/UIUtilities-JIFQBLYDDJMT5CAWQF90VLJV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Security-1TPOVNXH4J93PW8JFEY9EEWZ0.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ExtensionKit-9VNJYLXRVSD00RK8L08VMGKRR.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/SwiftUICore-2I3RL8U8A3LW9XG7B2QEKTFE3.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/PhotosUI-3K138MT2ERVJDE551XCGW8QWO.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreMIDI-9YPWVQH06ZFM1F307QUIRX21L.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/LocalAuthentication-8LSX0728PQYCNWICOYBEKTOYB.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreImage-MIHNA1YKM6NX0BYDEGLQHTVY.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreAudio-467L91CM67DTSPGJC9I6Y042B.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/VideoToolbox-9IJO6XQ2HZELWOH0F04FB8BLF.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/os_workgroup-1MQA2PVW3ABTREGENKTHZWDCG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ObjectiveC-DV7WLANTBFKMDRREJ5VW8O405.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/IOSurface-AWWKHCMU2DQ4RJ08W3ROY3ARH.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ptrcheck-3BVHNY7E1880PEN5W55ATTP29.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/MediaToolbox-6JEEFJR8A0MBOU6HLBSEMDNUV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/MachO-1IO7W689DEHHU9C1XGE0WH12W.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/OpenGLES-YSTLOT2TEYF2AN33BNVUAL8P.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/DataDetection-2FNUKY4I6WW24FL58S65Q8H4V.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ptrauth-15VX8W30ZIG22PKGYLT6339SO.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_intrinsics-CBGU5CEUNL2V5JQO6G2TGFDJX.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AlarmKit-AAF2RVWXSP0IJ9SDE78BEXZF8.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/string_h-AKBW83RP3KRFBPMH3WBNK6IAY.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_float-6G2LMLJXB1AEIM2KP07VEH70A.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CloudKit-15VV0UBD0TV501DARJIV4VCRK.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_AvailabilityInternal-7TIY297W37U3W6R5RBS6WBJ0R.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/UserNotifications-62V58JOUMMISK4PUVEE94YWSO.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Symbols-8CWSHSD0OKIOGR94BTPFPJRCL.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/UniformTypeIdentifiers-HINYFAM2BQL0TMRT9RXEG3V2.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AVRouting-EME0MEQ72GMETZ22ZABX65JXG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/OSLog-AB3K9AZ5IFLINPU02COFMRAJ1.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CallKit-560DZ7U0YQ1YD5GOX3U8PMTUE.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/QuartzCore-B89T0K3BURH9FYZIFVP1NPX4S.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreMotion-4JFR731PERT1UIMMK3Q82PKYF.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreLocation-95Y9GOPYWT4L3I8GAVTCUHMC6.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreFoundation-BHGQXINRF7IM5EJH044RA5PBP.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreData-9SGKPWDGEIM7A9W2GIBNYVUDK.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Darwin-8Y3WUIZ2PDD1JR6HKAUVU9QRC.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreText-3VSA5JYAC91PPLGM244DX02FX.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/RelevanceKit-D7C0VMGJE2SDXRFWBL7OYDMIG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AVFAudio-3NTYTURRO72Q64HJKS4SJJGGX.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_DarwinFoundation3-C8X16PYG0HMCKS6QZCND3O6DL.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/DeveloperToolsSupport-AEBT14JZ9C0RJEWA8GGUQOV6C.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/os_object-1RNLEH8263GRL07UNC64NFJN1.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Intents-54FW37KCXW2SAXJVZMG79TFBB.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AppIntentsTypeSupport-49SAWCGW7II0VJVW8DLNJS2T5.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/HealthKit-8QFYQFABDCGMARN7G4F8HG5VV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_inttypes-DO2G12GRX9GAYRC3XB25ASLKQ.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreBluetooth-8EKBEMT1VSPHCLCKZAI4I3A7G.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_SwiftConcurrencyShims-3C84S88AY8C69G7PCH2MUI9TJ.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/UIKit-BMOIKVZEPP9ACAJW7TGNW9SIH.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ImageIO-4KJJUBLF32021DNIGUNA6IAZ3.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_stdarg-D7S7YC357XOLNTZM2C16SZRBE.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/dnssd-A2UEY348LTLORF1PHJJF8WSJ4.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_limits-1YJ573CSIQSG45JCF3MEBBY4T.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/os-DOEWBG9GO6BZG9V643VSCHJVV.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AppIntents-DY754O155B2CI0ADEDXXR0NY9.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_stddef-CTEVP5H40YP0T4VH7GHDFHE4Q.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreSpotlight-2Z2Z7216ODM9TBZAQTTXWSN0H.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ExtensionFoundation-7FC39YIYVI81G1ZNLQLSKJ73V.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_DarwinFoundation1-9OSP7MDB0WQHDYI0N6F82ETAC.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/sys_types-5IELGZLJQ7BEYB49VETOJ6HI7.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_DarwinFoundation2-5NYR4E9EDQ4UBO2W8XFS7EV1E.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/BackgroundTasks-CVOPN0EZW6ZW23BA1GH55ZM2K.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/ActivityKit-4F3QF4PE8G08RL6FWQR3BQCU1.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AVFoundation-1W1TEPECF6S3Y5KXEEAL5X5YP.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/XPC-E36BM3IAS7A00TRNAAMRLHOGL.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/AudioToolbox-219VU191L7WQ101XJY4L2C14Z.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Accessibility-C2SQUW25T8HT6X7R8GTHF0HFG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Compression-9V3YDY9AFPSWMPSY4QCDBABJ9.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CFNetwork-7DJW8JMNGSHWR2HQV8ZVTE8BN.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreMedia-7VM3YGZYBA95V4MZQZUICFDO7.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/SwiftShims-193ZD8EVUKEXD2MJM3BCS0YQL.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreTransferable-5FSW05X37YASQSAAVZ716AO1.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/SwiftUI-CELHN3GPF8JR0OMM71L9NF0ES.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Photos-9VGHBRSKQ49OHQP0YNBHLYAVN.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Metal-AVEHDCHNUKIUSBVHEFDVVH7SY.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/CoreGraphics-AYBRCDFDD1SR6FFAZX47QJXU2.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_stdbool-9BCC2EH12O1BM18DHIWLVUGCO.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Network-6Y5VGMYGQO8EEAHKTCCGZWRTO.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Spatial-5HFKE7T7F5JFAZ169JQYQ23CG.pcm /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/_Builtin_stdint-1SYVIKWLAJSCHO7HD17CVFAF7.pcm /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-dependencies-1.json (in target 'Atria' from project 'Atria')
+
+SwiftCompile normal arm64 (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    
+
+/Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift:3207:50: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 3198 |         historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions, maxHR: maxHR)
+ 3199 |         if deferred {
+ 3200 |             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12) {
+      |                                                                                     |- note: 'self' implicitly strongly captured here
+      |                                                                                     `- note: add 'self' as a capture list item to silence
+ 3201 |                 let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,
+ 3202 |                                                           confirmedWorkouts: confirmedWorkouts,
+      :
+ 3205 |                                                           rest: rest,
+ 3206 |                                                           maxHR: maxHR)
+ 3207 |                 DispatchQueue.main.async { [weak self] in
+      |                                                  |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+      |                                                  `- note: explicitly assign the capture list item to silence
+ 3208 |                     self?.publishFullHistorySnapshotIfCurrent(revision: revision,
+ 3209 |                                                               history: snapshots.history,
+
+/Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift:3426:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 3422 |         let maxHR = profile.maxHR
+ 3423 |         let delay: TimeInterval = deferred ? 0.12 : 0
+ 3424 |         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+      |                                                                                  |- note: 'self' implicitly strongly captured here
+      |                                                                                  `- note: add 'self' as a capture list item to silence
+ 3425 |             let points = Self.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)
+ 3426 |             DispatchQueue.main.async { [weak self] in
+      |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+      |                                              `- note: explicitly assign the capture list item to silence
+ 3427 |                 guard let self, revision == self.overviewTrendPointsRevision else { return }
+ 3428 |                 self.overviewTrendPoints = points
+
+/Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift:3444:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 3438 |         let maxHR = profile.maxHR
+ 3439 |         let delay: TimeInterval = deferred ? 0.12 : 0
+ 3440 |         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+      |                                                                                  |- note: 'self' implicitly strongly captured here
+      |                                                                                  `- note: add 'self' as a capture list item to silence
+ 3441 |             let summary = Self.makeTrainingLoadSummary(sessions: source,
+ 3442 |                                                        rest: rest,
+ 3443 |                                                        maxHR: maxHR)
+ 3444 |             DispatchQueue.main.async { [weak self] in
+      |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+      |                                              `- note: explicitly assign the capture list item to silence
+ 3445 |                 guard let self, revision == self.trainingLoadSummaryRevision else { return }
+ 3446 |                 self.trainingLoadSummarySnapshot = summary
+
+/Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift:3455:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 3450 | 
+ 3451 |     func refreshHistoricalArchiveStatus(reason: String = "manual") {
+ 3452 |         DispatchQueue.global(qos: .utility).async {
+      |                                                   |- note: 'self' implicitly strongly captured here
+      |                                                   `- note: add 'self' as a capture list item to silence
+ 3453 |             let diagnostics = HistoricalArchive.diagnostics()
+ 3454 |             let status = HistoricalArchiveStatus(diagnostics: diagnostics)
+ 3455 |             DispatchQueue.main.async { [weak self] in
+      |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+      |                                              `- note: explicitly assign the capture list item to silence
+ 3456 |                 self?.historicalArchiveStatus = status
+ 3457 |                 if status.metricReady {
+
+/Users/amanpandey/projects/atria/Atria/Atria/Sessions.swift:4198:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 4182 |         behaviorInsightsGeneration &+= 1
+ 4183 |         let generation = behaviorInsightsGeneration
+ 4184 |         DispatchQueue.global(qos: .utility).async {
+      |                                                   |- note: 'self' implicitly strongly captured here
+      |                                                   `- note: add 'self' as a capture list item to silence
+ 4185 |             let summaries = Self.sortedBehaviorCorrelationSummaries(
+ 4186 |                 Self.makeBehaviorCorrelationSummaries(sessions: sourceSessions,
+      :
+ 4196 |                 labels: Self.journalQuestionLabels,
+ 4197 |                 days: metricDays)
+ 4198 |             DispatchQueue.main.async { [weak self] in
+      |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+      |                                              `- note: explicitly assign the capture list item to silence
+ 4199 |                 guard let self, generation == self.behaviorInsightsGeneration else { return }
+ 4200 |                 self.behaviorCorrelationSummariesCache = summaries
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+SwiftDriver\ Compilation Atria normal arm64 com.apple.xcode.tools.swift.compiler (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-Swift-Compilation -- /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name Atria -O -whole-module-optimization @/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.SwiftFileList -enable-bare-slash-regex -enable-experimental-feature DebugDescriptionMacro -sdk /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk -target arm64-apple-ios26.1 -g -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -Xfrontend -serialize-debugging-options -swift-version 5 -I /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -F /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -emit-localized-strings -emit-localized-strings-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64 -c -num-threads 14 -Xcc -ivfsstatcache -Xcc /Users/amanpandey/projects/atria/build/DerivedData/SDKStatCaches.noindex/iphoneos27.0-24A5370g-ab8728d0c5b464cc751fe8b4b02b9db3.sdkstatcache -output-file-map /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-OutputFileMap.json -save-temps -no-color-diagnostics -explicit-module-build -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules -clang-scanner-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -sdk-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -emit-dependencies -emit-module -emit-module-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule -serialize-diagnostics -dependency-scan-serialize-diagnostics-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-dependency-scan.dia -validate-clang-modules-once -clang-build-session-file /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Session.modulevalidation -Xcc -fmodules-prune-interval\=86400 -Xcc -fmodules-prune-after\=345600 -emit-const-values -const-gather-protocols-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_const_extract_protocols.json -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-generated-files.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-own-target-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-all-target-headers.hmap -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-project-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/include -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources-normal/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources -emit-objc-header -emit-objc-header-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-Swift.h -working-directory /Users/amanpandey/projects/atria/Atria -no-emit-module-separately-wmo
+
+SwiftDriverJobDiscovery normal arm64 Compiling ActiveSessionJournal.swift, AtriaAICoach.swift, AtriaAICoachCard.swift, AtriaAnalytics.swift, AtriaApp.swift, AtriaAppIntents.swift, AtriaBackupCompression.swift, AtriaBehaviorImpact.swift, AtriaBLEManager.swift, AtriaBreathworkSession.swift, AtriaCustomizeSheet.swift, AtriaDebugLogging.swift, AtriaDefault.swift, AtriaDesignTokens.swift, AtriaDeveloperMode.swift, AtriaEntitlements.swift, AtriaExerciseCatalog.swift, AtriaFaceOff.swift, AtriaFitnessAge.swift, AtriaHapticAlerts.swift, AtriaHealthScreen.swift, AtriaHeartRateBroadcaster.swift, AtriaHeroConnectionSections.swift, AtriaHighlights.swift, AtriaHomeLayoutConfig.swift, AtriaHomeShellSupport.swift, AtriaHomeView.swift, AtriaIMUDecoder.swift, AtriaJournalInsights.swift, AtriaJournalStore.swift, AtriaJournalTab.swift, AtriaLiveActivityAttributes.swift, AtriaLiveActivityCoordinator.swift, AtriaLiveWorkoutView.swift, AtriaManualSleepSheet.swift, AtriaMaxHRSuggestion.swift, AtriaMediaControls.swift, AtriaMetricRing.swift, AtriaMetricTargets.swift, AtriaNutritionContext.swift, AtriaOnboardingFlow.swift, AtriaOverviewSections.swift, AtriaRawExport.swift, AtriaResearchProbe.swift, AtriaSettingsView.swift, AtriaShareCard.swift, AtriaSharedChrome.swift, AtriaSharedUIComponents.swift, AtriaSleepBudget.swift, AtriaSleepWakeResearch.swift, AtriaStrapScreen.swift, AtriaStrapStepResearch.swift, AtriaStrengthLog.swift, AtriaTodayScreen.swift, AtriaTrendChart.swift, AtriaTriRing.swift, AtriaVitalsCollectionSections.swift, AtriaWakeAlarm.swift, AtriaWeeklyPlan.swift, AtriaWeeklyReport.swift, AtriaWidgetProofSheet.swift, AtriaWorkoutPromptEvaluator.swift, AtriaZipWriter.swift, ContentView.swift, DailyRollupStore.swift, Dashboard.swift, FrameParser.swift, HealthKitExporter.swift, HeartRate.swift, HistoricalArchive.swift, HRV.swift, Insights.swift, LocalNotificationScheduler.swift, Metrics.swift, Sessions.swift, WidgetSnapshot.swift, GeneratedAssetSymbols.swift (in target 'Atria' from project 'Atria')
+
+SwiftDriver\ Compilation\ Requirements Atria normal arm64 com.apple.xcode.tools.swift.compiler (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-Swift-Compilation-Requirements -- /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name Atria -O -whole-module-optimization @/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.SwiftFileList -enable-bare-slash-regex -enable-experimental-feature DebugDescriptionMacro -sdk /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk -target arm64-apple-ios26.1 -g -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -Xfrontend -serialize-debugging-options -swift-version 5 -I /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -F /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -emit-localized-strings -emit-localized-strings-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64 -c -num-threads 14 -Xcc -ivfsstatcache -Xcc /Users/amanpandey/projects/atria/build/DerivedData/SDKStatCaches.noindex/iphoneos27.0-24A5370g-ab8728d0c5b464cc751fe8b4b02b9db3.sdkstatcache -output-file-map /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-OutputFileMap.json -save-temps -no-color-diagnostics -explicit-module-build -module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules -clang-scanner-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -sdk-module-cache-path /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex -emit-dependencies -emit-module -emit-module-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule -serialize-diagnostics -dependency-scan-serialize-diagnostics-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-dependency-scan.dia -validate-clang-modules-once -clang-build-session-file /Users/amanpandey/projects/atria/build/DerivedData/ModuleCache.noindex/Session.modulevalidation -Xcc -fmodules-prune-interval\=86400 -Xcc -fmodules-prune-after\=345600 -emit-const-values -const-gather-protocols-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_const_extract_protocols.json -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-generated-files.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-own-target-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-all-target-headers.hmap -Xcc -iquote -Xcc /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria-project-headers.hmap -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/include -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources-normal/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources/arm64 -Xcc -I/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/DerivedSources -emit-objc-header -emit-objc-header-path /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria-Swift.h -working-directory /Users/amanpandey/projects/atria/Atria -no-emit-module-separately-wmo
+
+Copy /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/arm64-apple-ios.swiftmodule /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-copy -exclude .DS_Store -exclude CVS -exclude .svn -exclude .git -exclude .hg -resolve-src-symlinks -rename /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/arm64-apple-ios.swiftmodule
+
+Copy /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/arm64-apple-ios.abi.json /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.abi.json (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-copy -exclude .DS_Store -exclude CVS -exclude .svn -exclude .git -exclude .hg -resolve-src-symlinks -rename /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.abi.json /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/arm64-apple-ios.abi.json
+
+Copy /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/Project/arm64-apple-ios.swiftsourceinfo /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftsourceinfo (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-copy -exclude .DS_Store -exclude CVS -exclude .svn -exclude .git -exclude .hg -resolve-src-symlinks -rename /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftsourceinfo /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.swiftmodule/Project/arm64-apple-ios.swiftsourceinfo
+
+Ld /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria normal (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -Xlinker -reproducible -target arm64-apple-ios26.1 -isysroot /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk -Os -Xlinker -no_warn_duplicate_libraries -L/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/EagerLinkingTBDs/Release-iphoneos -L/Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -F/Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/EagerLinkingTBDs/Release-iphoneos -F/Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos -filelist /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.LinkFileList -Xlinker -rpath -Xlinker @executable_path/Frameworks -Xlinker -dead_strip -Xlinker -object_path_lto -Xlinker /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_lto.o -Xlinker -dependency_info -Xlinker /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_dependency_info.dat -fobjc-link-runtime -L/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos -L/usr/lib/swift -Xlinker -add_ast_path -Xlinker /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.swiftmodule -Xlinker -no_adhoc_codesign -o /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria
+
+CopySwiftLibs /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-swiftStdLibTool --copy --verbose --sign 8A8084FD4F59CDDD6153B5B39DDFB448D9DAC0B5 --scan-executable /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria --scan-folder /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Frameworks --scan-folder /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/PlugIns --scan-folder /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/SystemExtensions --scan-folder /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Extensions --platform iphoneos --toolchain /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain --destination /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Frameworks --strip-bitcode --strip-bitcode-tool /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/bitcode_strip --emit-dependency-info /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/SwiftStdLibToolInputDependencies.dep --filter-for-swift-os
+
+GenerateDSYMFile /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app.dSYM /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    export PATH\=/Applications/Xcode-beta.app/Contents/SharedFrameworks/SwiftBuild.framework/Versions/A/PlugIns/SWBBuildService.bundle/Contents/PlugIns/SWBUniversalPlatformPlugin.bundle/Contents/Frameworks/SWBUniversalPlatform.framework/Resources:/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/bin:/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/libexec:/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/usr/bin:/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/usr/local/bin:/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin:/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/bin:/Applications/Xcode-beta.app/Contents/Developer/usr/bin:/Applications/Xcode-beta.app/Contents/Developer/usr/local/bin:/Users/amanpandey/.antigravity-ide/antigravity-ide/bin:/Users/amanpandey/.antigravity/antigravity/bin:/Users/amanpandey/google-cloud-sdk/bin:/Users/amanpandey/.fuelup/bin:/Users/amanpandey/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/amanpandey/.starkli/bin:/Users/amanpandey/.cargo/bin:/Users/amanpandey/.sp1/bin:/Users/amanpandey/.zisk/bin:/Users/amanpandey/.foundry/bin:/Users/amanpandey/Library/Android/sdk/emulator:/Users/amanpandey/Library/Android/sdk/platform-tools:/Users/amanpandey/.asdf/shims:/Users/amanpandey/.maestro/bin:/Users/amanpandey/.claude/plugins/cache/claude-plugins-official/swift-lsp/1.0.0/bin:/Users/amanpandey/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0/bin:/Users/amanpandey/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown/bin
+    /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/dsymutil /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria -o /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app.dSYM
+
+ExtractAppIntentsMetadata (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/appintentsmetadataprocessor --toolchain-dir /Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain --module-name Atria --sdk-root /Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk --xcode-version 27A5209h --platform-family iOS --deployment-target 26.1 --bundle-identifier com.adidshaft.atria --output /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app --target-triple arm64-apple-ios26.1 --binary-file /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Atria --dependency-file /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria_dependency_info.dat --stringsdata-file /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/ExtractedAppShortcutsMetadata.stringsdata --source-file-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.SwiftFileList --metadata-file-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria.DependencyMetadataFileList --static-metadata-file-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria.DependencyStaticMetadataFileList --swift-const-vals-list /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Objects-normal/arm64/Atria.SwiftConstValuesFileList --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
+2026-07-04 10:53:21.683 appintentsmetadataprocessor[54519:11582485] Starting appintentsmetadataprocessor export
+2026-07-04 10:53:21.749 appintentsmetadataprocessor[54519:11582485] Writing Metadata.appintents
+2026-07-04 10:53:21.749 appintentsmetadataprocessor[54519:11582485] Metadata root: /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app/Metadata.appintents
+
+CodeSign /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    
+    Signing Identity:     "Apple Development: Aman Pandey (9BFSABP27W)"
+    Provisioning Profile: "Atria App Development"
+                          (e1b67d88-b48a-4225-bec8-a869f6214e5a)
+    
+    /usr/bin/codesign --force --sign 8A8084FD4F59CDDD6153B5B39DDFB448D9DAC0B5 --entitlements /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/Atria.build/Release-iphoneos/Atria.build/Atria.app.xcent --timestamp\=none --generate-entitlement-der /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app
+
+Validate /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app (in target 'Atria' from project 'Atria')
+    cd /Users/amanpandey/projects/atria/Atria
+    builtin-validationUtility /Users/amanpandey/projects/atria/build/DerivedData/Build/Products/Release-iphoneos/Atria.app -validate-for-store -shallow-bundle -infoplist-subpath Info.plist
+
+PruneExplicitPrecompiledModules /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/ExplicitPrecompiledModules
+
+PruneExplicitPrecompiledModules /Users/amanpandey/projects/atria/build/DerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules
+
+** BUILD SUCCEEDED **
+
+App installed:
+• bundleID: com.adidshaft.atria
+• installationURL: file:///private/var/containers/Bundle/Application/CA4BBC0F-D945-4FC8-9CF6-A4D24D991DE2/Atria.app/
+• launchServicesIdentifier: unknown
+• databaseUUID: 80179514-55C1-48AA-8DCA-BE1C81EA7F24
+• databaseSequenceNumber: 9824
+• options: 
+HARNESS_LAUNCH_ARGS=xcrun devicectl device process launch --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B --terminate-existing --console com.adidshaft.atria --atria-log-ble-frames
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate…
+2026-07-04 10:53:25.811 Atria[4775:721410] ATRIADBG sleep_confirmed_migration status=updated records=1 reason=legacy_missing_stage_segments
+2026-07-04 10:53:25.811 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=session_cache observed_peak=0 current_max_hr=189
+2026-07-04 10:53:25.811 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=init observed_peak=0 current_max_hr=189
+2026-07-04 10:53:25.812 Atria[4775:721421] ATRIADBG ble_restore peripherals=1
+2026-07-04 10:53:25.857 Atria[4775:721410] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=coexistence_risk
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG connection_diagnosis status=pending reason=coexistence_risk title=Strap disconnected delay_s=15
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.891 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:25.893 Atria[4775:721410] ATRIADBG scene_phase phase=appear reason=content_on_appear
+2026-07-04 10:53:25.893 Atria[4775:721410] ATRIADBG launch_timing event=on_appear elapsed_ms=106 scene=inactive
+2026-07-04 10:53:25.934 Atria[4775:721410] ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=1
+2026-07-04 10:53:25.934 Atria[4775:721410] ATRIADBG status_derived to=connected reason=event central=5 peripheral=2 saved=1 scanning=0
+2026-07-04 10:53:25.934 Atria[4775:721410] ATRIADBG ble_restore status=connected name=ADIDSHAFT'S WHO
+2026-07-04 10:53:25.934 Atria[4775:721410] ATRIADBG workout_review_candidate status=deferred source=home_appear reason=store_not_loaded rest_hr=57 max_hr=189
+2026-07-04 10:53:25.939 Atria[4775:721410] ATRIADBG hr_broadcast status=waiting state=0
+2026-07-04 10:53:25.939 Atria[4775:721410] ATRIADBG hr_broadcast_ui enabled=1 persistent=1 workout=0 active=0 reason=home_appear
+2026-07-04 10:53:25.941 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.941 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.941 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=home_appear
+2026-07-04 10:53:25.941 Atria[4775:721410] ATRIADBG home_launch_timing event=primary_ready elapsed_ms=6 status=disconnected tab=overview
+2026-07-04 10:53:25.942 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.942 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.942 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:25.943 Atria[4775:721410] ATRIADBG workout_review_candidate status=deferred source=dashboard_revision reason=store_not_loaded rest_hr=57 max_hr=189
+2026-07-04 10:53:25.944 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=62 confidence=unverified hrv=learning strain=0.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=588 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:25.944 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=coexistence_risk
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG connection_diagnosis status=pending reason=coexistence_risk title=Fit check needed delay_s=15
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:25.973 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:25.984 Atria[4775:721410] ATRIADBG model_gate status=assume_4_class reason=proprietary_service service=61080001-8D6D-82B8-614A-1C8CB0F8DCC6
+2026-07-04 10:53:25.985 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=8 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.986 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=9 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.986 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=10 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.987 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=11 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.987 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=12 custom_notify_enabled=0 tx_skipped=3 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.988 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=12 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.988 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=13 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.988 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=14 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.989 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=15 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.989 Atria[4775:721410] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=16 custom_notify_enabled=0 tx_skipped=4 realtime_start_skipped=0 reason=standard_hr_only
+2026-07-04 10:53:25.991 Atria[4775:721410] ATRIADBG scene_phase phase=inactive reason=fast_launch_background
+2026-07-04 10:53:25.991 Atria[4775:721410] ATRIADBG launch_timing event=fast_launch_begin elapsed_ms=204 scene=inactive
+2026-07-04 10:53:28.437 Atria[4775:721423] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:29.400 Atria[4775:721420] ATRIADBG session_store_save status=ok op=prune_short_long_wear_fragments sessions=120 bytes=11453431
+2026-07-04 10:53:31.432 Atria[4775:721432] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-07-04 10:53:35.282 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=session_cache observed_peak=0 current_max_hr=189
+2026-07-04 10:53:35.282 Atria[4775:721410] ATRIADBG session_store_reconcile status=merged reason=fast_launch sessions=124
+2026-07-04 10:53:35.282 Atria[4775:721410] ATRIADBG launch_timing event=fast_launch_complete elapsed_ms=9494 scene=inactive
+2026-07-04 10:53:35.420 Atria[4775:721431] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:35.433 Atria[4775:721410] ATRIADBG daily_rollup_persist_summary entries=11 respiratory_rows=10 rr_session_candidates=42 sessions=124
+2026-07-04 10:53:35.434 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-04 10:53:35.434 Atria[4775:721410] ATRIADBG morning_summary_skip reason=already_scheduled day=2026-07-04
+2026-07-04 10:53:35.434 Atria[4775:721410] ATRIADBG historical_archive_status reason=session_store_init exists=1 parse_ok=1 rows=169884 metric_usable=164690 current_usable=166172 metric_ready=1 fail_closed=0 status=Ready gate=Metric-ready detail=164690/169884 metric rows
+2026-07-04 10:53:35.435 Atria[4775:721410] ATRIADBG launch_timing event=deferred_launch_begin elapsed_ms=9647 scene=inactive
+2026-07-04 10:53:35.437 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.439 Atria[4775:721410] ATRIADBG ble_frame_logging enabled=1 reason=launch_arg
+2026-07-04 10:53:35.439 Atria[4775:721410] ATRIADBG launch_timing event=deferred_launch_complete elapsed_ms=9651 scene=inactive
+2026-07-04 10:53:35.439 Atria[4775:721410] ATRIADBG standardHR payload=0058 hr=88 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:35.440 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.443 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.445 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.448 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.450 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.452 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.454 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.456 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.459 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.461 Atria[4775:721431] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.466 Atria[4775:721410] ATRIADBG session_store_finish_checkpoint stage=before_rollup_refresh sessions=124 elapsed_ms=3597
+2026-07-04 10:53:35.466 Atria[4775:721410] ATRIADBG session_store_finish_checkpoint stage=pre_snapshot_rollup_persist sessions=124 metrics=11 elapsed_ms=3597
+2026-07-04 10:53:35.614 Atria[4775:721410] ATRIADBG daily_rollup_persist_summary entries=11 respiratory_rows=10 rr_session_candidates=42 sessions=124
+2026-07-04 10:53:35.615 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-04 10:53:35.615 Atria[4775:721410] ATRIADBG morning_summary_skip reason=already_scheduled day=2026-07-04
+2026-07-04 10:53:35.621 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.627 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.640 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.645 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.654 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.669 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.676 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.686 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.693 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.704 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:35.716 Atria[4775:721422] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:36.595 Atria[4775:721432] ATRIADBG session_store_save status=ok op=session_reconcile_fast_launch sessions=124 bytes=11491821
+2026-07-04 10:53:38.384 Atria[4775:721432] ATRIADBG session_store_save status=ok op=deferred_load_merge sessions=124 bytes=11491821
+2026-07-04 10:53:38.413 Atria[4775:721432] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-07-04 10:53:39.811 Atria[4775:721410] ATRIADBG daily_rollup_persist_summary entries=11 respiratory_rows=10 rr_session_candidates=42 sessions=124
+2026-07-04 10:53:39.811 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-04 10:53:39.811 Atria[4775:721410] ATRIADBG morning_summary_skip reason=already_scheduled day=2026-07-04
+2026-07-04 10:53:39.811 Atria[4775:721410] ATRIADBG session_store_finish_checkpoint stage=after_rollup_refresh sessions=124 elapsed_ms=3597
+2026-07-04 10:53:39.817 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.823 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.827 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.831 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.836 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.840 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.844 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.850 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.854 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.858 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.863 Atria[4775:721432] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:53:39.911 Atria[4775:721410] ATRIADBG sleep_stage_backfill_record status=updated source=deferred_session_load sleep_source=manual_sleep samples=10874 segments=1 covered_s=28800 non_awake_s=0 sleep_s=28800
+2026-07-04 10:53:39.912 Atria[4775:721410] ATRIADBG sleep_stage_backfill status=updated source=deferred_session_load records=1 total_segments=135 policy=hr_samples_labeled_estimate
+2026-07-04 10:53:41.339 Atria[4775:721410] ATRIADBG sleep_auto_confirm status=skipped reason=already_saved_or_overlapping source=deferred_session_load candidates=2
+2026-07-04 10:53:41.904 Atria[4775:721410] ATRIADBG session_store_load status=ok sessions=124 pruned_short_long_wear_fragments=4 baseline_rebuilt=0 elapsed_ms=3597
+2026-07-04 10:53:41.907 Atria[4775:721410] ATRIADBG battery level=88 source=2A19 bytes=58 persisted=1
+2026-07-04 10:53:41.908 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:41.908 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:41.908 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:41.908 Atria[4775:721410] ATRIADBG connection_diagnosis status=visible reason=connection_trigger title=Fit check needed elapsed_s=16
+2026-07-04 10:53:41.909 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:41.909 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:41.909 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:41.909 Atria[4775:721410] ATRIADBG connection_diagnosis status=hidden reason=connection_trigger action=clear
+2026-07-04 10:53:41.911 Atria[4775:721410] ATRIADBG notification_cancel kind=actionable_connection reason=diagnosis_cleared_connection_trigger identifiers=atria.battery.low,atria.bluetooth.off,atria.fitcheck.needed
+2026-07-04 10:53:42.529 Atria[4775:721410] ATRIADBG workout_review_candidate status=review_worthy source=dashboard_revision candidate_source=stitched_observed_chunks id=1782831161-1782833976-stitched_observed_chunks observed_s=869 coverage=93 peak_over_rest=107 ready=1 strength_candidate=0 moderate_strength=0
+2026-07-04 10:53:42.536 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=63 confidence=unverified hrv=personal_baseline strain=12.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=643 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:42.536 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:42.558 Atria[4775:721410] ATRIADBG haptic_alert kind=recovery_ready phone_side=1 strap_write=0
+2026-07-04 10:53:42.579 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:42.579 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:42.579 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:42.579 Atria[4775:721410] ATRIADBG home_launch_timing event=secondary_ready elapsed_ms=16644 status=connected tab=overview
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=0059 hr=89 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=0059 hr=89 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=005a hr=90 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG standardHR payload=005c hr=92 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=first_accepted_hr_batch samples=1 rr_values=0 duration_s=0 dirty=0 label=All-day wear
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-04 10:53:42.587 Atria[4775:721410] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-04 10:53:42.589 Atria[4775:721410] ATRIADBG battery level=88 source=2A19 bytes=58 persisted=1
+2026-07-04 10:53:42.590 Atria[4775:721410] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.590 Atria[4775:721410] ATRIADBG standardHR payload=005e hr=94 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.590 Atria[4775:721410] ATRIADBG standardHR payload=0060 hr=96 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.595 Atria[4775:721410] ATRIADBG scene_phase phase=active reason=ui_did_become_active
+2026-07-04 10:53:42.595 Atria[4775:721410] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=10
+2026-07-04 10:53:42.598 Atria[4775:721410] ATRIADBG foreground_keepalive armed=1 reason=scene_active_restart silence_timeout_s=75 check_interval_s=20
+2026-07-04 10:53:42.602 Atria[4775:721410] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=10
+2026-07-04 10:53:42.604 Atria[4775:721410] ATRIADBG long_wear_supervisor schedule base_tick_s=3.0 checkpoint_s=60.0 diagnostic_s=15.0 auto_save_s=15.0 no_data_timeout_s=75.0 hr_continuity_timeout_s=6.0 rr_presence_timeout_s=90.0 accepted_hr_timeout_s=45.0 label=Long wear
+2026-07-04 10:53:42.606 Atria[4775:721410] ATRIADBG foreground_keepalive armed=1 reason=scene_active_foreground_restart silence_timeout_s=75 check_interval_s=20
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG long_wear_mode enabled=1 reason=scene_active_foreground radio_mode=standard_hr_only supervisor=1 collection_profile=balanced cadence_multiplier=1.00 stale_timeout_multiplier=1.00 checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 no_data_check_interval_s=15 hr_continuity_timeout_s=6 supervisor_base_tick_s=3 accepted_hr_timeout_s=45 disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=Long wear rest_hr=57 max_hr=189
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active notifying_before=1
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG radio_mode mode=standard_hr_only persist=0 reconnect=0 reason=scene_active_interactive action=preserve_rr_sleep_window window=21_11
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active_interactive_rr_sleep_window notifying_before=1
+2026-07-04 10:53:42.609 Atria[4775:721410] ATRIADBG ble_notify_reassert status=requested reason=scene_active_interactive_rr_sleep_window source=foreground_return action=keep_connection
+2026-07-04 10:53:42.615 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:42.615 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:42.615 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:42.620 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=scene_active schema=3 recovery=63 confidence=unverified hrv=personal_baseline strain=12.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=642 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:42.620 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:42.621 Atria[4775:721410] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-07-04 10:53:42.622 Atria[4775:721410] ATRIADBG scene_phase phase=active reason=scene_active
+2026-07-04 10:53:42.622 Atria[4775:721410] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=10
+2026-07-04 10:53:42.625 Atria[4775:721410] ATRIADBG foreground_keepalive armed=1 reason=scene_active_restart silence_timeout_s=75 check_interval_s=20
+2026-07-04 10:53:42.628 Atria[4775:721410] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=10
+2026-07-04 10:53:42.628 Atria[4775:721410] ATRIADBG long_wear_supervisor schedule base_tick_s=3.0 checkpoint_s=60.0 diagnostic_s=15.0 auto_save_s=15.0 no_data_timeout_s=75.0 hr_continuity_timeout_s=6.0 rr_presence_timeout_s=90.0 accepted_hr_timeout_s=45.0 label=Long wear
+2026-07-04 10:53:42.631 Atria[4775:721410] ATRIADBG foreground_keepalive armed=1 reason=scene_active_foreground_restart silence_timeout_s=75 check_interval_s=20
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG long_wear_mode enabled=1 reason=scene_active_foreground radio_mode=standard_hr_only supervisor=1 collection_profile=balanced cadence_multiplier=1.00 stale_timeout_multiplier=1.00 checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 no_data_check_interval_s=15 hr_continuity_timeout_s=6 supervisor_base_tick_s=3 accepted_hr_timeout_s=45 disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=Long wear rest_hr=57 max_hr=189
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active notifying_before=1
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG radio_mode mode=standard_hr_only persist=0 reconnect=0 reason=scene_active_interactive action=preserve_rr_sleep_window window=21_11
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active_interactive_rr_sleep_window notifying_before=1
+2026-07-04 10:53:42.634 Atria[4775:721410] ATRIADBG ble_notify_reassert status=requested reason=scene_active_interactive_rr_sleep_window source=foreground_return action=keep_connection
+2026-07-04 10:53:42.640 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=live_throttled schema=3 recovery=63 confidence=unverified hrv=personal_baseline strain=12.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=642 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:42.640 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:42.640 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:42.640 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:42.640 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=0060 hr=96 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=0060 hr=96 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=005e hr=94 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.641 Atria[4775:721410] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.642 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=foreground_keepalive_crash_safety samples=10 rr_values=0 duration_s=9 dirty=0 label=All-day wear
+2026-07-04 10:53:42.649 Atria[4775:721410] ATRIADBG hr_broadcast status=advertising name=Atria_HR
+2026-07-04 10:53:42.649 Atria[4775:721410] ATRIADBG standardHR payload=005e hr=94 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:42.654 Atria[4775:721410] ATRIADBG rr_watchdog status=rearmed rr_gap_s=16.0 gap_s=16.0 accepted_gap_s=0.0 timeout_s=12.0 samples=17 rr_values=0 consecutive=1 action=reassert_notify notifying=1 label=Long wear
+2026-07-04 10:53:42.654 Atria[4775:721410] ATRIADBG rr_presence_watchdog status=segment_hr_only rr_gap_s=16.0 accepted_gap_s=0.0 timeout_s=12.0 samples=17 rr_values=0 consecutive=1 action=reassert_notify notifying=1 hrv_policy=learning_only label=Long wear
+2026-07-04 10:53:42.658 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:42.658 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:42.658 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-04 10:53:42.660 Atria[4775:721410] ATRIADBG notification_skip kind=fit_check reason=cooldown
+2026-07-04 10:53:42.661 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=rr_presence_watchdog_checkpoint samples=17 rr_values=0 duration_s=16 dirty=0 label=Long wear
+2026-07-04 10:53:42.674 Atria[4775:721410] ATRIADBG notification_scheduled kind=evening_checkin id=atria.eveningJournal.2026-07-04 title=Evening check-in delay_s=38177.4 reason=evening_journal_checkin
+2026-07-04 10:53:43.401 Atria[4775:721410] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:44.172 Atria[4775:721410] ATRIADBG haptic_alert kind=strain_target strain=12.0 target=10.2 phone_side=1 strap_write=0
+2026-07-04 10:53:44.333 Atria[4775:721410] ATRIADBG session_backup_status_deferred status=digest_mismatch reason=deferred_session_load elapsed_ms=8866 sessions=124
+2026-07-04 10:53:44.397 Atria[4775:721431] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-04 10:53:45.495 Atria[4775:721410] ATRIADBG workout_review_candidate status=review_worthy source=dashboard_revision candidate_source=stitched_observed_chunks id=1782831161-1782833976-stitched_observed_chunks observed_s=869 coverage=93 peak_over_rest=107 ready=1 strength_candidate=0 moderate_strength=0
+2026-07-04 10:53:45.501 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=63 confidence=unverified hrv=personal_baseline strain=12.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=643 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:45.501 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:45.882 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:45.882 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:45.882 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:53:46.393 Atria[4775:721432] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:46.394 Atria[4775:721410] ATRIADBG standardHR payload=0058 hr=88 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:47.391 Atria[4775:721410] ATRIADBG standardHR payload=0059 hr=89 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:47.392 Atria[4775:721431] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-04 10:53:48.521 Atria[4775:721410] ATRIADBG power_thermal_governor mode=serious multiplier=2.5 low_power=0 thermal=serious
+2026-07-04 10:53:50.383 Atria[4775:721432] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:50.385 Atria[4775:721410] ATRIADBG standardHR payload=0056 hr=86 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:50.387 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=89 rr=0
+2026-07-04 10:53:50.882 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:50.882 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:50.882 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:53:51.380 Atria[4775:721410] ATRIADBG standardHR payload=0056 hr=86 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:51.381 Atria[4775:721626] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-04 10:53:53.376 Atria[4775:721624] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:53.378 Atria[4775:721410] ATRIADBG standardHR payload=0054 hr=84 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:53.666 Atria[4775:721410] ATRIADBG long_wear_supervisor thermal_analysis_deferral status=deferred mode=serious multiplier=2.5 low_power=0 thermal=serious samples=23 label=Long wear
+2026-07-04 10:53:54.373 Atria[4775:721410] ATRIADBG standardHR payload=0052 hr=82 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:54.375 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=86 rr=0
+2026-07-04 10:53:54.375 Atria[4775:721624] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-04 10:53:55.882 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:53:55.882 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:53:55.882 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:53:56.369 Atria[4775:721624] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:56.371 Atria[4775:721410] ATRIADBG standardHR payload=0050 hr=80 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:56.375 Atria[4775:721410] ATRIADBG rr_watchdog status=rearmed rr_gap_s=29.9 gap_s=29.9 accepted_gap_s=0.0 timeout_s=12.0 samples=25 rr_values=0 consecutive=2 action=reassert_notify notifying=1 label=Long wear
+2026-07-04 10:53:56.375 Atria[4775:721410] ATRIADBG rr_presence_watchdog status=segment_hr_only rr_gap_s=29.9 accepted_gap_s=0.0 timeout_s=12.0 samples=25 rr_values=0 consecutive=2 action=reassert_notify notifying=1 hrv_policy=learning_only label=Long wear
+2026-07-04 10:53:56.382 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=rr_presence_watchdog_checkpoint samples=25 rr_values=0 duration_s=30 dirty=0 label=Long wear
+2026-07-04 10:53:57.366 Atria[4775:721410] ATRIADBG standardHR payload=0050 hr=80 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:57.367 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=82 rr=0
+2026-07-04 10:53:57.368 Atria[4775:721432] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:58.366 Atria[4775:721629] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-04 10:53:58.366 Atria[4775:721410] ATRIADBG standardHR payload=004d hr=77 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:53:58.371 Atria[4775:721410] ATRIADBG widget_snapshot status=ok reason=live_bpm_delta schema=3 recovery=63 confidence=unverified hrv=personal_baseline strain=12.0 rhr=57 max_hr=189 battery=88 charge=levelOnly bytes=642 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-04 10:53:58.371 Atria[4775:721410] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-04 10:53:59.361 Atria[4775:721410] ATRIADBG standardHR payload=004d hr=77 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:54:00.359 Atria[4775:721410] ATRIADBG standardHR payload=1051b402 hr=81 rrnum=1 truncated=0 rr_ms=676 suppressed_since_last=0
+2026-07-04 10:54:00.363 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=81 rrnum=1 decoded=1 total_decoded=1 truncated=0 hr_mismatch=0 implied_bpm=89 values=676
+2026-07-04 10:54:00.363 Atria[4775:721410] ATRIADBG rr_quality source=2a37 state=learning fraction=1.000 rr_frames=1 total_frames=1 max_rr_gap_s=0.0 frame_max_rr_gap_s=0.0 beat_timeline=1 window_s=0 hrv_state=learning rr_source_2a37_values=1 rr_source_0x28_decoded_values=0 rr_source_0x28_used_values=0
+2026-07-04 10:54:00.384 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=standard_rr_batch samples=29 rr_values=1 duration_s=34 dirty=0 label=Long wear
+2026-07-04 10:54:00.881 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:54:00.881 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:54:00.881 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:54:01.359 Atria[4775:721410] ATRIADBG standardHR payload=0052 hr=82 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-04 10:54:01.360 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=80 rr=0
+2026-07-04 10:54:02.130 Atria[4775:721410] ATRIADBG daily_rollup_persist_summary entries=11 respiratory_rows=10 rr_session_candidates=42 sessions=124
+2026-07-04 10:54:02.130 Atria[4775:721410] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-04 10:54:02.130 Atria[4775:721410] ATRIADBG morning_summary_skip reason=already_scheduled day=2026-07-04
+2026-07-04 10:54:02.131 Atria[4775:721410] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-04 10:54:02.134 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.138 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.142 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.145 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.148 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.151 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.154 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.158 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.162 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.166 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.170 Atria[4775:721624] ATRIADBG daily_rollup_store_save status=ok rows=11 bytes=5073 path=daily-rollups.json
+2026-07-04 10:54:02.354 Atria[4775:721410] ATRIADBG standardHR payload=1050d008 hr=80 rrnum=1 truncated=0 rr_ms=2203 suppressed_since_last=0
+2026-07-04 10:54:02.354 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=80 rrnum=1 decoded=1 total_decoded=2 truncated=0 hr_mismatch=1 implied_bpm=27 values=2203
+2026-07-04 10:54:03.351 Atria[4775:721410] ATRIADBG standardHR payload=10500603 hr=80 rrnum=1 truncated=0 rr_ms=756 suppressed_since_last=0
+2026-07-04 10:54:03.351 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=80 rrnum=1 decoded=1 total_decoded=3 truncated=0 hr_mismatch=0 implied_bpm=79 values=756
+2026-07-04 10:54:04.352 Atria[4775:721410] ATRIADBG standardHR payload=10503303 hr=80 rrnum=1 truncated=0 rr_ms=800 suppressed_since_last=0
+2026-07-04 10:54:04.352 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=80 rrnum=1 decoded=1 total_decoded=4 truncated=0 hr_mismatch=0 implied_bpm=75 values=800
+2026-07-04 10:54:05.347 Atria[4775:721410] ATRIADBG standardHR payload=104e8803 hr=78 rrnum=1 truncated=0 rr_ms=883 suppressed_since_last=0
+2026-07-04 10:54:05.347 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=78 rrnum=1 decoded=1 total_decoded=5 truncated=0 hr_mismatch=0 implied_bpm=68 values=883
+2026-07-04 10:54:05.352 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=80 rr=0
+2026-07-04 10:54:05.886 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:54:05.887 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:54:05.887 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-04 10:54:06.344 Atria[4775:721410] ATRIADBG standardHR payload=104e6403 hr=78 rrnum=1 truncated=0 rr_ms=848 suppressed_since_last=0
+2026-07-04 10:54:06.359 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=78 rrnum=1 decoded=1 total_decoded=6 truncated=0 hr_mismatch=0 implied_bpm=71 values=848
+2026-07-04 10:54:06.361 Atria[4775:721410] ATRIADBG active_session_journal status=saved reason=standard_rr_batch samples=35 rr_values=6 duration_s=40 dirty=0 label=Long wear
+2026-07-04 10:54:07.343 Atria[4775:721410] ATRIADBG standardHR payload=104e1b03 hr=78 rrnum=1 truncated=0 rr_ms=776 suppressed_since_last=0
+2026-07-04 10:54:07.343 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=78 rrnum=1 decoded=1 total_decoded=7 truncated=0 hr_mismatch=0 implied_bpm=77 values=776
+2026-07-04 10:54:08.339 Atria[4775:721410] ATRIADBG standardHR payload=104d7c03 hr=77 rrnum=1 truncated=0 rr_ms=871 suppressed_since_last=0
+2026-07-04 10:54:08.340 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=77 rrnum=1 decoded=1 total_decoded=8 truncated=0 hr_mismatch=0 implied_bpm=69 values=871
+2026-07-04 10:54:09.337 Atria[4775:721410] ATRIADBG standardHR payload=104b0903d202 hr=75 rrnum=2 truncated=0 rr_ms=759,705 suppressed_since_last=0
+2026-07-04 10:54:09.337 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=75 rrnum=2 decoded=2 total_decoded=10 truncated=0 hr_mismatch=0 implied_bpm=79,85 values=759,705
+2026-07-04 10:54:09.342 Atria[4775:721410] ATRIADBG hr_broadcast status=sent bpm=78 rr=0
+2026-07-04 10:54:10.335 Atria[4775:721410] ATRIADBG standardHR payload=1049f102 hr=73 rrnum=1 truncated=0 rr_ms=735 suppressed_since_last=0
+2026-07-04 10:54:10.335 Atria[4775:721410] ATRIADBG rr source=0x2A37 hr=73 rrnum=1 decoded=1 total_decoded=11 truncated=0 hr_mismatch=0 implied_bpm=82 values=735
+HARNESS_CAPTURE_TIMEOUT seconds=45 launch_seen=1 action=stop_devicectl_console
+2026-07-04 10:54:10.886 Atria[4775:721410] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-04 10:54:10.886 Atria[4775:721410] ATRIADBG notification_battery_decision level=88 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-04 10:54:10.887 Atria[4775:721410] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+App terminated due to signal 2.
+ATRIADBG_SUMMARY_START
+notify_61080005=False
+realtime_start=False
+cmd_response=False
+frame_61080005=False
+hrv_ready=False
+capture_summary_ready=False
+auto_capture_start=False
+auto_capture_stop=False
+gate_status_start=False
+gate_status_complete=False
+gate_readiness_complete=False
+gate_status_deep_complete=False
+healthkit_reference_audit_complete=False
+healthkit_export_complete=False
+healthkit_export_verify_complete=False
+healthkit_export_authorization_pending_complete=False
+healthkit_sleep_export_verify_complete=False
+healthkit_sleep_export_deferred_complete=False
+healthkit_reset_rebuild_complete=False
+workout_confirm_complete=False
+sleep_confirm_complete=False
+post_healthkit_gate_status_complete=False
+collection_health_complete=False
+rr_reference_package_complete=False
+hr_reference_package_complete=False
+rr_reference_validation_complete=False
+hr_reference_validation_complete=False
+reference_inputs_clear_complete=False
+workout_validation_complete=False
+sleep_validation_complete=False
+sleep_validation_fail_closed=False
+backup_complete=False
+backup_verify_complete=False
+notification_schedule_complete=False
+notification_delivery_complete=False
+radio_low_traffic_complete=True
+trend_summary_complete=False
+trend_windows_complete=False
+strain_validation_complete=False
+widget_snapshot_complete=True
+analytics_calibration_complete=False
+analytics_calibration_status=
+analytics_calibration_numeric_checks=
+analytics_calibration_label_checks=
+rr_frames=10
+rr_values=11
+rr_truncated_frames=0
+rr_hr_mismatch_values=1
+rr_source_2a37_frames=10
+rr_source_2a37_values=11
+rr_source_0x28_frames=0
+rr_source_0x28_values=0
+rr_source_0x28_used_frames=0
+rr_source_0x28_used_values=0
+standard_2a37_frames=39
+standard_2a37_rr_frames=10
+standard_2a37_rr_values=11
+last_standard_2a37_payload=1049f102
+last_standard_2a37_hr=73
+last_standard_2a37_rrnum=1
+last_standard_2a37_rr_ms=735
+last_rr_quality_source=2a37
+realtime_frames=0
+realtime_rr_frames=0
+realtime_rr_zero_frames=0
+realtime_malformed_frames=0
+realtime_truncated_rr_frames=0
+realtime_restarts=0
+realtime_reasserts=0
+auto_capture_starts=0
+auto_capture_stops=0
+capture_aborts=0
+capture_quality_resets=0
+auto_capture_exhausted=0
+last_realtime_hr=
+last_realtime_rrnum=
+last_realtime_rr_bytes=
+last_realtime_payload_tail=
+realtime_rr_fraction=
+realtime_rr_percent=
+realtime_zero_rr_tail_nonzero_frames=0
+realtime_zero_rr_tail_valid_candidate_frames=0
+last_rr_values=735
+last_rr_implied_bpm=82
+hrv_max_rr_gap_s=0.0
+last_hrv_max_rr_gap_s=
+first_realtime_elapsed_s=
+first_rr_elapsed_s=34.6
+rr_start_delay_s=
+last_rr_elapsed_s=44.5
+max_rr_log_gap_s=2.0
+cmd_response_count=0
+cmd_response_last_seq=
+cmd_response_last_cmd=
+cmd_response_last_status=
+cmd_response_statuses=
+history_clock_set_responses=0
+history_clock_get_responses=0
+history_clock_last_drift_s=
+history_clock_last_stale=
+frame_61080003_count=0
+frame_61080004_count=0
+frame_61080005_count=0
+frame_61080007_count=0
+frame_61080004_types=
+frame_61080005_types=
+frame_61080007_types=
+metadata_0x31_frames=0
+metadata_0x31_lengths=
+metadata_0x31_body_hashes=
+historical_2f_frames=0
+historical_data_rows=0
+historical_archive_rows=0
+historical_archive_metric_usable=
+historical_archive_current_usable=
+historical_2f_candidate_rr_values=0
+historical_2f_first_prefix=
+historical_2f_last_prefix=
+sensor_research_probe_rows=0
+sensor_research_probe_spo2_candidate_frames=
+sensor_research_probe_skin_temp_candidate_frames=
+sensor_research_probe_last_model_generation=
+sensor_research_probe_last_model_evidence=
+model_gate_rows=1
+model_gate_assume_4_class_rows=1
+model_gate_metadata_explicit_rows=0
+model_gate_last_status=assume_4_class
+model_gate_last_model=
+model_gate_last_reason=proprietary_service
+model_gate_last_evidence=
+sleep_motion_hint_count=0
+sleep_motion_hint_kinds=
+ATRIADBG_LINES=292
+ATRIADBG_SUMMARY_END
+HARNESS_LEAVE_RUNNING_ARGS=xcrun devicectl device process launch --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B --terminate-existing com.adidshaft.atria
+Launched application with com.adidshaft.atria bundle identifier.
+HARNESS_LEAVE_RUNNING status=launched mode=normal_end_user

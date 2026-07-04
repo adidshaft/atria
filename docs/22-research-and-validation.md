@@ -67,7 +67,7 @@ Captured live via `/usr/bin/log` is root-gated on devices, so used `devicectl de
 - **Connection health caveat:** `ble_link successes=321 attempts=323 disconnects=302` and a `connection_diagnosis reason=coexistence_risk "Fit check needed"` — high lifetime disconnect churn + official-app coexistence pressure.
 - **Implication for the HRV sleep-window fix (above):** gating HRV to overnight is feasible since RR flows at rest, but overnight *contact* reliability (the gaps/dropouts) is the dependency to verify before hard-gating — phase the fit-check/contact coaching first.
 
-**Historical RR layout (secondary, for backfill validation):** `historicalData cmd=05` frames carry `strap4_v24_rr19` = 0–1 "primary" RR per frame (e.g. 767 ms) plus `k_rr64` = rolling 4-RR buffer (e.g. 567,706,724,703) and a `candidate_rr` offset map; `noop_gravity_*` IMU gravity is present and validated. Layout is decodable but still needs an external IBI reference to validate ordering/dedup before unlocking offline-time HRV.
+**Historical RR layout (secondary, for backfill validation):** `historicalData cmd=05` frames carry `strap4_v24_rr19` = 0–1 "primary" RR per frame (e.g. 767 ms) plus `k_rr64` = rolling 4-RR buffer (e.g. 567,706,724,703) and a `candidate_rr` offset map; `historical_gravity_*` IMU gravity is present and validated. Layout is decodable but still needs an external IBI reference to validate ordering/dedup before unlocking offline-time HRV.
 
 ## Sources
 
@@ -75,4 +75,4 @@ Captured live via `/usr/bin/log` is root-gated on devices, so used `devicectl de
 - [Wearable sleep-staging vs PSG systematic review (JMIR mHealth, 2024)](https://mhealth.jmir.org/2024/1/e52192)
 - [WHOOP SpO2 sensor feature (WHOOP support)](https://support.whoop.com/hc/en-us/articles/4405801024027-4-0-Sensor-Feature-Measuring-Blood-Oxygen-Levels-SPO2-)
 - [WHOOP subscription backlash (Customer Contact Week)](https://www.customercontactweekdigital.com/cx-news-and-trends/articles/whoop-upgrade-customer-backlash)
-- [NOOP open-source WHOOP companion (analytics reference)](https://github.com/noop-app/noop)
+- Open-source WHOOP companion analytics reference
