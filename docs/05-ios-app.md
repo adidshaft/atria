@@ -673,7 +673,7 @@ the counted samples are from non-Atria sources. If the row reports
   readiness or artifact gates.
 - **Historical archive:** historical `0x2f` frames are persisted locally as JSONL
   in `Documents/whoop-historical/historical-archive.jsonl`. Each row stores a
-  schema, layout version, raw payload, NOOP-compatible WHOOP 4 historical
+  schema, layout version, raw payload, historical-layout-compatible WHOOP 4 historical
   version, provisional HR/RR fields, decoded gravity, clock-correction fields,
   and fail-closed `metricUsable=false` / `currentSessionUsable=false` flags. The app
   logs `ATRIADBG historicalArchive`; if a write fails, future continuation ACKs
@@ -698,12 +698,12 @@ the counted samples are from non-Atria sources. If the row reports
   pulled archive with `tools/analyze_historical_usability.py` output and keeps
   printing `ready=0` for metric usability while protocol exit is separately
   ready.
-- **NOOP historical gravity/clock cross-check:** NOOP's WHOOP 4 historical v24
+- **historical gravity/clock cross-check:** the reference app's WHOOP 4 historical v24
   layout maps raw historical payload offsets to real Unix, HR, RR, and gravity;
   v25 maps Unix plus an i16 gravity vector. The app and
   `tools/analyze_historical_archive.py` now decode those gravity layouts and
   count rows whose gravity magnitude is physically plausible. Stale strap-clock
-  correction follows NOOP's fail-closed policy: apply a snapped 5-minute offset
+  correction follows the reference app's fail-closed policy: apply a snapped 5-minute offset
   only when a `GET_CLOCK` reference shows gross drift, and keep corrected rows
   diagnostic-only until current-session overlap and external validation are
   proven. For sleep validation, historical gravity more than 24 hours away from
@@ -713,7 +713,7 @@ the counted samples are from non-Atria sources. If the row reports
 - **History-only override:** explicit historical probes now override persisted
   standard-HR-only mode for the custom WHOOP service only. Physical iPhone
   evidence in
-  `docs/evidence/gate-h/20260614T032719Z-clock-policy-noop-backfill-override-device-verify/`
+  `docs/evidence/gate-h/20260614T032719Z-clock-policy-safe-history-backfill-override-device-verify/`
   confirmed `61080003/04/05/07` subscriptions, `SET_CLOCK`/`GET_CLOCK`
   correlation (`drift_s=6`), `0x16 [00]` ACK, and `50` codec-clean `0x2f`
   frames pulled into the archive. The analyzer still reports
@@ -1531,7 +1531,7 @@ the counted samples are from non-Atria sources. If the row reports
   custom notify set, sent START, and produced
   `status=no_strap_motion_signal` with `protocol_packets=3`,
   `protocol_imu_frames=0`, `protocol_diagnostic_frames=0`,
-  `sleep_motion_hint_count=0`, `phone_motion_over_still_threshold=0`, and
+  `sleep_motion_hint_count=0`, no handset motion source, and
   `metric_promotions=0`. No sleep/workout metric was promoted; the row is a
   faster fail-closed decision point for the single-device motion path.
 - Capture summaries keep RMSSD, SDNN, pNN50, lnRMSSD, and respiratory rate as
@@ -1667,8 +1667,8 @@ the counted samples are from non-Atria sources. If the row reports
   Gate G as `metric_gated` with
   `healthkit_hrv_reference_pending+healthkit_workout_learning`.
 - History-only probe isolation, 2026-06-15:
-  `docs/evidence/gate-h/20260615T-single-device-noop-backfill-current-recheck/`.
-  A NOOP-style `1400,6000,1600` recheck on the real iPhone pulled the persisted
+  `docs/evidence/gate-h/20260615T-single-device-safe-history-backfill-current-recheck/`.
+  A safe-history `1400,6000,1600` recheck on the real iPhone pulled the persisted
   local archive (`728` codec-clean rows) but did not receive new live `0x2f`
   frames. The evidence showed Atria's long-wear HR/RR watchdogs forcing fresh
   reconnects during the explicit history-only init sequence, so history-only
@@ -1732,8 +1732,8 @@ the counted samples are from non-Atria sources. If the row reports
   where the app UI could show `H=ready[metric_fail_closed]` while the stricter
   reducer reported `partial`.
 - Quiet historical proof and current-selector recheck, 2026-06-15:
-  `docs/evidence/gate-h/20260615T-noop-backfill-current-selector-recheck-device-verify/`.
-  A targeted NOOP/WHoof-style history-only run built, installed, and launched
+  `docs/evidence/gate-h/20260615T-safe-history-backfill-current-selector-recheck-device-verify/`.
+  A targeted open-source WHOOP references-style history-only run built, installed, and launched
   on the cabled iPhone, performed `SET_CLOCK`/`GET_CLOCK` with `drift_s=1`,
   sent `0x14 [00]`, `0x60 [00]`, and `0x16 [00]`, and received
   `cmd_response_last_cmd=0x16` with status `06020b0000`. The quiet console
@@ -1742,8 +1742,8 @@ the counted samples are from non-Atria sources. If the row reports
   launcher and `tools/analyze_historical_usability.py` now count app-level
   `historicalData` payloads as historical transfer evidence, so quiet runs no
   longer summarize real downloads as zero frames. The pulled archive is
-  codec-clean and has physically plausible NOOP gravity
-  (`noop_historical_gravity_validated_rows=100/100`), but the corrected range is
+  codec-clean and has physically plausible historical gravity
+  (`historical_gravity_validated_rows=100/100`), but the corrected range is
   still `2026-03-29T23:17:19Z` to `2026-03-29T23:18:07Z`. Therefore Gate H
   protocol evidence is real, while `historical_archive_current_usable=0` and
   `historical_archive_metric_usable=0` remain binding. These rows must not feed

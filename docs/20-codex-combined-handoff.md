@@ -148,7 +148,7 @@ lower (n=8)", "Best recovery ~7.5h sleep". One-line, visual (up/down chip +
 magnitude), never medical. Plus a togglable "this week" summary card.
 
 ### E. Advanced metrics (docs/18, in its order)
-VO₂ polish → IMU decode (gravity-validated) → strap steps (vs CMPedometer) →
+VO₂ polish → IMU decode (gravity-validated) → strap steps (strap-only controlled walks) →
 sleep/wake → skin-temp & SpO₂ probes (4.0 sensors exist; research-gated, sleep-only,
 no absolute units without a reference). All flow through the derived store. Keep
 each in its tier; gate on detected model; never write SpO₂/BP/ECG to HealthKit.

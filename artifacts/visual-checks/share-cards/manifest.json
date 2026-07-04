@@ -1,0 +1,53 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "B0A161A8-488A-40EF-8BD0-79311E48FC8F",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "31C8A251-41A0-4C42-B977-6A4C94967A52.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "weekly-post_0_7F4FD906-1552-438F-BDC5-A141691BA58C.png",
+        "timestamp" : 1783005658.857
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "B0A161A8-488A-40EF-8BD0-79311E48FC8F",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "8CC33BE8-B0A2-4C58-8065-CF133C0A7155.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "workout-story_0_F418CDE4-E068-43E4-9233-7735595F68AD.png",
+        "timestamp" : 1783005658.856
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "B0A161A8-488A-40EF-8BD0-79311E48FC8F",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "C991DD0F-FC74-4CFF-91B1-E4FCE5438730.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "photo-story_0_C9756322-2FAA-4313-8F29-7016EACE2B1E.png",
+        "timestamp" : 1783005658.856
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "B0A161A8-488A-40EF-8BD0-79311E48FC8F",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "B2447B9E-EF04-4C36-B720-08272CB87370.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "post_0_B5AF6DBB-AF89-440E-9168-A9587CA392ED.png",
+        "timestamp" : 1783005658.855
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "B0A161A8-488A-40EF-8BD0-79311E48FC8F",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "15ED6E90-EB03-4C6B-906F-4AF98000AEDA.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "story_0_A510DEED-C7E1-4B33-8C77-26BF4CE1A992.png",
+        "timestamp" : 1783005658.854
+      }
+    ],
+    "testIdentifier" : "AtriaAnalyticsTests/testShareCardRendererOutputsStoryAndPostPNGsWithoutMetadata()",
+    "testIdentifierURL" : "test://com.apple.xcode/Atria/AtriaTests/AtriaAnalyticsTests/testShareCardRendererOutputsStoryAndPostPNGsWithoutMetadata"
+  }
+]

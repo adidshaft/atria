@@ -178,7 +178,7 @@ onboarding. Light mode read washed-out: cards dissolved into the near-white fiel
 - **Root cause (the real bug):** the `AtriaBackdropLayer` placed in the home
   `ZStack` (behind the `TabView`) was *fully covered* by the `NavigationStack`/
   `TabView`'s opaque content background — a red-gradient probe proved nothing of it
-  ever reached the screen. So every prior backdrop tweak was a no-op in light mode
+  ever reached the screen. So every prior backdrop tweak was a no-effect in light mode
   (masked in dark, where dark gradient ≈ dark systemBackground). Fix: attach the
   backdrop as the **ScrollView's own `.background`** (+ `scrollContentBackground(.hidden)`)
   in `tabNavigation`, so the field renders behind the transparent scroll content.
@@ -376,7 +376,7 @@ provide that users desperately want.** Build these through the cached derived st
 | **HRV (RMSSD)** | RR intervals (0x2A37 RR-flag / 0x28) | RR is the bottleneck — strap only emits RR with good contact/activity (see §B-RR). Compute RMSSD over a clean RR window; **morning/sleep HRV** is the headline. | needs validated RR window |
 | **Recovery** | HRV + RHR + sleep | Score = f(HRV vs personal baseline, RHR vs baseline, sleep). Show "building baseline" until N nights. Proxy `max(0,100-strain*4)` is a FALLBACK only — label it. | derived, baseline-gated |
 | **Strain (day + workout)** | HR over time (TRIMP/Banister) | ✅ `Metrics.strain(fromTRIMP:)` exists; accumulate across day like WHOOP. | derived |
-| **Steps / distance / floors** | strap IMU (0x33) vs `CMPedometer` | Phone pedometer is live (adjunct). Strap-step research exists (`AtriaStrapStepResearch`) — validate strap steps vs phone before promoting. | research → validated |
+| **Steps / distance / floors** | strap IMU (0x33) | Handset motion is not a product source. Strap-step research exists (`AtriaStrapStepResearch`) — promote only after strap-only IMU validation across controlled walks. | research → validated |
 | **Sleep (stages, duration, efficiency)** | overnight HR + RR + IMU motion | Detect sleep/wake from HR dip + motion (`AtriaSleepWakeResearch` scaffold). Stages need RR/HRV + motion; ship duration+efficiency first, stages as research. | research → validated, sleep-only |
 | **Sleep history** | saved sessions | Timeline of past nights (duration, efficiency, HRV, RHR trend). Read from `SessionStore` derived cache; chart per night. | derived from saved |
 | **VO₂max estimate** | HR/HRR + pace/age | `profileMetricsStore.vo2MaxEstimate` exists — polish + show trend. | estimate, labeled |
@@ -386,11 +386,11 @@ provide that users desperately want.** Build these through the cached derived st
 | **Respiratory rate** | RR-derived (during sleep) | Derivable from RR/HR modulation during sleep — research tier. | research, sleep-only |
 | **Biological Age** | VO₂max + RHR + HRV + sleep + activity + BMI | "Body age" + younger/older delta + factor breakdown. See §B-BIOAGE. | estimate, baseline-gated, non-medical |
 
-### B-BENCHMARK — match/beat NOOP's grounded methods (don't copy code)
-The open-source **NOOP** app (`github.com/noop-app/noop`, Swift) open-sources its
+### B-BENCHMARK — match/beat the reference app's grounded methods (don't copy code)
+The open-source **open-source reference** app (Swift companion reference) open-sources its
 analytics (`StrandAnalytics`) — but NOT its BLE/protocol (kept private). Its methods
 are well-grounded public sports-science; build Atria's metrics to the SAME standard
-(re-implement from the public research below — do not lift NOOP's source):
+(re-implement from the public research below — do not lift the reference app's source):
 - **Recovery** = logistic of a weighted z-score vs the user's PERSONAL baseline:
   HRV 0.60, RHR 0.20, Sleep 0.15, Respiration 0.05; logistic k≈1.6, z0≈−0.20; bands
   **red <34, yellow <67, green ≥67** (WHOOP's own thresholds). RHR = lowest 5-min
@@ -403,32 +403,32 @@ are well-grounded public sports-science; build Atria's metrics to the SAME stand
 - **Sleep stager** = IMU gravity-stillness + HR (difference-of-Gaussians, σ 120/600 s)
   + HRV/RR variability → wake/light/deep/rem on 30-s epochs; efficiency + per-night
   RHR/HRV. (Atria has only a research scaffold today — this is the biggest gap.)
-- **Vital bands / target zones (Part D)** — NOOP's `VitalBands` validates the Part-D
+- **Vital bands / target zones (Part D)** — the reference app's `VitalBands` validates the Part-D
   design: **personal z-score ±2σ once ≥14 valid nights** (trusted, not stale), else a
   **population range** fallback; `noData` until then. Mirror this exactly.
-- **Readiness/coaching** — NOOP's `ReadinessEngine` adds training-load signals worth
+- **Readiness/coaching** — the reference app's `ReadinessEngine` adds training-load signals worth
   having: **ACWR** (acute 7-day : chronic 28-day strain) and **monotony**, surfaced as
   primed/balanced/strained/rundown with per-signal good/neutral/watch/bad flags +
   plain-English detail. Fold into Recovery + the Part-D "(i)" coaching.
 
-WHERE ATRIA STANDS vs NOOP (2026-06-27): on par on Strain + HRV math + behavior
+WHERE ATRIA STANDS vs open-source reference (2026-06-27): on par on Strain + HRV math + behavior
 insights + trends; **ahead** on connection robustness (derived status + persistent
 reconnect) and iOS-native UX; **behind** on Recovery (proxy vs real model), Sleep
 staging, Readiness/ACWR, and Target zones — all already specced here, so building
-Parts B/D to the methods above puts Atria at or beyond parity. NOOP's protocol is
+Parts B/D to the methods above puts Atria at or beyond parity. the reference app's protocol is
 private, so Atria's RR-stream (§B-RR) must be solved with our own reverse-engineering.
 
-### B-ADOPT — objectively-better engineering from NOOP (build these into Atria)
-Beyond the formulas, these NOOP choices are objectively cleaner/stronger — adopt them
-(re-implement from the public methods; do NOT copy NOOP's source — respect its license):
-1. **A pure, unit-tested analytics module.** NOOP isolates ALL scoring in
+### B-ADOPT — objectively-better engineering from open-source reference (build these into Atria)
+Beyond the formulas, these open-source reference choices are objectively cleaner/stronger — adopt them
+(re-implement from the public methods; do NOT copy the reference app's source — respect its license):
+1. **A pure, unit-tested analytics module.** open-source reference isolates ALL scoring in
    `StrandAnalytics` (zero BLE/UI deps) with **calibration tests per metric**
    (RecoveryCalibration, SleepStager, StrainScorer, HRV, SkinTemp, RespRateRsa,
    StepsDaily, DayCalories…). Extract Atria's metric math out of `Sessions.swift`
    into an `AtriaAnalytics` Swift package/target with deterministic unit + calibration
    tests (fixed RR/HR fixtures → asserted scores). This is what makes "honest metrics"
    actually verifiable and regression-proof — Atria's biggest structural gap.
-2. **One rigorous personal-baseline engine.** NOOP's `Baselines.foldHistory` builds a
+2. **One rigorous personal-baseline engine.** the reference app's `Baselines.foldHistory` builds a
    per-metric baseline (mean + spread), marks it **trusted only after ≥14 valid nights
    and not stale**, and scores via **z-score deviation**. Make EVERY personal feature
    (Recovery, Part-D vital bands, Readiness, Bio Age, "(i)" coaching) read from this
@@ -440,8 +440,8 @@ Beyond the formulas, these NOOP choices are objectively cleaner/stronger — ado
    one-line plain-English read each. Atria has nothing here today; it's the single
    biggest "coach" upgrade and feeds Recovery + the Part-D "(i)" sheets.
 4. **Respiratory rate from RSA.** Derive resp rate from respiratory sinus arrhythmia in
-   the sleep RR series (NOOP's `RespRateRsa`) — concrete, validated, sleep-only.
-5. **Premium visualizations.** Adopt equivalents of NOOP's `Hypnogram` (sleep-stage
+   the sleep RR series (the reference app's `RespRateRsa`) — concrete, validated, sleep-only.
+5. **Premium visualizations.** Adopt equivalents of the reference app's `Hypnogram` (sleep-stage
    chart), `RecoveryRing`, `StrainGauge`, and `YearHeatStrip` (a GitHub-style year
    heatmap of a metric) — they read "premium," are cheap to draw, and differentiate.
 6. **Tested, pure daily aggregations.** `StepsDaily` / `DayCalories` / `HRZones` are

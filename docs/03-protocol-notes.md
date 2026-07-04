@@ -71,7 +71,7 @@ RR-shaped windows, but the range was March 29, 2026 and did not overlap live or
 saved local sessions. The correct verdict is `stored_transfer_verified=1`,
 `current_session_usable=0`, `metric_usable=0`.
 
-`--history-ack-mode enddata` is a NOOP-backed experiment mode. It ACKs
+`--history-ack-mode enddata` is a reference-backed experiment mode. It ACKs
 `HISTORY_END` with `[0x01] + body[10..<18]` and write-with-response instead of
 the older `trim + zero` payload. The physical iPhone run in
 `docs/evidence/gate-h/20260614T-history-enddata-ack-device-verify/` confirmed
@@ -79,11 +79,11 @@ the strap accepts this form (`writeResult ok`, repeated `0x17` ACK responses,
 `3160` codec-clean `0x2f` frames), but it still selected old March history.
 That rules out ACK padding as the current-history selector blocker.
 
-`./live_device_debug.sh --history-noop-backfill` is the repeatable NOOP-style
+`./live_device_debug.sh --history-safe-history-backfill` is the repeatable safe-history
 stored-session preset. It launches history-only, skips realtime START and the
 default `0x22` range request, sends `1400,6000,1600`, uses confirmed writes for
 the init/start commands, and uses `enddata` ACKs. Physical-iPhone evidence in
-`docs/evidence/gate-h/20260614T-noop-backfill-confirmed-init-device-verify/`
+`docs/evidence/gate-h/20260614T-safe-history-backfill-confirmed-init-device-verify/`
 verified the corrected command mode (`historyOnly ... mode=wr`), `3453`
 codec-clean `0x2f` frames, and plausible `whoof` layout windows
 (`ready_windows=2878`, best 300-second window `raw=371 kept=371 conf=100`).
@@ -92,16 +92,16 @@ saved-session overlap, so this path proves transfer mechanics but not a usable
 current-session selector.
 
 Current-history recheck, 2026-06-15:
-`docs/evidence/gate-h/20260615T-current-history-noop-backfill-recheck/`.
-The repeat NOOP-style backfill did not produce new current-history frames. The
+`docs/evidence/gate-h/20260615T-current-history-safe-history-backfill-recheck/`.
+The repeat safe-history backfill did not produce new current-history frames. The
 pulled archive is still codec-clean (`728` rows, `undecodable_rows=0`) but
 `current_session_usable_rows=0`, `metric_usable_rows=0`, and Gate E still
-reports `sleep_motion_unvalidated_historical_stale`. Plain NOOP backfill is
+reports `sleep_motion_unvalidated_historical_stale`. Plain safe-history backfill is
 therefore exhausted as a current sleep/workout unblocker unless a different
 current-history selector or validated live IMU path is discovered.
 
 Single-device recheck after long wear:
-`docs/evidence/gate-h/20260615T-single-device-noop-backfill-current-recheck/`.
+`docs/evidence/gate-h/20260615T-single-device-safe-history-backfill-current-recheck/`.
 The pulled archive again contained the same stale March 29 range (`728` decoded
 rows, validated gravity, `706` Whoof-layout RR values, zero current-session
 overlap). The live transfer attempt produced `historical_2f_frames=0` because
@@ -117,7 +117,7 @@ Post-fix physical verification:
 The fixed build installed and launched on the cabled iPhone. The same
 history-only sequence produced clock ACKs, `0x14`/`0x60`/`0x16` command
 responses, live `0x2f` rows, and a pulled archive with `50` decoded
-Whoof/NOOP-layout rows (`undecodable_rows=0`, validated gravity, corrected range
+WHOOP historical-layout rows (`undecodable_rows=0`, validated gravity, corrected range
 `2026-03-29T23:17:19Z...23:18:06Z`). The HR-continuity and accepted-HR
 watchdogs logged `action=suppressed_history_only_probe` instead of reconnecting.
 Gate H remains protocol-ready/metric-fail-closed because the archive is still
@@ -165,8 +165,8 @@ unattended single-device still run as a usable current-motion source. It does
 not prove a deliberate wrist-motion script or a missing selector cannot expose
 IMU; until such evidence appears, sleep/workout motion remains learning.
 
-Latest NOOP clock/backfill verification:
-`docs/evidence/gate-h/20260614T032719Z-clock-policy-noop-backfill-override-device-verify/`.
+Latest historical clock/backfill verification:
+`docs/evidence/gate-h/20260614T032719Z-clock-policy-safe-history-backfill-override-device-verify/`.
 The probe now overrides persisted standard-HR-only mode so explicit history-only
 runs can still subscribe to `61080003/04/05/07` and write `61080002`. The
 physical iPhone confirmed the full custom path: `cmd_response_count=5`,
@@ -181,7 +181,7 @@ Latest Atria post-rename verification:
 `docs/evidence/gate-h/20260614T-atria-historical-backfill-device-verify/` and
 `docs/evidence/gate-h/20260614T-atria-gate-h-post-backfill-status/`.
 The bundle rename created a fresh app container, so Atria initially reported
-`missing_archive`. A full-protocol NOOP backfill then pulled `350` codec-clean
+`missing_archive`. A full-protocol safe-history backfill then pulled `350` codec-clean
 `0x2f` rows into Atria's own local archive, and a short post-status launch
 reported Gate H `status=ready` / `gate_h_protocol_exit_ready=1`. The archive is
 still old March history with no saved-session overlap, so metric readiness stays
@@ -191,7 +191,7 @@ still old March history with no saved-session overlap, so metric readiness stays
 
 - **`TOGGLE_REALTIME_HR` (cmd 0x03)** — payload `[0x23, seq, 0x03, enable]`
   (`0x01` start / `0x00` stop). Triggers continuous `REALTIME_DATA`.
-- **`SET_CLOCK` (cmd 0x0A / decimal 10)** — NOOP-backed clock sync uses
+- **`SET_CLOCK` (cmd 0x0A / decimal 10)** — reference-backed clock sync uses
   `[unix u32le][subsec u32le]`, plus the legacy 9-byte form on WHOOP 4.
 - **`GET_CLOCK` (cmd 0x0B / decimal 11)** — empty payload or `[00]`; response
   establishes the diagnostic strap-clock/wall-clock correlation.

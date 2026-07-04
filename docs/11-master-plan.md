@@ -81,7 +81,7 @@ Fix paths, cheapest → deepest:
 3. **On-device log diagnosis** — stream `ATRIADBG` from the strap-connected iPhone to see exactly what the strap returns to the command. **Landed.**
 4. **Pairing/encryption** — not needed for realtime after the write-mode/fresh-connect fix.
 5. **Gate B RR continuity** — not needed for Gate A realtime unlock, but
-   required before any HRV accuracy claim. Cross-checking `NoopApp/noop` showed
+   required before any HRV accuracy claim. Cross-checking `public companion reference` showed
    the missing primary channel: standard BLE Heart Rate Measurement `2A37`
    carries HR plus R-R intervals, while WHOOP custom realtime `0x28` often
    reports `rr_count=0`. The app now parses `2A37` R-R as the primary live HRV
@@ -252,7 +252,7 @@ comparison step.
 
 **Phase B update 2026-06-13 sleep continuity result:** while adidshaft continued wearing the WHOOP tightly with the iPhone cabled, `docs/evidence/gate-b/20260613T-gate-b-sleep-continuity-result/` produced another real live-RR-only 300-second ready capture on the physical iPhone. The app waited for the adaptive gate (`rr_fraction_0.978`, `rr_frames=44/45`, `max_rr_gap_s=1.9`), then stopped on `capture_summary ready=1 elapsed=300 raw=299 kept=288 rejected_delta_over_20_percent=11 interpolated=11 conf=96 window=300 max_rr_gap_s=2.0 rmssd=49.0 sdnn=69.6 pnn50=32.6 lnrmssd=3.89 resp=learning`. Whole-run continuity was `realtime_rr_fraction=0.944`, `rr_values=344`, `max_rr_log_gap_s=2.0`, all realtime data was `0x28` on `61080005`, `historical_2f_frames=0`, and the ready CSV was pulled locally. This is the freshest result from the user's overnight setup: live HRV acquisition is working under still/tight-wear conditions, but clinical Gate B remains reference-pending until RMSSD is checked against an external RR/IBI reference within `+/-5 ms`.
 
-**Phase B update 2026-06-13 2A37 primary RR path:** read-only `NoopApp/noop` inspection revealed that standard BLE Heart Rate Measurement `2A37` is the reliable HR/R-R source and custom `REALTIME_DATA` commonly carries `rr_count=0`. The app now parses full `2A37` payloads (`flags`, 8/16-bit HR, optional energy expended, little-endian R-R intervals in 1/1024s), logs `standardHR payload=... rrnum=... rr_ms=...`, feeds those real intervals into the existing HRV/RR ledger, and demotes `0x28` to supplemental diagnostics when `2A37` RR is fresh. The cabled physical iPhone run in `docs/evidence/gate-b/20260613T132138Z-gate-b-2a37-reset-keep-recording/` verified this path with `standard_2a37_rr_values=832`, `rr_source_0x28_used_values=0`, `capture_aborts=0`, and `capture_quality_resets=2`. The app no longer throws away the whole recording when a live RR gap appears; it checkpoints the real received RR chunk, resets the HRV window, and keeps recording until a clean 300-second window exists. The pulled CSV ended `capture_summary ready=1 elapsed=604 raw=345 kept=315 conf=91 window=300 max_rr_gap_s=2.8 quality_resets=2 rmssd=46.7 sdnn=58.6 pnn50=25.6 lnrmssd=3.84 resp=12.0`. Independent log replay on `2A37` found one strict 300-second window (`raw=348`, `kept=318`, `conf=91.4`, `max_gap_s=2.845`, `rmssd_ms=52.1`). This clears the iPhone live-continuity blocker through a standards-based channel. Gate B is still not clinically passed until simultaneous external RR/IBI reference comparison shows RMSSD within `+/-5 ms`; all downstream surfaces remain reference-gated.
+**Phase B update 2026-06-13 2A37 primary RR path:** read-only `public companion reference` inspection revealed that standard BLE Heart Rate Measurement `2A37` is the reliable HR/R-R source and custom `REALTIME_DATA` commonly carries `rr_count=0`. The app now parses full `2A37` payloads (`flags`, 8/16-bit HR, optional energy expended, little-endian R-R intervals in 1/1024s), logs `standardHR payload=... rrnum=... rr_ms=...`, feeds those real intervals into the existing HRV/RR ledger, and demotes `0x28` to supplemental diagnostics when `2A37` RR is fresh. The cabled physical iPhone run in `docs/evidence/gate-b/20260613T132138Z-gate-b-2a37-reset-keep-recording/` verified this path with `standard_2a37_rr_values=832`, `rr_source_0x28_used_values=0`, `capture_aborts=0`, and `capture_quality_resets=2`. The app no longer throws away the whole recording when a live RR gap appears; it checkpoints the real received RR chunk, resets the HRV window, and keeps recording until a clean 300-second window exists. The pulled CSV ended `capture_summary ready=1 elapsed=604 raw=345 kept=315 conf=91 window=300 max_rr_gap_s=2.8 quality_resets=2 rmssd=46.7 sdnn=58.6 pnn50=25.6 lnrmssd=3.84 resp=12.0`. Independent log replay on `2A37` found one strict 300-second window (`raw=348`, `kept=318`, `conf=91.4`, `max_gap_s=2.845`, `rmssd_ms=52.1`). This clears the iPhone live-continuity blocker through a standards-based channel. Gate B is still not clinically passed until simultaneous external RR/IBI reference comparison shows RMSSD within `+/-5 ms`; all downstream surfaces remain reference-gated.
 
 **Phase B update 2026-06-13 RR-quality abort watchdog:** `AtriaBLEManager` now aborts an active HRV capture when rolling realtime RR evidence violates the Gate B continuity contract (`rr_fraction < 0.90` or `max_rr_gap_s > 3s` after the first 45 seconds), logs `capture_abort`, and writes a `ready=0 stop=rr_quality_abort` capture summary so bad windows cannot later surface as HRV. Physical iPhone evidence in `docs/evidence/gate-b/20260613T103515Z-still-5min-rr-abort-watchdog/` verified the behavior while adidshaft sat still: capture started at `rr_fraction_0.906`, then aborted at `fraction=0.500`, `max_rr_gap_s=30.8`; the pulled CSV stayed `learning`, and whole-run `realtime_rr_fraction=0.814`, `hrv_ready=False`. This is not a Gate B pass; it confirms that still posture alone does not guarantee live RR continuity and that phone-side buffering cannot recover RR intervals absent from `rrnum=0` live frames. Next work: retry from a fresh capture-local RR window after abort and keep pursuing validated historical/stored RR fallback plus external RR reference.
 
@@ -2137,8 +2137,8 @@ none of the `46` saved local sessions, and the verifier emitted
 `current_session_usable=0`, `rr_layout_validated=0`,
 `external_rr_reference_validated=0`, `metric_usable=0`.
 
-**Phase H update 2026-06-14 NOOP-style history ACK:** after a read-only
-cross-check of `NoopApp/noop` and `madhursatija/whoof`, the app now has a
+**Phase H update 2026-06-14 safe-history history ACK:** after a read-only
+cross-check of `public companion reference` and `madhursatija/whoof`, the app now has a
 selectable `enddata` ACK mode. `trim` remains the default/known path; `enddata`
 ACKs `HISTORY_END` with `[0x01] + body[10..<18]` and write-with-response. The
 physical-iPhone run in
@@ -2149,22 +2149,22 @@ and every confirmed write returned `ok`. The strap accepted the ACKs and emitted
 `3160` codec-clean historical frames. It still selected old history
 (`2026-03-29T19:28:03Z...20:16:45Z`) with no live or saved-session overlap, so
 the ACK form is not the current-session selector blocker. Next Gate H work
-should focus on NOOP's fuller clock/init/data-range start flow or structured
+should focus on the reference app's fuller clock/init/data-range start flow or structured
 historical sensor decoding.
 
-**Phase H update 2026-06-14 NOOP backfill preset:** the launcher now has
-`--history-noop-backfill` for the concrete NOOP/WHoof-derived path:
+**Phase H update 2026-06-14 safe-history backfill preset:** the launcher now has
+`--history-safe-history-backfill` for the concrete open-source WHOOP references-derived path:
 history-only, no default `0x22`, init/start sweep `1400,6000,1600`, confirmed
 writes, `enddata` ACKs, automatic log, and a 180-second physical-device window.
 An initial device run in
-`docs/evidence/gate-h/20260614T-noop-backfill-preset-device-verify/` exposed a
+`docs/evidence/gate-h/20260614T-safe-history-backfill-preset-device-verify/` exposed a
 launcher bug: the preset requested confirmed writes but the mode was only passed
 when an unrelated probe command/sweep was also present, so init logged
 `mode=wwr`. That run still verified transfer mechanics (`2491` codec-clean
 `0x2f` frames) but remained non-current
 (`2026-03-29T20:16:29Z...20:55:06Z`, `current_session_usable=0`). After fixing
 the launcher, the confirmed physical-iPhone run in
-`docs/evidence/gate-h/20260614T-noop-backfill-confirmed-init-device-verify/`
+`docs/evidence/gate-h/20260614T-safe-history-backfill-confirmed-init-device-verify/`
 built, installed, launched, logged `historyOnly ... mode=wr` and
 `historyInitSweep ... mode=wr`, accepted repeated `enddata` ACKs, and emitted
 `3453` codec-clean historical frames. The `whoof` historical layout is now
@@ -2173,14 +2173,14 @@ strongly plausible as a stored RR interpretation (`3711` RR values,
 `raw=371 kept=371 conf=100 max_rr_gap_s=0.961 rmssd_ms=36.0`), but it still
 downloaded old March history (`2026-03-29T20:54:58Z...21:49:00Z`) with
 `live_history_overlap=0`, `saved_overlap_seconds=0`, and `metric_usable=0`.
-This rules out write mode, ACK shape, and the clean NOOP init sequence as the
+This rules out write mode, ACK shape, and the clean open-source reference init sequence as the
 current-session selector blockers. Stop blind iterations on this exact path;
 use it as a packaged diagnostic/backfill tool only if a new selector clue
 appears, while Gate B remains external-reference pending for live/saved RR.
 
-**Phase H steering note 2026-06-14 from NOOP/WHoof cross-check:** the next
+**Phase H steering note 2026-06-14 from open-source WHOOP references cross-check:** the next
 software-useful historical step is durable, versioned local historical storage,
-not more blind selector churn. Mirror NOOP's safer shape: decode rows, archive
+not more blind selector churn. Mirror the reference app's safer shape: decode rows, archive
 undecodable sensor frames, persist a trim/cursor, and ACK only after local
 persistence succeeds. Store `layout_version`, HR/RR hypothesis fields, gravity
 or raw sensor fields when decoded, and explicit `current_session_usable` /
@@ -2198,7 +2198,7 @@ launcher now supports `--pull-historical`, and
 `tools/analyze_historical_archive.py` verifies the pulled archive. Physical
 iPhone evidence in
 `docs/evidence/gate-h/20260614T-historical-archive-device-verify/` built,
-installed, launched, ran `--history-noop-backfill`, persisted and pulled `2311`
+installed, launched, ran `--history-safe-history-backfill`, persisted and pulled `2311`
 historical rows, and logged archive progress with `failures=0`. Independent
 analysis remained honest: `codec_ok_frames=2311`, but the range was still old
 March history (`2026-03-29T21:48:45Z...22:24:29Z`), with
@@ -2219,7 +2219,7 @@ built, installed, launched, pulled sessions and the archive, and confirmed
 `archive_persisted=1`, `metric_ready=0`, `current_session_ready=0`, and
 `ready=0` to avoid ambiguous readiness language. This keeps Gate H partial:
 the archive is locally durable and codec/protocol useful, but no stored metric or
-new sensor is validated. A source cross-check against NOOP/WHoof also reinforced
+new sensor is validated. A source cross-check against open-source WHOOP references also reinforced
 the current execution shape: ACK `0x17` only after durable local storage, treat
 `[0x01] + endData[10:18]` as the stronger continuation clue, and keep gravity,
 SpO2, skin-temperature, respiratory, and PPG offsets version-gated until a
@@ -2230,7 +2230,7 @@ protocol exit is now physically verified on adidshaft's iPhone, while metric use
 remains fail-closed. Evidence in
 `docs/evidence/gate-h/20260614T-gate-h-protocol-exit-device-verify/` built
 successfully, installed/launched through `live_device_debug.sh`, ran the
-NOOP-backed history path, and pulled the on-device archive. The run streamed
+reference-backed history path, and pulled the on-device archive. The run streamed
 `2755` new historical `0x2f` frames, all codec-clean
 (`codec_ok_frames=2755`, `codec_bad_frames=0`), and the archive now contains
 `5092` persisted rows with raw payloads. The tightened archive analyzer reports
@@ -2275,12 +2275,12 @@ Atria a fresh app container, so a first post-rename status launch correctly
 reported Gate H as `partial` with `historical_archive_reason=missing_archive`.
 The physical-iPhone run in
 `docs/evidence/gate-h/20260614T-atria-historical-backfill-device-verify/` then
-rebuilt/installed/launched Atria in full-protocol mode, ran the NOOP-style
+rebuilt/installed/launched Atria in full-protocol mode, ran the safe-history
 historical backfill path, and pulled
 `Documents/whoop-historical/historical-archive.jsonl` from the current Atria
 container. The strap returned `350` historical `0x2f` frames, all persisted as
 schema-3 JSONL rows with `undecodable_rows=0`,
-`noop_historical_gravity_validated_rows=350`, and `archive_persisted=1`. A
+`historical_gravity_validated_rows=350`, and `archive_persisted=1`. A
 post-backfill status launch in
 `docs/evidence/gate-h/20260614T-atria-gate-h-post-backfill-status/` verified
 the app now logs `gate_status gate=H status=ready` with
@@ -2291,47 +2291,47 @@ and the pulled archive is old/non-overlapping with saved sessions
 exit for Atria without promoting historical HRV, Recovery, Sleep, Workout,
 Trends, widgets, notifications, or HealthKit.
 
-**Phase H/E update 2026-06-14 NOOP historical gravity pivot:** direct inspection
-of NOOP confirmed that WHOOP 4 historical records can carry the motion evidence
+**Phase H/E update 2026-06-14 historical gravity pivot:** direct inspection
+of open-source reference confirmed that WHOOP 4 historical records can carry the motion evidence
 we need for sleep confidence: v24 records decode real Unix, HR, RR, and float32
 gravity; v25 records decode real Unix plus i16 gravity even when per-second HR is
-not stored. The app archive is upgraded to schema 3 with NOOP-compatible gravity
+not stored. The app archive is upgraded to schema 3 with historical-layout-compatible gravity
 fields, physically-plausible gravity row counts, and snapped stale-clock
 correction diagnostics. The Mac archive analyzer cross-checked the existing
 pulled archive and found `hist_versions=24,25` with
-`noop_historical_gravity_validated_rows=5089/5092`; this is strong historical
+`historical_gravity_validated_rows=5089/5092`; this is strong historical
 motion evidence but remains fail-closed because the prior pull lacked clock
 correlation and still reported no current-session overlap. The next useful
 physical run is not another live START retry; it is a historical backfill with
 `--history-clock-handshake`, then verify whether corrected historical rows
 overlap the current saved session before allowing any sleep/workout repair.
 
-**Phase H update 2026-06-14 NOOP clock/backfill override:** the history-only
+**Phase H update 2026-06-14 historical clock/backfill override:** the history-only
 probe now overrides persisted standard-HR-only mode for explicit protocol runs,
 so long-wear settings no longer mask `61080003/04/05/07` subscriptions or
 `61080002` command writes. Physical iPhone evidence in
-`docs/evidence/gate-h/20260614T032719Z-clock-policy-noop-backfill-override-device-verify/`
-built, installed, launched, subscribed to the custom service, sent NOOP-style
+`docs/evidence/gate-h/20260614T032719Z-clock-policy-safe-history-backfill-override-device-verify/`
+built, installed, launched, subscribed to the custom service, sent safe-history
 `SET_CLOCK`/`GET_CLOCK` plus `1400,6000,1600`, and pulled the on-device archive.
 The run logged `cmd_response_count=5`, `clock_correlation_present=1`,
 `clock_offset_s=6`, `historical_2f_frames=50`, `codec_ok_frames=50`,
 `stored_transfer_verified=1`, and `gate_h_protocol_exit_ready=1`. It remains
 metric-blocked: the selected range was `2026-03-29T23:07:05Z...23:07:53Z`,
 `current_session_usable=0`, `metric_usable=0`, and `ready=0`. This fixes an
-execution bug and verifies the NOOP clock/backfill path, but it still does not
+execution bug and verifies the historical clock/backfill path, but it still does not
 provide current-session HRV, workout repair, sleep repair, trends, or HealthKit
 data.
 
 **Phase H update 2026-06-14 schema-3 backfill overlap check:** a follow-up
 physical iPhone run in
-`docs/evidence/gate-h/20260614T050402Z-schema3-noop-backfill-current-overlap-check/`
+`docs/evidence/gate-h/20260614T050402Z-schema3-safe-history-backfill-current-overlap-check/`
 kept the WHOOP 4.0 strap on-wrist, built/launched on the cabled iPhone, sent the
-NOOP clock/backfill path, and pulled both the historical archive and current
+historical clock/backfill path, and pulled both the historical archive and current
 `sessions.json`. The archive analyzer now compares pulled JSONL rows directly
 against saved sessions because quiet console runs can show `historical_2f_frames=0`
 even when the on-device archive has rows. Evidence: the archive grew to `5192`
 rows (`schemas=1,2,3`), `hist_versions=24,25`, and
-`noop_historical_gravity_validated_rows=5189/5192`; the clock reference was
+`historical_gravity_validated_rows=5189/5192`; the clock reference was
 healthy (`clock_offset_s=5`), so the corrected archive range remained
 `2026-03-29T23:07:10Z...23:07:59Z`. It had zero overlap with `74` saved local
 sessions (`saved_best_separation_seconds=6482000.0`), so
@@ -2347,13 +2347,13 @@ current-overlapping archive range.
 iPhone cabled and the WHOOP 4.0 strap on-wrist, the current Atria build was
 installed/launched in full-protocol history-only mode in
 `docs/evidence/gate-h/20260614T170211Z-gate-h-fresh-protocol-exit-device-verify-long/`.
-The run sent the NOOP/WHoof-derived clock/init/download sequence
+The run sent the open-source WHOOP references-derived clock/init/download sequence
 (`SET_CLOCK`, `GET_CLOCK`, `0x14 [00]`, `0x60 [00]`, `0x16 [00]`) and accepted
 `0x17` trim continuation ACKs. The strap returned `378` fresh `0x2f`
 historical frames on `61080005`, all validated by `whoop_codec.py`
 (`codec_ok_frames=378`, `codec_bad_frames=0`, `declared_len_mismatches=0`).
 The pulled on-device archive now contains `728` schema-3 rows with raw payloads,
-`undecodable_rows=0`, and `noop_historical_gravity_validated_rows=728/728`, so
+`undecodable_rows=0`, and `historical_gravity_validated_rows=728/728`, so
 Gate H remains ready for the historical-download/protocol-expansion exit. It
 still must not feed metrics: the selected history is old and non-overlapping
 (`2026-03-29T23:07:06Z...23:17:19Z`,
@@ -2450,7 +2450,7 @@ hardening rather than a Gate E pass. Gate E remains partial with
 `stream_gaps_and_hr_below_threshold`.
 
 **Phase E update 2026-06-14 no-data watchdog:** long-wear collection now also
-handles the NOOP-style stale stream case: the app may be connected while
+handles the safe-history stale stream case: the app may be connected while
 standard `2A37` notifications silently stop. Long wear schedules a watchdog with
 `timeout_s=30` and `interval_s=15`; on stale data it checkpoints the real samples
 already collected, marks stale recovery, cancels the stale peripheral, and falls
@@ -4041,13 +4041,13 @@ focused Gate G row from widget-only evidence and reports `metric_gated` on
 `healthkit_hrv_reference_pending+healthkit_workout_learning`, so this hardens
 the verifier without pretending HRV/workout exports are done.
 
-**Gate H/E recheck 2026-06-15 NOOP backfill still stale:** a targeted
-NOOP-style backfill recheck on the cabled iPhone in
-`docs/evidence/gate-h/20260615T-current-history-noop-backfill-recheck/` pulled
+**Gate H/E recheck 2026-06-15 safe-history backfill still stale:** a targeted
+safe-history backfill recheck on the cabled iPhone in
+`docs/evidence/gate-h/20260615T-current-history-safe-history-backfill-recheck/` pulled
 the same persisted historical archive shape (`728` codec-clean rows) and still
 reported `current_session_usable_rows=0`, `metric_usable_rows=0`, and
 `gate_status gate=E ... sleep_blocker=sleep_motion_unvalidated_historical_stale`.
-This rules out repeating plain `--history-noop-backfill` as a current sleep or
+This rules out repeating plain `--history-safe-history-backfill` as a current sleep or
 workout unblocker. The next local path must be a different current-history
 selector or validated live IMU/current-motion evidence; otherwise sleep stays
 learning and the old archive remains diagnostic/protocol evidence only.
@@ -4079,7 +4079,7 @@ out passive foreground full-protocol subscription as a current sleep-motion
 source and keeps Gate E blocked on a true current-history selector, validated
 live-IMU trigger, or official-app/sniffer evidence.
 
-**Gate E update 2026-06-15 long-wear watchdog evidence:** after the NOOP/whoof
+**Gate E update 2026-06-15 long-wear watchdog evidence:** after the open-source WHOOP references
 cross-check, the actionable local path is standard `2A37` collection hardening,
 not more proprietary START/history churn. Atria now persists long-wear watchdog
 recovery counters (`watchdog_no_data_recoveries`,
@@ -4396,7 +4396,7 @@ the latest fragmented sleep fallback (`duration_s=10545`, `span_s=13706`,
 `sleep_motion_unvalidated_historical_stale` because the historical gravity
 archive is March data with zero overlap against the June sleep windows. The same
 evidence keeps Gate H metric fail-closed (`current_session_usable_rows=0`)
-despite codec-clean historical rows. Subagent read-only cross-check of NOOP/Whoof
+despite codec-clean historical rows. Subagent read-only cross-check of open-source WHOOP references
 references found no concrete untried local command/parser path to make current
 sleep motion or workout detection pass without new evidence; defer more blind
 protocol churn. Follow-up verification in
@@ -4471,53 +4471,20 @@ the app running on the cabled iPhone (`HARNESS_LEAVE_RUNNING status=launched`,
 PID `35583`). Gate E remains partial, but the collection-continuity blocker is
 now explicit on device.
 
-**Gate E tooling update 2026-06-15 phone-motion audit wiring:** Atria now
-records iPhone CoreMotion accelerometer deltas as explicit `phone_motion_*`
-audit fields on saved sessions and checkpoint logs, with
-`phone_motion_wrist_validated=0` and `phoneMotionValidated=false`. This is only
-debug-rig corroboration: it must not validate wrist motion, sleep, workout,
-HRV, recovery, trends, or HealthKit metrics. The code builds cleanly and the
-physical iPhone install succeeded in
-`docs/evidence/gate-e/20260615T-phone-motion-audit-device-verify/`, but the
-launch/ATRIADBG verification was blocked because the iPhone was locked
-(`FBSOpenApplicationErrorDomain error 7`, `reason: Locked`). A no-console
-launch retry failed for the same reason. This checkpoint is therefore not
-device-verified and does not pass Gate E; rerun the physical launch after the
-iPhone is unlocked to collect `ATRIADBG phone_motion` and
-`session_checkpoint ... phone_motion_*` evidence.
+**Gate E tooling update 2026-06-15 handset-motion audit wiring (obsolete):**
+this diagnostic path has been removed. Atria must not collect or validate
+product metrics from handset motion or handset steps. Movement-derived product
+features must come from the strap path and remain research-gated until the strap
+IMU layout is validated.
 
-**Gate E tooling update 2026-06-15 phone-motion sampled verification:** the
-phone-motion audit now logs direct sampler summaries as
-`ATRIADBG phone_motion status=sampled`, so CoreMotion delivery can be verified
-without depending on a saved HR segment. Physical iPhone evidence in
-`docs/evidence/gate-e/20260615T-phone-motion-sampled-device-verify/` built,
-installed, and launched Atria, then confirmed the sampler on-device:
-`samples=15`, `mean_delta_g=0.001`, `max_delta_g=0.002`,
-`over_still_threshold=0`, `still_threshold_g=0.030`,
-`validated=0`, and `wrist_motion_validated=0`. Follow-up leave-running evidence
-in `docs/evidence/gate-e/20260615T-phone-motion-sampled-leave-running/`
-confirmed the same sampler (`max_delta_g=0.003`), real `2A37` RR
-(`standard_2a37_rr_values=23`), a fresh active journal
-(`active_collection_status=active`, `active_collection_blocker=none`), and left
-Atria running on the cabled iPhone as PID `35790`. Gate E remains partial:
-phone motion is debug-rig corroboration only, sleep still needs validated
-current wrist/strap motion or a documented accepted fallback, and workout still
-needs sustained-HR or independent HR-reference evidence.
+**Gate E tooling update 2026-06-15 handset-motion sampled verification
+(obsolete):** this diagnostic path has been removed. Do not recreate it as a
+runtime source or as a validation reference. Sleep/workout movement confidence
+must come from strap evidence or stay fail-closed.
 
-**Gate status tooling update 2026-06-15 phone-motion pull summary:** the
-copy-only `./pull_atria_state.sh --evidence-dir DIR` helper now reports saved
-phone-motion audit coverage directly: `phone_motion_sessions`,
-`phone_motion_nonzero_sessions`, latest phone-motion fields, and latest nonzero
-phone-motion fields. Physical iPhone evidence in
-`docs/evidence/gate-status/20260615T-phone-motion-pull-nonzero-summary-device-verify/`
-verified the pull while Atria stayed running: `process_status=running`,
-`active_journal_freshness=fresh`, `phone_motion_sessions=5`,
-`phone_motion_nonzero_sessions=1`, and the latest nonzero audit block had
-`samples=21`, `mean_delta_g=0.0013624043313197848`,
-`max_delta_g=0.002240601334120985`, `over_still_threshold=0`,
-`phone_motion_validated=0`, and `wrist_motion_validated=0`. This improves
-status visibility only; it does not pass Gate E because the motion source is
-still phone CoreMotion audit data, not validated strap/wrist motion.
+**Gate status tooling update 2026-06-15 handset-motion pull summary
+(obsolete):** this diagnostic summary has been removed from the product source
+boundary. Pull/status tooling should report strap HR/RR/IMU evidence only.
 
 **Gate E durability update 2026-06-15 checkpoint persistence status:** checkpoint
 callbacks now return the `SessionStore.checkpoint` result, so watchdog,
@@ -4948,8 +4915,8 @@ synthesizing fallback status. The reducer now reports Gate G as
 incorrectly claiming the HealthKit entitlement is missing.
 
 **Gate H probe isolation 2026-06-15:** after long-wear collection,
-`docs/evidence/gate-h/20260615T-single-device-noop-backfill-current-recheck/`
-showed the NOOP-style `1400,6000,1600` historical probe was being interrupted by
+`docs/evidence/gate-h/20260615T-single-device-safe-history-backfill-current-recheck/`
+showed the safe-history `1400,6000,1600` historical probe was being interrupted by
 Atria's own long-wear watchdog reconnects. The fixed build in
 `docs/evidence/gate-h/20260615T-history-probe-watchdog-suppressed-device-verify/`
 was installed and launched on the physical iPhone, kept the history-only BLE
@@ -5027,9 +4994,9 @@ installed, launched, and logged `gate_status gate=H status=partial` plus
 partial until targeted historical diagnostics show current usable transfer data
 or a new sensor stream is decoded and validated.
 
-**Gate H current-selector recheck 2026-06-15:** the NOOP/WHoof-style
+**Gate H current-selector recheck 2026-06-15:** the open-source WHOOP references-style
 `1400,6000,1600` history-only path was re-run on the cabled physical iPhone in
-`docs/evidence/gate-h/20260615T-noop-backfill-current-selector-recheck-device-verify/`.
+`docs/evidence/gate-h/20260615T-safe-history-backfill-current-selector-recheck-device-verify/`.
 The run built, installed, launched, held the history-only probe window, synced
 the strap clock (`drift_s=1`), ACKed through `0x16` (`06020b0000`), emitted `50`
 app-level `historicalData` payloads, and pulled a `100`-row local archive. The

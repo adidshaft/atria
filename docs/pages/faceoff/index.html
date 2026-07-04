@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recovery Face-Off — Atria</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif;
+         background: linear-gradient(#0d1224, #05070f); color: #fff;
+         min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { max-width: 420px; width: 92%; padding: 28px; text-align: center; }
+  h1 { font-size: 26px; margin: 0 0 18px; }
+  .cols { display: flex; gap: 12px; }
+  .col { flex: 1; border-radius: 18px; padding: 16px 10px; }
+  .col.friend { background: rgba(255,159,10,.12); }
+  .big { font-size: 34px; font-weight: 800; margin: 6px 0; }
+  .label { font-size: 12px; opacity: .65; }
+  .row { display: flex; justify-content: space-between; font-size: 13px; margin: 6px 8px; }
+  .note { font-size: 12px; opacity: .55; margin-top: 18px; line-height: 1.5; }
+  .badge { display: inline-block; margin-top: 20px; padding: 12px 22px; border-radius: 14px;
+           background: #fff; color: #000; font-weight: 700; text-decoration: none; }
+  #error { opacity: .7; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Recovery Face-Off</h1>
+  <div id="content"><p id="error">Decoding the challenge…</p></div>
+  <p class="note">This page decodes the link in your browser — the data never touches a server.
+  Get Atria to send your week back.</p>
+  <a class="badge" href="https://apps.apple.com/">Get Atria</a>
+</div>
+<script>
+(async function () {
+  const el = document.getElementById('content');
+  try {
+    const encoded = (location.hash || '').replace(/^#/, '') ||
+      new URLSearchParams(location.search).get('d') || '';
+    if (!encoded) throw new Error('no payload');
+    let b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4 !== 0) b64 += '=';
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    const json = await new Response(stream).text();
+    const p = JSON.parse(json);
+    if (p.v !== 1 || !Array.isArray(p.days)) throw new Error('unsupported payload');
+    const nums = k => p.days.map(d => d[k]).filter(v => typeof v === 'number');
+    const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+    const rec = avg(nums('r')), str = avg(nums('s')), slp = avg(nums('z'));
+    const name = String(p.name || 'A friend').slice(0, 24);
+    el.innerHTML =
+      '<div class="cols"><div class="col friend">' +
+      '<div class="label">' + name.replace(/[<>&]/g, '') + '</div>' +
+      '<div class="big">' + (rec === null ? '--' : Math.round(rec) + '%') + '</div>' +
+      '<div class="label">avg recovery · last ' + p.days.length + ' days</div>' +
+      '<div class="row"><span>Strain</span><b>' + (str === null ? '--' : str.toFixed(1)) + '</b></div>' +
+      '<div class="row"><span>Sleep</span><b>' + (slp === null ? '--' : slp.toFixed(1) + ' h') + '</b></div>' +
+      '</div></div>' +
+      '<p style="margin-top:16px;font-size:14px">Think you recover better? Prove it.</p>';
+  } catch (e) {
+    el.innerHTML = '<p id="error">This challenge link could not be decoded. Ask your friend to send a fresh one.</p>';
+  }
+})();
+</script>
+</body>
+</html>

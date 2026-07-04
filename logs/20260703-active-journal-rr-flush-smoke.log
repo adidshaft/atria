@@ -1,0 +1,462 @@
+HARNESS_LAUNCH_ARGS=xcrun devicectl --log-output logs/20260703-active-journal-rr-flush-smoke.log.devicectl.log device process launch --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B --terminate-existing --console com.adidshaft.atria --atria-log-ble-frames
+Launched application with com.adidshaft.atria bundle identifier.
+Waiting for the application to terminate…
+2026-07-03 20:41:10.495 Atria[1409:115658] ATRIADBG ble_restore peripherals=1
+2026-07-03 20:41:10.496 Atria[1409:115650] ATRIADBG sleep_confirmed_migration status=updated records=1 reason=legacy_missing_stage_segments
+2026-07-03 20:41:10.496 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=session_cache observed_peak=0 current_max_hr=189
+2026-07-03 20:41:10.497 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=init observed_peak=0 current_max_hr=189
+2026-07-03 20:41:10.532 Atria[1409:115650] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-07-03 20:41:10.559 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.559 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.559 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=coexistence_risk
+2026-07-03 20:41:10.559 Atria[1409:115650] ATRIADBG connection_diagnosis status=pending reason=coexistence_risk title=Strap disconnected delay_s=15
+2026-07-03 20:41:10.560 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.560 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.560 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:10.561 Atria[1409:115650] ATRIADBG scene_phase phase=appear reason=content_on_appear
+2026-07-03 20:41:10.561 Atria[1409:115650] ATRIADBG launch_timing event=on_appear elapsed_ms=79 scene=inactive
+2026-07-03 20:41:10.598 Atria[1409:115650] ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only peripherals=1
+2026-07-03 20:41:10.598 Atria[1409:115650] ATRIADBG status_derived to=connected reason=event central=5 peripheral=2 saved=1 scanning=0
+2026-07-03 20:41:10.598 Atria[1409:115650] ATRIADBG ble_restore status=connected name=ADIDSHAFT'S WHO
+2026-07-03 20:41:10.599 Atria[1409:115650] ATRIADBG workout_review_candidate status=none source=home_appear reason=no_candidate rest_hr=59 max_hr=189
+2026-07-03 20:41:10.603 Atria[1409:115650] ATRIADBG hr_broadcast status=waiting state=0
+2026-07-03 20:41:10.603 Atria[1409:115650] ATRIADBG hr_broadcast_ui enabled=1 persistent=1 workout=0 active=0 reason=home_appear
+2026-07-03 20:41:10.605 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.605 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.605 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=home_appear
+2026-07-03 20:41:10.605 Atria[1409:115650] ATRIADBG home_launch_timing event=primary_ready elapsed_ms=5 status=disconnected tab=overview
+2026-07-03 20:41:10.605 Atria[1409:115650] ATRIADBG historical_archive_status reason=session_store_init exists=1 parse_ok=1 rows=168829 metric_usable=163986 current_usable=165164 metric_ready=1 fail_closed=0 status=Ready gate=Metric-ready detail=163986/168829 metric rows
+2026-07-03 20:41:10.606 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.606 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.606 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:10.606 Atria[1409:115650] ATRIADBG workout_review_candidate status=none source=dashboard_revision reason=no_candidate rest_hr=59 max_hr=189
+2026-07-03 20:41:10.607 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=64 confidence=unverified hrv=learning strain=0.0 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=587 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:10.607 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=coexistence_risk
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG connection_diagnosis status=pending reason=coexistence_risk title=Fit check needed delay_s=15
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:10.631 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:10.641 Atria[1409:115650] ATRIADBG model_gate status=assume_4_class reason=proprietary_service service=61080001-8D6D-82B8-614A-1C8CB0F8DCC6
+2026-07-03 20:41:10.642 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=25 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.642 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=26 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.643 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=27 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.643 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=28 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.644 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=29 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.644 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=30 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.644 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=31 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.645 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=32 tx_skipped=0 realtime_start_skipped=4 reason=full_protocol
+2026-07-03 20:41:10.648 Atria[1409:115650] ATRIADBG scene_phase phase=inactive reason=fast_launch_background
+2026-07-03 20:41:10.648 Atria[1409:115650] ATRIADBG launch_timing event=fast_launch_begin elapsed_ms=167 scene=inactive
+2026-07-03 20:41:10.840 Atria[1409:115663] ATRIADBG notifyState ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:11.141 Atria[1409:115663] ATRIADBG notifyState ch=61080004-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:11.290 Atria[1409:115663] ATRIADBG notifyState ch=61080005-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:11.590 Atria[1409:115668] ATRIADBG notifyState ch=61080007-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:11.891 Atria[1409:115668] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-03 20:41:12.245 Atria[1409:115658] ATRIADBG session_store_save status=ok op=prune_short_long_wear_fragments sessions=108 bytes=9221182
+2026-07-03 20:41:12.341 Atria[1409:115658] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-07-03 20:41:12.941 Atria[1409:115663] ATRIADBG notifyState ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:13.241 Atria[1409:115663] ATRIADBG notifyState ch=61080004-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:13.541 Atria[1409:115663] ATRIADBG notifyState ch=61080005-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:13.840 Atria[1409:115663] ATRIADBG notifyState ch=61080007-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:14.141 Atria[1409:115663] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-03 20:41:14.591 Atria[1409:115658] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-07-03 20:41:18.428 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=session_cache observed_peak=0 current_max_hr=189
+2026-07-03 20:41:18.428 Atria[1409:115650] ATRIADBG session_store_reconcile status=merged reason=fast_launch sessions=112
+2026-07-03 20:41:18.428 Atria[1409:115650] ATRIADBG launch_timing event=fast_launch_complete elapsed_ms=7947 scene=inactive
+2026-07-03 20:41:18.584 Atria[1409:115650] ATRIADBG daily_rollup_persist_summary entries=10 respiratory_rows=9 rr_session_candidates=38 sessions=112
+2026-07-03 20:41:18.584 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-03 20:41:18.584 Atria[1409:115650] ATRIADBG morning_summary_skip reason=outside_window local_minutes=1241
+2026-07-03 20:41:18.587 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.590 Atria[1409:115650] ATRIADBG launch_timing event=deferred_launch_begin elapsed_ms=8108 scene=inactive
+2026-07-03 20:41:18.591 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.593 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.593 Atria[1409:115650] ATRIADBG ble_frame_logging enabled=1 reason=launch_arg
+2026-07-03 20:41:18.593 Atria[1409:115650] ATRIADBG launch_timing event=deferred_launch_complete elapsed_ms=8112 scene=inactive
+2026-07-03 20:41:18.594 Atria[1409:115650] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=0 tx_skipped=0 realtime_start_skipped=1 reason=standard_hr_only
+2026-07-03 20:41:18.594 Atria[1409:115650] ATRIADBG realtimeConfig standard_hr_only=1 realtime_start=skipped
+2026-07-03 20:41:18.594 Atria[1409:115650] ATRIADBG standardHR payload=0060 hr=96 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:18.595 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.597 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.599 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.601 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.603 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.605 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.605 Atria[1409:115650] ATRIADBG session_store_finish_checkpoint stage=before_rollup_refresh sessions=112 elapsed_ms=1752
+2026-07-03 20:41:18.605 Atria[1409:115650] ATRIADBG session_store_finish_checkpoint stage=pre_snapshot_rollup_persist sessions=112 metrics=10 elapsed_ms=1752
+2026-07-03 20:41:18.606 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.765 Atria[1409:115650] ATRIADBG daily_rollup_persist_summary entries=10 respiratory_rows=9 rr_session_candidates=38 sessions=112
+2026-07-03 20:41:18.766 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-03 20:41:18.766 Atria[1409:115650] ATRIADBG morning_summary_skip reason=outside_window local_minutes=1241
+2026-07-03 20:41:18.768 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.770 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.772 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.774 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.776 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.778 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.780 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.782 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.784 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:18.785 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:19.106 Atria[1409:115657] ATRIADBG session_store_save status=ok op=session_reconcile_fast_launch sessions=112 bytes=9273898
+2026-07-03 20:41:19.930 Atria[1409:115657] ATRIADBG session_store_save status=ok op=deferred_load_merge sessions=112 bytes=9273898
+2026-07-03 20:41:21.328 Atria[1409:115650] ATRIADBG daily_rollup_persist_summary entries=10 respiratory_rows=9 rr_session_candidates=38 sessions=112
+2026-07-03 20:41:21.329 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-03 20:41:21.329 Atria[1409:115650] ATRIADBG morning_summary_skip reason=outside_window local_minutes=1241
+2026-07-03 20:41:21.329 Atria[1409:115650] ATRIADBG session_store_finish_checkpoint stage=after_rollup_refresh sessions=112 elapsed_ms=1752
+2026-07-03 20:41:21.332 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.335 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.337 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.340 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.342 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.344 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.347 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.349 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.352 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.354 Atria[1409:115757] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:21.419 Atria[1409:115650] ATRIADBG sleep_stage_backfill_record status=updated source=deferred_session_load sleep_source=manual_sleep samples=10874 segments=1 covered_s=28800 non_awake_s=0 sleep_s=28800
+2026-07-03 20:41:21.420 Atria[1409:115650] ATRIADBG sleep_stage_backfill status=updated source=deferred_session_load records=1 total_segments=85 policy=hr_samples_labeled_estimate
+2026-07-03 20:41:22.131 Atria[1409:115650] ATRIADBG sleep_auto_confirm status=skipped reason=already_saved_or_overlapping source=deferred_session_load candidates=1
+2026-07-03 20:41:22.383 Atria[1409:115650] ATRIADBG session_store_load status=ok sessions=112 pruned_short_long_wear_fragments=4 baseline_rebuilt=0 elapsed_ms=1752
+2026-07-03 20:41:22.385 Atria[1409:115650] ATRIADBG battery level=99 source=2A19 bytes=63 persisted=1
+2026-07-03 20:41:22.386 Atria[1409:115650] ATRIADBG radio_low_traffic status=ready mode=standard_hr_only custom_notify_skipped=0 custom_notify_enabled=0 tx_skipped=0 realtime_start_skipped=2 reason=standard_hr_only
+2026-07-03 20:41:22.386 Atria[1409:115650] ATRIADBG realtimeConfig standard_hr_only=1 realtime_start=skipped
+2026-07-03 20:41:22.387 Atria[1409:115650] ATRIADBG battery level=99 source=2A19 bytes=63 persisted=1
+2026-07-03 20:41:22.387 Atria[1409:115650] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-03 20:41:22.387 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.387 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.387 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:22.388 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.388 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.388 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:22.388 Atria[1409:115650] ATRIADBG connection_diagnosis status=hidden reason=connection_trigger action=clear
+2026-07-03 20:41:22.390 Atria[1409:115650] ATRIADBG notification_cancel kind=actionable_connection reason=diagnosis_cleared_connection_trigger identifiers=atria.battery.low,atria.bluetooth.off,atria.fitcheck.needed
+2026-07-03 20:41:22.392 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=50 confidence=unverified hrv=personal_baseline strain=10.3 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=643 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:22.392 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:22.397 Atria[1409:115650] ATRIADBG haptic_alert kind=recovery_ready phone_side=1 strap_write=0
+2026-07-03 20:41:22.404 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.404 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.404 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:22.404 Atria[1409:115650] ATRIADBG home_launch_timing event=secondary_ready elapsed_ms=11804 status=connected tab=overview
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG standardHR payload=0061 hr=97 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG standardHR payload=0061 hr=97 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.409 Atria[1409:115650] ATRIADBG standardHR payload=0061 hr=97 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG standardHR payload=0063 hr=99 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG standardHR payload=0064 hr=100 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG active_session_journal status=saved reason=first_accepted_hr_batch samples=1 rr_values=0 duration_s=0 dirty=0 label=All-day wear
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-03 20:41:22.410 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.414 Atria[1409:115650] ATRIADBG scene_phase phase=active reason=ui_did_become_active
+2026-07-03 20:41:22.414 Atria[1409:115650] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=8
+2026-07-03 20:41:22.417 Atria[1409:115650] ATRIADBG foreground_keepalive armed=1 reason=scene_active_restart silence_timeout_s=75 check_interval_s=20
+2026-07-03 20:41:22.421 Atria[1409:115650] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=8
+2026-07-03 20:41:22.422 Atria[1409:115650] ATRIADBG long_wear_supervisor schedule base_tick_s=3.0 checkpoint_s=60.0 diagnostic_s=15.0 auto_save_s=15.0 no_data_timeout_s=75.0 hr_continuity_timeout_s=6.0 rr_presence_timeout_s=90.0 accepted_hr_timeout_s=45.0 label=Long wear
+2026-07-03 20:41:22.425 Atria[1409:115650] ATRIADBG foreground_keepalive armed=1 reason=scene_active_foreground_restart silence_timeout_s=75 check_interval_s=20
+2026-07-03 20:41:22.428 Atria[1409:115650] ATRIADBG long_wear_mode enabled=1 reason=scene_active_foreground radio_mode=standard_hr_only supervisor=1 collection_profile=balanced cadence_multiplier=1.00 stale_timeout_multiplier=1.00 checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 no_data_check_interval_s=15 hr_continuity_timeout_s=6 supervisor_base_tick_s=3 accepted_hr_timeout_s=45 disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=Long wear rest_hr=59 max_hr=189
+2026-07-03 20:41:22.428 Atria[1409:115650] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active notifying_before=1
+2026-07-03 20:41:22.428 Atria[1409:115650] ATRIADBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-07-03 20:41:22.428 Atria[1409:115650] ATRIADBG radio_mode mode=full_protocol persist=0 reconnect=0 reason=scene_active_interactive
+2026-07-03 20:41:22.428 Atria[1409:115650] ATRIADBG radio_mode full_protocol_discovery status=requested reason=scene_active_interactive action=keep_connection
+2026-07-03 20:41:22.432 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.432 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.432 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:22.434 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=scene_active schema=3 recovery=50 confidence=unverified hrv=personal_baseline strain=10.4 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=644 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:22.434 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:22.434 Atria[1409:115650] -canOpenURL: failed for URL: "whoop://" - error: "The operation couldn’t be completed. (OSStatus error -10814.)"
+2026-07-03 20:41:22.435 Atria[1409:115650] ATRIADBG scene_phase phase=active reason=scene_active
+2026-07-03 20:41:22.435 Atria[1409:115650] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=8
+2026-07-03 20:41:22.438 Atria[1409:115650] ATRIADBG foreground_keepalive armed=1 reason=scene_active_restart silence_timeout_s=75 check_interval_s=20
+2026-07-03 20:41:22.441 Atria[1409:115650] ATRIADBG active_session_journal status=restore_skipped reason=live_session_active samples=8
+2026-07-03 20:41:22.441 Atria[1409:115650] ATRIADBG long_wear_supervisor schedule base_tick_s=3.0 checkpoint_s=60.0 diagnostic_s=15.0 auto_save_s=15.0 no_data_timeout_s=75.0 hr_continuity_timeout_s=6.0 rr_presence_timeout_s=90.0 accepted_hr_timeout_s=45.0 label=Long wear
+2026-07-03 20:41:22.443 Atria[1409:115650] ATRIADBG foreground_keepalive armed=1 reason=scene_active_foreground_restart silence_timeout_s=75 check_interval_s=20
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG long_wear_mode enabled=1 reason=scene_active_foreground radio_mode=full_protocol supervisor=1 collection_profile=balanced cadence_multiplier=1.00 stale_timeout_multiplier=1.00 checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 no_data_check_interval_s=15 hr_continuity_timeout_s=6 supervisor_base_tick_s=3 accepted_hr_timeout_s=45 disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=Long wear rest_hr=59 max_hr=189
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG ble_notify_reassert status=reset_requested reason=scene_active notifying_before=1
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG ble_notify_reassert status=requested reason=scene_active source=foreground_return action=keep_connection
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG hr_broadcast status=advertising name=Atria_HR
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.446 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:22.447 Atria[1409:115650] ATRIADBG active_session_journal status=saved reason=foreground_keepalive_crash_safety samples=8 rr_values=0 duration_s=7 dirty=0 label=All-day wear
+2026-07-03 20:41:22.448 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=live_throttled schema=3 recovery=50 confidence=unverified hrv=personal_baseline strain=10.4 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=645 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:22.448 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:22.452 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:22.452 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:22.452 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=connection_trigger
+2026-07-03 20:41:22.691 Atria[1409:115802] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-03 20:41:22.833 Atria[1409:115650] ATRIADBG session_backup_status_deferred status=digest_mismatch reason=deferred_session_load elapsed_ms=4227 sessions=112
+2026-07-03 20:41:22.991 Atria[1409:115664] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-03 20:41:22.993 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:23.042 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=102 rr=0
+2026-07-03 20:41:23.141 Atria[1409:115664] ATRIADBG notifyState ch=2A37 notifying=0 err=nil
+2026-07-03 20:41:23.440 Atria[1409:115664] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-03 20:41:23.442 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=full_protocol custom_notify_skipped=0 custom_notify_enabled=1 tx_skipped=0 realtime_start_skipped=2 reason=full_protocol
+2026-07-03 20:41:23.442 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=full_protocol custom_notify_skipped=0 custom_notify_enabled=2 tx_skipped=0 realtime_start_skipped=2 reason=full_protocol
+2026-07-03 20:41:23.442 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=full_protocol custom_notify_skipped=0 custom_notify_enabled=3 tx_skipped=0 realtime_start_skipped=2 reason=full_protocol
+2026-07-03 20:41:23.443 Atria[1409:115650] ATRIADBG radio_low_traffic status=learning mode=full_protocol custom_notify_skipped=0 custom_notify_enabled=4 tx_skipped=0 realtime_start_skipped=2 reason=full_protocol
+2026-07-03 20:41:23.591 Atria[1409:115802] ATRIADBG notifyState ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:23.891 Atria[1409:115664] ATRIADBG notifyState ch=61080004-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:23.891 Atria[1409:115650] ATRIADBG proprietary_arm_fallback status=arming reason=notify_pair_ready notify_count=2 stream5_confirmed=0 history_only=0
+2026-07-03 20:41:23.960 Atria[1409:115650] ATRIADBG haptic_alert kind=strain_target strain=10.4 target=8.0 phone_side=1 strap_write=0
+2026-07-03 20:41:24.041 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:24.191 Atria[1409:115802] ATRIADBG notifyState ch=61080005-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:24.341 Atria[1409:115657] ATRIADBG notifyState ch=61080007-8D6D-82B8-614A-1C8CB0F8DCC6 notifying=1 err=nil
+2026-07-03 20:41:24.640 Atria[1409:115657] ATRIADBG notifyState ch=2A37 notifying=1 err=nil
+2026-07-03 20:41:24.941 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:25.091 Atria[1409:115760] ATRIADBG notifyState ch=2A19 notifying=1 err=nil
+2026-07-03 20:41:25.392 Atria[1409:115650] ATRIADBG battery level=99 source=2A19 bytes=63 persisted=1
+2026-07-03 20:41:25.393 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=dashboard_revision schema=3 recovery=50 confidence=unverified hrv=personal_baseline strain=10.4 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=645 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:25.393 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:25.551 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:25.551 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:25.551 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:25.840 Atria[1409:115650] ATRIADBG standardHR payload=0067 hr=103 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:26.891 Atria[1409:115650] ATRIADBG standardHR payload=0067 hr=103 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:27.058 Atria[1409:115650] ATRIADBG send mode=wwr cmd=03 seq=0 to=61080002-8D6D-82B8-614A-1C8CB0F8DCC6 props=12 frame=aa0800a82300030199bce9cf
+2026-07-03 20:41:27.341 Atria[1409:115650] ATRIADBG frame ch=61080003 len=16 hex=aa0c00fc24a303000200000013c0c042
+2026-07-03 20:41:27.341 Atria[1409:115650] ATRIADBG cmdResp ch=61080003-8D6D-82B8-614A-1C8CB0F8DCC6 payload=24a3030002000000
+2026-07-03 20:41:27.342 Atria[1409:115650] ATRIADBG frame ch=61080004 len=20 hex=aa10005730de210018d1476a98510000a3a1f5e4
+2026-07-03 20:41:27.343 Atria[1409:115650] ATRIADBG protocol_packet type=30 kind=event len=12 body=de210018d1476a98510000 full=aa10005730de210018d1476a98510000a3a1f5e4
+2026-07-03 20:41:27.791 Atria[1409:115650] ATRIADBG standardHR payload=0066 hr=102 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:27.792 Atria[1409:115650] ATRIADBG rr_quality source=none state=learning fraction=0.000 rr_frames=0 total_frames=1 max_rr_gap_s=0.0 frame_max_rr_gap_s=0.0 beat_timeline=0 window_s=0 hrv_state=learning rr_source_2a37_values=0 rr_source_0x28_decoded_values=0 rr_source_0x28_used_values=0
+2026-07-03 20:41:28.841 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:29.439 Atria[1409:115650] ATRIADBG daily_rollup_persist_summary entries=10 respiratory_rows=9 rr_session_candidates=38 sessions=112
+2026-07-03 20:41:29.439 Atria[1409:115650] ATRIADBG max_hr_suggestion_rollup status=none reason=daily_rollup observed_peak=0 current_max_hr=189
+2026-07-03 20:41:29.439 Atria[1409:115650] ATRIADBG morning_summary_skip reason=outside_window local_minutes=1241
+2026-07-03 20:41:29.442 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.443 Atria[1409:115650] ATRIADBG notification_skip kind=health_deviation reason=no_two_day_deviation
+2026-07-03 20:41:29.444 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.447 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.449 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.451 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.454 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.456 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.458 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.460 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.462 Atria[1409:115663] ATRIADBG daily_rollup_store_save status=ok rows=10 bytes=4431 path=daily-rollups.json
+2026-07-03 20:41:29.741 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:30.555 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:30.555 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:30.556 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:30.642 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:30.649 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=101 rr=0
+2026-07-03 20:41:31.693 Atria[1409:115650] ATRIADBG standardHR payload=0063 hr=99 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:32.743 Atria[1409:115650] ATRIADBG standardHR payload=0063 hr=99 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:33.641 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:34.541 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:35.442 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:35.450 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=98 rr=0
+2026-07-03 20:41:35.555 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:35.555 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:35.555 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:36.492 Atria[1409:115650] ATRIADBG standardHR payload=0061 hr=97 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:37.392 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:38.442 Atria[1409:115650] ATRIADBG standardHR payload=0063 hr=99 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:39.342 Atria[1409:115650] ATRIADBG standardHR payload=0064 hr=100 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:40.242 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:40.555 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:40.555 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:40.555 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:41.292 Atria[1409:115650] ATRIADBG standardHR payload=0065 hr=101 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:41.300 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=100 rr=0
+2026-07-03 20:41:41.310 Atria[1409:115650] ATRIADBG widget_snapshot status=ok reason=live_bpm_delta schema=3 recovery=50 confidence=unverified hrv=personal_baseline strain=10.4 rhr=59 max_hr=189 battery=99 charge=levelOnly bytes=645 storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1
+2026-07-03 20:41:41.310 Atria[1409:115650] ATRIADBG widget_readiness status=ready storage=app_group_userdefaults app_group=1 widget_target=1 complication_target=1 action=verify_widget_on_device
+2026-07-03 20:41:42.192 Atria[1409:115650] ATRIADBG standardHR payload=0064 hr=100 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:43.242 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:44.142 Atria[1409:115650] ATRIADBG standardHR payload=0062 hr=98 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:45.193 Atria[1409:115650] ATRIADBG standardHR payload=0060 hr=96 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:45.556 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:45.556 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:45.556 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:46.091 Atria[1409:115650] ATRIADBG standardHR payload=005d hr=93 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:46.992 Atria[1409:115650] ATRIADBG standardHR payload=005c hr=92 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:47.000 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=96 rr=0
+2026-07-03 20:41:48.042 Atria[1409:115650] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:48.941 Atria[1409:115650] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:48.950 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=92 rr=0
+2026-07-03 20:41:48.951 Atria[1409:115650] ATRIADBG haptic_alert kind=hr_zone from=Warm-up to=Rest bpm=92 max_hr=189 phone_side=1 strap_write=0
+2026-07-03 20:41:49.992 Atria[1409:115650] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:50.555 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+2026-07-03 20:41:50.555 Atria[1409:115650] ATRIADBG notification_battery_decision level=99 source=live_2A19 age_s=0 usable=1 threshold=25 charge=levelOnly drop_recent=1
+2026-07-03 20:41:50.555 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+2026-07-03 20:41:50.892 Atria[1409:115650] ATRIADBG standardHR payload=005b hr=91 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:51.794 Atria[1409:115650] ATRIADBG standardHR payload=005c hr=92 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:51.802 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=91 rr=0
+2026-07-03 20:41:52.842 Atria[1409:115650] ATRIADBG standardHR payload=005c hr=92 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:53.742 Atria[1409:115650] ATRIADBG standardHR payload=005e hr=94 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:54.791 Atria[1409:115650] ATRIADBG standardHR payload=0061 hr=97 rrnum=0 truncated=0 rr_ms= suppressed_since_last=0
+2026-07-03 20:41:54.799 Atria[1409:115650] ATRIADBG hr_broadcast status=sent bpm=92 rr=0
+2026-07-03 20:41:55.556 Atria[1409:115650] ATRIADBG notification_battery_drain_cycle status=cleared reason=above_threshold had_cycle=0
+HARNESS_CAPTURE_TIMEOUT seconds=45 launch_seen=1 action=stop_devicectl_console
+2026-07-03 20:41:55.556 Atria[1409:115650] ATRIADBG notification_battery_maintenance status=evaluated reason=timer
+App terminated due to signal 2.
+ATRIADBG_SUMMARY_START
+notify_61080005=True
+realtime_start=True
+cmd_response=True
+frame_61080005=False
+hrv_ready=False
+capture_summary_ready=False
+auto_capture_start=False
+auto_capture_stop=False
+gate_status_start=False
+gate_status_complete=False
+gate_readiness_complete=False
+gate_status_deep_complete=False
+healthkit_reference_audit_complete=False
+healthkit_export_complete=False
+healthkit_export_verify_complete=False
+healthkit_export_authorization_pending_complete=False
+healthkit_sleep_export_verify_complete=False
+healthkit_sleep_export_deferred_complete=False
+healthkit_reset_rebuild_complete=False
+workout_confirm_complete=False
+sleep_confirm_complete=False
+post_healthkit_gate_status_complete=False
+collection_health_complete=False
+rr_reference_package_complete=False
+hr_reference_package_complete=False
+rr_reference_validation_complete=False
+hr_reference_validation_complete=False
+reference_inputs_clear_complete=False
+workout_validation_complete=False
+sleep_validation_complete=False
+sleep_validation_fail_closed=False
+backup_complete=False
+backup_verify_complete=False
+notification_schedule_complete=False
+notification_delivery_complete=False
+radio_low_traffic_complete=True
+trend_summary_complete=False
+trend_windows_complete=False
+strain_validation_complete=False
+widget_snapshot_complete=True
+analytics_calibration_complete=False
+analytics_calibration_status=
+analytics_calibration_numeric_checks=
+analytics_calibration_label_checks=
+rr_frames=0
+rr_values=0
+rr_truncated_frames=0
+rr_hr_mismatch_values=0
+rr_source_2a37_frames=0
+rr_source_2a37_values=0
+rr_source_0x28_frames=0
+rr_source_0x28_values=0
+rr_source_0x28_used_frames=0
+rr_source_0x28_used_values=0
+standard_2a37_frames=46
+standard_2a37_rr_frames=0
+standard_2a37_rr_values=0
+last_standard_2a37_payload=0061
+last_standard_2a37_hr=97
+last_standard_2a37_rrnum=0
+last_standard_2a37_rr_ms=
+last_rr_quality_source=none
+realtime_frames=0
+realtime_rr_frames=0
+realtime_rr_zero_frames=0
+realtime_malformed_frames=0
+realtime_truncated_rr_frames=0
+realtime_restarts=0
+realtime_reasserts=0
+auto_capture_starts=0
+auto_capture_stops=0
+capture_aborts=0
+capture_quality_resets=0
+auto_capture_exhausted=0
+last_realtime_hr=
+last_realtime_rrnum=
+last_realtime_rr_bytes=
+last_realtime_payload_tail=
+realtime_rr_fraction=
+realtime_rr_percent=
+realtime_zero_rr_tail_nonzero_frames=0
+realtime_zero_rr_tail_valid_candidate_frames=0
+last_rr_values=
+last_rr_implied_bpm=
+hrv_max_rr_gap_s=0.0
+last_hrv_max_rr_gap_s=
+first_realtime_elapsed_s=
+first_rr_elapsed_s=
+rr_start_delay_s=
+last_rr_elapsed_s=
+max_rr_log_gap_s=
+cmd_response_count=1
+cmd_response_last_seq=163
+cmd_response_last_cmd=0x03
+cmd_response_last_status=0002000000
+cmd_response_statuses=seq=163:cmd=0x03:status=0002000000
+history_clock_set_responses=0
+history_clock_get_responses=0
+history_clock_last_drift_s=
+history_clock_last_stale=
+frame_61080003_count=1
+frame_61080004_count=1
+frame_61080005_count=0
+frame_61080007_count=0
+frame_61080004_types=0x30:1
+frame_61080005_types=
+frame_61080007_types=
+metadata_0x31_frames=0
+metadata_0x31_lengths=
+metadata_0x31_body_hashes=
+historical_2f_frames=0
+historical_data_rows=0
+historical_archive_rows=0
+historical_archive_metric_usable=
+historical_archive_current_usable=
+historical_2f_candidate_rr_values=0
+historical_2f_first_prefix=
+historical_2f_last_prefix=
+sensor_research_probe_rows=0
+sensor_research_probe_spo2_candidate_frames=
+sensor_research_probe_skin_temp_candidate_frames=
+sensor_research_probe_last_model_generation=
+sensor_research_probe_last_model_evidence=
+model_gate_rows=1
+model_gate_assume_4_class_rows=1
+model_gate_metadata_explicit_rows=0
+model_gate_last_status=assume_4_class
+model_gate_last_model=
+model_gate_last_reason=proprietary_service
+model_gate_last_evidence=
+sleep_motion_hint_count=0
+sleep_motion_hint_kinds=
+segment_0_label=initial
+segment_0_raw=03
+segment_0_frames=0
+segment_0_rr_frames=0
+segment_0_zero_frames=0
+segment_0_rr_values=0
+segment_0_rr_fraction=0.000
+segment_0_rr_percent=0.0
+segment_0_cmd_status=seq=163:cmd=0x03:status=0002000000
+segment_0_frame_61080003_count=1
+segment_0_frame_61080004_count=1
+segment_0_frame_61080005_count=0
+segment_0_frame_61080007_count=0
+segment_0_frame_61080004_types=0x30:1
+segment_0_frame_61080005_types=
+segment_0_frame_61080007_types=
+segment_0_historical_2f_frames=0
+segment_0_historical_data_rows=0
+segment_0_historical_archive_rows=0
+segment_0_historical_2f_candidate_rr_values=0
+segment_0_historical_2f_first_prefix=
+segment_0_historical_2f_last_prefix=
+segment_0_sleep_motion_hint_count=0
+segment_0_sleep_motion_hint_kinds=
+ATRIADBG_LINES=292
+ATRIADBG_LOG=logs/20260703-active-journal-rr-flush-smoke.log
+ATRIADBG_SUMMARY_END
+HARNESS_LEAVE_RUNNING_ARGS=xcrun devicectl device process launch --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B --terminate-existing com.adidshaft.atria
+Launched application with com.adidshaft.atria bundle identifier.
+HARNESS_LEAVE_RUNNING status=launched mode=normal_end_user
