@@ -779,7 +779,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }",
             ".tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }",
             ".tag(HomeTab.journal)",
-            ".tabItem { Label(HomeTab.collection.title, systemImage: HomeTab.collection.systemImage) }",
+            # Strap moved to the top chrome (2026-07-05); Chat placeholder tab took its slot.
+            ".tabItem { Label(HomeTab.chat.title, systemImage: HomeTab.chat.systemImage) }",
+            'Button(action: onShowStrap) {',
+            'AtriaToolbarIcon(symbol: "applewatch.radiowaves.left.and.right")',
+            '"Coming Soon!"',
             ".tabBarMinimizeBehavior(.onScrollDown)",
             ".tabViewBottomAccessory",
             ".padding(.bottom, scrollBottomClearance)",
@@ -8416,7 +8420,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaStrapScreen(statusStore:",
             "coreLiveStore: model.coreLiveStore",
             "pulseLiveStore: model.pulseLiveStore",
-            'tabNavigation(title: "Strap", showsHero: false)',
+            'tabNavigation(title: "Chat", showsHero: false)',
             '"sleep-plan-bedtime", "north-star-highlights"',
             'ProcessInfo.processInfo.environment["ATRIA_UI_SCREEN"]',
             "--atria-open-connection-guide",
@@ -8482,7 +8486,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, top_chrome, forbidden)
 
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
-        self.assertEqual(top_chrome_body.count(".buttonStyle(AtriaHeaderActionButtonStyle())"), 1)
+        # 2 header actions since 2026-07-05: Strap (moved off the tab bar at
+        # user direction) + Settings/Help.
+        self.assertEqual(top_chrome_body.count(".buttonStyle(AtriaHeaderActionButtonStyle())"), 2)
         assert_contains(self, top_chrome_body, "Button(action: showHelp ? onShowHelp : onShowSettings)")
         assert_contains(self, home, "private var shouldShowTopChromeHelp: Bool")
         assert_contains(self, home, "if model.pulseLiveStore.state.hasPulseSignal || model.coreLiveStore.state.hasRecentHeartRateSample")
