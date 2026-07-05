@@ -5,6 +5,16 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+// Perf (docs/26 follow-up): one shared formatter for the three share-card
+// dateLine properties (each previously allocated a DateFormatter per read, and
+// these feed ImageRenderer which re-lays out several times per export).
+private let atriaShareDateLineFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "EEE · MMM d"
+    return formatter
+}()
+
 struct AtriaShareSnapshot: Equatable, Hashable {
     struct Ring: Equatable, Hashable {
         let title: String
@@ -472,10 +482,7 @@ struct AtriaShareCardView: View {
     }
 
     private var dateLine: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE · MMM d"
-        return formatter.string(from: snapshot.date)
+        atriaShareDateLineFormatter.string(from: snapshot.date)
     }
 }
 
@@ -678,10 +685,7 @@ struct AtriaWorkoutShareCardView: View {
     }
 
     private var dateLine: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE · MMM d"
-        return formatter.string(from: snapshot.date)
+        atriaShareDateLineFormatter.string(from: snapshot.date)
     }
 }
 
@@ -837,10 +841,7 @@ struct AtriaWeeklyShareCardView: View {
     }
 
     private var dateLine: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE · MMM d"
-        return formatter.string(from: snapshot.date)
+        atriaShareDateLineFormatter.string(from: snapshot.date)
     }
 }
 

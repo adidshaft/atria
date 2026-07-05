@@ -56,6 +56,7 @@ struct AtriaTrendChartCard: View {
             AtriaTrendRangeDock(selectedRange: $range,
                                 coverage: rangeCoverage,
                                 tint: metric.tint)
+                .equatable()
 
             if periodReadout.hasEnoughSignal {
                 AtriaTrendRangeReportCard(readout: periodReadout)
@@ -1199,10 +1200,22 @@ private struct AtriaTrendPeriodHeroCard: View, Equatable {
     }
 }
 
-private struct AtriaTrendRangeDock: View {
+private struct AtriaTrendRangeDock: View, Equatable {
     @Binding var selectedRange: AtriaTrendRange
     let coverage: [AtriaTrendRange: Int]
     let tint: Color
+
+    // Perf (docs/26 follow-up): custom Equatable + `.equatable()` at the call
+    // site lets SwiftUI skip this 7-node GeometryReader dock during scrub/anim
+    // frames when its inputs are unchanged. The @Binding closure is excluded
+    // from equality (its source is stable parent @State); the sibling
+    // value-input subviews already get this via automatic structural comparison,
+    // which a @Binding defeats — hence the explicit conformance here.
+    static func == (lhs: AtriaTrendRangeDock, rhs: AtriaTrendRangeDock) -> Bool {
+        lhs.selectedRange == rhs.selectedRange &&
+        lhs.coverage == rhs.coverage &&
+        lhs.tint == rhs.tint
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

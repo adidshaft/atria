@@ -8796,7 +8796,14 @@ class HandoffStaticChecks(unittest.TestCase):
         ordered_tokens = [
             "triRingHero",
             "AtriaTodayLiveStatusStrip(live: liveStore.state,",
-            "AtriaHighlights.topTwo(rollups: highlightRollups)",
+            # Perf pass (2026-07-06 docs/26 follow-up): AtriaHighlights.topTwo
+            # was hoisted out of the Today body into a
+            # dailyRollupHistoryRevision-memoized `highlights` property (it was
+            # re-sorting the full history up to 4x per ~700ms live tick). The
+            # highlights section still renders in this exact slot, so the
+            # ordering marker migrates from the (now-hoisted) topTwo call to the
+            # section's guard condition, which occupies the same position.
+            "if layoutConfig.showHighlights && !highlights.isEmpty",
             "AtriaTodayHighlightsStrip(highlights: highlights)",
             "AtriaTodayPlanCard(title: planTitle,",
             "LazyVGrid(columns: glanceColumns, spacing: 10)",

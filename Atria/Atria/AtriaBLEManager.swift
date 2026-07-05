@@ -3541,10 +3541,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let cadenceMultiplier = effectiveThermalCadenceMultiplier
         let previousJournalSampleCount = lastActiveJournalSavedSessionSampleCount
         let previousJournalRRCount = lastActiveJournalSavedRRArchiveCount
-        let mirroredStrengthState = ActiveSessionJournal.load()
-        let mirroredStrengthSets = mirroredStrengthState?.strengthSets
-        let mirroredExcludedIntervals = mirroredStrengthState?.excludedIntervals
         DispatchQueue.global(qos: .utility).async {
+            // Perf (docs/26 follow-up): ActiveSessionJournal.load() is a
+            // synchronous directory enumeration + full JSON decode of all
+            // journal segments (unbounded across an all-day session); it used to
+            // run on the main actor on every ~5s flush while HR/RR stream. It's
+            // nonisolated and serialized by its own ioLock, its result is used
+            // only here, and the activeJournalSaveInFlight guard already
+            // serializes flushes — so run it on this background queue instead.
+            let mirroredStrengthState = ActiveSessionJournal.load()
+            let mirroredStrengthSets = mirroredStrengthState?.strengthSets
+            let mirroredExcludedIntervals = mirroredStrengthState?.excludedIntervals
             let record = ActiveSessionJournalRecord(
                 schema: ActiveSessionJournal.schema,
                 id: liveSessionID,

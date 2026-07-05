@@ -361,7 +361,10 @@ struct AtriaHealthScreen: View {
     }
 
     private var latestRollup: DailyRollupStoreEntry? {
-        store.dailyRollupHistory.sorted { $0.day > $1.day }.first
+        // Perf (docs/26 follow-up): O(n) single pass instead of sorting the whole
+        // history and taking .first — this row is read ~13x per render on a
+        // reported-laggy surface. Behavior-identical (greatest .day wins).
+        store.dailyRollupHistory.max(by: { $0.day < $1.day })
     }
 
     // Today↔Vitals unification (2026-07-06): the Health Monitor rows read ONLY

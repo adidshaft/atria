@@ -44,7 +44,20 @@ enum WidgetSnapshotPublisher {
 
     private static let key = "atria.widgetSnapshot.v1"
     private static let appGroupID = "group.com.adidshaft.atria"
+    // Perf (docs/26 follow-up): bundle layout + entitlements are immutable for
+    // the process lifetime, but `diagnostics` was recomputed on every widget
+    // publish — a synchronous FileManager.contentsOfDirectory + bundle reads +
+    // mobileprovision Data(contentsOf:) on the main thread. Compute once and
+    // cache (MainActor-isolated, so the cache write is race-free).
+    private static var cachedDiagnostics: Diagnostics?
     static var diagnostics: Diagnostics {
+        if let cached = cachedDiagnostics { return cached }
+        let computed = computeDiagnostics()
+        cachedDiagnostics = computed
+        return computed
+    }
+
+    private static func computeDiagnostics() -> Diagnostics {
         let extensions = bundledExtensionInfos()
         let widgetTargetPresent = extensions.contains { $0.extensionPoint == "com.apple.widgetkit-extension" }
         let complicationTargetPresent = extensions.contains { info in
@@ -281,10 +294,13 @@ enum WidgetSnapshotPublisher {
 }
 
 private extension JSONEncoder {
-    static var widgetSnapshotEncoder: JSONEncoder {
+    // Perf (docs/26 follow-up): stored static so the encoder is configured once
+    // rather than allocated on every widget publish during live use. Read-only
+    // concurrent encodes on an immutable-config encoder are safe.
+    static let widgetSnapshotEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
         return encoder
-    }
+    }()
 }

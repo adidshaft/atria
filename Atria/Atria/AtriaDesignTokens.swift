@@ -37,25 +37,19 @@ enum AtriaDesignTokens {
                 : Color(uiColor: .systemGroupedBackground)
         }
 
+        // The isDark/emphasis params are retained for call-site stability; the
+        // underlying UIColors are already dynamic (dark/light aware), so both
+        // branches resolved to the same style — collapsed to one return.
         static func card(isDark: Bool, emphasis: AtriaPanelEmphasis) -> AnyShapeStyle {
-            if isDark {
-                return AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
-            }
-            return AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
+            AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
         }
 
         static func raisedCard(isDark: Bool, emphasis: AtriaPanelEmphasis) -> AnyShapeStyle {
-            if isDark {
-                return AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
-            }
-            return AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
+            AnyShapeStyle(Color(uiColor: .secondarySystemGroupedBackground))
         }
 
         static func inset(isDark: Bool) -> AnyShapeStyle {
-            if isDark {
-                return AnyShapeStyle(Color(uiColor: .tertiarySystemFill))
-            }
-            return AnyShapeStyle(Color(uiColor: .tertiarySystemFill))
+            AnyShapeStyle(Color(uiColor: .tertiarySystemFill))
         }
     }
 }
