@@ -6265,6 +6265,20 @@ final class AtriaHomeModel {
         store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
     }
 
+    /// Honest resting-HR DISPLAY text (2026-07-05). `currentRestingHeartRate` falls
+    /// back to a hardcoded 60 when there is no baseline, no live BLE reading, and no
+    /// saved session — that 60 is fine as a math fallback but must NOT be shown as a
+    /// real "overnight low" to a no-data user (violates Atria's honesty rule). Return
+    /// "Learning" for that case so RHR reads like the other calibrating metrics.
+    private static func currentRestingHeartRateText(ble: AtriaBLEManager, store: SessionStore) -> String {
+        if store.baseline.restingInt == nil,
+           ble.restingHR == nil,
+           store.sessions.first?.restingStable == nil {
+            return "Learning"
+        }
+        return "\(currentRestingHeartRate(ble: ble, store: store))"
+    }
+
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
         let deviceName = ble.resolvedDeviceName
@@ -6381,6 +6395,9 @@ final class AtriaHomeModel {
                                          savedAggregate: SavedAggregate,
                                          deferredDetails: DeferredDetails?) -> HeroSnapshot {
         let rest = currentRestingHeartRate(ble: ble, store: store)
+        // Numeric `rest` (60 fallback) drives the math; `restText` is the honest
+        // DISPLAY ("Learning" when there is no real resting reading yet).
+        let restText = currentRestingHeartRateText(ble: ble, store: store)
         let fallbackHrv = fallbackHeroHRVState(ble: ble, store: store)
         let headline = deferredDetails?.headline ?? defaultHeroHeadline(status: ble.status)
         let nextAction = deferredDetails?.nextAction ?? defaultHeroNextAction(status: ble.status)
@@ -6391,7 +6408,8 @@ final class AtriaHomeModel {
                                                 fallbackHrv: fallbackHrv,
                                                 headline: headline,
                                                 nextAction: nextAction,
-                                                rest: rest)
+                                                rest: rest,
+                                                restText: restText)
         }
 
         let maxHR = store.profile.maxHR
@@ -6451,7 +6469,7 @@ final class AtriaHomeModel {
                             backupValue: deferredDetails?.backupValue ?? "Preparing",
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
                             restingHeartRate: rest,
-                            restingHeartRateText: "\(rest)",
+                            restingHeartRateText: restText,
                             strainNarrative: String(format: "TRIMP %.1f from saved %.1f + live %.1f", totalTRIMP, savedAggregate.savedTodayTRIMP, liveTRIMP),
                             loadRatioText: load.ratioText,
                             loadTargetText: load.targetBandText,
@@ -6682,7 +6700,8 @@ final class AtriaHomeModel {
                                                      fallbackHrv: FallbackHeroHRVState,
                                                      headline: String,
                                                      nextAction: String,
-                                                     rest: Int) -> HeroSnapshot {
+                                                     rest: Int,
+                                                     restText: String) -> HeroSnapshot {
         let guidance: Coach.Guidance
         switch live.status {
         case .scanning:
@@ -6748,7 +6767,7 @@ final class AtriaHomeModel {
                             backupValue: hasSavedBackup ? "Ready" : "Learning",
                             backupDetail: hasSavedBackup ? "saved on device" : "no backup yet",
                             restingHeartRate: rest,
-                            restingHeartRateText: "\(rest)",
+                            restingHeartRateText: restText,
                             strainNarrative: "Live strain resumes after the strap reconnects.",
                             loadRatioText: "Learning",
                             loadTargetText: "Learning",
