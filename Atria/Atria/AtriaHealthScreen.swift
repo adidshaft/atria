@@ -404,9 +404,15 @@ struct AtriaHealthScreen: View {
     }
 
     private var restingHeartRateValue: String {
-        let liveRHR = heroStore.state.restingHeartRate
-        let rhr = latestRollup?.rhr.map(Double.init) ?? (liveRHR > 0 ? Double(liveRHR) : nil)
-        return AtriaMetricFormat.restingHeartRate(rhr)
+        // Honesty (2026-07-05): prefer a real saved rollup RHR. Otherwise only show
+        // the live hero value when it's a genuine reading -- its text is "Learning"
+        // when it's the 60 math-fallback (no baseline / live / session), and that
+        // must never be presented as a real "overnight low".
+        if let rollupRHR = latestRollup?.rhr {
+            return AtriaMetricFormat.restingHeartRate(Double(rollupRHR))
+        }
+        guard let liveRHR = Int(heroStore.state.restingHeartRateText) else { return "Learning" }
+        return AtriaMetricFormat.restingHeartRate(Double(liveRHR))
     }
 
     private var hrvValue: String {
