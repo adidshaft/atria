@@ -388,7 +388,9 @@ struct AtriaHealthScreen: View {
         if let live = liveRecoveryPercent {
             return "\(live)%"
         }
-        return "Building"
+        // "Learning" (not "Building") to match this card's own header pill and the
+        // Today recovery legend for the identical no-recovery-yet state.
+        return "Learning"
     }
 
     private var recoveryDetail: String {
@@ -426,7 +428,10 @@ struct AtriaHealthScreen: View {
     }
 
     private var respiratoryValue: String {
-        guard let value = latestRollup?.respiratoryRate else {
+        // Use the same source the hint uses (rollup, then latest recorded night) so
+        // the row can't show "--" while the hint reports an elevated reading -- and
+        // so Vitals shows the real value instead of "--" when only a night exists.
+        guard let value = latestRollup?.respiratoryRate ?? store.sleepHistorySnapshot.latest?.respiratoryRate else {
             return "--"
         }
         return String(format: "%.1f rpm", value)

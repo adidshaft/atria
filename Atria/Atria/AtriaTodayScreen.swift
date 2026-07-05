@@ -966,7 +966,11 @@ struct AtriaTodayScreen: View {
             fill = nil
         }
         return AtriaTriRingMetric(title: "RHR",
-                                  value: current > 0 ? "\(current)" : displayHero.restingHeartRateText,
+                                  // Honest value: `current` is the 60 math-fallback (always > 0),
+                                  // so the old `current > 0 ? "\(current)"` always showed a
+                                  // fabricated 60. restingHeartRateText is "Learning" until there
+                                  // is a real reading, matching the RHR glance tile and Vitals row.
+                                  value: displayHero.restingHeartRateText,
                                   detail: legendDetail("bpm"),
                                   systemImage: "heart.fill",
                                   tint: .pink,
