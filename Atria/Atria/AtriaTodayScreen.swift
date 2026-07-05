@@ -861,7 +861,13 @@ struct AtriaTodayScreen: View {
         if let stored = newestStored?.recovery {
             return ("\(stored)%", todayHasReading ? "this morning" : "yesterday", stored)
         }
-        return ("Learning", "Recovery", nil)
+        // Time-to-detect (2026-07-05): recovery calibrates over ~4 nights. Instead
+        // of a bare "Learning", show how far into that window the user is (matches
+        // the overview surface's "Day X of 4"), so they know when a score arrives.
+        let calibrationSamples = max(store.baseline.freshHRVSampleCount(),
+                                     store.baseline.freshRestingSampleCount())
+        let calibratingDay = min(max(calibrationSamples + 1, 1), 4)
+        return ("Learning", "Day \(calibratingDay) of 4", nil)
     }
 
     private var recoveryMetric: AtriaTriRingMetric {
