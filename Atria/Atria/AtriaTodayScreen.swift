@@ -802,7 +802,7 @@ struct AtriaTodayScreen: View {
         // before ever falling back to a bare percent as the primary number.
         let value = latestSleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
-            ?? "Building"
+            ?? "Learning"   // canonical not-ready word (was "Building"); consistent across tabs
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
                                   detail: sleepNeedDetailText(performance: performance),
@@ -1268,7 +1268,7 @@ struct AtriaTodayScreen: View {
         case .sleepPerformance:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: latestRollup?.sleepPerformance.map { "\($0)%" } ?? "Building",
+                                        value: latestRollup?.sleepPerformance.map { "\($0)%" } ?? "Learning",
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
