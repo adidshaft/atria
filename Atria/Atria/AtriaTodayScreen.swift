@@ -864,10 +864,17 @@ struct AtriaTodayScreen: View {
         // Time-to-detect (2026-07-05): recovery calibrates over ~4 nights. Instead
         // of a bare "Learning", show how far into that window the user is (matches
         // the overview surface's "Day X of 4"), so they know when a score arrives.
-        let calibrationSamples = max(store.baseline.freshHRVSampleCount(),
-                                     store.baseline.freshRestingSampleCount())
-        let calibratingDay = min(max(calibrationSamples + 1, 1), 4)
-        return ("Learning", "Day \(calibratingDay) of 4", nil)
+        return ("Learning", "Day \(recoveryCalibratingDay) of 4", nil)
+    }
+
+    /// Which day of the ~4-night recovery calibration the user is on. Shared by the
+    /// ring center (`centerValue`) and the recovery legend chip (`displayRecovery`)
+    /// so the two never disagree — the center used to hardcode "Day 1" while the
+    /// legend showed the real day, which read as a bug on-device.
+    private var recoveryCalibratingDay: Int {
+        let samples = max(store.baseline.freshHRVSampleCount(),
+                          store.baseline.freshRestingSampleCount())
+        return min(max(samples + 1, 1), 4)
     }
 
     private var recoveryMetric: AtriaTriRingMetric {
@@ -994,7 +1001,7 @@ struct AtriaTodayScreen: View {
     private var centerValue: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            return displayRecovery.percent != nil ? displayRecovery.value : "Day 1"
+            return displayRecovery.percent != nil ? displayRecovery.value : "Day \(recoveryCalibratingDay)"
         case .sleep:
             // Hours-first: never the bare "82%" this used to show -- the
             // percent moves to `centerState` as a small "82% of need"
@@ -1010,7 +1017,9 @@ struct AtriaTodayScreen: View {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
             if displayRecovery.detail == "yesterday" { return "yesterday" }
-            return displayRecovery.percent.map(recoveryState) ?? "Building"
+            // "Learning" (not "Building") to match the recovery legend chip's word
+            // for the same calibrating state.
+            return displayRecovery.percent.map(recoveryState) ?? "Learning"
         case .sleep:
             return sleepPerformancePercent.map { "\($0)% of need" } ?? sleepMetric.detail
         case .strain:
