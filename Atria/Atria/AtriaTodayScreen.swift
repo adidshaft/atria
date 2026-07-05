@@ -1728,7 +1728,7 @@ private struct AtriaTodayLivePill: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
         .padding(.horizontal, 10)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -1782,7 +1782,7 @@ private struct AtriaTodayPlanCard: View, Equatable {
         }
         .padding(12)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Today's Plan. \(title). \(detail). \(target).")
     }
@@ -2024,10 +2024,13 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .leading)
         .padding(10)
+        // Consistency (2026-07-05): route the glance tile's corner radius through the
+        // shared chip token instead of a hardcoded 8, so the deck's dominant card
+        // shares one radius scale (chip < tile < card).
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(item.tint.opacity(0.18), lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
@@ -2062,9 +2065,9 @@ private struct AtriaTodayInfoRow: View, Equatable {
         .frame(minHeight: 46)
         .padding(.horizontal, 12)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(tint.opacity(0.16), lineWidth: 1)
         }
     }
@@ -2144,7 +2147,7 @@ private struct AtriaTodayHighlightsStrip: View, Equatable {
         }
         .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -2185,7 +2188,7 @@ private struct AtriaTodayActionRow: View, Equatable {
             .frame(maxWidth: .infinity, minHeight: compact ? 50 : 54, alignment: .leading)
             .padding(.horizontal, compact ? 10 : 12)
             .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
     }
