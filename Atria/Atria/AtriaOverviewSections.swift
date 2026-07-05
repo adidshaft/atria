@@ -7230,7 +7230,6 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     let contributors: Contributors
     let chart: ChartContent
     let about: About
-    @State private var showingMoreDetail = false
 
     init(heroValue: String,
          heroState: String,
@@ -7264,30 +7263,49 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     var body: some View {
-        // Progressive disclosure: hero + the single most useful chart are always
-        // visible up top; everything else (contributor breakdowns, workout/hypnogram
-        // detail, "Learn") is tiered into a collapsed "More detail" group so the
-        // sheet doesn't dump every stat on the user at once.
+        // Progressive disclosure: first screen is the WHOOP-like simple view
+        // (value + graph). Scrolling/pulling the lower card up reveals the
+        // heavier contributor/context material, so metric taps no longer dump
+        // every stat at once.
         VStack(alignment: .leading, spacing: 16) {
             hero
             chart
-            moreDetail
+            revealAffordance
+            detailPanel
         }
     }
 
-    private var moreDetail: some View {
-        DisclosureGroup(isExpanded: $showingMoreDetail) {
-            VStack(alignment: .leading, spacing: 16) {
-                betweenHeroAndContributors
-                contributors
-                about
-            }
-            .padding(.top, 4)
-        } label: {
-            Label("More detail", systemImage: "chevron.down.circle")
-                .font(.subheadline.weight(.semibold))
+    private var revealAffordance: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chevron.up")
+                .font(.caption.weight(.black))
+            Text("Pull up for details")
+                .font(.caption.weight(.bold))
+            Spacer(minLength: 0)
         }
-        .padding(14)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.primary.opacity(0.035), in: Capsule(style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private var detailPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label("Details", systemImage: "slider.horizontal.3")
+                    .font(.headline.weight(.semibold))
+                Spacer(minLength: 0)
+                Text("Deeper context")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+            }
+
+            betweenHeroAndContributors
+            contributors
+            about
+        }
+        .padding(16)
         .atriaInsetCard(tint: tint)
     }
 
