@@ -1264,9 +1264,11 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.restingHeartRateText,
-                                        detail: legendDetail(isPendingHeroValue(displayHero.restingHeartRateText)
-                                                             ? baselineNightsProgress(store.baseline.freshRestingSampleCount())
-                                                             : "bpm"),
+                                        // RHR is measured nightly and is shown from night 1, so unlike
+                                        // HRV it has no multi-night "calibrating" value state — its text
+                                        // is always numeric. Keep the plain unit; a nights-progress
+                                        // caption here would mislabel a ready reading as pending.
+                                        detail: legendDetail("bpm"),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
