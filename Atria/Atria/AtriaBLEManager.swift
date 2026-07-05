@@ -538,6 +538,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published private(set) var lastScanMatchAt: Date?
     @Published private(set) var pendingKnownReconnectStartedAt: Date?
     @Published private(set) var pendingKnownReconnectReason = ""
+    /// True only while CBCentralManager.state == .poweredOn. Lets the UI tell
+    /// "radio not up yet" (.unknown/.resetting, abstracted into .connecting by
+    /// recomputeConnectionStatus when a strap is saved) apart from a real
+    /// pending-connect attempt, without inventing a new connection Status case.
+    @Published private(set) var isBluetoothReady = false
     private var lastScanRequestMode = "filtered"
     private static let scanRequestDedupWindow: TimeInterval = 1.5
     private(set) var sleepMotionHintCount = 0
@@ -10150,15 +10155,51 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        // CORE FIX (launch-start timing): issue the standing connect to the
+        // saved strap directly on centralQueue, synchronously, BEFORE hopping
+        // to @MainActor. At cold start the main actor can be saturated by the
+        // launch render + deferred-load work for seconds; central.connect()
+        // and retrievePeripherals(withIdentifiers:) are CoreBluetooth calls
+        // safe to make from the manager's own delegate queue and must not
+        // wait behind that UI work. The later @MainActor hop only publishes
+        // state (peripheral, status, pendingKnownReconnectStartedAt) — it
+        // never gates the radio's pursuit of the strap. This keeps the single
+        // existing launch path (retrieve saved identifier + central.connect,
+        // no scan) — no new reconnect variant is introduced.
+        var earlyPendingConnect: CBPeripheral?
+        if central.state == .poweredOn {
+            let defaults = UserDefaults.standard
+            if let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
+               let uuid = UUID(uuidString: uuidString),
+               let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first,
+               saved.state != .connected {
+                central.connect(saved, options: nil)
+                earlyPendingConnect = saved
+                AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=pending_connect_early")
+            }
+        }
         Task { @MainActor in
             switch central.state {
             case .poweredOn:
                 assignIfChanged(\.bluetoothPermissionDenied, false)
+                assignIfChanged(\.isBluetoothReady, true)
                 let reason = pendingScanReason ?? "central_powered_on"
                 pendingScanReason = nil
                 if let peripheral, peripheral.state == .connected {
                     peripheral.discoverServices(Self.UUIDs.discoveryServices)
+                } else if let earlyPendingConnect {
+                    // The standing connect was already issued synchronously
+                    // above; this only publishes bookkeeping/UI state for it.
+                    earlyPendingConnect.delegate = self
+                    self.peripheral = earlyPendingConnect
+                    assignIfChanged(\.deviceName, earlyPendingConnect.name ?? deviceName)
+                    recomputeConnectionStatus(reason: "event")
+                    recordLinkAttempt(reason: "powered_on_\(reason)", peripheral: earlyPendingConnect)
+                    markPendingKnownReconnect(reason: "powered_on_\(reason)")
+                    AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_%@ action=pending_connect", reason)
                 } else if reconnectToSavedPeripheralIfPossible(reason: "powered_on_\(reason)") {
+                    // Fallback path (e.g. saved peripheral was already connected,
+                    // or became available only after the early precheck ran).
                     // Re-armed a standing pending connection to the known strap.
                     // No scan needed — iOS reconnects when it is in range.
                 } else {
@@ -10168,16 +10209,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.recomputeConnectionStatus(reason: "central_powered_on")
             case .poweredOff:
                 assignIfChanged(\.bluetoothPermissionDenied, false)
+                assignIfChanged(\.isBluetoothReady, false)
                 preserveLongWearRangeLossRecovery(reason: "central_powered_off")
                 self.isActivelyScanning = false
                 self.recomputeConnectionStatus(reason: "central_powered_off")
             case .unauthorized:
                 assignIfChanged(\.bluetoothPermissionDenied, true)
+                assignIfChanged(\.isBluetoothReady, false)
                 preserveLongWearRangeLossRecovery(reason: "central_unauthorized")
                 self.isActivelyScanning = false
                 self.recomputeConnectionStatus(reason: "central_unauthorized")
             default:
                 assignIfChanged(\.bluetoothPermissionDenied, false)
+                assignIfChanged(\.isBluetoothReady, false)
                 preserveLongWearRangeLossRecovery(reason: "central_unavailable")
                 self.isActivelyScanning = false
                 self.recomputeConnectionStatus(reason: "central_unavailable")

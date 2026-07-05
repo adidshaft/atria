@@ -3674,6 +3674,7 @@ final class SessionStore: ObservableObject {
             LocalNotificationScheduler.scheduleMorningSummary(recovery: recovery,
                                                               sleepText: sleepText,
                                                               hrvText: hrvText,
+                                                              sleepDurationSeconds: sleepDuration,
                                                               now: now,
                                                               calendar: calendar)
             return
@@ -3682,6 +3683,7 @@ final class SessionStore: ObservableObject {
         LocalNotificationScheduler.scheduleMorningSummary(recovery: recovery,
                                                           sleepText: sleepText,
                                                           hrvText: hrvText,
+                                                          sleepDurationSeconds: sleepDuration,
                                                           now: now,
                                                           calendar: calendar)
         defaults.set(dayID, forKey: Self.morningSummaryLastScheduledDayKey)
@@ -14012,7 +14014,13 @@ final class SessionStore: ObservableObject {
         let coldURL = coldSessionsURL
         let currentBaseline = baseline
         let currentProfile = profile
-        Task.detached(priority: .utility) { [sourceURL, coldURL, currentBaseline, currentProfile] in
+        // Launch time-to-content fix (2026-07-05): this decode feeds the first
+        // real render of History/Vitals/Journal now that the full-screen
+        // "Preparing…" skeleton gate is gone, so it can no longer sit behind
+        // other .utility-QoS background work. .userInitiated keeps it ahead of
+        // that without touching the main actor before the decode is ready to
+        // hop back.
+        Task.detached(priority: .userInitiated) { [sourceURL, coldURL, currentBaseline, currentProfile] in
             let startedAt = CFAbsoluteTimeGetCurrent()
             guard let data = try? Data(contentsOf: sourceURL),
                   var decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
@@ -14099,6 +14107,15 @@ final class SessionStore: ObservableObject {
         verifyLatestSessionBackupFromLaunchIfRequested(arguments: arguments)
     }
 
+    // Launch time-to-content fix (2026-07-05): this used to do ALL of the work
+    // below (rollup refresh, sleep backfill/auto-confirm, wake-boundary
+    // evaluation, trend/load caches) synchronously on the main actor in one
+    // shot right as the decode landed -- a single large main-actor stall plus
+    // a giant first re-render on big stores. `sessions = merged` (the field the
+    // rest of the app actually reads for real content) now lands on its own,
+    // immediately, so the UI picks up real data on the very next frame; the
+    // heavier housekeeping below is pushed to a follow-up main-actor tick so it
+    // never shares a runloop turn with the decode landing.
     private func finishDeferredLoad(_ decoded: [SavedSession],
                                     preparation: DeferredLoadPreparation,
                                     elapsedMS: Int) {
@@ -14115,22 +14132,42 @@ final class SessionStore: ObservableObject {
         cachedCanonicalSessions = finalPreparation.canonicalSessions
         cachedHomeSavedAggregate = nil
         cachedCurrentCollectionStatus = nil
+        cachedHomeDashboardDiagnostics = nil
         hasCompletedDeferredSessionLoad = true
         if merged.count != decoded.count {
             markSessionPersistenceDirty()
             scheduleSessionFilePersist(reason: "deferred_load_merge", delay: 0.10)
         }
+        if finalPreparation.didRebuildBaseline {
+            baseline = finalPreparation.baseline
+        }
+        publishDashboardRevision()
+        AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=sessions_landed sessions=%d elapsed_ms=%d",
+                      sessions.count,
+                      elapsedMS)
+
+        Task { @MainActor [weak self] in
+            // Yield at least one runloop turn so the `sessions = merged` update
+            // above gets its own commit before this heavier follow-up work runs.
+            await Task.yield()
+            self?.continueDeferredLoadFollowUp(merged: merged,
+                                               finalPreparation: finalPreparation,
+                                               elapsedMS: elapsedMS)
+        }
+    }
+
+    private func continueDeferredLoadFollowUp(merged: [SavedSession],
+                                              finalPreparation: DeferredLoadPreparation,
+                                              elapsedMS: Int) {
         runQueuedSessionBackupAfterDeferredLoadIfNeeded()
         refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
 
         if finalPreparation.didRebuildBaseline {
-            baseline = finalPreparation.baseline
             let preparedBaseline = finalPreparation.baseline
             Task.detached(priority: .utility) {
                 preparedBaseline.save()
             }
         }
-        cachedHomeDashboardDiagnostics = nil
         AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=before_rollup_refresh sessions=%d elapsed_ms=%d",
                       sessions.count,
                       elapsedMS)

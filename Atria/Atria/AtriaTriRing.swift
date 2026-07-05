@@ -279,7 +279,7 @@ struct AtriaTriRing: View, Equatable {
             Text(centerValue)
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .minimumScaleFactor(0.80)
+                .minimumScaleFactor(0.55)
                 .lineLimit(1)
                 .contentTransition(reduceMotion ? .identity : .numericText())
             Text(centerState)

@@ -318,7 +318,11 @@ enum AtriaIntentCommandStore {
     }
 }
 
-private enum AtriaIntentSnapshotStore {
+// Not private: the launch time-to-content cold-start seed (AtriaHomeModel,
+// AtriaHomeView.swift) reads the last-known widget snapshot synchronously at
+// init so the first frame can show real last-known numbers instead of a
+// placeholder while the session decode is still in flight.
+enum AtriaIntentSnapshotStore {
     private static let key = "atria.widgetSnapshot.v1"
     private static let appGroupID = "group.com.adidshaft.atria"
 
