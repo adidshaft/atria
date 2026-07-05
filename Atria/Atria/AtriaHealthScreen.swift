@@ -20,6 +20,7 @@ struct AtriaHealthScreen: View {
     @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
     @State private var educationTopic: AtriaVitalsEducationTopic?
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
 
     private static let stressRecomputeTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
@@ -44,7 +45,8 @@ struct AtriaHealthScreen: View {
                                         rollupRevision: store.dailyRollupHistoryRevision,
                                         workouts: store.confirmedWorkouts,
                                         sleeps: store.confirmedSleeps,
-                                        workoutsRevision: store.confirmedWorkoutsRevision)
+                                        workoutsRevision: store.confirmedWorkoutsRevision,
+                                        detectionsRevision: detectionsRevision)
                         .equatable()
                 }
             }

@@ -503,6 +503,11 @@ struct WorkoutReadiness {
 
     var strengthCandidate: Bool {
         guard !ready else { return false }
+        // Contact-artifact hardening: a compromised stream or an RR channel
+        // that contradicts its own reported HR must never source a strength
+        // candidate, even diagnostically -- see reviewWorthyCandidate below,
+        // which previously was the only strength-path gate enforcing this.
+        guard !contactCompromised, !rrDisagreement else { return false }
         guard observedDuration >= Self.reviewMinimumObservedDuration,
               streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         let closeToWorkoutBand = thresholdGapBPM <= 5 || elevatedSeconds > 0
@@ -516,6 +521,7 @@ struct WorkoutReadiness {
 
     var moderateStrengthReviewCandidate: Bool {
         guard !ready else { return false }
+        guard !contactCompromised, !rrDisagreement else { return false }
         guard observedDuration >= Self.reviewMinimumObservedDuration,
               streamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         let p95OverRest = p95HR - max(0, peakHR - peakOverRest)
@@ -2446,6 +2452,10 @@ private struct WorkoutReplaySummary {
 
     var strengthCandidate: Bool {
         guard bestStatus != "ready" else { return false }
+        // Contact-artifact hardening: mirrors WorkoutReadiness.strengthCandidate
+        // -- a compromised stream or RR-contradicts-reported-HR candidate must
+        // never source a strength candidate, even diagnostically.
+        guard !bestContactCompromised, !bestRRDisagreement else { return false }
         guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
               bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         let closeToWorkoutBand = bestThresholdGapBPM <= 5 || bestElevatedSeconds > 0
@@ -2459,6 +2469,7 @@ private struct WorkoutReplaySummary {
 
     var moderateStrengthReviewCandidate: Bool {
         guard bestStatus != "ready" else { return false }
+        guard !bestContactCompromised, !bestRRDisagreement else { return false }
         guard bestObservedDuration >= Self.reviewMinimumObservedDuration,
               bestStreamCoveragePercent >= Self.reviewMinimumCoveragePercent else { return false }
         return bestPeakHR - restHR >= Self.reviewMinimumModerateStrengthPeakOverRest
@@ -2745,6 +2756,10 @@ extension SavedSession {
     fileprivate static let workoutAcceptedGapSecondsCeiling: TimeInterval = 120
     fileprivate static let workoutAcceptedGapCountCeiling = 3
     fileprivate static let workoutRRAgreementToleranceBPM = 20.0
+    /// Peak-over-rest floor above which a total absence of RR/IBI samples in
+    /// the observed window is treated as the loose-contact spike fingerprint
+    /// rather than a genuine effort (see `impliedArtifact` in workoutReadiness).
+    fileprivate static let workoutImpliedArtifactPeakOverRestFloor = 60
 
     /// True when this session's own audit counters show the watchdog-cycling /
     /// loose-contact fingerprint that can fabricate a workout from noise: a
@@ -2786,7 +2801,19 @@ extension SavedSession {
         return abs(rrImpliedMedianBPM - Double(avg)) > Self.workoutRRAgreementToleranceBPM
     }
 
-    func workoutReadiness(rest: Int, maxHR: Int, thresholdFraction: Double = 0.50) -> WorkoutReadiness {
+    /// Ghost-workout gating hardening (2026-07-05): `contactCompromisedOverride`/
+    /// `rrDisagreementOverride`/`rrSampleCountOverride` let a stitched/aggregate
+    /// caller supply the WORST-of-source-chunks contact signal and the SUM of
+    /// source `rrSampleCount`s, instead of this method judging only the
+    /// diluted/synthetic aggregate session (whose summed artifact/zero shares
+    /// dilute below the ceilings, and whose `rrPoints` is always nil). Per-
+    /// session callers omit these and get the session's own signal.
+    func workoutReadiness(rest: Int,
+                          maxHR: Int,
+                          thresholdFraction: Double = 0.50,
+                          contactCompromisedOverride: Bool? = nil,
+                          rrDisagreementOverride: Bool? = nil,
+                          rrSampleCountOverride: Int? = nil) -> WorkoutReadiness {
         let sustained = sustainedElevatedEvidence(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
         let thresholdHR = Self.workoutElevatedThreshold(rest: rest, maxHR: maxHR, fraction: thresholdFraction)
         let borderlineThresholdHR = max(rest, thresholdHR - Self.workoutBorderlineThresholdMarginBPM)
@@ -2803,12 +2830,23 @@ extension SavedSession {
         let streamCoveragePercent = Self.workoutStreamCoveragePercent(observed: observedDuration, duration: duration)
         // RR present OR an unbroken accepted-HR stream backs the elevation with
         // something other than raw wrist/strap bpm alone (see spec item 2).
-        let contactQualified = rrSampleCount > 0
+        // `effectiveRRSampleCount` lets a stitched/aggregate caller substitute
+        // the SUM of its source sessions' rrSampleCount, since the synthetic
+        // aggregate session's own rrPoints is always nil.
+        let effectiveRRSampleCount = rrSampleCountOverride ?? rrSampleCount
+        let contactQualified = effectiveRRSampleCount > 0
             || (hrAcceptedGapsValue == 0 && hrMaxAcceptedGapValue <= Self.workoutContinuityGapLimit)
         let contactQualifiedElevatedSeconds = contactQualified ? elevatedSeconds : 0
         let contactQualifiedLongestBout = contactQualified ? sustained.longestBout : 0
-        let contactCompromised = hrContactCompromised
-        let rrDisagreement = hrRRDisagreesWithReportedHR
+        // Sanity ceiling: a peak effort >=60bpm over rest with zero RR/IBI
+        // samples anywhere in the observed window is the loose-contact spike
+        // fingerprint (a genuine effort that hard always carries RR), not a
+        // real workout -- fold it into contactCompromised so every gate that
+        // already respects contactCompromised rejects it for free.
+        let impliedArtifact = peakOverRest >= Self.workoutImpliedArtifactPeakOverRestFloor
+            && effectiveRRSampleCount == 0
+        let contactCompromised = (contactCompromisedOverride ?? hrContactCompromised) || impliedArtifact
+        let rrDisagreement = rrDisagreementOverride ?? hrRRDisagreesWithReportedHR
         let ready = observedDuration >= 10 * 60
             && streamCoveragePercent >= 75
             && elevatedSeconds >= requiredElevatedSeconds
@@ -3364,6 +3402,10 @@ final class SessionStore: ObservableObject {
     private var pendingDailyMetricSaveWorkItem: DispatchWorkItem?
     private static let checkpointPersistenceDelay: TimeInterval = 2.25
     private static let workoutReviewSettleDelay: TimeInterval = 10 * 60
+    /// Permanent ghost-killer ceiling (2026-07-05): a review candidate whose
+    /// window ended longer ago than this is never surfaced, regardless of its
+    /// contact/strength signal -- see latestWorkoutReviewCandidate.
+    private static let workoutReviewStaleAfter: TimeInterval = 24 * 3600
     private var sessionPersistenceRevision = 0
     private var lastCompletedSessionPersistenceRevision = 0
     private var pendingSessionPersistenceRevision = 0
@@ -7586,6 +7628,21 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // Permanent ghost-killer: a candidate whose window ended more than a
+        // day ago is never review_worthy, independent of stitching/contact
+        // math -- this alone stops a stale stitched candidate from resurfacing
+        // every day it remains in the archive.
+        guard secondsSinceEnd <= Self.workoutReviewStaleAfter else {
+            AtriaDebugLog("ATRIADBG workout_review_candidate status=stale source=%@ candidate_source=%@ reason=window_ended_over_24h_ago seconds_since_end=%.0f",
+                          source,
+                          summary.bestSource,
+                          secondsSinceEnd)
+            DetectionEventLog.append(DetectionEvent(kind: "workoutSuppressed",
+                                                     reason: "window_ended_over_24h_ago",
+                                                     detail: "seconds_since_end=\(Int(secondsSinceEnd))"))
+            return nil
+        }
+
         let confirmable = (summary.readySessions > 0 || summary.bestReviewWorthyCandidate)
             && !summary.bestContactCompromised
         guard confirmable else {
@@ -7598,6 +7655,9 @@ final class SessionStore: ObservableObject {
                           summary.readySessions > 0 ? 1 : 0,
                           summary.nearMiss ? 1 : 0,
                           summary.strengthCandidate ? 1 : 0)
+            DetectionEventLog.append(DetectionEvent(kind: "workoutSuppressed",
+                                                     reason: "candidate_not_review_worthy",
+                                                     detail: "observed \(Int(summary.bestObservedDuration))s, peak_over_rest=\(summary.bestPeakHR - rest)"))
             return nil
         }
 
@@ -7627,6 +7687,8 @@ final class SessionStore: ObservableObject {
                       summary.readySessions > 0 ? 1 : 0,
                       summary.strengthCandidate ? 1 : 0,
                       summary.moderateStrengthReviewCandidate ? 1 : 0)
+        DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
+                                                 detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%"))
         return WorkoutReviewCandidate(id: id,
                                       start: start,
                                       end: end,
@@ -7690,7 +7752,8 @@ final class SessionStore: ObservableObject {
 
     private func confirmBestWorkoutCandidate(rest: Int,
                                              maxHR: Int,
-                                             source: String) -> UserConfirmedWorkout? {
+                                             source: String,
+                                             now: Date = Date()) -> UserConfirmedWorkout? {
         let summary = replaySavedWorkoutReadiness(rest: rest, maxHR: maxHR)
         guard let bestStart = summary.bestStart,
               let bestEnd = summary.bestEnd else {
@@ -7707,6 +7770,17 @@ final class SessionStore: ObservableObject {
                   source,
                   rest,
                   maxHR)
+            return nil
+        }
+        // Permanent ghost-killer, mirrored from latestWorkoutReviewCandidate:
+        // never confirm a candidate whose window ended over a day ago.
+        guard now.timeIntervalSince(bestEnd) <= Self.workoutReviewStaleAfter else {
+            AtriaDebugLog("ATRIADBG workout_confirm status=stale reason=window_ended_over_24h_ago source=%@ candidate_source=%@ metric_promotions=0",
+                  source,
+                  summary.bestSource)
+            DetectionEventLog.append(DetectionEvent(kind: "workoutSuppressed",
+                                                     reason: "window_ended_over_24h_ago",
+                                                     detail: "candidate_source=\(summary.bestSource)"))
             return nil
         }
         let confirmable = (summary.readySessions > 0 || summary.bestReviewWorthyCandidate)
@@ -7792,6 +7866,9 @@ final class SessionStore: ObservableObject {
               confirmed.zoneSeconds?["aerobic"] ?? 0,
               confirmed.zoneSeconds?["anaerobic"] ?? 0,
               confirmed.zoneSeconds?["max"] ?? 0)
+        DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
+                                                 reason: "confirmed",
+                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s"))
         return confirmed
     }
 
@@ -7957,6 +8034,9 @@ final class SessionStore: ObservableObject {
               confirmed.zoneSeconds?["aerobic"] ?? 0,
               confirmed.zoneSeconds?["anaerobic"] ?? 0,
               confirmed.zoneSeconds?["max"] ?? 0)
+        DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
+                                                 reason: "confirmed",
+                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s"))
         return confirmed
     }
 
@@ -8251,7 +8331,16 @@ final class SessionStore: ObservableObject {
             return
         }
         lastForegroundSleepAutoConfirmAt = now
-        let saved = autoConfirmStrongSleepCandidates(reason: reason)
+        var saved = autoConfirmStrongSleepCandidates(reason: reason)
+        if !saved {
+            // The continuous/checkpointed recording never presents a closed
+            // overnight session (it keeps extending into the awake morning),
+            // so the strong-candidate path above never has anything to
+            // confirm for the current night. Evaluate the still-open night
+            // against the learned wake boundary instead of waiting for a
+            // session end that will never come (WHOOP-parity finalize-at-wake).
+            saved = evaluateWakeBoundarySleepIfUseful(reason: reason, now: now)
+        }
         refreshHistorySnapshotCache(deferred: true)
         if !saved {
             // Back the rate limit off to ~10 min on failure so a transient
@@ -8271,6 +8360,9 @@ final class SessionStore: ObservableObject {
         guard !candidates.isEmpty else {
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=no_strong_candidate source=%@ candidates=0",
                           reason)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "no_strong_candidate",
+                                                     detail: "No sleep candidates found (source: \(reason))"))
             return false
         }
 
@@ -8278,41 +8370,14 @@ final class SessionStore: ObservableObject {
         var saved = 0
         var firstSavedOvernight: UserConfirmedSleep?
         for candidate in candidates.prefix(limit) {
-            let classification = Self.autoSleepClassification(for: candidate)
-            let sleepSource = classification.source
-            let id = confirmedSleepID(start: candidate.start, end: candidate.end, source: sleepSource)
+            let id = confirmedSleepID(start: candidate.start,
+                                     end: candidate.end,
+                                     source: Self.autoSleepClassification(for: candidate).source)
             if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
                 continue
             }
 
-            let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
-                                                                start: candidate.start,
-                                                                end: candidate.end,
-                                                                restingHR: candidate.restingHR,
-                                                                isNap: candidate.kind == "nap_candidate",
-                                                                motionValidated: classification.motionValidated)
-            let metrics = confirmedSleepWindowMetrics(start: candidate.start,
-                                                      end: candidate.end,
-                                                      rest: candidate.restingHR)
-            let confirmed = UserConfirmedSleep(id: id,
-                                               createdAt: Date(),
-                                               start: candidate.start,
-                                               end: candidate.end,
-                                               source: sleepSource,
-                                               confidence: classification.confidence,
-                                               sessions: candidate.sessions,
-                                               samples: candidate.samples,
-                                               avgHR: candidate.avgHR,
-                                               peakHR: candidate.peakHR,
-                                               restingHR: candidate.restingHR,
-                                               hrv: metrics.hrv,
-                                               hrvWindowCount: metrics.hrvWindowCount,
-                                               duration: candidate.duration,
-                                               span: candidate.span,
-                                               reason: "\(reason); \(candidate.reason)",
-                                               motionSource: classification.motionSource,
-                                               motionValidated: classification.motionValidated,
-                                               stageSegments: stageSegments.isEmpty ? nil : stageSegments)
+            let confirmed = buildAutoConfirmedSleep(from: candidate, reason: reason)
             existing.append(confirmed)
             if candidate.kind != "nap_candidate", firstSavedOvernight == nil {
                 firstSavedOvernight = confirmed
@@ -8324,6 +8389,9 @@ final class SessionStore: ObservableObject {
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=already_saved_or_overlapping source=%@ candidates=%d",
                           reason,
                           candidates.count)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "already_saved_or_overlapping",
+                                                     detail: "\(candidates.count) candidate(s), all already saved or overlapping"))
             return false
         }
         saveConfirmedSleeps(existing)
@@ -8339,12 +8407,313 @@ final class SessionStore: ObservableObject {
                       reason,
                       saved,
                       candidates.count)
+        if let firstSavedOvernight {
+            DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
+                                                     detail: "\(isoString(firstSavedOvernight.start))–\(isoString(firstSavedOvernight.end)), \(SleepHistorySnapshot.formatDuration(firstSavedOvernight.duration))"))
+        }
         return true
     }
 
     func dismissAutoSleepLoggedBanner(id: String) {
         guard autoSleepLoggedBanner?.id == id else { return }
         autoSleepLoggedBanner = nil
+    }
+
+    /// Single build path for a `UserConfirmedSleep` from an already-gated
+    /// `AggregateSleepCandidate`, shared by the closed-session strong-candidate
+    /// path (`autoConfirmStrongSleepCandidates`) and the wake-boundary path
+    /// (`evaluateWakeBoundarySleepIfUseful`) so both go through exactly the same
+    /// classification/stage-segment/metrics/save shape.
+    private func buildAutoConfirmedSleep(from candidate: AggregateSleepCandidate, reason: String) -> UserConfirmedSleep {
+        let classification = Self.autoSleepClassification(for: candidate)
+        let id = confirmedSleepID(start: candidate.start, end: candidate.end, source: classification.source)
+        let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                            start: candidate.start,
+                                                            end: candidate.end,
+                                                            restingHR: candidate.restingHR,
+                                                            isNap: candidate.kind == "nap_candidate",
+                                                            motionValidated: classification.motionValidated)
+        let metrics = confirmedSleepWindowMetrics(start: candidate.start,
+                                                  end: candidate.end,
+                                                  rest: candidate.restingHR)
+        return UserConfirmedSleep(id: id,
+                                  createdAt: Date(),
+                                  start: candidate.start,
+                                  end: candidate.end,
+                                  source: classification.source,
+                                  confidence: classification.confidence,
+                                  sessions: candidate.sessions,
+                                  samples: candidate.samples,
+                                  avgHR: candidate.avgHR,
+                                  peakHR: candidate.peakHR,
+                                  restingHR: candidate.restingHR,
+                                  hrv: metrics.hrv,
+                                  hrvWindowCount: metrics.hrvWindowCount,
+                                  duration: candidate.duration,
+                                  span: candidate.span,
+                                  reason: "\(reason); \(candidate.reason)",
+                                  motionSource: classification.motionSource,
+                                  motionValidated: classification.motionValidated,
+                                  stageSegments: stageSegments.isEmpty ? nil : stageSegments)
+    }
+
+    // MARK: - Wake-boundary sleep confirm (WHOOP-parity finalize-at-wake)
+
+    /// Constants for the wake-boundary evaluation path: confirms the still-open
+    /// overnight session at the detected/learned wake point instead of waiting
+    /// for a closed session that continuous checkpointed recording never
+    /// produces. See `evaluateWakeBoundarySleepIfUseful`.
+    private enum WakeBoundaryDefaults {
+        /// Mirrors `AtriaBLEManager.DutyCycleDefaults`'s own fallback window so
+        /// the two subsystems agree on "night" before any confirmed sleep has
+        /// been learned (n<3).
+        static let fallbackWindowStartMin = 23 * 60 + 30
+        static let fallbackWindowEndMin = 10 * 60 + 30
+        /// The fallback (no learned window yet) path only ever fires inside
+        /// this morning core, even though `now >= fallbackWindowEndMin` would
+        /// otherwise hold for most of the day — bounds the unlearned path to a
+        /// narrow, safe morning slot.
+        static let fallbackMorningCoreStartMin = 9 * 60
+        static let fallbackMorningCoreEndMin = 11 * 60
+        static let sustainedWakeHRDelta = 15
+        static let sustainedWakeLookback: TimeInterval = 25 * 60
+        static let minNightAnchorAge: TimeInterval = 3 * 60 * 60
+    }
+
+    private nonisolated static func minutesOfDay(_ date: Date, calendar: Calendar) -> Int {
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    private nonisolated static func minuteInsideWindow(_ minute: Int, start: Int, end: Int) -> Bool {
+        start <= end ? (minute >= start && minute <= end) : (minute >= start || minute <= end)
+    }
+
+    /// Learned duty-cycle sleep window (docs/24 §13), read back for the wake
+    /// boundary. `nil` when fewer than 3 overnights have been learned yet —
+    /// `writeDutyCycleSleepWindow` never writes either key until then — so this
+    /// distinguishes "no learned window" from a legitimately-zero minute-of-day.
+    private nonisolated static func learnedDutyCycleSleepWindow(defaults: UserDefaults) -> (start: Int, end: Int)? {
+        guard defaults.object(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin) != nil,
+              defaults.object(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin) != nil else {
+            return nil
+        }
+        let start = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowStartMin)
+        let end = defaults.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+        return (min(max(start, 0), 1439), min(max(end, 0), 1439))
+    }
+
+    /// The nearest instant of day `minuteOfDay` that falls after `start` and
+    /// at/before `upperBound`, checked up to two days out so a window that
+    /// starts before midnight still resolves to the following morning.
+    private nonisolated static func nearestMinuteOfDayInstant(after start: Date,
+                                                              minuteOfDay: Int,
+                                                              calendar: Calendar,
+                                                              upperBound: Date) -> Date? {
+        let startDay = calendar.startOfDay(for: start)
+        var best: Date?
+        for offset in 0...2 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
+                  let candidate = calendar.date(bySettingHour: minuteOfDay / 60,
+                                                minute: minuteOfDay % 60,
+                                                second: 0,
+                                                of: day),
+                  candidate > start, candidate <= upperBound else { continue }
+            if best == nil || candidate < best! { best = candidate }
+        }
+        return best
+    }
+
+    /// First sample where the trailing rolling-median HR (over `lookback`,
+    /// 20-30min) crosses `restingHR + delta` and stays there through the end of
+    /// `session` — the onset of a sustained wake run, not a transient artifact
+    /// spike. `nil` when no such sustained run exists in the tail.
+    ///
+    /// Exposed (not `private`) so unit tests can exercise the wake detector
+    /// directly against constructed `SavedSession` fixtures, matching the
+    /// `isStrongAutoConfirmableSleepCandidate` pure-static-testing pattern.
+    nonisolated static func sustainedWakeOnset(in session: SavedSession,
+                                                       restingHR: Int,
+                                                       delta: Int = WakeBoundaryDefaults.sustainedWakeHRDelta,
+                                                       lookback: TimeInterval = WakeBoundaryDefaults.sustainedWakeLookback) -> Date? {
+        let points = session.points.sorted { $0.t < $1.t }
+        guard points.count >= 3 else { return nil }
+        let threshold = restingHR + delta
+        var rollingMedians: [Int] = []
+        rollingMedians.reserveCapacity(points.count)
+        var windowStart = 0
+        for i in 0..<points.count {
+            while points[windowStart].t < points[i].t - lookback {
+                windowStart += 1
+            }
+            let window = points[windowStart...i].map(\.bpm).sorted()
+            let mid = window.count / 2
+            let median = window.count.isMultiple(of: 2) ? (window[mid - 1] + window[mid]) / 2 : window[mid]
+            rollingMedians.append(median)
+        }
+        guard let lastMedian = rollingMedians.last, lastMedian >= threshold else { return nil }
+        var onsetIndex = rollingMedians.count - 1
+        while onsetIndex > 0, rollingMedians[onsetIndex - 1] >= threshold {
+            onsetIndex -= 1
+        }
+        return session.start.addingTimeInterval(points[onsetIndex].t)
+    }
+
+    /// Trims `session` to only the samples at/before `wakePoint`, so the
+    /// existing cluster -> `AggregateSleepCandidate` math in
+    /// `aggregateSleepCandidates(in:...)` computes avgHR/SD/median/P90/
+    /// elevatedFraction over the sleep portion only, with `end == wakePoint`.
+    private nonisolated static func sessionTrimmedAtWakePoint(_ session: SavedSession, wakePoint: Date) -> SavedSession? {
+        guard wakePoint > session.start else { return nil }
+        let cutoff = wakePoint.timeIntervalSince(session.start)
+        let trimmedPoints = session.points.filter { $0.t <= cutoff }
+        guard trimmedPoints.count >= 2 else { return nil }
+        return SavedSession(id: session.id,
+                           start: session.start,
+                           end: wakePoint,
+                           label: session.label,
+                           points: trimmedPoints)
+    }
+
+    /// Synthesizes a clean, ended overnight `AggregateSleepCandidate` from a
+    /// still-open (or long-running) night `session` by trimming its awake
+    /// morning tail at the detected/learned wake point, then routing the
+    /// trimmed session through the exact same eligibility + clustering math
+    /// every other sleep candidate goes through (never a new/weaker gate).
+    /// Returns `nil` when the wake point can't be resolved or the trim leaves
+    /// too little data to cluster.
+    ///
+    /// Exposed (not `private`) so unit tests can exercise the wake-boundary
+    /// synthesis directly against constructed `SavedSession` fixtures.
+    nonisolated static func wakeBoundarySleepCandidate(session: SavedSession,
+                                                               windowEndMinute: Int,
+                                                               rest: Int,
+                                                               maxHR: Int,
+                                                               calendar: Calendar,
+                                                               now: Date) -> AggregateSleepCandidate? {
+        let wakePoint = sustainedWakeOnset(in: session, restingHR: rest)
+            ?? nearestMinuteOfDayInstant(after: session.start,
+                                         minuteOfDay: windowEndMinute,
+                                         calendar: calendar,
+                                         upperBound: now)
+        guard let wakePoint, let trimmed = sessionTrimmedAtWakePoint(session, wakePoint: wakePoint) else { return nil }
+        let candidates = aggregateSleepCandidates(in: [trimmed],
+                                                  rest: rest,
+                                                  maxHR: maxHR,
+                                                  calendar: calendar,
+                                                  historicalMotionPolicy: .boundedRecent)
+        // Never enter the nap_candidate branch here: the night anchor is only
+        // ever a session whose start fell inside the sleep window, so the
+        // trimmed candidate stays "overnight_sleep"; a nap-shaped result would
+        // mean the trim collapsed the window below the overnight thresholds,
+        // which should not auto-confirm through this path.
+        return candidates.first { $0.kind == "overnight_sleep" }
+    }
+
+    /// WHOOP-parity wake-boundary confirm: called only after
+    /// `autoConfirmStrongSleepCandidates` already found no closed candidate to
+    /// save for tonight (the recording never ends — it keeps extending into
+    /// the awake morning via checkpointed continuity — so the closed-candidate
+    /// path never has anything strict to confirm). Evaluates the still-open
+    /// night session against the learned (or fallback) wake boundary instead.
+    /// Inherits the 30-min rate limit and 16h-since-last-overnight guard from
+    /// the caller (`autoConfirmSleepOnForegroundIfUseful`) unchanged.
+    @discardableResult
+    private func evaluateWakeBoundarySleepIfUseful(reason: String, now: Date) -> Bool {
+        let calendar = Calendar.current
+        let defaults = UserDefaults.standard
+        let learnedWindow = Self.learnedDutyCycleSleepWindow(defaults: defaults)
+        let windowStart = learnedWindow?.start ?? WakeBoundaryDefaults.fallbackWindowStartMin
+        let windowEnd = learnedWindow?.end ?? WakeBoundaryDefaults.fallbackWindowEndMin
+        let nowMinute = Self.minutesOfDay(now, calendar: calendar)
+
+        // Precondition 1: never evaluate before/during the (learned or
+        // fallback) sleep window. The fallback additionally only ever fires in
+        // the morning core so an unlearned device can't drift into evaluating
+        // at arbitrary hours just because `now >= fallbackWindowEndMin`.
+        let pastWindowEnd = nowMinute >= windowEnd
+        let fallbackMorningCoreOK = learnedWindow != nil
+            || (nowMinute >= WakeBoundaryDefaults.fallbackMorningCoreStartMin
+                && nowMinute <= WakeBoundaryDefaults.fallbackMorningCoreEndMin)
+        guard pastWindowEnd, fallbackMorningCoreOK else {
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=before_window_end reason=%@ window_end_min=%d now_min=%d learned=%d",
+                          reason, windowEnd, nowMinute, learnedWindow != nil ? 1 : 0)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_no_wake_detected",
+                                                     detail: "Before the learned/fallback wake boundary (source: \(reason))"))
+            return false
+        }
+
+        // Precondition 2: the night-session anchor — latest session (live
+        // journal tail included) that started inside the sleep window at
+        // least 3h ago. Nap logic is untouched: any session whose start falls
+        // outside the sleep window is never eligible here.
+        let rest = baseline.restingInt ?? 60
+        let nightSessions = canonicalSessions(includeActiveJournal: true).filter { session in
+            Self.minuteInsideWindow(Self.minutesOfDay(session.start, calendar: calendar), start: windowStart, end: windowEnd)
+                && now.timeIntervalSince(session.start) >= WakeBoundaryDefaults.minNightAnchorAge
+        }
+        guard let nightSession = nightSessions.max(by: { $0.start < $1.start }) else {
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=no_wake_detected reason=%@ blocker=no_night_anchor", reason)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_no_wake_detected",
+                                                     detail: "No overnight-started session found for the wake-boundary check (source: \(reason))"))
+            return false
+        }
+
+        // Precondition 3: some evidence of being awake right now — either a
+        // genuinely elevated tail, or simply being past the learned wake
+        // boundary already (precondition 1 already guarantees the latter in
+        // practice; kept explicit here as the named wake detector per spec).
+        let tailAwake = Self.sustainedWakeOnset(in: nightSession, restingHR: rest) != nil || nowMinute > windowEnd
+        guard tailAwake else {
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=no_wake_detected reason=%@ blocker=tail_not_awake", reason)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_no_wake_detected",
+                                                     detail: "No sustained wake HR detected yet (source: \(reason))"))
+            return false
+        }
+
+        guard let candidate = Self.wakeBoundarySleepCandidate(session: nightSession,
+                                                              windowEndMinute: windowEnd,
+                                                              rest: rest,
+                                                              maxHR: profile.maxHR,
+                                                              calendar: calendar,
+                                                              now: now),
+              Self.isStrongAutoConfirmableSleepCandidate(candidate) else {
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=no_wake_detected reason=%@ blocker=candidate_did_not_clear_gates", reason)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_no_wake_detected",
+                                                     detail: "Trimmed wake-boundary candidate did not clear the strong-confirm gates (source: \(reason))"))
+            return false
+        }
+
+        // Same saved-window overlap guardrail as the closed-candidate path —
+        // checked only against already-persisted records (`cachedConfirmedSleeps`),
+        // never the in-flight candidate itself, so this can't self-match.
+        var existing = cachedConfirmedSleeps
+        let confirmed = buildAutoConfirmedSleep(from: candidate, reason: "\(reason)_wake_boundary")
+        guard !existing.contains(where: { $0.id == confirmed.id || Self.sleepWindowsOverlap($0, candidate: candidate) }) else {
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=overlaps_saved reason=%@ id=%@", reason, confirmed.id)
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_overlaps_saved",
+                                                     detail: "Wake-boundary candidate overlaps an already-saved sleep (source: \(reason))"))
+            return false
+        }
+
+        existing.append(confirmed)
+        saveConfirmedSleeps(existing)
+        autoSleepLoggedBanner = AutoSleepLoggedBanner(id: confirmed.id,
+                                                      start: confirmed.start,
+                                                      end: confirmed.end,
+                                                      duration: confirmed.duration,
+                                                      sleepID: confirmed.id)
+        LocalNotificationScheduler.scheduleSleepLogged(confirmed)
+        AtriaDebugLog("ATRIADBG sleep_wake_boundary status=saved reason=%@ id=%@ source=%@ wake_point=%@",
+                      reason, confirmed.id, confirmed.source, isoString(confirmed.end))
+        DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
+                                                 detail: "\(isoString(confirmed.start))–\(isoString(confirmed.end)), \(SleepHistorySnapshot.formatDuration(confirmed.duration)) (wake boundary)"))
+        return true
     }
 
     /// Exposed (not `private`) so unit tests can exercise the auto-confirm gate
@@ -10218,7 +10587,23 @@ final class SessionStore: ObservableObject {
                                      hrMaxRawGap: ordered.map(\.hrMaxRawGapValue).max() ?? 0,
                                      hrMaxAcceptedGap: ordered.map(\.hrMaxAcceptedGapValue).max() ?? 0,
                                      hrRRMismatch: ordered.reduce(0) { $0 + $1.hrRRMismatchValue })
-        let readiness = aggregate.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
+        // Contact-artifact hardening (2026-07-05): judge the WORST source
+        // chunk, not the diluted/summed aggregate -- stitching keeps only the
+        // contact-present chunks, so summed artifact/zero shares can dilute
+        // below the ceilings even when one source chunk was compromised. Also
+        // restore an RR gate for aggregates: the synthetic `aggregate` session
+        // above always carries `rrPoints: nil`, so its own rrSampleCount/
+        // hrRRDisagreesWithReportedHR are structurally blind; substitute the
+        // sum/OR of the real source sessions.
+        let anyChunkContactCompromised = ordered.contains { $0.hrContactCompromised }
+        let anyChunkRRDisagreement = ordered.contains { $0.hrRRDisagreesWithReportedHR }
+        let sourceRRSampleCount = ordered.reduce(0) { $0 + $1.rrSampleCount }
+        let readiness = aggregate.workoutReadiness(rest: rest,
+                                                   maxHR: maxHR,
+                                                   thresholdFraction: thresholdFraction,
+                                                   contactCompromisedOverride: anyChunkContactCompromised || aggregate.hrContactCompromised,
+                                                   rrDisagreementOverride: anyChunkRRDisagreement || aggregate.hrRRDisagreesWithReportedHR,
+                                                   rrSampleCountOverride: sourceRRSampleCount)
         return AggregateWorkoutCandidate(id: aggregate.id,
                                          source: source,
                                          day: day,
@@ -13764,7 +14149,14 @@ final class SessionStore: ObservableObject {
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
         refreshTodayHRZoneMinutesCache(deferred: true)
-        let savedStrongSleep = autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
+        var savedStrongSleep = autoConfirmStrongSleepCandidates(reason: "deferred_session_load")
+        if !savedStrongSleep {
+            // Same WHOOP-parity fallback the foreground path gets: the open
+            // overnight recording never closes, so finalize at the learned
+            // wake boundary here too — launches ARE most users' first
+            // morning foreground.
+            savedStrongSleep = evaluateWakeBoundarySleepIfUseful(reason: "deferred_session_load", now: Date())
+        }
         if !savedStrongSleep {
             scheduleSleepReadinessRetryIfUseful(reason: "deferred_session_load")
         }
