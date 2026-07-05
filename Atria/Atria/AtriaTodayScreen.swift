@@ -1079,7 +1079,7 @@ struct AtriaTodayScreen: View {
     }
 
     private var healthValue: String {
-        displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Building"
+        displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Learning"
     }
 
     private var strapValue: String {
@@ -1268,7 +1268,10 @@ struct AtriaTodayScreen: View {
         case .sleepPerformance:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: latestRollup?.sleepPerformance.map { "\($0)%" } ?? "Learning",
+                                        // Same source the sleep ring uses (computed from the latest
+                                        // sleep, falling back to the rollup) so the tile and ring can't
+                                        // show two different sleep-performance percentages.
+                                        value: sleepPerformancePercent.map { "\($0)%" } ?? "Learning",
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
@@ -1681,7 +1684,7 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
                                tint: pulse.heartRate > 0 ? .green : .secondary)
             AtriaTodayLivePill(title: "Zone",
-                               value: pulse.heartRateZone?.shortLabel ?? "Building",
+                               value: pulse.heartRateZone?.shortLabel ?? "Learning",
                                systemImage: "waveform.path.ecg",
                                tint: pulse.heartRateZone?.tint ?? .secondary)
             AtriaTodayLivePill(title: "Battery",
