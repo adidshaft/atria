@@ -42,7 +42,11 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
 
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
-    var size: CGFloat = 38
+    // HIG-compliant default (2026-07-05): 44pt is the minimum tap target. Every
+    // current call site passes an explicit size, so this only governs future
+    // buttons — the existing sub-44 sizes are intentional in tight rows and need
+    // per-screen visual review before changing, not a blind global bump.
+    var size: CGFloat = 44
 
     func makeBody(configuration: Configuration) -> some View {
         // Native Liquid Glass: a real translucent glass circle with a clearly
@@ -303,7 +307,7 @@ extension View {
         }
     }
 
-    func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View {
+    func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View {
         self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
     }
 }

@@ -819,7 +819,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.tint(tint).buttonStyle(.glassProminent)",
             "self.tint(tint).buttonStyle(.glass)",
             "struct AtriaGlassIconButtonStyle: ButtonStyle",
-            "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View",
+            # 2026-07-05: default raised 38 -> 44 for HIG tap-target compliance.
+            "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View",
             "self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))",
         ]:
             assert_contains(self, text, needle)
