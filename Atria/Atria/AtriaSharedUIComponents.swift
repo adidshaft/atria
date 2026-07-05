@@ -132,19 +132,22 @@ struct AtriaLoadingPanel: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.quaternary)
                 .frame(width: 144, height: 18)
             RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.quaternary)
                 .frame(height: 58)
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.quaternary)
                     .frame(height: 38)
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.quaternary)
                     .frame(height: 38)
             }
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
-        .redacted(reason: .placeholder)
         .accessibilityLabel(title)
     }
 }

@@ -545,34 +545,25 @@ struct AtriaHomeView: View {
 
             TabView(selection: $selectedTab) {
                 tabNavigation(title: "Today", showsHero: false) {
-                    if hasUnlockedPrimaryContent {
-                        overviewContent
-                    } else {
-                        secondaryLoadingCard(title: "Preparing overview",
-                                             subtitle: "")
-                    }
+                    // Always render real content from first frame: the model is
+                    // seeded synchronously (cold-start rollup/widget-snapshot
+                    // seed, see AtriaHomeModel.makeColdStartSnapshot) so there is
+                    // no "Preparing overview" placeholder gate here anymore.
+                    // hasUnlockedPrimaryContent now only gates progressive
+                    // diagnostics kickoff, not the base layout paint.
+                    overviewContent
                 }
                 .tabItem { Label(HomeTab.overview.title, systemImage: HomeTab.overview.systemImage) }
                 .tag(HomeTab.overview)
 
                 tabNavigation(title: "Vitals", showsHero: false) {
-                    if hasUnlockedPrimaryContent {
-                        vitalsContent
-                    } else {
-                        secondaryLoadingCard(title: "Preparing vitals",
-                                             subtitle: "")
-                    }
+                    vitalsContent
                 }
                 .tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }
                 .tag(HomeTab.vitals)
 
                 tabNavigation(title: "Journal", showsHero: false) {
-                    if hasUnlockedPrimaryContent {
-                        journalContent
-                    } else {
-                        secondaryLoadingCard(title: "Preparing journal",
-                                             subtitle: "")
-                    }
+                    journalContent
                 }
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
@@ -770,13 +761,8 @@ struct AtriaHomeView: View {
         .fullScreenCover(isPresented: $showStrapScreen) {
             NavigationStack {
                 ScrollView {
-                    if hasUnlockedPrimaryContent {
-                        collectionContent
-                            .padding(.horizontal, 16)
-                    } else {
-                        secondaryLoadingCard(title: "Preparing strap",
-                                             subtitle: "")
-                    }
+                    collectionContent
+                        .padding(.horizontal, 16)
                 }
                 .scrollContentBackground(.hidden)
                 .background {
@@ -2655,19 +2641,22 @@ struct AtriaHomeView: View {
     private func secondaryLoadingCard(title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.quaternary)
                 .frame(width: 142, height: 18)
             RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.quaternary)
                 .frame(height: 64)
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.quaternary)
                     .frame(height: 38)
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.quaternary)
                     .frame(height: 38)
             }
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
-        .redacted(reason: .placeholder)
         .accessibilityLabel(title)
     }
 
@@ -5147,6 +5136,7 @@ final class AtriaHomeModel {
         var status: AtriaBLEManager.Status
         var bluetoothPermissionDenied: Bool
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+        var isBluetoothReady: Bool
     }
 
     struct CoreLiveState: Equatable {
@@ -5682,16 +5672,87 @@ final class AtriaHomeModel {
         let confirmedSleeps: Int
     }
 
-    private static let placeholderSnapshot = Snapshot(referenceText: "Waiting",
-                                                      sleepValue: "Preparing",
-                                                      sleepDetail: "saved history",
-                                                      workoutText: "Preparing",
-                                                      loggingText: "settling",
-                                                      trendCoverageText: "--",
-                                                      trendConfidence: "learning",
-                                                      trendDetail: "Saved trends are preparing.",
-                                                      confirmedWorkouts: 0,
-                                                      confirmedSleeps: 0)
+    // Cold-start seed (launch time-to-content fix, 2026-07-05): the app used to
+    // seed this store with a hardcoded "Waiting"/"Preparing" placeholder that
+    // stayed on screen until the diagnostics kickoff ran (seconds later). All
+    // of the data this needs (dailyRollupHistory, confirmed sleeps/workouts,
+    // baseline) is already loaded synchronously in SessionStore.init, so build
+    // the first frame from real saved numbers instead.
+    //
+    // This is split into a thin store-reading wrapper and a pure function
+    // (`makeColdStartSnapshot(rollup:rollupIsToday:...)`) so the shaping logic
+    // is unit-testable without constructing a SessionStore (which touches the
+    // real on-disk sessions.json / daily-rollups.json) -- see
+    // AtriaLaunchTimeToContentTests.
+    private static func makeColdStartSnapshot(store: SessionStore) -> Snapshot {
+        let calendar = Calendar.current
+        let now = Date()
+        let todayRollup = store.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: now) }
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+        let rollup = todayRollup ?? store.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: yesterday) }
+        // Last-known widget snapshot: a same-day fallback when there is no
+        // rollup yet at all (e.g. first launch ever, or the rollup file hasn't
+        // been written for today), so the first frame still shows the last
+        // numbers the widget/Lock Screen displayed rather than "Preparing".
+        let widgetSnapshot = rollup == nil ? AtriaIntentSnapshotStore.loadLatestSnapshot() : nil
+
+        return Self.makeColdStartSnapshot(rollup: rollup,
+                                          rollupIsToday: todayRollup != nil,
+                                          recentRollupCount: store.dailyRollupHistory.prefix(14).count,
+                                          widgetSnapshot: widgetSnapshot,
+                                          freshHRVSampleCount: store.baseline.freshHRVSampleCount(),
+                                          confirmedWorkouts: store.confirmedWorkouts.count,
+                                          confirmedSleeps: store.confirmedSleeps.count)
+    }
+
+    static func makeColdStartSnapshot(rollup: DailyRollupStoreEntry?,
+                                      rollupIsToday: Bool,
+                                      recentRollupCount: Int,
+                                      widgetSnapshot: WidgetSnapshot?,
+                                      freshHRVSampleCount: Int,
+                                      confirmedWorkouts: Int,
+                                      confirmedSleeps: Int) -> Snapshot {
+        let sleepValue: String
+        let sleepDetail: String
+        if let seconds = rollup?.sleepSeconds, seconds > 0 {
+            sleepValue = String(format: "%.1fh", seconds / 3600)
+            sleepDetail = rollupIsToday ? "saved history" : "yesterday's saved rollup"
+        } else if let hours = widgetSnapshot?.sleepHours, hours > 0 {
+            sleepValue = String(format: "%.1fh", hours)
+            sleepDetail = "last known"
+        } else {
+            sleepValue = "Preparing"
+            sleepDetail = "saved history"
+        }
+
+        let workoutText = rollup?.strain.map { String(format: "Strain %.1f", $0) }
+            ?? widgetSnapshot.map { String(format: "Strain %.1f", $0.strain) }
+            ?? "Preparing"
+
+        let trendCoverageText: String
+        let trendConfidence: String
+        let trendDetail: String
+        if recentRollupCount >= 3 {
+            trendCoverageText = "\(recentRollupCount)d"
+            trendConfidence = "local"
+            trendDetail = "Saved trends from \(recentRollupCount) recent days."
+        } else {
+            trendCoverageText = "--"
+            trendConfidence = "learning"
+            trendDetail = "Saved trends are preparing."
+        }
+
+        return Snapshot(referenceText: baselineMaturityText(sampleCount: freshHRVSampleCount),
+                        sleepValue: sleepValue,
+                        sleepDetail: sleepDetail,
+                        workoutText: workoutText,
+                        loggingText: rollup != nil ? "saved" : "settling",
+                        trendCoverageText: trendCoverageText,
+                        trendConfidence: trendConfidence,
+                        trendDetail: trendDetail,
+                        confirmedWorkouts: confirmedWorkouts,
+                        confirmedSleeps: confirmedSleeps)
+    }
 
     private struct LiveSessionDerived: Equatable {
         let sampleCount: Int
@@ -5717,7 +5778,8 @@ final class AtriaHomeModel {
                                                                     profile: store.profile)
         let initialStatus = StatusState(status: ble.status,
                                         bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
-                                        officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
+                                        officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
+                                        isBluetoothReady: ble.isBluetoothReady)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble, liveSessionDerived: initialLiveSessionDerived)
         let initialHeroPulse = Self.makeHeroPulseState(ble: ble,
                                                        rest: initialLiveSessionDerived.rest,
@@ -5757,7 +5819,7 @@ final class AtriaHomeModel {
         self.pulseLiveStore = PulseLiveStore(state: initialPulseLive)
         self.pulseSparklineStore = PulseSparklineStore(state: initialPulseSparkline)
         self.collectionLiveStore = CollectionLiveStore(state: initialCollectionLive)
-        self.snapshotStore = SnapshotStore(state: Self.placeholderSnapshot)
+        self.snapshotStore = SnapshotStore(state: Self.makeColdStartSnapshot(store: store))
         self.homeStatsStore = HomeStatsStore(state: initialHomeStats)
         self.profileStore = ProfileStore(profile: store.profile)
         self.profileMetricsStore = ProfileMetricsStore(state: initialProfileMetrics)
@@ -5820,6 +5882,14 @@ final class AtriaHomeModel {
             .store(in: &cancellables)
 
         ble.$bluetoothPermissionDenied
+            .removeDuplicates()
+            .map { _ in () }
+            .sink { [weak self] _ in
+                self?.publishStatus()
+            }
+            .store(in: &cancellables)
+
+        ble.$isBluetoothReady
             .removeDuplicates()
             .map { _ in () }
             .sink { [weak self] _ in
@@ -6026,7 +6096,8 @@ final class AtriaHomeModel {
     private func publishStatus() {
         let next = StatusState(status: ble.status,
                                bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
-                               officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
+                               officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
+                               isBluetoothReady: ble.isBluetoothReady)
         guard next != statusStore.state else { return }
         statusStore.state = next
     }
@@ -6739,15 +6810,19 @@ final class AtriaHomeModel {
                                      hero: HeroSnapshot,
                                      deferredDetails: DeferredDetails?) -> Snapshot {
         let defaultReferenceText = baselineMaturityText(sampleCount: hero.baselineSamples)
+        // Before diagnostics finish, fall back to the same real-data cold-start
+        // seed used at launch instead of hardcoded "Preparing" strings, so the
+        // tiles keep showing saved numbers rather than reverting to placeholders.
+        let coldStart = deferredDetails == nil ? Self.makeColdStartSnapshot(store: store) : nil
 
         return Snapshot(referenceText: deferredDetails?.referenceText ?? defaultReferenceText,
-                        sleepValue: deferredDetails?.sleepValue ?? "Preparing",
-                        sleepDetail: deferredDetails?.sleepDetail ?? "saved history",
-                        workoutText: deferredDetails?.workoutText ?? "Preparing",
-                        loggingText: deferredDetails?.loggingText ?? "settling",
-                        trendCoverageText: deferredDetails?.trendCoverageText ?? "--",
-                        trendConfidence: deferredDetails?.trendConfidence ?? "learning",
-                        trendDetail: deferredDetails?.trendDetail ?? "Saved trends are preparing.",
+                        sleepValue: deferredDetails?.sleepValue ?? coldStart?.sleepValue ?? "Preparing",
+                        sleepDetail: deferredDetails?.sleepDetail ?? coldStart?.sleepDetail ?? "saved history",
+                        workoutText: deferredDetails?.workoutText ?? coldStart?.workoutText ?? "Preparing",
+                        loggingText: deferredDetails?.loggingText ?? coldStart?.loggingText ?? "settling",
+                        trendCoverageText: deferredDetails?.trendCoverageText ?? coldStart?.trendCoverageText ?? "--",
+                        trendConfidence: deferredDetails?.trendConfidence ?? coldStart?.trendConfidence ?? "learning",
+                        trendDetail: deferredDetails?.trendDetail ?? coldStart?.trendDetail ?? "Saved trends are preparing.",
                         confirmedWorkouts: deferredDetails?.confirmedWorkouts ?? store.confirmedWorkouts.count,
                         confirmedSleeps: deferredDetails?.confirmedSleeps ?? store.confirmedSleeps.count)
     }
@@ -7134,6 +7209,22 @@ private struct AtriaTopStatusChip: View {
     private var isRecoveringLiveSignal: Bool {
         coreLiveStore.state.isInRecentLiveRecovery()
     }
+    /// Radio not powered on yet (.unknown/.resetting at cold start) — distinct
+    /// from a real pending-connect attempt, which recomputeConnectionStatus
+    /// otherwise abstracts into the same .connecting/.disconnected Status.
+    private var isBluetoothReady: Bool { statusStore.state.isBluetoothReady }
+    /// Age of the current standing pending-connect attempt, if one is armed.
+    private var pendingKnownReconnectAge: TimeInterval? {
+        coreLiveStore.state.pendingKnownReconnectAge()
+    }
+    /// Honest short window where the strap is genuinely being linked to (a
+    /// standing central.connect() is outstanding) rather than the stale,
+    /// open-ended "Reconnecting…" that used to show from launch.
+    private static let linkingWindow: TimeInterval = 8
+    private var isActivelyLinking: Bool {
+        guard let age = pendingKnownReconnectAge else { return false }
+        return age >= 0 && age <= Self.linkingWindow
+    }
     private var displayStatus: AtriaBLEManager.Status {
         if isRecoveringLiveSignal {
             switch status {
@@ -7182,13 +7273,21 @@ private struct AtriaTopStatusChip: View {
         case .connected:
             // "Live" must mean actually reading your pulse, not just a BLE link.
             return hasPulseSignal ? "Live" : "No signal"
-        case .connecting: return isRecoveringLiveSignal ? "Reading…" : "Connecting"
+        case .connecting:
+            if isRecoveringLiveSignal { return "Reading…" }
+            if !isBluetoothReady { return "Waiting for Bluetooth" }
+            if isActivelyLinking { return "Linking to \(coreLiveStore.state.displayDeviceName)" }
+            if pendingKnownReconnectAge != nil { return "Reconnecting…" }
+            return "Connecting"
         case .scanning: return "Searching"
         case .poweredOff: return bluetoothPermissionDenied ? "Permission" : "Bluetooth off"
         case .disconnected:
-            return UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0
-                ? "Reconnecting…"
-                : "Disconnected"
+            guard UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) > 0 else {
+                return "Disconnected"
+            }
+            if !isBluetoothReady { return "Waiting for Bluetooth" }
+            if isActivelyLinking { return "Linking to \(coreLiveStore.state.displayDeviceName)" }
+            return "Reconnecting…"
         }
     }
 

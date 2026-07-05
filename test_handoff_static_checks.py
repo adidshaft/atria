@@ -863,6 +863,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, project, "INFOPLIST_KEY_UIRequiresFullScreen")
 
     def test_top_left_status_restores_original_chip_and_labels(self):
+        # 2026-07-05: pins for the .connecting/.disconnected label branches were
+        # migrated for the auto-connect-at-launch pill copy fix (honest
+        # "Waiting for Bluetooth" / "Linking to <strap>" / "Reconnecting…"
+        # sub-states driven by isBluetoothReady + pendingKnownReconnectStartedAt
+        # age, replacing the stale always-"Reconnecting…" disconnected+history
+        # mapping). See AtriaBLEManager.swift centralManagerDidUpdateState.
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         ble = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
@@ -903,13 +909,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .connected, .connecting, .scanning, .disconnected:\n            return .connected",
             "if displayStatus != .connected { onTapWhenNotConnected() }",
             "return hasPulseSignal ? \"Live\" : \"No signal\"",
-            "case .connecting: return isRecoveringLiveSignal ? \"Reading…\" : \"Connecting\"",
+            "if isRecoveringLiveSignal { return \"Reading…\" }",
+            "if !isBluetoothReady { return \"Waiting for Bluetooth\" }",
+            "if isActivelyLinking { return \"Linking to \\(coreLiveStore.state.displayDeviceName)\" }",
+            "if pendingKnownReconnectAge != nil { return \"Reconnecting…\" }",
             "case .scanning: return \"Searching\"",
             "case .poweredOff: return bluetoothPermissionDenied ? \"Permission\" : \"Bluetooth off\"",
             "case .poweredOff: return bluetoothPermissionDenied ? \"hand.raised.fill\" : \"bolt.slash.fill\"",
             "case .connecting: return isRecoveringLiveSignal ? \"waveform.path.ecg\" : \"dot.radiowaves.left.and.right\"",
-            "? \"Reconnecting…\"",
-            ": \"Disconnected\"",
+            "return \"Disconnected\"",
             "case .connected: return hasPulseSignal ? .green : .orange",
             "case .connecting: return isRecoveringLiveSignal ? .cyan : .yellow",
             "case .scanning: return .cyan",

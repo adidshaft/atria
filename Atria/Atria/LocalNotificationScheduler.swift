@@ -24,6 +24,10 @@ enum LocalNotificationScheduler {
     private static let strapChargeReminderLowBatteryThreshold = 30
     private static let strapChargeReminderMinLearnedHours = 5
     private static let strapChargeReminderHourTolerance = 1
+    private static let sleepEventDedupDayKey = "atria.notification.sleepEvent.lastDay"
+    private static let sleepEventDedupMinutesKey = "atria.notification.sleepEvent.lastDurationMinutes"
+    private static let sleepEventDedupKindKey = "atria.notification.sleepEvent.lastKind"
+    private static let sleepEventDedupToleranceMinutes = 3
 
     private enum Identifier {
         static let morningSummaryPrefix = "atria.morningSummary."
@@ -40,6 +44,7 @@ enum LocalNotificationScheduler {
         static let fitCheck = "atria.fitcheck.needed"
         static let strapChargeReminder = "atria.strap.chargeReminder"
         static let diagnostic = "atria.diagnostic.delivery"
+        static let logJournalAction = "atria.action.logJournal"
         static let legacyRecovery = "atria.recovery.ready"
         static let legacyStrain = "atria.strain.target"
         static let legacySleepReview = "atria.sleep.review"
@@ -101,10 +106,20 @@ enum LocalNotificationScheduler {
     static func scheduleMorningSummary(recovery: Int,
                                        sleepText: String,
                                        hrvText: String,
+                                       sleepDurationSeconds: TimeInterval? = nil,
                                        now: Date = Date(),
                                        calendar: Calendar = .current) {
         guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_summary")
+            return
+        }
+
+        let day = localDayIdentifier(for: now, calendar: calendar)
+        if let sleepDurationSeconds,
+           shouldSkipRedundantSleepEvent(kind: "morning_summary",
+                                        durationMinutes: Int(sleepDurationSeconds / 60),
+                                        day: day) {
+            AtriaDebugLog("ATRIADBG notification_skip kind=morning_summary reason=redundant_sleep_event day=%@", day)
             return
         }
 
@@ -122,7 +137,7 @@ enum LocalNotificationScheduler {
                 return
             }
 
-            let identifier = Identifier.morningSummaryPrefix + localDayIdentifier(for: now, calendar: calendar)
+            let identifier = Identifier.morningSummaryPrefix + day
             center.removePendingNotificationRequests(withIdentifiers: [identifier])
             // Adaptive timing (docs/24 §14.2): deliver no earlier than YOUR
             // learned wake + 15 min; metrics landing later fire immediately.
@@ -136,10 +151,15 @@ enum LocalNotificationScheduler {
                     morningDelay = TimeInterval((wakePlus15 - nowMinutes) * 60)
                 }
             }
+            // Journal nudge is folded into this one notification as the
+            // "atria.action.logJournal" action on category "atria.morningSummary"
+            // (registered in registerNotificationCategoriesIfNeeded) rather than
+            // a second notification — the trailing clause below covers users who
+            // never long-press for the action.
             let decision = NotificationDecision(kind: "morning_summary",
                                                 identifier: identifier,
                                                 title: "Morning summary",
-                                                body: "Recovery \(recovery)% \u{00B7} Slept \(sleepText) \u{00B7} HRV \(hrvText)",
+                                                body: "Recovery \(recovery)% \u{00B7} Slept \(sleepText) \u{00B7} HRV \(hrvText) \u{2014} log how you feel",
                                                 reason: "morning_summary_ready",
                                                 shouldSchedule: true,
                                                 delay: morningDelay,
@@ -147,6 +167,11 @@ enum LocalNotificationScheduler {
                                                 userInfo: ["deepLink": "atria://overview"])
             do {
                 try await add(decision: decision, center: center)
+                if let sleepDurationSeconds {
+                    recordSleepEvent(kind: "morning_summary",
+                                     durationMinutes: Int(sleepDurationSeconds / 60),
+                                     day: day)
+                }
                 await logMorningSummaryPendingProof(identifier: identifier, center: center)
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=morning_summary error=%@",
@@ -497,9 +522,19 @@ enum LocalNotificationScheduler {
                       reason)
     }
 
-    static func scheduleSleepLogged(_ sleep: UserConfirmedSleep) {
+    static func scheduleSleepLogged(_ sleep: UserConfirmedSleep, calendar: Calendar = .current) {
         guard AtriaNotificationSettings.load().allows(kind: "sleep_logged") else {
             AtriaDebugLog("ATRIADBG notification_skip kind=sleep_logged reason=user_disabled")
+            return
+        }
+        // Wake-boundary saves and the wake+15 morning summary land minutes
+        // apart for the same sleep event and share the same 6/day attention
+        // budget — if the morning summary already announced this duration
+        // today, don't spend a second slot re-announcing it here.
+        let day = localDayIdentifier(for: sleep.end, calendar: calendar)
+        let durationMinutes = Int(sleep.duration / 60)
+        if shouldSkipRedundantSleepEvent(kind: "sleep_logged", durationMinutes: durationMinutes, day: day) {
+            AtriaDebugLog("ATRIADBG notification_skip kind=sleep_logged reason=redundant_sleep_event day=%@", day)
             return
         }
         configureDeliveryLogger()
@@ -517,6 +552,7 @@ enum LocalNotificationScheduler {
             }
             do {
                 try await add(decision: sleepLoggedDecision(for: sleep), center: center)
+                recordSleepEvent(kind: "sleep_logged", durationMinutes: durationMinutes, day: day)
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=sleep_logged error=%@",
                               String(describing: error))
@@ -611,8 +647,49 @@ enum LocalNotificationScheduler {
         return (sorted[mid - 1] + sorted[mid]) / 2
     }
 
+    /// True when a *different* kind ("morning_summary" vs. "sleep_logged")
+    /// already announced a sleep of essentially the same duration on the same
+    /// local day — the two land minutes apart for the same wake event and
+    /// would otherwise burn two of the shared 6/day attention-budget slots.
+    private static func shouldSkipRedundantSleepEvent(kind: String, durationMinutes: Int, day: String) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: sleepEventDedupDayKey) == day,
+              let lastKind = defaults.string(forKey: sleepEventDedupKindKey),
+              lastKind != kind else { return false }
+        let lastMinutes = defaults.integer(forKey: sleepEventDedupMinutesKey)
+        return abs(lastMinutes - durationMinutes) <= sleepEventDedupToleranceMinutes
+    }
+
+    private static func recordSleepEvent(kind: String, durationMinutes: Int, day: String) {
+        let defaults = UserDefaults.standard
+        defaults.set(day, forKey: sleepEventDedupDayKey)
+        defaults.set(durationMinutes, forKey: sleepEventDedupMinutesKey)
+        defaults.set(kind, forKey: sleepEventDedupKindKey)
+    }
+
+    private static var categoriesRegistered = false
+
     private static func configureDeliveryLogger() {
         UNUserNotificationCenter.current().delegate = NotificationDeliveryLogger.shared
+        registerNotificationCategoriesIfNeeded()
+    }
+
+    /// Registers the "log how you feel" action on the morning summary category
+    /// once per process launch. Folds the wake-time journal nudge into the
+    /// single morning notification (as an action button) instead of a second
+    /// notification, so the shared attention budget only ever spends one slot
+    /// on the wake moment.
+    private static func registerNotificationCategoriesIfNeeded() {
+        guard !categoriesRegistered else { return }
+        categoriesRegistered = true
+        let logJournalAction = UNNotificationAction(identifier: Identifier.logJournalAction,
+                                                    title: "Log how you feel",
+                                                    options: [.foreground])
+        let morningSummaryCategory = UNNotificationCategory(identifier: "atria.morningSummary",
+                                                             actions: [logJournalAction],
+                                                             intentIdentifiers: [],
+                                                             options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([morningSummaryCategory])
     }
 
     private static func schedule(store: SessionStore,
@@ -1547,11 +1624,16 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
                                 didReceive response: UNNotificationResponse) async {
         let request = response.notification.request
         let deepLink = request.content.userInfo["deepLink"] as? String
+        // "Log how you feel" on the morning summary is folded into the same
+        // notification as an action button, not a second notification — the
+        // default tap still goes to atria://overview (via `deepLink` above),
+        // but this action overrides the destination to the journal.
+        let resolvedDeepLink = response.actionIdentifier == "atria.action.logJournal" ? "atria://journal" : deepLink
         AtriaDebugLog("ATRIADBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)
-        if let deepLink,
+        if let deepLink = resolvedDeepLink,
            let url = URL(string: deepLink) {
             AtriaDebugLog("ATRIADBG notification_deeplink status=posted kind=%@ url=%@",
                           kind(for: request.identifier),
