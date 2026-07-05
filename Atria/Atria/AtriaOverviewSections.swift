@@ -2728,7 +2728,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .recovery:
             detailButton(.recovery) {
                 AtriaGlanceMetricCard(title: "Recovery",
-                                      value: hero.recoveryEstimate.percent == nil ? "Building" : hero.recoveryValue,
+                                      value: hero.recoveryEstimate.percent == nil ? "Learning" : hero.recoveryValue,
                                       detail: recoveryDetailText,
                                       systemImage: metric.systemImage,
                                       tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
@@ -2822,8 +2822,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             sleepHistoryCard
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
-                                  value: sleepHistory.latest?.sleepEfficiencyText ?? "Building",
-                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based",
+                                  value: sleepHistory.latest?.sleepEfficiencyText ?? "Learning",
+                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Learning" : "Duration-based",
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan),
                                   zone: sleepEfficiencyZone,
@@ -2837,7 +2837,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 // so no `.sorted` here -- a render-path sort would recompute
                 // session metrics on every body eval (2026-07-05 perf hygiene).
                 AtriaGlanceMetricCard(title: "Sleep perf",
-                                      value: dailyRollupHistory.first?.sleepPerformance.map { "\($0)%" } ?? "Building",
+                                      value: dailyRollupHistory.first?.sleepPerformance.map { "\($0)%" } ?? "Learning",
                                       detail: "of need",
                                       systemImage: metric.systemImage,
                                       tint: Metrics.electricSleep,
@@ -2949,7 +2949,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             return "\(sleepHistory.candidateCount)"
         }
         if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue }
-        return sleepCalibratingDay.map { "Day \($0)" } ?? "Building"
+        // Canonical not-ready word. Sleep is available after one night (not a 4-night
+        // calibration like recovery), so it shows "Learning", not a "Day X" countdown.
+        return "Learning"
     }
 
     private var sleepGlanceTitleText: String {

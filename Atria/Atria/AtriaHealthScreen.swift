@@ -441,7 +441,9 @@ struct AtriaHealthScreen: View {
         // Fall back to the latest recorded night (same source the Today ring
         // uses) when today's rollup hasn't persisted yet, so Vitals shows the
         // real "8h 12m" instead of "--".
-        let seconds = latestRollup?.sleepSeconds ?? store.sleepHistorySnapshot.latest?.duration
+        guard let seconds = latestRollup?.sleepSeconds ?? store.sleepHistorySnapshot.latest?.duration else {
+            return "Learning"   // canonical not-ready word, consistent with Today/Overview
+        }
         return AtriaMetricFormat.sleepDuration(seconds: seconds)
     }
 

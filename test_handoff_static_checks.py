@@ -1460,7 +1460,8 @@ class HandoffStaticChecks(unittest.TestCase):
             # longer read anywhere -- Data/backfill status now surfaces via
             # onOpenCollection instead of its own glance card. Not re-adding it.
             "AtriaGlanceMetricCard(title: \"Sleep eff\"",
-            "value: sleepHistory.latest?.sleepEfficiencyText ?? \"Building\"",
+            # 2026-07-06: not-ready word standardized "Building" -> "Learning".
+            "value: sleepHistory.latest?.sleepEfficiencyText ?? \"Learning\"",
             "Duration-based",
             "accessibilityDetail: sleepHistory.latest?.sleepEfficiency == nil",
             "Sleep efficiency is building from saved sleep duration",
