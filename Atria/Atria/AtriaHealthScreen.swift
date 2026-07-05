@@ -364,33 +364,56 @@ struct AtriaHealthScreen: View {
         store.dailyRollupHistory.sorted { $0.day > $1.day }.first
     }
 
+    // Today↔Vitals unification (2026-07-06): the Health Monitor rows read ONLY
+    // the persisted daily-rollup store, but today's rollup row is intentionally
+    // not persisted until a settled morning reading exists (frozen-chart
+    // invariant, Sessions.swift). The Today screen meanwhile renders the LIVE
+    // hero estimate. That split is exactly the reported bug -- Today shows 72%
+    // / 8h while Vitals shows Building / --. Fix: when there is no persisted
+    // rollup for today, fall back READ-ONLY to the same live hero snapshot the
+    // Today screen already shows, honestly labeled "today · estimate" so the
+    // two tabs never disagree. Nothing is persisted here, so the frozen-chart
+    // invariant is untouched -- these are live readiness rows, not trend data.
+    private var liveRecoveryPercent: Int? {
+        heroStore.state.recoveryEstimate.percent
+    }
+
     private var recoveryValue: String {
         if let value = latestRollup?.recovery {
             return "\(value)%"
+        }
+        if let live = liveRecoveryPercent {
+            return "\(live)%"
         }
         return "Building"
     }
 
     private var recoveryDetail: String {
-        latestRollup?.recovery == nil ? "building" : "saved"
+        if latestRollup?.recovery != nil { return "saved" }
+        return liveRecoveryPercent != nil ? "today · estimate" : "building"
     }
 
     private var recoveryTint: Color {
-        if let value = latestRollup?.recovery {
+        if let value = latestRollup?.recovery ?? liveRecoveryPercent {
             return Metrics.recoveryColor(value)
         }
         return .secondary
     }
 
     private var restingHeartRateValue: String {
-        AtriaMetricFormat.restingHeartRate(latestRollup?.rhr.map(Double.init))
+        let liveRHR = heroStore.state.restingHeartRate
+        let rhr = latestRollup?.rhr.map(Double.init) ?? (liveRHR > 0 ? Double(liveRHR) : nil)
+        return AtriaMetricFormat.restingHeartRate(rhr)
     }
 
     private var hrvValue: String {
         if let lnRMSSD = latestRollup?.lnRMSSD {
             return AtriaMetricFormat.hrv(exp(lnRMSSD))
         }
-        return "--"
+        // Fall back to the live hero HRV (already an honest formatted string --
+        // a real value or "Learning") so Vitals matches Today rather than "--".
+        let live = heroStore.state.hrvValue.trimmingCharacters(in: .whitespaces)
+        return live.isEmpty || live == "--" ? "--" : live
     }
 
     private var respiratoryValue: String {
@@ -401,7 +424,11 @@ struct AtriaHealthScreen: View {
     }
 
     private var sleepValue: String {
-        AtriaMetricFormat.sleepDuration(seconds: latestRollup?.sleepSeconds)
+        // Fall back to the latest recorded night (same source the Today ring
+        // uses) when today's rollup hasn't persisted yet, so Vitals shows the
+        // real "8h 12m" instead of "--".
+        let seconds = latestRollup?.sleepSeconds ?? store.sleepHistorySnapshot.latest?.duration
+        return AtriaMetricFormat.sleepDuration(seconds: seconds)
     }
 
     private var sleepDetail: String {

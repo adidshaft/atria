@@ -1830,29 +1830,31 @@ private struct AtriaResearchSignalInfoSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                researchInfoRow(systemImage: "drop.degreesign",
-                                tint: .blue,
-                                title: "Blood oxygen signal",
-                                detail: spo2CandidateFrames > 0
-                                    ? "\(spo2CandidateFrames) candidate frames found. Atria does not show an SpO2 percentage until quality checks pass."
-                                    : "No candidate frames yet. Atria does not estimate or display an SpO2 percentage from unvalidated bytes.")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    researchInfoRow(systemImage: "drop.degreesign",
+                                    tint: .blue,
+                                    title: "Blood oxygen signal",
+                                    detail: spo2CandidateFrames > 0
+                                        ? "\(spo2CandidateFrames) candidate frames found. Atria does not show an SpO2 percentage until quality checks pass."
+                                        : "No candidate frames yet. Atria does not estimate or display an SpO2 percentage from unvalidated bytes.")
 
-                researchInfoRow(systemImage: "thermometer.variable",
-                                tint: .teal,
-                                title: "Body temperature signal",
-                                detail: skinTemperatureSummary.isReady
-                                    ? "\(skinTemperatureSummary.valueText) delta C versus your local sleep baseline. This is not an absolute body-temperature reading."
-                                    : "Atria is building a sleep baseline. It will only show relative deviation, never absolute body temperature.")
+                    researchInfoRow(systemImage: "thermometer.variable",
+                                    tint: .teal,
+                                    title: "Body temperature signal",
+                                    detail: skinTemperatureSummary.isReady
+                                        ? "\(skinTemperatureSummary.valueText) delta C versus your local sleep baseline. This is not an absolute body-temperature reading."
+                                        : "Atria is building a sleep baseline. It will only show relative deviation, never absolute body temperature.")
 
-                Text("Experimental readings stay local, depend on sleep data, and are not medical advice. Atria does not write SpO2 or body-temperature values to HealthKit.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text("Experimental readings stay local, depend on sleep data, and are not medical advice. Atria does not write SpO2 or body-temperature values to HealthKit.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
+                }
+                .padding(20)
             }
-            .padding(20)
             .navigationTitle("Experimental sensors")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

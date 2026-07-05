@@ -163,7 +163,7 @@ struct AtriaLiveWorkoutView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showSetLogger) {
             setLoggerSheet
-                .presentationDetents([.height(390)])
+                .presentationDetents([.height(390), .large])
                 .presentationDragIndicator(.visible)
                 .preferredColorScheme(.dark)
         }
@@ -376,63 +376,65 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private var setLoggerSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label(editingSetID == nil ? "Log set" : "Edit set", systemImage: "dumbbell.fill")
-                    .font(.headline.weight(.black))
-                Spacer()
-                Button("Done") { showSetLogger = false }
-                    .font(.subheadline.weight(.bold))
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label(editingSetID == nil ? "Log set" : "Edit set", systemImage: "dumbbell.fill")
+                        .font(.headline.weight(.black))
+                    Spacer()
+                    Button("Done") { showSetLogger = false }
+                        .font(.subheadline.weight(.bold))
+                }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(loggerExerciseOptions, id: \.self) { exercise in
-                        Button {
-                            selectedExercise = exercise
-                            primeLoggerFromLastSet(exercise: exercise)
-                            loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
-                        } label: {
-                            Text(exercise)
-                                .font(.caption.weight(.bold))
-                                .lineLimit(1)
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 8)
-                                .background(selectedExercise == exercise ? Color.mint.opacity(0.26) : Color.white.opacity(0.08),
-                                            in: Capsule())
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(loggerExerciseOptions, id: \.self) { exercise in
+                            Button {
+                                selectedExercise = exercise
+                                primeLoggerFromLastSet(exercise: exercise)
+                                loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
+                            } label: {
+                                Text(exercise)
+                                    .font(.caption.weight(.bold))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 8)
+                                    .background(selectedExercise == exercise ? Color.mint.opacity(0.26) : Color.white.opacity(0.08),
+                                                in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
+
+                loggerStepperRow(title: "Weight",
+                                 value: "\(Int(loggerWeightKg.rounded())) kg",
+                                 decrement: { loggerWeightKg = max(0, loggerWeightKg - 2.5) },
+                                 increment: { loggerWeightKg += 2.5 })
+                loggerStepperRow(title: "Reps",
+                                 value: "\(loggerReps)",
+                                 decrement: { loggerReps = max(1, loggerReps - 1) },
+                                 increment: { loggerReps = min(99, loggerReps + 1) })
+                loggerStepperRow(title: "Rest",
+                                 value: restOverrideText(loggerRestSeconds),
+                                 decrement: { updateRestOverride(max(30, loggerRestSeconds - 15)) },
+                                 increment: { updateRestOverride(min(600, loggerRestSeconds + 15)) })
+
+                exerciseHistoryPanel
+
+                Button {
+                    saveLoggedSet()
+                } label: {
+                    Label(editingSetID == nil ? "Save set" : "Update set", systemImage: "checkmark.circle.fill")
+                        .font(.headline.weight(.black))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.mint)
             }
-
-            loggerStepperRow(title: "Weight",
-                             value: "\(Int(loggerWeightKg.rounded())) kg",
-                             decrement: { loggerWeightKg = max(0, loggerWeightKg - 2.5) },
-                             increment: { loggerWeightKg += 2.5 })
-            loggerStepperRow(title: "Reps",
-                             value: "\(loggerReps)",
-                             decrement: { loggerReps = max(1, loggerReps - 1) },
-                             increment: { loggerReps = min(99, loggerReps + 1) })
-            loggerStepperRow(title: "Rest",
-                             value: restOverrideText(loggerRestSeconds),
-                             decrement: { updateRestOverride(max(30, loggerRestSeconds - 15)) },
-                             increment: { updateRestOverride(min(600, loggerRestSeconds + 15)) })
-
-            exerciseHistoryPanel
-
-            Button {
-                saveLoggedSet()
-            } label: {
-                Label(editingSetID == nil ? "Save set" : "Update set", systemImage: "checkmark.circle.fill")
-                    .font(.headline.weight(.black))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 7)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.mint)
+            .padding(18)
         }
-        .padding(18)
     }
 
     private func loggerStepperRow(title: String,
@@ -1205,32 +1207,34 @@ private struct AtriaWorkoutTargetPicker: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Label("Workout target", systemImage: "target")
-                    .font(.headline.weight(.black))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button("Done") { commitAndDismiss() }
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Metrics.electricStrain)
-            }
-
-            modePicker
-
-            Group {
-                switch mode {
-                case .auto: autoContent
-                case .zone: zoneContent
-                case .strain: strainContent
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Label("Workout target", systemImage: "target")
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Button("Done") { commitAndDismiss() }
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Metrics.electricStrain)
                 }
-            }
 
-            Spacer(minLength: 0)
+                modePicker
+
+                Group {
+                    switch mode {
+                    case .auto: autoContent
+                    case .zone: zoneContent
+                    case .strain: strainContent
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color.black.ignoresSafeArea())
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.black.ignoresSafeArea())
     }
 
     private var modePicker: some View {

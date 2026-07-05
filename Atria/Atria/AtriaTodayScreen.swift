@@ -34,11 +34,13 @@ struct AtriaTodayScreen: View {
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
     @State private var ringShareImage: UIImage?
-    /// Apple-Fitness-style scroll shrink: 0 at rest (full size), 1 once the
-    /// user has scrolled up past `Self.heroShrinkDistance`. Reduce Motion
-    /// keeps this pinned to full size (see `heroScale`/`heroOpacity`)
-    /// regardless of this value -- the hero simply never shrinks.
-    @State private var heroShrinkProgress: CGFloat = 0
+    // Apple-Fitness-style scroll shrink state now lives inside
+    // `AtriaTodayHeroShrink` (perf pass, 2026-07-06): it owns its own
+    // `progress` @State and the `.onScrollGeometryChange` observation, so
+    // per-scroll-step writes invalidate only that small view -- this parent
+    // body (ring construction, glance grid, plan/coach cards) no longer reads
+    // any scroll-shrink state and so no longer re-evaluates on every scroll
+    // quantum. Completes the isolation commit 28797998 started.
     /// Read-through cache for glance-tile derivations that are expensive to
     /// recompute (filters/sorts over rollup or workout history) but only
     /// change when the underlying aggregate actually changes -- see
@@ -184,27 +186,8 @@ struct AtriaTodayScreen: View {
             }
             #endif
         }
-        // Apple-Fitness-style hero shrink: reads the *ancestor* ScrollView's
-        // (owned by the Overview/Home screen this is embedded in) live
-        // content offset without any prop-drilling, and drives
-        // `heroShrinkProgress` from it. Reduce Motion is honored in
-        // `heroScale`/`heroOpacity` themselves, not by skipping this update,
-        // so the state stays consistent if the setting changes mid-scroll.
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, newValue in
-            let clamped = min(max(newValue, 0), Self.heroShrinkDistance)
-            // Quantized to 5% steps: a raw per-frame write re-evaluates the
-            // whole screen ~60x/s during scroll — the "hanging" the user felt.
-            let quantized = (clamped / Self.heroShrinkDistance * 20).rounded() / 20
-            if quantized != heroShrinkProgress {
-                heroShrinkProgress = quantized
-            }
-        }
     }
 
-    /// Scroll distance (points) over which the hero fully shrinks/fades.
-    private static let heroShrinkDistance: CGFloat = 140
     private static let heroMinScale: CGFloat = 0.6
 
     /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
@@ -346,15 +329,15 @@ struct AtriaTodayScreen: View {
             // test_handoff_static_checks.py -- see that file for the note
             // citing this migration).
             //
-            // Perf pass (2026-07-05): the scroll-driven scale/opacity used to
-            // be applied here, directly inside AtriaTodayScreen's own body --
-            // every `heroShrinkProgress` write (quantized, but still ~20
-            // steps over a full scroll) forced this whole property (ring
-            // construction + all its slot/metric plumbing) to be rebuilt.
-            // `AtriaTodayHeroShrink` isolates the scale/opacity consumer in
-            // its own `View` so the per-step churn during scroll shows up on
-            // its own probe line instead of amplifying `AtriaTodayScreen`'s.
-            AtriaTodayHeroShrink(progress: heroShrinkProgress, minScale: Self.heroMinScale) {
+            // Perf pass (2026-07-06): `AtriaTodayHeroShrink` now OWNS the
+            // scroll-shrink `progress` @State and the `.onScrollGeometryChange`
+            // observation. Previously the progress lived on AtriaTodayScreen
+            // and was read here, so every quantized scroll write re-evaluated
+            // this whole property (ring construction + slot/metric plumbing)
+            // AND the rest of the parent body. Now the per-step churn is fully
+            // contained in the small child view -- the parent no longer reads
+            // any scroll state, so it stops re-evaluating on scroll entirely.
+            AtriaTodayHeroShrink(minScale: Self.heroMinScale) {
                 AtriaTriRing(slots: ringSlots.map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
                              centerValue: centerValue,
                              centerState: centerState,
@@ -960,8 +943,21 @@ struct AtriaTodayScreen: View {
         dayDescendingRollups.first
     }
 
+    /// The current week's plan. `WeeklyPlanStore().currentPlan` does
+    /// synchronous disk I/O (read + generate + atomic write on a cache miss),
+    /// so it must never run from a body-level computed property on the scroll
+    /// path -- memoize it behind the rollup revision (measured-perf pass,
+    /// 2026-07-06). The plan only depends on the rollups, so this recomputes
+    /// at most once per actual rollup change, not on every scroll/live eval.
     private var weeklyPlan: WeeklyPlan {
-        WeeklyPlanStore().currentPlan(rollups: highlightRollups)
+        let revision = store.dailyRollupHistoryRevision
+        if glanceMemo.weeklyPlanRevision == revision, let cached = glanceMemo.weeklyPlanValue {
+            return cached
+        }
+        let plan = WeeklyPlanStore().currentPlan(rollups: highlightRollups)
+        glanceMemo.weeklyPlanRevision = revision
+        glanceMemo.weeklyPlanValue = plan
+        return plan
     }
 
     private var weeklyReport: WeeklyReport {
@@ -1083,10 +1079,24 @@ struct AtriaTodayScreen: View {
                           sessionsCount: displayHero.sessionsCount)
     }
 
+    /// The AI-coach narrative payload. Building it sorts and ISO/weekday-
+    /// formats the last-7 rollups, so -- like `weeklyPlan` -- it must not run
+    /// from a body computed property on the scroll/live path. Memoized behind
+    /// the rollup revision (measured-perf pass, 2026-07-06): the payload is
+    /// rollup-driven (the live `coachContext` is only a cold-start fallback
+    /// for the narrative, which changes slowly), so a once-per-rollup-change
+    /// refresh is correct and keeps the coaching copy stable between updates.
     private var coachPayload: AtriaCoachPayload {
-        AtriaCoachPayload.fromRollups(rollups: Array(highlightRollups.prefix(7)),
-                                      fallback: coachContext,
-                                      baselines: coachBaselines)
+        let revision = store.dailyRollupHistoryRevision
+        if glanceMemo.coachPayloadRevision == revision, let cached = glanceMemo.coachPayloadValue {
+            return cached
+        }
+        let payload = AtriaCoachPayload.fromRollups(rollups: Array(highlightRollups.prefix(7)),
+                                                    fallback: coachContext,
+                                                    baselines: coachBaselines)
+        glanceMemo.coachPayloadRevision = revision
+        glanceMemo.coachPayloadValue = payload
+        return payload
     }
 
     private var coachBaselines: [String: AtriaCoachPayload.VitalRange] {
@@ -1461,6 +1471,21 @@ private final class AtriaTodayGlanceMemo {
     var workoutsOneLiner: String?
     var dayDescendingRevision: Int?
     var dayDescendingRollups: [DailyRollupStoreEntry]?
+    // Perf pass (2026-07-06 scroll-hang fix): the weekly plan card ran
+    // `WeeklyPlanStore().currentPlan` -- synchronous disk read (+ generate +
+    // atomic write on a cache miss) -- and the AI coach payload sorted and
+    // ISO-formatted the last-7 rollups, both from computed properties read
+    // directly in `body`. That put file I/O and a sort on the scroll path:
+    // `body` re-evaluates on every quantized hero-shrink step and every
+    // ~750ms live tick, so on a device with a real rollup file these were
+    // the dominant cause of the reported scroll "hang"/lag (invisible in the
+    // simulator, which has no saved plan file and no scroll-under-load).
+    // Cache both behind `store.dailyRollupHistoryRevision` so they run at
+    // most once per actual rollup change, never on the scroll/live path.
+    var weeklyPlanRevision: Int?
+    var weeklyPlanValue: WeeklyPlan?
+    var coachPayloadRevision: Int?
+    var coachPayloadValue: AtriaCoachPayload?
 }
 
 /// Isolates the Apple-Fitness-style hero scroll-shrink consumer (scale +
@@ -1472,11 +1497,22 @@ private final class AtriaTodayGlanceMemo {
 /// still owned and driven by the parent's `.onScrollGeometryChange` (measured-
 /// perf pass, 2026-07-05) -- this view is a pure pass-through consumer of it.
 private struct AtriaTodayHeroShrink<Content: View>: View {
-    let progress: CGFloat
     let minScale: CGFloat
     @ViewBuilder let content: () -> Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Perf pass (2026-07-06): this view now OWNS the shrink progress and the
+    /// `.onScrollGeometryChange` observation, so per-scroll-step writes
+    /// invalidate only this small view -- not the entire AtriaTodayScreen body
+    /// (glance grid, plan/coach cards, ring). `.onScrollGeometryChange` reads
+    /// the nearest ancestor ScrollView regardless of which descendant it is
+    /// attached to, so observing from here is equivalent to observing from the
+    /// parent, minus the whole-body invalidation. 0 at rest, 1 once scrolled
+    /// past `shrinkDistance`; Reduce Motion pins `scale`/`opacity` regardless.
+    @State private var progress: CGFloat = 0
+
+    /// Scroll distance (points) over which the hero fully shrinks/fades.
+    private static var shrinkDistance: CGFloat { 140 }
 
     private var scale: CGFloat {
         guard !reduceMotion else { return 1.0 }
@@ -1497,6 +1533,16 @@ private struct AtriaTodayHeroShrink<Content: View>: View {
             // pins both to their resting values.
             .scaleEffect(scale, anchor: .top)
             .opacity(opacity)
+            // Own the ancestor-ScrollView observation here so per-scroll-step
+            // writes stay contained in this view. Quantized to 5% steps so a
+            // raw per-frame offset can't thrash even this small body.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, newValue in
+                let clamped = min(max(newValue, 0), Self.shrinkDistance)
+                let quantized = (clamped / Self.shrinkDistance * 20).rounded() / 20
+                if quantized != progress { progress = quantized }
+            }
     }
 }
 

@@ -2518,7 +2518,15 @@ private struct WorkoutReplaySummary {
                 || bestThresholdGapBPM <= 10
         }
         if moderateStrengthReviewCandidate {
-            return true
+            // Contact-artifact alignment (2026-07-06 false-positive pass):
+            // mirror the nearMiss branch above -- a moderate-strength signal
+            // must carry at least some contact-qualified sustained effort to
+            // surface a workout review prompt. Previously this branch returned
+            // review-worthy on HR thresholds alone, so ordinary daily HR
+            // elevation (stairs, a stressful meeting) with no sustained
+            // contact-qualified bout could nag as a possible workout -- the
+            // "randomly classifies activity as a workout" the owner reported.
+            return bestContactQualifiedLongestBout > 0
         }
         return false
     }

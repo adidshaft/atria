@@ -320,80 +320,82 @@ struct AtriaMetricZoneInfoSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 12) {
-                    Image(systemName: zone.warningSystemImage ?? "checkmark.circle.fill")
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(zone.tint)
-                        .frame(width: 42, height: 42)
-                        .background(AtriaIconTileBackground(cornerRadius: 14, tint: zone.tint))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 12) {
+                        Image(systemName: zone.warningSystemImage ?? "checkmark.circle.fill")
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(zone.tint)
+                            .frame(width: 42, height: 42)
+                            .background(AtriaIconTileBackground(cornerRadius: 14, tint: zone.tint))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(zone.title)
-                            .font(.headline.weight(.semibold))
-                        Text(zone.current)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(zone.title)
+                                .font(.headline.weight(.semibold))
+                            Text(zone.current)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Target zone")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(zone.targetSummary)
-                        .font(.body.weight(.semibold))
-                }
-                .padding(14)
-                .atriaInsetCard(tint: zone.tint)
-
-                HStack(spacing: 10) {
-                    Image(systemName: "checklist.checked")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(zone.tint)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Source")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Target zone")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(zone.sourceLabel)
-                            .font(.subheadline.weight(.semibold))
+                        Text(zone.targetSummary)
+                            .font(.body.weight(.semibold))
                     }
+                    .padding(14)
+                    .atriaInsetCard(tint: zone.tint)
+
+                    HStack(spacing: 10) {
+                        Image(systemName: "checklist.checked")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(zone.tint)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Source")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(zone.sourceLabel)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14)
+                    .atriaInsetCard(tint: zone.tint)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("What to do")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(zone.recommendation)
+                            .font(.body)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(14)
+                    .atriaInsetCard(tint: zone.tint)
+
+                    Text(zone.disclaimer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let onEditTarget {
+                        Button {
+                            dismiss()
+                            onEditTarget()
+                        } label: {
+                            Label("Edit target", systemImage: "target")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .atriaCardAction(prominent: true, tint: zone.tint)
+                        .accessibilityHint("Opens the target controls for this metric.")
+                    }
+
                     Spacer(minLength: 0)
                 }
-                .padding(14)
-                .atriaInsetCard(tint: zone.tint)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("What to do")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(zone.recommendation)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(14)
-                .atriaInsetCard(tint: zone.tint)
-
-                Text(zone.disclaimer)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let onEditTarget {
-                    Button {
-                        dismiss()
-                        onEditTarget()
-                    } label: {
-                        Label("Edit target", systemImage: "target")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .atriaCardAction(prominent: true, tint: zone.tint)
-                    .accessibilityHint("Opens the target controls for this metric.")
-                }
-
-                Spacer(minLength: 0)
+                .padding(20)
             }
-            .padding(20)
             .navigationTitle("Metric info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
