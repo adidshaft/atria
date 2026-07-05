@@ -1411,7 +1411,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "title: \"Training load readiness\"",
             "AtriaGlanceMetricCard(title: \"VO2max\"",
             "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
-            "detail: vo2MaxEstimate.value == nil ? \"Building\" : vo2MaxDetailText",
+            # 2026-07-06: not-ready word standardized "Building" -> "Learning".
+            "detail: vo2MaxEstimate.value == nil ? \"Learning\" : vo2MaxDetailText",
             "private var vo2MaxDetailText: String",
             "let confidence = vo2MaxEstimate.confidence.capitalized",
             "guard vo2MaxEstimate.trendText != \"Learning\" else { return confidence }",

@@ -262,7 +262,7 @@ struct AtriaHealthScreen: View {
                 // sheet (section 3), not just the education sheet, per spec.
                 AtriaHealthMetricRow(title: "VO2 max",
                                      value: profileMetricsStore.state.vo2MaxEstimate.valueText,
-                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Building" : "Estimate",
+                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Learning" : "Estimate",
                                      systemImage: "lungs.fill",
                                      tint: Metrics.electricGreen,
                                      onTap: { metricDetail = .vo2max })

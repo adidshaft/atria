@@ -2334,7 +2334,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var dailyFocusItems: [AtriaDailyFocusRail.Item] {
         [
             AtriaDailyFocusRail.Item(title: "Recovery",
-                                     value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Building",
+                                     value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Learning",
                                      detail: recoveryDetailText,
                                      systemImage: AtriaTodayMetric.recovery.systemImage,
                                      tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
@@ -2394,7 +2394,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var triRingRecoveryMetric: AtriaTriRingMetric {
         AtriaTriRingMetric(title: "Recovery",
-                           value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Building",
+                           value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Learning",
                            detail: recoveryTriRingDetailText,
                            systemImage: AtriaTodayMetric.recovery.systemImage,
                            tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
@@ -2829,7 +2829,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   zone: sleepEfficiencyZone,
                                   accessibilityDetail: sleepHistory.latest?.sleepEfficiency == nil
                                     ? "Sleep efficiency is building from saved sleep duration."
-                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "Building").",
+                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "Learning").",
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
@@ -2885,7 +2885,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .vo2max:
             AtriaGlanceMetricCard(title: "VO2max",
                                   value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
-                                  detail: vo2MaxEstimate.value == nil ? "Building" : vo2MaxDetailText,
+                                  detail: vo2MaxEstimate.value == nil ? "Learning" : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
                                   tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
                                   zone: vo2TrendZone,
@@ -2995,7 +2995,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var trendCard: some View {
         AtriaGlanceMetricCard(title: "Resting trend",
                               value: trendValues.count > 1 ? "\(trendValues.last ?? 0)" : "--",
-                              detail: trendValues.count > 1 ? "14 sessions" : "Building",
+                              detail: trendValues.count > 1 ? "14 sessions" : "Learning",
                               systemImage: AtriaTodayMetric.trend.systemImage,
                               tint: .red,
                               sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
@@ -3099,7 +3099,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         let detail = hero.hrvDetail.lowercased()
         if detail.contains("validated") { return "Checked" }
         if detail.contains("personal baseline") || detail.contains("% kept") { return "Personal baseline" }
-        return "Building"
+        return "Learning"
     }
 
     private var vo2MaxDetailText: String {
@@ -3121,7 +3121,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV baseline") {
                 base = "Building baseline"
             } else {
-                base = "Building"
+                base = "Learning"
             }
         }
         return hero.recoveryIsProvisional ? "\(base) · Early read" : base
@@ -6414,7 +6414,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .hrv:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
-                                      heroState: hrvBand == nil ? "Building" : "Typical",
+                                      heroState: hrvBand == nil ? "Learning" : "Typical",
                                       tint: .pink) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
@@ -6439,7 +6439,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .restingHeartRate:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
-                                      heroState: restingBand == nil ? "Building" : "Typical",
+                                      heroState: restingBand == nil ? "Learning" : "Typical",
                                       tint: .pink) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
@@ -6464,7 +6464,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
-                                      heroState: respiratoryBand == nil ? "Building" : "Typical",
+                                      heroState: respiratoryBand == nil ? "Learning" : "Typical",
                                       tint: .teal) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "lungs.fill",
@@ -6595,17 +6595,17 @@ struct AtriaMetricDetailSheet: View {
                                 bodyText: "Stress is a live, moment-to-moment estimate from heart rate and beat-to-beat timing. Atria doesn't save a daily stress history yet, so there's no trend chart here \u{2014} check the Stress tile for the current read, or open guided breathwork to bring it down.")
         case .vo2max:
             honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
-                                heroState: (vo2MaxEstimate?.value == nil) ? "Building" : "Estimate",
+                                heroState: (vo2MaxEstimate?.value == nil) ? "Learning" : "Estimate",
                                 tint: Metrics.electricGreen,
                                 bodyText: vo2MaxEstimate?.narrative ?? "VO2max is estimated from your resting heart-rate baseline and measured max heart rate. It sharpens as Atria gathers more sessions.")
         case .sleepEfficiency:
             honestPartialDetail(heroValue: sleepHistory.latest?.sleepEfficiencyText ?? "--",
-                                heroState: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based estimate",
+                                heroState: sleepHistory.latest?.sleepEfficiency == nil ? "Learning" : "Duration-based estimate",
                                 tint: Metrics.electricSleep,
                                 bodyText: "Sleep efficiency is estimated from time asleep versus time in bed. Atria doesn't save a night-by-night efficiency trend here yet \u{2014} the current estimate is shown above.")
         case .skinTemperature:
             honestPartialDetail(heroValue: (skinTemperatureDeviation?.isReady == true) ? skinTemperatureDeviation!.valueText : "--",
-                                heroState: (skinTemperatureDeviation?.isReady == true) ? "vs sleep baseline" : "Building",
+                                heroState: (skinTemperatureDeviation?.isReady == true) ? "vs sleep baseline" : "Learning",
                                 tint: .teal,
                                 bodyText: skinTemperatureDeviation?.footnoteText ?? "Skin temperature is a relative, sleep-only research signal compared with your own recent baseline \u{2014} not an absolute body temperature.")
         case .hrZones:
@@ -6625,7 +6625,7 @@ struct AtriaMetricDetailSheet: View {
     /// current value but no saved daily trend yet -- renders the hero value
     /// plus an explanatory card instead of a fabricated chart.
     private func honestPartialDetail(heroValue: String,
-                                     heroState: String = "Building",
+                                     heroState: String = "Learning",
                                      tint: Color,
                                      bodyText: String) -> some View {
         AtriaMetricDetailTemplate(heroValue: heroValue, heroState: heroState, tint: tint) {
@@ -6648,7 +6648,7 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var sleepPerformanceHeroState: String {
-        preparedHistory.sleepPerformance[range]?.last == nil ? "Building" : "of nightly need"
+        preparedHistory.sleepPerformance[range]?.last == nil ? "Learning" : "of nightly need"
     }
 
     private var fitnessAgeHeroValue: String {
@@ -6658,7 +6658,7 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var fitnessAgeHeroState: String {
-        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return "Building" }
+        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return "Learning" }
         if latest == 0 { return "Matches your age" }
         return latest < 0 ? "younger" : "older"
     }

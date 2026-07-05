@@ -889,7 +889,7 @@ private enum AtriaHealthMonitorRangeState: Equatable {
         case .inRange: return "In range"
         case .aboveTypical: return "Above typical"
         case .belowTypical: return "Below typical"
-        case .building: return "Building"
+        case .building: return "Learning"
         case .research: return "Early"
         }
     }
