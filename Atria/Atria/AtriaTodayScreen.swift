@@ -114,28 +114,13 @@ struct AtriaTodayScreen: View {
 
             LazyVGrid(columns: glanceColumns, spacing: 10) {
                 ForEach(glanceItems) { item in
-                    if item.id == "Stress" {
-                        Button {
-                            showBreathworkSession = true
-                        } label: {
-                            AtriaTodayGlanceTile(item: item)
-                        }
-                        .buttonStyle(.plain)
+                    glanceTile(for: item)
                         .gridCellColumns(glanceColumnSpan(for: item))
                         .contextMenu {
                             Button(action: onCustomizeToday) {
                                 Label("Customize Today", systemImage: "slider.horizontal.3")
                             }
                         }
-                    } else {
-                        AtriaTodayGlanceTile(item: item)
-                            .gridCellColumns(glanceColumnSpan(for: item))
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
-                            }
-                    }
                 }
             }
 
@@ -164,7 +149,10 @@ struct AtriaTodayScreen: View {
                                    guidance: displayHero.guidance,
                                    recoveryEstimate: displayHero.recoveryEstimate,
                                    sleepGoalHours: sleepGoalHours,
-                                   sleepBaseNeedHours: sleepBaseNeedHours)
+                                   sleepBaseNeedHours: sleepBaseNeedHours,
+                                   hrZoneMinutes: displayHero.hrZoneMinutes,
+                                   vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+                                   skinTemperatureDeviation: store.imuAuditSummary.skinTemperatureDeviation)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -248,6 +236,60 @@ struct AtriaTodayScreen: View {
 
     private func glanceColumnSpan(for item: AtriaTodayGlanceItem) -> Int {
         min(item.layoutSize.columnSpan, glanceColumnCount)
+    }
+
+    /// Route audit (visibilitySpec §3, 2026-07-05): every glance tile used to
+    /// dead-end on tap except Stress -- and even that was broken (see below),
+    /// so in practice ALL of them dead-ended. Maps each metric to the detail
+    /// kind it should open; tiles with no honest detail yet (load, workouts,
+    /// steps, calories, trend, insights) are intentionally left out rather
+    /// than routed to a placeholder.
+    private static let glanceDetailRoutes: [AtriaTodayMetric: AtriaMetricDetailKind] = [
+        .recovery: .recovery,
+        .strain: .strain,
+        .strainCompare: .strain,
+        .hrv: .hrv,
+        .rhr: .restingHeartRate,
+        .respiratoryRate: .respiratoryRate,
+        .sleep: .sleep,
+        .sleepHistory: .sleep,
+        .sleepEfficiency: .sleep,
+        .sleepPerformance: .sleepPerformance,
+        .vo2max: .vo2max,
+        .bioAge: .fitnessAge,
+        .bodyTemp: .skinTemperature,
+        .hrZones: .hrZones,
+        .bloodOxygen: .bloodOxygen
+    ]
+
+    /// Wraps a glance tile in whatever tap affordance it honestly supports.
+    /// Stress keeps its dedicated breathwork shortcut (previously gated on a
+    /// broken `item.id == "Stress"` string check -- `AtriaTodayMetric.stress`
+    /// raw-values to `"stress"`, never the capitalized literal, so that
+    /// branch never actually ran and Stress dead-ended along with everything
+    /// else). Everything else that has a real or honest-partial detail opens
+    /// `metricDetail`; anything without one renders as a plain, non-tappable
+    /// tile rather than a fake affordance.
+    @ViewBuilder
+    private func glanceTile(for item: AtriaTodayGlanceItem) -> some View {
+        let metric = AtriaTodayMetric(rawValue: item.metricKey)
+        if metric == .stress {
+            Button {
+                showBreathworkSession = true
+            } label: {
+                AtriaTodayGlanceTile(item: item)
+            }
+            .buttonStyle(.plain)
+        } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
+            Button {
+                metricDetail = detail
+            } label: {
+                AtriaTodayGlanceTile(item: item)
+            }
+            .buttonStyle(.plain)
+        } else {
+            AtriaTodayGlanceTile(item: item)
+        }
     }
 
     private var topActionMenu: some View {
@@ -729,8 +771,29 @@ struct AtriaTodayScreen: View {
         return "Sleep"
     }
 
+    /// Single honest source for "percent of nightly need", wherever sleep
+    /// shows a percent -- the ring fill/state-tint AND the ring-center "X% of
+    /// need" caption (`centerState`). Computed the same live way as the
+    /// hours-first value/detail above (`sleepNeedHoursValue`), from the same
+    /// `latestSleep` night, so the percent a user sees can never disagree with
+    /// the hours they see.
+    ///
+    /// Data-coherence fix (2026-07-05): this used to read the *stored*
+    /// `latestRollup.sleepPerformance` (written once, against whatever
+    /// duration/need was known at that write time) while the hours-first
+    /// caption read the *live* `sleepHistorySnapshot` -- the two could
+    /// disagree, seen on device as a chip reading "2h 57m of 9h 04m need"
+    /// (~33%) alongside a "9% of need" caption. Falls back to the stored
+    /// rollup value only when there's no `Night` on record at all yet.
+    private var sleepPerformancePercent: Int? {
+        if let latestSleep {
+            return store.sleepHistorySnapshot.sleepPerformancePercent(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+        }
+        return latestRollup?.sleepPerformance
+    }
+
     private var sleepMetric: AtriaTriRingMetric {
-        let performance = latestRollup?.sleepPerformance
+        let performance = sleepPerformancePercent
         // Hours-first, always: falls back to the rollup's stored duration
         // before ever falling back to a bare percent as the primary number.
         let value = latestSleep?.durationText
@@ -926,7 +989,7 @@ struct AtriaTodayScreen: View {
             if displayRecovery.detail == "yesterday" { return "yesterday" }
             return displayRecovery.percent.map(recoveryState) ?? "Building"
         case .sleep:
-            return latestRollup?.sleepPerformance.map { "\($0)% of need" } ?? sleepMetric.detail
+            return sleepPerformancePercent.map { "\($0)% of need" } ?? sleepMetric.detail
         case .strain:
             return strainMetric.detail
         }
@@ -1150,6 +1213,14 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))
+        case .sleepPerformance:
+            return AtriaTodayGlanceItem(title: metric.label,
+                                        metricKey: metric.rawValue,
+                                        value: latestRollup?.sleepPerformance.map { "\($0)%" } ?? "Building",
+                                        detail: legendDetail("of need"),
+                                        systemImage: metric.systemImage,
+                                        tint: Metrics.electricSleep,
+                                        layoutSize: layoutSize(for: metric))
         case .rhr:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -1199,12 +1270,16 @@ struct AtriaTodayScreen: View {
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
         case .bloodOxygen:
+            // Honest permanent state (2026-07-05): this strap's hardware has no
+            // validated SpO2 path -- "Building"/"Signal" implied a percentage was
+            // coming. It never is, so this is a stable, non-promissory state
+            // (mirrors the steps honesty pattern), not a "still learning" one.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail("Signal"),
+                                        value: "\u{2014}",
+                                        detail: legendDetail("Not available on this strap"),
                                         systemImage: metric.systemImage,
-                                        tint: .pink,
+                                        tint: .secondary,
                                         layoutSize: layoutSize(for: metric))
         case .bodyTemp:
             return AtriaTodayGlanceItem(title: metric.label,

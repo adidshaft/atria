@@ -1,0 +1,368 @@
+import SwiftUI
+
+// MARK: - Model
+
+/// One day's checkmark state for a single routine target. `.noData` and
+/// `.missed` are deliberately distinct: `.noData` means Atria has no signal
+/// to judge the day (no strap rollup at all that day), `.missed` means there
+/// IS a signal and it didn't clear the bar. Collapsing the two would either
+/// scold users for days the strap wasn't worn, or quietly hide real misses --
+/// this card does neither.
+enum AtriaRoutineDayState: Equatable {
+    case kept
+    case missed
+    case noData
+    case upcoming
+}
+
+struct AtriaRoutineDay: Equatable, Identifiable {
+    let date: Date
+    let state: AtriaRoutineDayState
+    var id: Date { date }
+}
+
+struct AtriaRoutineTarget: Equatable, Identifiable {
+    enum Kind: String, CaseIterable {
+        case bedtime
+        case workout
+        case journal
+    }
+
+    let kind: Kind
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    /// Current ISO week, Monday...Sunday, oldest first. 7 entries.
+    let week: [AtriaRoutineDay]
+    /// Current streak of kept days, computed over a longer lookback window
+    /// than the visible week (see `AtriaRoutineComputer`) so a streak that
+    /// started last week doesn't visually reset to 0 every Monday.
+    let streak: Int
+
+    var id: String { kind.rawValue }
+}
+
+struct AtriaRoutineSummary: Equatable {
+    let isoYear: Int
+    let isoWeek: Int
+    let targets: [AtriaRoutineTarget]
+    /// False only when there is truly nothing to show yet (no rollups, no
+    /// journal entries at all) -- gates the honest empty state.
+    let hasAnyHistory: Bool
+}
+
+// MARK: - Computer (pure; no SwiftUI/store dependency)
+
+/// v1 routine/streak math (gap spec d): a pure function over data the app
+/// already computes elsewhere -- `DailyRollupStoreEntry` (bedtime, strain)
+/// and `BehaviorJournalEntry` (journal logging). No new tracking, no new
+/// persistence.
+enum AtriaRoutineComputer {
+    /// Matches `WeeklyPlan`'s ISO-week calendar so the Routine card and the
+    /// "This week" plan card always agree on what "this week" means.
+    static let isoCalendar: Calendar = {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = .current
+        return calendar
+    }()
+
+    /// Strain threshold for "workout done" -- matches
+    /// `WeeklyPlan.workoutTarget`'s threshold exactly so the two cards never
+    /// disagree about whether a day counted.
+    static let workoutStrainThreshold: Double = 10
+
+    /// Minutes of grace after the median recent bedtime -- matches
+    /// `WeeklyPlan.bedtimeTarget`'s "+20" buffer.
+    private static let bedtimeGraceMinutes = 20
+
+    /// How far back "current streak" looks so a streak begun last week
+    /// doesn't appear to reset on Monday even though only 7 days render.
+    private static let streakLookbackDays = 90
+
+    static func summary(rollups: [DailyRollupStoreEntry],
+                        journalEntries: [BehaviorJournalEntry],
+                        now: Date = Date(),
+                        calendar: Calendar = AtriaRoutineComputer.isoCalendar) -> AtriaRoutineSummary {
+        let today = calendar.startOfDay(for: now)
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? today
+        let weekDays = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: weekStart) }
+        let lookbackDays = (0..<streakLookbackDays).reversed().compactMap {
+            calendar.date(byAdding: .day, value: -$0, to: today)
+        }
+
+        var rollupsByDay: [Date: DailyRollupStoreEntry] = [:]
+        for entry in rollups {
+            rollupsByDay[calendar.startOfDay(for: entry.day)] = entry
+        }
+        let loggedJournalDays = Set(journalEntries
+            .filter { !$0.tags.isEmpty || !$0.healthAutoTags.isEmpty }
+            .map { calendar.startOfDay(for: $0.day) })
+
+        let recent28 = recentEntries(rollups, calendar: calendar, onOrBefore: today, count: 28)
+        let bedtimeTarget = bedtimeTargetMinute(recentRollups: recent28)
+
+        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+
+        let targets: [AtriaRoutineTarget] = AtriaRoutineTarget.Kind.allCases.map { kind in
+            func state(for day: Date) -> AtriaRoutineDayState {
+                dayState(for: kind,
+                        day: day,
+                        today: today,
+                        rollupsByDay: rollupsByDay,
+                        loggedJournalDays: loggedJournalDays,
+                        bedtimeTargetMinute: bedtimeTarget,
+                        calendar: calendar)
+            }
+            let weekStates = weekDays.map { AtriaRoutineDay(date: $0, state: state(for: $0)) }
+            let streak = currentStreak(lookbackDays.map(state(for:)))
+            return AtriaRoutineTarget(kind: kind,
+                                      title: title(for: kind),
+                                      subtitle: subtitle(for: kind, bedtimeTargetMinute: bedtimeTarget),
+                                      systemImage: systemImage(for: kind),
+                                      week: weekStates,
+                                      streak: streak)
+        }
+
+        return AtriaRoutineSummary(isoYear: components.yearForWeekOfYear ?? components.year ?? 0,
+                                   isoWeek: components.weekOfYear ?? 0,
+                                   targets: targets,
+                                   hasAnyHistory: !rollups.isEmpty || !journalEntries.isEmpty)
+    }
+
+    /// Longest RUNNING streak, processed in chronological order: a `.kept`
+    /// day extends it, `.missed`/`.noData` resets it to 0, `.upcoming`
+    /// (future days that haven't happened) is skipped rather than resetting
+    /// anything. The value after the last real day is "the current streak."
+    static func currentStreak(_ states: [AtriaRoutineDayState]) -> Int {
+        var current = 0
+        for state in states {
+            switch state {
+            case .kept:
+                current += 1
+            case .upcoming:
+                continue
+            case .missed, .noData:
+                current = 0
+            }
+        }
+        return current
+    }
+
+    // MARK: Per-day state
+
+    private static func dayState(for kind: AtriaRoutineTarget.Kind,
+                                 day: Date,
+                                 today: Date,
+                                 rollupsByDay: [Date: DailyRollupStoreEntry],
+                                 loggedJournalDays: Set<Date>,
+                                 bedtimeTargetMinute: Int,
+                                 calendar: Calendar) -> AtriaRoutineDayState {
+        let normalizedDay = calendar.startOfDay(for: day)
+        guard normalizedDay <= today else { return .upcoming }
+        switch kind {
+        case .bedtime:
+            guard let entry = rollupsByDay[normalizedDay], let minutes = entry.bedtimeMinutes else { return .noData }
+            return minuteIsNoLater(minutes, than: bedtimeTargetMinute) ? .kept : .missed
+        case .workout:
+            guard let entry = rollupsByDay[normalizedDay], let strain = entry.strain else { return .noData }
+            return strain >= workoutStrainThreshold ? .kept : .missed
+        case .journal:
+            // Unlike bedtime/workout (which depend on strap data that may
+            // simply be absent that day), a missing journal entry for a past
+            // day IS the ground truth -- the user didn't log. Honest to call
+            // it `.missed`, not `.noData`.
+            return loggedJournalDays.contains(normalizedDay) ? .kept : .missed
+        }
+    }
+
+    // MARK: Copy
+
+    private static func title(for kind: AtriaRoutineTarget.Kind) -> String {
+        switch kind {
+        case .bedtime: return "Bedtime kept"
+        case .workout: return "Workout day"
+        case .journal: return "Journal logged"
+        }
+    }
+
+    private static func systemImage(for kind: AtriaRoutineTarget.Kind) -> String {
+        switch kind {
+        case .bedtime: return "moon.zzz.fill"
+        case .workout: return "figure.run"
+        case .journal: return "square.and.pencil"
+        }
+    }
+
+    private static func subtitle(for kind: AtriaRoutineTarget.Kind, bedtimeTargetMinute: Int) -> String {
+        switch kind {
+        case .bedtime: return "By \(formatClockMinute(bedtimeTargetMinute))"
+        case .workout: return "\u{2265} \(Int(workoutStrainThreshold)) strain"
+        case .journal: return "Any tag logged"
+        }
+    }
+
+    // MARK: Bedtime target math
+
+    // The following mirrors `WeeklyPlan.bedtimeTarget`'s median+grace
+    // computation exactly (median recent bedtime + 20 minutes). It is
+    // duplicated rather than called because those methods are `private` to
+    // AtriaWeeklyPlan.swift, a file outside this feature's ownership --
+    // duplicating a few small pure functions keeps the two cards in
+    // agreement without editing that file.
+
+    private static func recentEntries(_ rollups: [DailyRollupStoreEntry],
+                                      calendar: Calendar,
+                                      onOrBefore today: Date,
+                                      count: Int) -> [DailyRollupStoreEntry] {
+        Array(rollups
+            .filter { calendar.startOfDay(for: $0.day) <= today }
+            .sorted { $0.day > $1.day }
+            .prefix(count))
+    }
+
+    private static func bedtimeTargetMinute(recentRollups: [DailyRollupStoreEntry]) -> Int {
+        let minutes = recentRollups.compactMap(\.bedtimeMinutes)
+        let median = medianMinute(minutes) ?? 23 * 60
+        return (median + bedtimeGraceMinutes) % 1_440
+    }
+
+    private static func medianMinute(_ minutes: [Int]) -> Int? {
+        guard !minutes.isEmpty else { return nil }
+        let normalized = minutes.map { minute -> Int in
+            let wrapped = ((minute % 1_440) + 1_440) % 1_440
+            return wrapped < 720 ? wrapped + 1_440 : wrapped
+        }.sorted()
+        return normalized[normalized.count / 2] % 1_440
+    }
+
+    private static func minuteIsNoLater(_ minute: Int, than target: Int) -> Bool {
+        normalizeBedtimeMinute(minute) <= normalizeBedtimeMinute(target)
+    }
+
+    private static func normalizeBedtimeMinute(_ minute: Int) -> Int {
+        let wrapped = ((minute % 1_440) + 1_440) % 1_440
+        return wrapped < 720 ? wrapped + 1_440 : wrapped
+    }
+
+    private static func formatClockMinute(_ minute: Int) -> String {
+        let wrapped = ((minute % 1_440) + 1_440) % 1_440
+        let hour = wrapped / 60
+        let mins = wrapped % 60
+        let suffix = hour >= 12 ? "PM" : "AM"
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        return String(format: "%d:%02d %@", displayHour, mins, suffix)
+    }
+}
+
+// MARK: - View
+
+/// v1 routine/streak card (gap spec d): pure visualization over data the app
+/// already has -- `WeeklyPlan`'s underlying rollups and the behavior journal.
+/// No new tracking, no new stores. Mounted in the Journal tab near the cycle
+/// card.
+struct AtriaRoutineCard: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        let summary = AtriaRoutineComputer.summary(rollups: store.dailyRollupHistory,
+                                                   journalEntries: store.behaviorJournalEntries)
+        VStack(alignment: .leading, spacing: 14) {
+            AtriaPanelSectionHeader(title: "Routine",
+                                    subtitle: "This week \u{00B7} W\(summary.isoWeek)")
+
+            if summary.hasAnyHistory {
+                VStack(spacing: 14) {
+                    ForEach(summary.targets) { target in
+                        AtriaRoutineTargetRow(target: target)
+                    }
+                }
+            } else {
+                emptyState
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private var emptyState: some View {
+        Text("Log a few days \u{2014} bedtime, a workout, a journal tag \u{2014} and Atria will track your streaks here.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct AtriaRoutineTargetRow: View, Equatable {
+    let target: AtriaRoutineTarget
+
+    static func == (lhs: AtriaRoutineTargetRow, rhs: AtriaRoutineTargetRow) -> Bool {
+        lhs.target == rhs.target
+    }
+
+    private static let weekdaySymbols = ["M", "T", "W", "T", "F", "S", "S"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(target.title, systemImage: target.systemImage)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                if target.streak > 0 {
+                    AtriaStatusChip(text: "\(target.streak)d streak",
+                                    systemImage: "flame.fill",
+                                    tint: .orange)
+                }
+            }
+
+            Text(target.subtitle)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                ForEach(Array(target.week.enumerated()), id: \.offset) { index, day in
+                    dayDot(day, label: Self.weekdaySymbols[index % Self.weekdaySymbols.count])
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func dayDot(_ day: AtriaRoutineDay, label: String) -> some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .fill(fillColor(day.state))
+                if day.state == .upcoming {
+                    Circle()
+                        .strokeBorder(Color.primary.opacity(0.16), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                }
+                if day.state == .kept {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                } else if day.state == .missed {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            .frame(width: 22, height: 22)
+
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityHidden(true)
+    }
+
+    private func fillColor(_ state: AtriaRoutineDayState) -> Color {
+        switch state {
+        case .kept: return .cyan
+        case .missed: return .red.opacity(0.55)
+        case .noData: return .primary.opacity(0.08)
+        case .upcoming: return .clear
+        }
+    }
+}

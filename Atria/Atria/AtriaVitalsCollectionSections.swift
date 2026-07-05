@@ -3586,7 +3586,10 @@ private struct AtriaSleepContextLens: View, Equatable {
     }
 }
 
-private struct AtriaSleepStageSummary: View, Equatable {
+/// De-privatized (visibilitySpec §2, 2026-07-05) so `AtriaHealthScreen` (the
+/// live Vitals tab) can mount it directly, alongside this orphaned card's own
+/// usage above -- no logic change.
+struct AtriaSleepStageSummary: View, Equatable {
     let night: SleepHistorySnapshot.Night
 
     var body: some View {
@@ -3656,7 +3659,8 @@ private struct AtriaSleepStageSummary: View, Equatable {
     }
 }
 
-private struct AtriaSleepStageBuildingSummary: View, Equatable {
+/// De-privatized (visibilitySpec §2, 2026-07-05) -- see `AtriaSleepStageSummary`.
+struct AtriaSleepStageBuildingSummary: View, Equatable {
     let night: SleepHistorySnapshot.Night
 
     var body: some View {

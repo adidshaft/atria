@@ -3550,7 +3550,22 @@ final class SessionStore: ObservableObject {
                       respiratoryRows,
                       rrSessionCandidates,
                       sessions.count)
-        for entry in entries {
+        // Pace-of-aging trend: stamp today's rollup row with the current fitness-age
+        // delta (only once BiologicalAgeSummary.isReady) so the trend can be built
+        // from the slope of this value over time. Past days keep whatever delta was
+        // already persisted for them — makeDailyRollupStoreEntries recomputes those
+        // rows fresh each refresh and has no way to know a historical delta.
+        let today = calendar.startOfDay(for: Date())
+        let todaysFitnessAgeSummary = biologicalAgeSummary(vo2MaxEstimate: vo2MaxEstimateSummary(rest: baseline.restingInt ?? 60,
+                                                                                                  maxHR: profile.maxHR))
+        for var entry in entries {
+            if calendar.isDate(entry.day, inSameDayAs: today) {
+                if todaysFitnessAgeSummary.isReady {
+                    entry.fitnessAgeDelta = todaysFitnessAgeSummary.ageDelta
+                }
+            } else {
+                entry.fitnessAgeDelta = dailyRollupStore.rollup(for: entry.day)?.fitnessAgeDelta
+            }
             dailyRollupStore.upsert(entry)
         }
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
@@ -3603,6 +3618,7 @@ final class SessionStore: ObservableObject {
                                            respiratoryRate: existing?.respiratoryRate,
                                            vitals: existing?.vitals,
                                            nutrition: summary,
+                                           fitnessAgeDelta: existing?.fitnessAgeDelta,
                                            calendar: calendar)
         dailyRollupStore.upsert(merged)
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)

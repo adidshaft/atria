@@ -25,6 +25,12 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     var respiratoryRate: Double?
     var vitals: DailyRollupVitals?
     var nutrition: AtriaNutritionSummary?
+    /// Fitness-age delta (biological minus chronological years) for this day,
+    /// captured only once `BiologicalAgeSummary.isReady` — persisted so the
+    /// pace-of-aging trend can be computed from the slope of this value over
+    /// time. Additive/optional so legacy rollup rows without this field keep
+    /// decoding via `decodeIfPresent` (nil).
+    var fitnessAgeDelta: Int?
 
     var id: Date { day }
 
@@ -41,6 +47,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case respiratoryRate
         case vitals
         case nutrition
+        case fitnessAgeDelta
     }
 
     init(day: Date,
@@ -55,6 +62,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          respiratoryRate: Double? = nil,
          vitals: DailyRollupVitals? = nil,
          nutrition: AtriaNutritionSummary? = nil,
+         fitnessAgeDelta: Int? = nil,
          calendar: Calendar = .current) {
         self.day = calendar.startOfDay(for: day)
         self.tzOffsetMinutes = tzOffsetMinutes ?? TimeZone.current.secondsFromGMT(for: day) / 60
@@ -68,6 +76,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.respiratoryRate = respiratoryRate
         self.vitals = vitals
         self.nutrition = nutrition
+        self.fitnessAgeDelta = fitnessAgeDelta
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +99,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
         vitals = try container.decodeIfPresent(DailyRollupVitals.self, forKey: .vitals)
         nutrition = try container.decodeIfPresent(AtriaNutritionSummary.self, forKey: .nutrition)
+        fitnessAgeDelta = try container.decodeIfPresent(Int.self, forKey: .fitnessAgeDelta)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -106,6 +116,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
         try container.encodeIfPresent(vitals, forKey: .vitals)
         try container.encodeIfPresent(nutrition, forKey: .nutrition)
+        try container.encodeIfPresent(fitnessAgeDelta, forKey: .fitnessAgeDelta)
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -160,6 +171,7 @@ final class DailyRollupStore {
                                                respiratoryRate: rollup.respiratoryRate,
                                                vitals: rollup.vitals,
                                                nutrition: rollup.nutrition,
+                                               fitnessAgeDelta: rollup.fitnessAgeDelta,
                                                calendar: calendar)
         cache.removeAll { calendar.isDate($0.day, inSameDayAs: normalized.day) }
         cache.append(normalized)

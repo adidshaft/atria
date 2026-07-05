@@ -401,6 +401,7 @@ private struct AtriaCustomizePreview: View {
         case .sleep: return "7:42"
         case .sleepHistory: return "5/7"
         case .sleepEfficiency: return "91%"
+        case .sleepPerformance: return "88%"
         case .rhr: return "58"
         case .respiratoryRate: return "14.2"
         case .steps: return "8.2k"
@@ -419,7 +420,7 @@ private struct AtriaCustomizePreview: View {
         switch metric {
         case .recovery: return Metrics.recoveryColor(64)
         case .strain, .load, .calories, .strainCompare: return Metrics.electricStrain
-        case .sleep, .sleepHistory, .sleepEfficiency: return Metrics.electricSleep
+        case .sleep, .sleepHistory, .sleepEfficiency, .sleepPerformance: return Metrics.electricSleep
         case .hrv, .rhr, .respiratoryRate, .bloodOxygen: return .pink
         case .stress: return .cyan
         case .steps, .vo2max, .bioAge: return Metrics.electricGreen
