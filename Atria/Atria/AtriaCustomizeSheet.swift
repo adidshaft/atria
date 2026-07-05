@@ -77,9 +77,6 @@ struct AtriaCustomizeSheet: View {
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .bottomBar) {
-                    EditButton()
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         onCommit(draft.validated())
@@ -142,9 +139,18 @@ struct AtriaCustomizeSheet: View {
             }
             .onMove(perform: moveSelectedMetrics)
         } header: {
-            Text("Metric order")
+            // Discoverability (2026-07-05): the reorder Edit control used to live
+            // only in the bottom toolbar, so users rarely found it. Co-locate it in
+            // this section's header, right beside the list it reorders.
+            HStack {
+                Text("Metric order")
+                Spacer()
+                EditButton()
+                    .textCase(nil)
+                    .font(.footnote.weight(.semibold))
+            }
         } footer: {
-            Text("Use Edit to drag selected Today cards into the order you want.")
+            Text("Tap Edit, then drag by the handle to reorder your Today cards.")
         }
     }
 
