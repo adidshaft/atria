@@ -1708,6 +1708,211 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertFalse(readiness.reviewWorthyCandidate)
     }
 
+    // MARK: - July-4 stitched-ghost gating fix (2026-07-05)
+    //
+    // Prior to this fix, `contactCompromised`/`rrDisagreement` were only
+    // consulted by `reviewWorthyCandidate` -- `strengthCandidate` and
+    // `moderateStrengthReviewCandidate` themselves never guarded on them, so a
+    // watchdog-cycling/loose-contact night that failed `ready` for OTHER
+    // reasons (e.g. the workout-band bout/elevated-seconds hardening) could
+    // still read `strengthCandidate=true` and resurface via the strength
+    // review branch. These tests exercise `strengthCandidate`/
+    // `moderateStrengthReviewCandidate` directly (not just
+    // `reviewWorthyCandidate`) against the same fixture shapes as above.
+
+    func testStrengthCandidateItselfRejectsContactCompromisedSession() {
+        // Same watchdog-cycling artifact night as
+        // testArtifactContactGapNightProducesNoWorkoutCandidate: peak 120bpm
+        // over a 55bpm rest clears the strength peak-over-rest floor and sits
+        // within the borderline margin of the HRR50 threshold, so pre-fix
+        // this read strengthCandidate=true despite being contact-compromised.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var cursor: TimeInterval = 0
+        while cursor < 20 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+        var spacingToggle = false
+        let artifactEnd = cursor + 22 * 60
+        while cursor < artifactEnd {
+            points.append(SavedSession.Point(t: cursor, bpm: 120))
+            cursor += spacingToggle ? 12 : 5
+            spacingToggle.toggle()
+        }
+        let tailEnd = cursor + 18 * 60
+        while cursor < tailEnd {
+            points.append(SavedSession.Point(t: cursor, bpm: 55))
+            cursor += 5
+        }
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Sleep",
+                                            points: points,
+                                            rrPoints: nil,
+                                            hrRaw2A37: 1_000,
+                                            hrAccepted: 600,
+                                            hrZero: 300,
+                                            hrArtifactHeld: 100,
+                                            hrArtifactDropped: 100,
+                                            hrAcceptedGaps: 4,
+                                            hrMaxAcceptedGap: 150)
+
+        XCTAssertTrue(session.hrContactCompromised)
+
+        let readiness = session.workoutReadiness(rest: 55, maxHR: 190)
+
+        XCTAssertFalse(readiness.strengthCandidate,
+                       "a contact-compromised session must never read strengthCandidate=true, independent of reviewWorthyCandidate")
+        XCTAssertFalse(readiness.moderateStrengthReviewCandidate,
+                       "a contact-compromised session must never read moderateStrengthReviewCandidate=true")
+    }
+
+    func testStrengthCandidateItselfRejectsRRDisagreement() {
+        // Same RR-contradicts-reported-HR fixture as
+        // testRRContradictsElevationIsRejectedByAgreementCeiling: a clean,
+        // gap-free 120bpm stream (no artifact/zero share) that clears both
+        // the workout-band threshold and the strength peak-over-rest floor,
+        // but whose RR channel implies ~55bpm throughout. Pre-fix this read
+        // strengthCandidate=true despite the RR contradiction.
+        let rest = 50
+        let maxHR = 170
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        var cursor: TimeInterval = 0
+        while cursor < 20 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 120))
+            cursor += 5
+        }
+        var rrCursor: TimeInterval = 0
+        while rrCursor < 20 * 60 {
+            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: 1_090))
+            rrCursor += 24
+        }
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "Contradicted",
+                                            points: points,
+                                            rrPoints: rrPoints,
+                                            hrRaw2A37: points.count,
+                                            hrAccepted: points.count,
+                                            hrZero: 0,
+                                            hrArtifactHeld: 0,
+                                            hrArtifactDropped: 0,
+                                            hrAcceptedGaps: 0,
+                                            hrMaxAcceptedGap: 5)
+
+        XCTAssertTrue(session.hrRRDisagreesWithReportedHR)
+
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertFalse(readiness.strengthCandidate,
+                       "RR contradicting reported HR must reject strengthCandidate itself, not just reviewWorthyCandidate")
+        XCTAssertFalse(readiness.moderateStrengthReviewCandidate)
+    }
+
+    func testPeakOverRestWithZeroRRIsTreatedAsImpliedArtifact() {
+        // A clean, gap-free, non-artifact stream (no held/dropped frames, no
+        // zero share, no accepted gaps) sustained 90bpm over rest for 25
+        // minutes with NO RR/IBI samples anywhere in the window. A genuine
+        // effort at this intensity always carries RR; zero RR at this peak
+        // is the loose-contact spike fingerprint, so this must be rejected
+        // even though every other counter looks clean.
+        let rest = 55
+        let maxHR = 190
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var cursor: TimeInterval = 0
+        while cursor < 25 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 145)) // peakOverRest = 90
+            cursor += 2
+        }
+        let session = workoutFixtureSession(start: start,
+                                            end: start.addingTimeInterval(cursor),
+                                            label: "No RR",
+                                            points: points,
+                                            rrPoints: nil,
+                                            hrRaw2A37: points.count,
+                                            hrAccepted: points.count,
+                                            hrZero: 0,
+                                            hrArtifactHeld: 0,
+                                            hrArtifactDropped: 0,
+                                            hrAcceptedGaps: 0,
+                                            hrMaxAcceptedGap: 2)
+
+        XCTAssertFalse(session.hrContactCompromised, "the raw audit counters alone are clean")
+
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertTrue(readiness.contactCompromised,
+                      "peak_over_rest>=60 with zero in-window RR must be folded into contactCompromised as an implied artifact")
+        XCTAssertFalse(readiness.ready)
+        XCTAssertFalse(readiness.strengthCandidate)
+        XCTAssertFalse(readiness.reviewWorthyCandidate)
+    }
+
+    func testWorkoutReadinessOverridesCarryWorstChunkAggregateSignal() {
+        // Mirrors what makeAggregateWorkoutCandidate now threads through for
+        // a stitched/aggregate candidate: the synthetic aggregate session's
+        // OWN counters can look clean (diluted by stitching), and here RR
+        // agrees with the reported HR (no Pillar C/RR-disagreement fold), so
+        // strengthCandidate reads true on the raw counters alone -- but a
+        // worst-source-chunk override must still reject it, exactly as
+        // makeAggregateWorkoutCandidate now supplies from `ordered.contains {
+        // $0.hrContactCompromised }` when stitching diluted a compromised
+        // source chunk's counters below the aggregate's own ceilings.
+        let rest = 55
+        let maxHR = 190
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var points: [SavedSession.Point] = []
+        var cursor: TimeInterval = 0
+        while cursor < 25 * 60 {
+            points.append(SavedSession.Point(t: cursor, bpm: 120)) // peakOverRest = 65
+            cursor += 2
+        }
+        var rrPoints: [SavedSession.RRPoint] = []
+        var rrCursor: TimeInterval = 0
+        while rrCursor < 25 * 60 {
+            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: Int((60_000.0 / 120.0).rounded())))
+            rrCursor += 24
+        }
+        let syntheticAggregate = workoutFixtureSession(start: start,
+                                                       end: start.addingTimeInterval(cursor),
+                                                       label: "Aggregate",
+                                                       points: points,
+                                                       rrPoints: rrPoints,
+                                                       hrRaw2A37: points.count,
+                                                       hrAccepted: points.count,
+                                                       hrZero: 0,
+                                                       hrArtifactHeld: 0,
+                                                       hrArtifactDropped: 0,
+                                                       hrAcceptedGaps: 0,
+                                                       hrMaxAcceptedGap: 2)
+
+        XCTAssertFalse(syntheticAggregate.hrContactCompromised)
+        XCTAssertFalse(syntheticAggregate.hrRRDisagreesWithReportedHR)
+
+        let withoutOverride = syntheticAggregate.workoutReadiness(rest: rest, maxHR: maxHR)
+        XCTAssertFalse(withoutOverride.contactCompromised,
+                       "sanity check: this synthetic aggregate reads clean on its own diluted/summed counters")
+        XCTAssertTrue(withoutOverride.strengthCandidate,
+                      "sanity check: on its own counters alone this candidate would read strengthCandidate=true")
+
+        let withWorstChunkOverride = syntheticAggregate.workoutReadiness(rest: rest,
+                                                                        maxHR: maxHR,
+                                                                        contactCompromisedOverride: true,
+                                                                        rrDisagreementOverride: nil,
+                                                                        rrSampleCountOverride: rrPoints.count)
+
+        XCTAssertTrue(withWorstChunkOverride.contactCompromised,
+                      "a worst-source-chunk contact-compromised override must win over the diluted aggregate's own clean counters")
+        XCTAssertFalse(withWorstChunkOverride.ready)
+        XCTAssertFalse(withWorstChunkOverride.strengthCandidate,
+                       "the strength path itself must respect the threaded worst-chunk override, not just reviewWorthyCandidate")
+        XCTAssertFalse(withWorstChunkOverride.reviewWorthyCandidate)
+    }
+
     @MainActor
     func testPendingSleepFixtureShowsProvisionalRecovery() {
         #if DEBUG
@@ -3033,6 +3238,152 @@ final class AtriaAnalyticsTests: XCTestCase {
             XCTAssertFalse(classification.isHROnly)
             XCTAssertNotEqual(classification.confidence, "hr_only")
         }
+    }
+
+    // MARK: - Wake-boundary sleep confirm (WHOOP-parity finalize-at-wake)
+
+    /// `sustainedWakeOnset` is the wake detector the wake-boundary path relies
+    /// on to trim a still-open/continuously-extending night session: it must
+    /// stay silent on a flat low-HR night and on a transient mid-night
+    /// artifact spike that resolves back to low HR (both would otherwise let a
+    /// noisy strap falsely "wake" the aggregate), while still finding the
+    /// onset of a genuine, sustained morning rise.
+    func testSustainedWakeOnsetIgnoresTransientSpikeButDetectsSustainedWake() {
+        let rest = 50
+        let start = utcDate(2027, 3, 10, 23, 0)
+
+        let flatNight = flatHRSession(start: start, end: start.addingTimeInterval(7 * 60 * 60), bpm: 52)
+        XCTAssertNil(SessionStore.sustainedWakeOnset(in: flatNight, restingHR: rest),
+                    "a flat low-HR night has no sustained wake run")
+
+        // A single transient artifact spike mid-night that resolves back to
+        // low HR through the end of the session must not read as wake — the
+        // detector requires the elevated run to persist through the tail.
+        var transientPoints = (0..<300).map { SavedSession.Point(t: Double($0) * 60, bpm: 52) }
+        for i in 150..<155 { transientPoints[i] = SavedSession.Point(t: Double(i) * 60, bpm: 95) }
+        let transientSession = SavedSession(id: UUID(),
+                                            start: start,
+                                            end: start.addingTimeInterval(300 * 60),
+                                            label: "Test",
+                                            points: transientPoints)
+        XCTAssertNil(SessionStore.sustainedWakeOnset(in: transientSession, restingHR: rest),
+                    "a single mid-night artifact spike that resolves back to low HR must not read as wake")
+
+        // A genuine, sustained rise in the tail that persists through the end
+        // of the session should read as wake, with the onset falling inside
+        // that elevated tail — never in the preceding low-HR portion.
+        let lowCount = 420 // 7h at 60s cadence
+        var sustainedPoints = (0..<lowCount).map { SavedSession.Point(t: Double($0) * 60, bpm: 52) }
+        let elevatedCount = 40 // 40 more minutes, clearly elevated and sustained to the end
+        sustainedPoints += (0..<elevatedCount).map { SavedSession.Point(t: Double(lowCount + $0) * 60, bpm: 78) }
+        let sustainedSession = SavedSession(id: UUID(),
+                                            start: start,
+                                            end: start.addingTimeInterval(Double(lowCount + elevatedCount) * 60),
+                                            label: "Test",
+                                            points: sustainedPoints)
+        guard let onset = SessionStore.sustainedWakeOnset(in: sustainedSession, restingHR: rest) else {
+            XCTFail("expected a sustained wake onset in the elevated tail")
+            return
+        }
+        let elevatedTailStart = start.addingTimeInterval(Double(lowCount) * 60)
+        XCTAssertGreaterThanOrEqual(onset, elevatedTailStart.addingTimeInterval(-60),
+                                    "onset should not be detected before the elevated tail begins")
+        XCTAssertLessThan(onset, sustainedSession.end, "onset must fall strictly before the session end")
+    }
+
+    /// The exact WHOOP-parity bug this feature fixes: a continuously
+    /// checkpointed overnight session never closes — its `end` keeps
+    /// extending into the awake morning — so `aggregateSleepCandidates` folds
+    /// the awake tail's elevated HR into avg/SD/P90/elevated-fraction and
+    /// BOTH the unambiguous and degraded auto-confirm tiers reject it, exactly
+    /// as docs/23's root-cause trace describes. `wakeBoundarySleepCandidate`
+    /// must trim that same still-open session at the detected wake point and
+    /// produce a candidate that clears `isStrongAutoConfirmableSleepCandidate`.
+    func testWakeBoundarySleepCandidateRecoversWhatTheOpenSessionBugLoses() {
+        let calendar = utcCalendar
+        let rest = 50
+        let maxHR = 190
+        let start = utcDate(2027, 3, 20, 23, 0)
+
+        let lowCount = 420 // 7h low-HR sleep at 60s cadence
+        var points = (0..<lowCount).map { SavedSession.Point(t: Double($0) * 60, bpm: 52) }
+        // The still-open session keeps extending through the awake morning
+        // (checkpointed continuity) instead of ending at wake.
+        let awakeTailCount = 180 // 3h of moderate awake-morning HR
+        points += (0..<awakeTailCount).map { SavedSession.Point(t: Double(lowCount + $0) * 60, bpm: 90) }
+        let openSession = SavedSession(id: UUID(),
+                                       start: start,
+                                       end: start.addingTimeInterval(Double(lowCount + awakeTailCount) * 60),
+                                       label: "Test",
+                                       points: points)
+
+        // Reproduce the bug: the naive whole-session candidate must fail the
+        // strong auto-confirm gate because the awake tail is folded in.
+        let buggyCandidates = SessionStore.aggregateSleepCandidates(in: [openSession],
+                                                                    rest: rest,
+                                                                    maxHR: maxHR,
+                                                                    calendar: calendar,
+                                                                    historicalMotionPolicy: .boundedRecent)
+        XCTAssertEqual(buggyCandidates.count, 1)
+        if let buggyCandidate = buggyCandidates.first {
+            XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(buggyCandidate),
+                          "the still-open session's whole span (including the awake tail) must not auto-confirm")
+        }
+
+        // The fix: trim at the detected wake point and re-run through the
+        // exact same gates.
+        let fixed = SessionStore.wakeBoundarySleepCandidate(session: openSession,
+                                                            windowEndMinute: 10 * 60 + 30,
+                                                            rest: rest,
+                                                            maxHR: maxHR,
+                                                            calendar: calendar,
+                                                            now: openSession.end)
+        guard let fixed else {
+            XCTFail("expected the wake-boundary trim to synthesize a candidate")
+            return
+        }
+        XCTAssertEqual(fixed.kind, "overnight_sleep")
+        XCTAssertLessThan(fixed.end, openSession.end, "the synthesized candidate must end at wake, not keep the awake tail")
+        XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(fixed),
+                     "trimming the awake tail should let the sleep-only portion clear the strong auto-confirm gate")
+    }
+
+    /// When the tail gives no clear sustained-wake signal (e.g. a resolved
+    /// mid-night artifact blip, not a real morning wake), `wakeBoundarySleepCandidate`
+    /// must fall back to cutting at the learned/fallback window-end instant
+    /// rather than either confirming the untrimmed (still-growing) session or
+    /// refusing to confirm at all.
+    func testWakeBoundarySleepCandidateFallsBackToWindowEndWithoutClearOnset() {
+        let calendar = utcCalendar
+        let rest = 50
+        let maxHR = 190
+        let start = utcDate(2027, 3, 21, 23, 0)
+
+        let totalCount = 480 // 8h at 60s cadence
+        var points = (0..<totalCount).map { SavedSession.Point(t: Double($0) * 60, bpm: 52) }
+        for i in 200..<205 { points[i] = SavedSession.Point(t: Double(i) * 60, bpm: 95) } // resolved mid-night blip
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: start.addingTimeInterval(Double(totalCount) * 60),
+                                   label: "Test",
+                                   points: points)
+        XCTAssertNil(SessionStore.sustainedWakeOnset(in: session, restingHR: rest),
+                    "a resolved mid-night blip must not read as a sustained wake onset")
+
+        let windowEndMinute = 6 * 60 + 30 // 06:30
+        let now = start.addingTimeInterval(8 * 60 * 60)
+        guard let fixed = SessionStore.wakeBoundarySleepCandidate(session: session,
+                                                                  windowEndMinute: windowEndMinute,
+                                                                  rest: rest,
+                                                                  maxHR: maxHR,
+                                                                  calendar: calendar,
+                                                                  now: now) else {
+            XCTFail("expected the fallback window-end trim to synthesize a candidate")
+            return
+        }
+        XCTAssertEqual(fixed.kind, "overnight_sleep")
+        XCTAssertLessThan(fixed.end, session.end, "fallback trim must cut before the untrimmed session end")
+        XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(fixed))
     }
 
     /// Section D fix: today's frozen daily metric must exist from wear alone —

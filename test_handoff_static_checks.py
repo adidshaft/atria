@@ -3687,7 +3687,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "UserDefaults.standard.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)",
             "evidence.blocker.hasPrefix(\"sleep_motion_unvalidated\")",
             "evidence.blocker == \"sleep_fragmented_below_minimum\"",
-            "let savedStrongSleep = autoConfirmStrongSleepCandidates(reason: \"deferred_session_load\")",
+            # var since 2026-07-06: the wake-boundary fallback also runs on the
+            # launch path when the strong tier saves nothing.
+            "var savedStrongSleep = autoConfirmStrongSleepCandidates(reason: \"deferred_session_load\")",
             "if !savedStrongSleep {",
             "scheduleSleepReadinessRetryIfUseful(reason: \"deferred_session_load\")",
             "@discardableResult\n    private func autoConfirmStrongSleepCandidates(reason: String, limit: Int = 2) -> Bool",

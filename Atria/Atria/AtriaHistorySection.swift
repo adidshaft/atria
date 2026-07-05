@@ -65,13 +65,17 @@ struct AtriaHistoryMedians: Equatable {
 struct AtriaHistoryModel: Equatable {
     let days: [AtriaHistoryDay]
     let sessionsCount: Int
-    /// Honest placeholder (2026-07-05): 0 until a real detected-but-unconfirmed
-    /// session signal exists -- never fabricated.
+    /// Real count of detection-log activity: ring-buffer size (last 20
+    /// events) -- never fabricated, sourced from `DetectionEventLog`.
     let detectedCount: Int
     let baselineReady: Int
     let baselineTarget: Int
+    /// Newest-first ring buffer of detection events, read straight from
+    /// `DetectionEventLog` -- purely additive, has zero effect on detection
+    /// logic itself.
+    let detections: [DetectionEvent]
 
-    static let empty = AtriaHistoryModel(days: [], sessionsCount: 0, detectedCount: 0, baselineReady: 0, baselineTarget: 14)
+    static let empty = AtriaHistoryModel(days: [], sessionsCount: 0, detectedCount: 0, baselineReady: 0, baselineTarget: 14, detections: [])
 
     static func make(rollups: [DailyRollupStoreEntry],
                       workouts: [UserConfirmedWorkout],
@@ -113,12 +117,14 @@ struct AtriaHistoryModel: Equatable {
         }
 
         let baselineReady = rollups.prefix(14).filter { $0.recovery != nil }.count
+        let detections = DetectionEventLog.load()
 
         return AtriaHistoryModel(days: days,
                                   sessionsCount: workouts.count,
-                                  detectedCount: 0,
+                                  detectedCount: detections.count,
                                   baselineReady: baselineReady,
-                                  baselineTarget: 14)
+                                  baselineTarget: 14,
+                                  detections: detections)
     }
 
     /// Trailing 14 calendar days ending on (and including) `day`.
@@ -153,17 +159,24 @@ struct AtriaHistorySection: View, Equatable {
     let workouts: [UserConfirmedWorkout]
     let sleeps: [UserConfirmedSleep]
     let workoutsRevision: Int
+    let detectionsRevision: Int
 
     @State private var model = AtriaHistoryModel.empty
     @State private var selectedDay: AtriaHistoryDay?
+    @State private var showAllDetections = false
 
     static func == (lhs: AtriaHistorySection, rhs: AtriaHistorySection) -> Bool {
-        lhs.rollupRevision == rhs.rollupRevision && lhs.workoutsRevision == rhs.workoutsRevision
+        lhs.rollupRevision == rhs.rollupRevision
+            && lhs.workoutsRevision == rhs.workoutsRevision
+            && lhs.detectionsRevision == rhs.detectionsRevision
     }
 
     var body: some View {
         VStack(spacing: 16) {
             historyHeroCard
+            if !model.detections.isEmpty {
+                detectionsCard
+            }
             if model.days.isEmpty {
                 emptyStateCard
             } else {
@@ -174,8 +187,14 @@ struct AtriaHistorySection: View, Equatable {
         .onAppear { rebuild() }
         .onChange(of: rollupRevision) { _, _ in rebuild() }
         .onChange(of: workoutsRevision) { _, _ in rebuild() }
+        .onChange(of: detectionsRevision) { _, _ in rebuild() }
         .sheet(item: $selectedDay) { day in
             AtriaHistoryDayDetailSheet(day: day, medians: model.medianWindow(around: day))
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showAllDetections) {
+            AtriaDetectionsListSheet(detections: model.detections)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -197,7 +216,12 @@ struct AtriaHistorySection: View, Equatable {
             }
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
-                AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                Button {
+                    showAllDetections = true
+                } label: {
+                    AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                }
+                .buttonStyle(.plain)
                 AtriaHistoryStatChip(label: "Baseline", value: "\(model.baselineReady)/\(model.baselineTarget)", tint: Metrics.electricGreen)
             }
         }
@@ -237,6 +261,38 @@ struct AtriaHistorySection: View, Equatable {
                     AtriaVitalsHintChip(text: "\(sleepCount) Sleep", tint: Metrics.electricSleep)
                 }
                 Spacer(minLength: 0)
+            }
+        }
+        .padding(16)
+        .atriaCard(cornerRadius: 24, emphasis: .soft)
+    }
+
+    /// Newest-first list of the last few detection events. Purely a read of
+    /// `DetectionEventLog` via `model.detections` -- rendering this card has
+    /// zero effect on detection logic. Hidden entirely when the log is empty.
+    private var detectionsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Detections", subtitle: "What the app detected and why")
+            VStack(spacing: 8) {
+                ForEach(model.detections.prefix(5)) { event in
+                    AtriaDetectionRow(event: event)
+                }
+            }
+            if model.detections.count > 5 {
+                Button {
+                    showAllDetections = true
+                } label: {
+                    HStack {
+                        Text("See all detections")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(16)
@@ -401,6 +457,86 @@ struct AtriaHistoryDayRow: View, Equatable {
             if day.reviewPending > 0 {
                 AtriaVitalsHintChip(text: "\(day.reviewPending) Review", tint: .cyan)
             }
+        }
+    }
+}
+
+// MARK: - Detections (visible detection ring buffer)
+
+/// One row in the Detections card / full-list sheet: an SF Symbol by kind,
+/// the honest reason line (never fabricated -- `DetectionReasonCopy` only
+/// maps codes the pipeline itself already produced), and a relative
+/// timestamp.
+struct AtriaDetectionRow: View, Equatable {
+    let event: DetectionEvent
+
+    private var systemImage: String {
+        switch event.kind {
+        case "sleepAutoConfirmed": return "moon.fill"
+        case "workoutDetected": return "bolt.fill"
+        case "workoutSuppressed": return "bolt.slash"
+        case "sleepCandidateSkipped": return "xmark.circle"
+        default: return "circle"
+        }
+    }
+
+    private var tint: Color {
+        switch event.kind {
+        case "sleepAutoConfirmed": return Metrics.electricSleep
+        case "workoutDetected": return .cyan
+        case "workoutSuppressed": return .secondary
+        case "sleepCandidateSkipped": return .secondary
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(DetectionReasonCopy.text(for: event))
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(2)
+                Text(event.date.formatted(.relative(presentation: .named)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .atriaInsetCard(cornerRadius: 16, tint: tint.opacity(0.4))
+    }
+}
+
+/// Full ring-buffer list (up to 20 events), presented from the hero
+/// "Detected" chip or the detections card's "See all" row.
+struct AtriaDetectionsListSheet: View {
+    let detections: [DetectionEvent]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    if detections.isEmpty {
+                        Text("No detections yet")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 40)
+                    } else {
+                        ForEach(detections) { event in
+                            AtriaDetectionRow(event: event)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Detections")
         }
     }
 }
