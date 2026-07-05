@@ -882,13 +882,6 @@ private struct AtriaSleepReviewCard: View {
         return night.confirmationText
     }
 
-    private var evidenceText: String {
-        if night.confidence == "review_needed" {
-            return "Strap HR"
-        }
-        return night.confidenceText.capitalized
-    }
-
     private var subtitleText: String {
         isNap
             ? "Confirm to save this nap separately."
@@ -903,6 +896,9 @@ private struct AtriaSleepReviewCard: View {
         night.end?.formatted(date: .omitted, time: .shortened) ?? "--"
     }
 
+    // durationTargetHours is uncalled in code but pinned by
+    // test_handoff_static_checks as required structure — retained (with its
+    // durationProgress consumer) as intentional scaffolding, not deleted.
     private var durationTargetHours: Double {
         isNap ? 1.5 : 8.0
     }
@@ -6869,7 +6865,11 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var strainWorkoutSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // Perf (docs/26 follow-up): compute the filter+sort once per render
+        // instead of re-deriving todayConfirmedWorkouts for both the isEmpty
+        // check and the ForEach below.
+        let workouts = todayConfirmedWorkouts
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Workouts")
                     .font(.subheadline.weight(.semibold))
@@ -6881,7 +6881,7 @@ struct AtriaMetricDetailSheet: View {
                     .minimumScaleFactor(0.72)
             }
 
-            if todayConfirmedWorkouts.isEmpty {
+            if workouts.isEmpty {
                 Label("No confirmed workouts today", systemImage: "figure.run")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -6889,7 +6889,7 @@ struct AtriaMetricDetailSheet: View {
                     .padding(.horizontal, 12)
                     .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             } else {
-                ForEach(todayConfirmedWorkouts.prefix(4), id: \.id) { workout in
+                ForEach(workouts.prefix(4), id: \.id) { workout in
                     AtriaStrainWorkoutRow(workout: workout)
                 }
             }

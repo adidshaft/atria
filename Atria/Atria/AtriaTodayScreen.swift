@@ -91,7 +91,6 @@ struct AtriaTodayScreen: View {
                                           pulse: pulseStore.state)
             }
 
-            let highlights = AtriaHighlights.topTwo(rollups: highlightRollups)
             if layoutConfig.showHighlights && !highlights.isEmpty {
                 AtriaTodayHighlightsStrip(highlights: highlights)
             }
@@ -193,10 +192,15 @@ struct AtriaTodayScreen: View {
     /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
     /// above the ring hero -- nil (and simply omitted) whenever no nickname
     /// has been set, never a placeholder greeting.
+    // Perf (docs/26 follow-up): cached once instead of building a fresh
+    // autoupdating Calendar (NSCalendar + locale lookup) on every Today body
+    // pass (~700ms live tick + scroll). Coarse morning/afternoon/evening bucket.
+    private static let greetingCalendar = Calendar.current
+
     private var greetingText: String? {
         let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let hour = Calendar.current.component(.hour, from: Date())
+        let hour = Self.greetingCalendar.component(.hour, from: Date())
         let timeOfDay: String
         switch hour {
         case 5..<12: timeOfDay = "morning"
@@ -501,6 +505,23 @@ struct AtriaTodayScreen: View {
         }
         #endif
         return store.dailyRollupHistory
+    }
+
+    /// Perf (docs/26 follow-up): `AtriaHighlights.topTwo` internally full-sorts
+    /// the up-to-400-entry rollup history twice, and the body invoked it up to
+    /// 4x per pass on every ~700ms live tick / scroll. Memoized behind
+    /// `store.dailyRollupHistoryRevision` like every neighboring rollup
+    /// derivation, so it recomputes at most once per rollup change.
+    /// Behavior-preserving.
+    private var highlights: [AtriaHighlight] {
+        let revision = store.dailyRollupHistoryRevision
+        if glanceMemo.highlightsRevision == revision, let cached = glanceMemo.highlightsValue {
+            return cached
+        }
+        let value = AtriaHighlights.topTwo(rollups: highlightRollups)
+        glanceMemo.highlightsRevision = revision
+        glanceMemo.highlightsValue = value
+        return value
     }
 
     #if DEBUG
@@ -1310,7 +1331,7 @@ struct AtriaTodayScreen: View {
         case .insights:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\(AtriaHighlights.topTwo(rollups: highlightRollups).count)",
+                                        value: "\(highlights.count)",
                                         detail: legendDetail("Highlights"),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
@@ -1471,6 +1492,8 @@ private final class AtriaTodayGlanceMemo {
     var workoutsOneLiner: String?
     var dayDescendingRevision: Int?
     var dayDescendingRollups: [DailyRollupStoreEntry]?
+    var highlightsRevision: Int?
+    var highlightsValue: [AtriaHighlight]?
     // Perf pass (2026-07-06 scroll-hang fix): the weekly plan card ran
     // `WeeklyPlanStore().currentPlan` -- synchronous disk read (+ generate +
     // atomic write on a cache miss) -- and the AI coach payload sorted and

@@ -2642,28 +2642,6 @@ struct AtriaHomeView: View {
                                                  hrImportStatus: hrImportStatus)
     }
 
-    private func secondaryLoadingCard(title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-                .frame(width: 142, height: 18)
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-                .frame(height: 64)
-            HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.quaternary)
-                    .frame(height: 38)
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.quaternary)
-                    .frame(height: 38)
-            }
-        }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
-        .accessibilityLabel(title)
-    }
-
     private func handleRRImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
@@ -3277,6 +3255,9 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
         .atriaInsetCard(tint: tint)
     }
 
+    // Uncalled in code but pinned by test_handoff_static_checks
+    // (test_live_workout_auto_detect_prompt_is_inline_and_conservative) as
+    // required structure — retained as intentional scaffolding, not deleted.
     private var reviewPathStrip: some View {
         HStack(spacing: 7) {
             pathStep("1", "Window", tint: .cyan)
@@ -4723,25 +4704,6 @@ private struct AtriaWorkoutReviewFlow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func reviewMetricRow(_ values: [(String, String)]) -> some View {
-        HStack(spacing: 8) {
-            ForEach(values, id: \.0) { item in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.0)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(item.1)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
         }
     }
 
@@ -6280,14 +6242,6 @@ final class AtriaHomeModel {
         DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 
-    private func refreshLiveSessionDerived() {
-        liveSessionDerived = Self.nextLiveSessionDerived(previous: liveSessionDerived,
-                                                         samples: ble.session,
-                                                         rest: Self.currentRestingHeartRate(ble: ble, store: store),
-                                                         maxHR: store.profile.maxHR,
-                                                         profile: store.profile)
-    }
-
     private func refreshLiveSessionDerivedIfNeeded() {
         let rest = Self.currentRestingHeartRate(ble: ble, store: store)
         let maxHR = store.profile.maxHR
@@ -7022,21 +6976,6 @@ final class AtriaHomeModel {
 
     private static func baselineMaturityText(sampleCount: Int) -> String {
         sampleCount >= PersonalBaseline.trustedMinimumSamples ? "Ready" : "\(max(0, sampleCount))/\(PersonalBaseline.trustedMinimumSamples)"
-    }
-
-    private static func sessionHeartStats(_ samples: [HRSample]) -> (average: Int?, peak: Int?) {
-        guard !samples.isEmpty else { return (nil, nil) }
-        var total = 0
-        var count = 0
-        var peak = Int.min
-        for sample in samples where sample.bpm > 0 {
-            total += sample.bpm
-            count += 1
-            peak = max(peak, sample.bpm)
-        }
-        guard count > 0 else { return (nil, nil) }
-        return (Int((Double(total) / Double(count)).rounded()),
-                peak == Int.min ? nil : peak)
     }
 
     private static func makeLiveSessionDerived(samples: [HRSample],

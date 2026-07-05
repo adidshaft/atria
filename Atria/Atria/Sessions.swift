@@ -3117,16 +3117,6 @@ extension SavedSession {
         return sorted[index]
     }
 
-    private static func medianInt(_ values: [Int]) -> Int {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return Int((Double(sorted[middle - 1] + sorted[middle]) / 2.0).rounded())
-        }
-        return sorted[middle]
-    }
-
     private static func workoutStreamCoveragePercent(observed: TimeInterval, duration: TimeInterval) -> Int {
         guard duration > 0 else { return 0 }
         let percent = (observed / duration) * 100
@@ -3455,8 +3445,11 @@ final class SessionStore: ObservableObject {
             .sorted { $0.start < $1.start }
             .reduce(into: [(day: Date, value: Int)]()) { days, session in
                 let day = calendar.startOfDay(for: session.start)
-                if let index = days.lastIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
-                    days[index] = (day, min(days[index].value, session.restingStable))
+                // Sessions are ascending by start, so same-day rows are
+                // contiguous — only the last bucket can match. Check it
+                // directly instead of an O(n) lastIndex scan per element.
+                if let last = days.indices.last, calendar.isDate(days[last].day, inSameDayAs: day) {
+                    days[last] = (day, min(days[last].value, session.restingStable))
                 } else {
                     days.append((day, session.restingStable))
                 }
@@ -7116,35 +7109,6 @@ final class SessionStore: ObservableObject {
               workoutReplay.bestPrimaryBlocker)
     }
 
-    private func logRRLedgerReplay(_ summary: RRLedgerReplaySummary) {
-        let metricSummary: String
-        if summary.bestReady {
-            metricSummary = String(format: "rmssd=%.1f sdnn=%.1f pnn50=%.1f lnrmssd=%.2f resp=%@",
-                                   summary.bestRMSSD ?? 0,
-                                   summary.bestSDNN ?? 0,
-                                   summary.bestPNN50 ?? 0,
-                                   summary.bestLnRMSSD ?? 0,
-                                   formatDouble(summary.bestRespiratoryRate))
-        } else {
-            metricSummary = "rmssd=learning sdnn=learning pnn50=learning lnrmssd=learning resp=learning"
-        }
-        AtriaDebugLog("ATRIADBG rr_ledger_summary sessions=%d rr_samples=%d best_ready=%d best_label=%@ raw=%d kept=%d rejected_out_of_range=%d rejected_delta_over_20_percent=%d interpolated=%d conf=%d window=%.0f max_rr_gap_s=%.1f reason=%@ source=saved_rr_points reference_validated=0 %@",
-              summary.sessionsWithRR,
-              summary.rrSamples,
-              summary.bestReady ? 1 : 0,
-              summary.bestSessionLabel,
-              summary.bestRaw,
-              summary.bestKept,
-              summary.bestRejectedOutOfRange,
-              summary.bestRejectedDeltaOver20Percent,
-              summary.bestInterpolated,
-              summary.bestConfidencePercent,
-              summary.bestWindowSeconds,
-              summary.bestMaxRRGapSeconds,
-              summary.reason,
-              metricSummary)
-    }
-
     private func replaySavedRRLedger(limitSessions: Int? = nil,
                                      includeActiveJournal: Bool = false) -> RRLedgerReplaySummary {
         let replaySessions = canonicalSessions(includeActiveJournal: includeActiveJournal)
@@ -7364,15 +7328,6 @@ final class SessionStore: ObservableObject {
         }
         maxGap = max(maxGap, windowEnd.timeIntervalSince(previous))
         return maxGap
-    }
-
-    private func isBetterRRLedgerSummary(_ lhs: RRLedgerReplaySummary, than rhs: RRLedgerReplaySummary) -> Bool {
-        if lhs.bestReady != rhs.bestReady { return lhs.bestReady }
-        if lhs.bestKept != rhs.bestKept { return lhs.bestKept > rhs.bestKept }
-        if lhs.bestConfidencePercent != rhs.bestConfidencePercent {
-            return lhs.bestConfidencePercent > rhs.bestConfidencePercent
-        }
-        return lhs.bestMaxRRGapSeconds < rhs.bestMaxRRGapSeconds
     }
 
     private func isBetterRRReferenceWindow(_ lhs: RRSavedReferenceWindow, than rhs: RRSavedReferenceWindow) -> Bool {

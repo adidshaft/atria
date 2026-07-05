@@ -1113,6 +1113,9 @@ struct AtriaLiveWorkoutView: View {
         .background(.white.opacity(0.07), in: Capsule())
     }
 
+    // Uncalled in code but pinned by test_handoff_static_checks
+    // (test_handoff_21_uniform_cards...) as required structure — retained as
+    // intentional scaffolding, not deleted.
     private var statsRow: some View {
         HStack(spacing: 14) {
             statTile(title: "Strain",
