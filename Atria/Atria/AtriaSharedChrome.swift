@@ -93,6 +93,38 @@ private struct AtriaCardBackground: View {
     }
 }
 
+/// Real iOS 26 Liquid Glass surface for CONTENT cards. Opt-in on purpose: it is
+/// meant to be applied hero/prominent-first, NOT flipped onto every scrolling
+/// tile, because dense glass in a scroll view is GPU-costly — the reason large
+/// content cards deliberately shipped static fills (see the capsule-chrome note
+/// below). Honors Reduce Transparency by falling back to the opaque card so the
+/// surface is never unreadable. Nothing consumes this yet; apply + verify scroll
+/// performance and legibility on-device before any broad rollout.
+private struct AtriaGlassCardBackground: View {
+    let cornerRadius: CGFloat
+    let emphasis: AtriaPanelEmphasis
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            AtriaCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+        } else {
+            shape
+                .fill(Color.clear)
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    shape.stroke(colorScheme == .dark
+                                 ? Color.white.opacity(emphasis == .strong ? 0.10 : 0.07)
+                                 : Color.black.opacity(emphasis == .strong ? 0.12 : 0.08),
+                                 lineWidth: 1)
+                }
+        }
+    }
+}
+
 private struct AtriaRaisedCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
@@ -226,6 +258,18 @@ extension View {
         self
             .background {
                 AtriaCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+            }
+    }
+
+    /// Opt-in Liquid Glass content-card surface (see AtriaGlassCardBackground).
+    /// Use for hero/prominent cards; verify scroll performance before applying to
+    /// dense scrolling tiles.
+    @ViewBuilder
+    func atriaGlassCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
+                        emphasis: AtriaPanelEmphasis = .soft) -> some View {
+        self
+            .background {
+                AtriaGlassCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
             }
     }
 

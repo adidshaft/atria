@@ -1269,34 +1269,53 @@ struct AtriaTodayScreen: View {
                                         tint: .teal,
                                         layoutSize: layoutSize(for: metric))
         case .steps:
+            // Consistency + detection fix (2026-07-05): the Today deck hard-coded
+            // "Building" while the overview surface (AtriaOverviewReadinessSection)
+            // already shows the real strap-movement step estimate. Mirror it exactly:
+            // this strap has no validated pedometer, only an experimental IMU step
+            // count, so show it when present and say so honestly when it isn't.
+            let stepSensor = store.imuAuditSummary
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail(strapValue),
+                                        value: stepSensor.strapStepText,
+                                        detail: legendDetail(stepSensor.strapStepCount > 0 ? "Strap movement" : "Not available on this strap"),
                                         systemImage: metric.systemImage,
-                                        tint: liveStore.state.status == .connected ? .green : .secondary,
+                                        tint: stepSensor.strapStepCount > 0 ? .green : .secondary,
                                         layoutSize: layoutSize(for: metric))
         case .calories:
+            // Detection fix (2026-07-05): the card hard-coded "Building" and never
+            // showed a number, though the live active-calorie estimate is already
+            // computed and surfaced elsewhere (AtriaHomeView/live workout). Wire the
+            // real value; fall back to an honest "Profile needed" when the estimate
+            // can't be produced (missing athlete profile), never a fake placeholder.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail("Active"),
+                                        value: liveStore.state.liveActiveCaloriesText,
+                                        detail: legendDetail(liveStore.state.liveActiveCalories == nil ? "Needs profile" : "Estimate"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric))
         case .vo2max:
+            // Time-to-detect (2026-07-05): when the estimate isn't ready yet, show
+            // the summary's specific calibration progress ("12/14 RHR", "Need HRmax")
+            // instead of a generic "Estimate", so users see how far off a reading is.
+            let vo2 = profileMetricsStore.state.vo2MaxEstimate
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: profileMetricsStore.state.vo2MaxEstimate.valueText,
-                                        detail: legendDetail("Estimate"),
+                                        value: vo2.valueText,
+                                        detail: legendDetail(vo2.value == nil ? vo2.detail : "Estimate"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
         case .bioAge:
+            // Time-to-detect (2026-07-05): surface the calibration state
+            // ("Calibrating 28-day baseline") while the fitness-age baseline is still
+            // forming, rather than a generic "Estimate" that implies a ready value.
+            let bioAge = profileMetricsStore.state.biologicalAgeSummary
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: profileMetricsStore.state.biologicalAgeSummary.valueText,
-                                        detail: legendDetail("Estimate"),
+                                        value: bioAge.valueText,
+                                        detail: legendDetail(bioAge.isReady ? "Estimate" : bioAge.narrative),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
@@ -1313,10 +1332,16 @@ struct AtriaTodayScreen: View {
                                         tint: .secondary,
                                         layoutSize: layoutSize(for: metric))
         case .bodyTemp:
+            // Detection fix (2026-07-05): the card hard-coded "Building" while the
+            // real relative skin-temperature deviation is already computed and shown
+            // on the Vitals tab (AtriaHealthScreen). Surface the same value/detail so
+            // the primary deck stops hiding data the app already has. valueText is
+            // "--" until the sleep baseline matures, so this stays honest.
+            let skinTemp = store.imuAuditSummary.skinTemperatureDeviation
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail("Sleep"),
+                                        value: skinTemp.valueText,
+                                        detail: legendDetail(skinTemp.detailText),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric))
@@ -1340,7 +1365,11 @@ struct AtriaTodayScreen: View {
     }
 
     private func layoutSize(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem.LayoutSize {
-        AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
+        // Clamp non-chart metrics to compact regardless of any saved override (a
+        // single-value tile stretched full-width leaves the row half-empty). Mirrors
+        // the System-B glance clamp so both surfaces agree on which cards can be wide.
+        guard metric.canBeWideGlanceCard else { return .compact }
+        return AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
     }
 
     /// Measured-perf pass (2026-07-05): `store.confirmedWorkouts` is already
@@ -1800,14 +1829,15 @@ private struct AtriaStrainTargetCard: View, Equatable {
             }
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Prominent full-width card: subtle Liquid Glass + the shared `tile` radius,
+        // matching the weekly-plan card so the big cards read as one intentional tier
+        // (dense glance tiles stay flat for scroll perf). Verified legible on-sim in
+        // light and dark before applying to the sibling prominent cards.
+        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
         .overlay {
-            // Same secondary-surface + tint-stroke chrome as the glance
-            // tiles and weekly-plan card it sits beside, instead of the
-            // flatter tertiary card the info rows use -- this is a live
-            // metric widget, not a passive row.
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            // Keep the per-metric tint stroke (its identity) on top of the glass --
+            // same tint-stroke chrome as the glance tiles it sits beside.
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
                 .stroke(tint.opacity(0.18), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -1850,10 +1880,12 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                 }
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Prominent full-width card: subtle Liquid Glass + the shared `tile`
+            // radius, matching the strain-target card so the big cards read as one
+            // intentional tier (dense glance tiles stay flat for scroll perf).
+            .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
                     .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
             }
         }

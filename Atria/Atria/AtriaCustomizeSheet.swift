@@ -64,6 +64,7 @@ struct AtriaCustomizeSheet: View {
                 cardsSection
                 metricsSection
                 metricToggleSection
+                cardSizeSection
                 lookSection
                 appIconSection
                 resetSection
@@ -158,8 +159,49 @@ struct AtriaCustomizeSheet: View {
         } header: {
             Text("Metrics")
         } footer: {
-            Text("Up to eight Today cards.")
+            Text("Showing \(draft.glanceMetrics.count) of \(AtriaHomeLayoutConfig.maxTodayCards) Today cards.")
         }
+    }
+
+    // Per-card resize (2026-07-05): the model always supported sizeOverrides but
+    // no UI wrote it (only a debug fixture). Offer a Wide toggle for the chart-style
+    // metrics that can actually fill a full row (canBeWideGlanceCard); single-value
+    // tiles are omitted because they'd render half-empty when stretched.
+    private var wideCapableSelectedMetrics: [AtriaTodayMetric] {
+        draft.validated().glanceMetrics
+            .compactMap(AtriaTodayMetric.init(rawValue:))
+            .filter { $0.canBeWideGlanceCard }
+    }
+
+    @ViewBuilder
+    private var cardSizeSection: some View {
+        let wideMetrics = wideCapableSelectedMetrics
+        if !wideMetrics.isEmpty {
+            Section {
+                ForEach(wideMetrics) { metric in
+                    Toggle(isOn: wideBinding(metric)) {
+                        Label(metric.label, systemImage: metric.systemImage)
+                    }
+                }
+            } header: {
+                Text("Card width")
+            } footer: {
+                Text("Chart-style cards can span the full row; other cards stay compact.")
+            }
+        }
+    }
+
+    private func wideBinding(_ metric: AtriaTodayMetric) -> Binding<Bool> {
+        Binding(
+            get: { draft.sizeOverrides[metric.rawValue] == "wide" },
+            set: { isWide in
+                if isWide {
+                    draft.sizeOverrides[metric.rawValue] = "wide"
+                } else {
+                    draft.sizeOverrides.removeValue(forKey: metric.rawValue)
+                }
+            }
+        )
     }
 
     private var selectedMetrics: [AtriaTodayMetric] {
