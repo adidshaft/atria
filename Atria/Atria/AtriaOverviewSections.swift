@@ -6329,6 +6329,9 @@ struct AtriaMetricDetailSheet: View {
     private let preparedHistory: AtriaPreparedMetricHistory
     @State private var range: AtriaTrendRange = .month
     @State private var showingMeaningSheet = false
+    // Tap-to-inspect (2026-07-05): drag across the detail chart to read a day's
+    // value, matching the overview trend card's scrub. nil = not scrubbing.
+    @State private var scrubbedDay: Date?
 
     init(metric: AtriaMetricDetailKind,
          rollups: [DailyRollupStoreEntry],
@@ -7048,6 +7051,11 @@ struct AtriaMetricDetailSheet: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
                     .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
+                let selectedPoint = scrubbedDay.flatMap { target in
+                    points.min(by: {
+                        abs($0.day.timeIntervalSince(target)) < abs($1.day.timeIntervalSince(target))
+                    })
+                }
                 Chart {
                     if let baselineBand {
                         RectangleMark(xStart: .value("Start", points.first?.day ?? Date()),
@@ -7066,11 +7074,37 @@ struct AtriaMetricDetailSheet: View {
                                   y: .value(title, point.value))
                             .foregroundStyle(point.tint)
                     }
+
+                    if let selectedPoint {
+                        RuleMark(x: .value("Day", selectedPoint.day, unit: .day))
+                            .foregroundStyle(tint.opacity(0.30))
+                            .annotation(position: .top, spacing: 0,
+                                        overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                                VStack(spacing: 1) {
+                                    Text(latestText(value: selectedPoint.value, unit: unit))
+                                        .font(.caption.weight(.bold).monospacedDigit())
+                                        .foregroundStyle(tint)
+                                    Text(selectedPoint.day, format: .dateTime.month(.abbreviated).day())
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        PointMark(x: .value("Day", selectedPoint.day, unit: .day),
+                                  y: .value(title, selectedPoint.value))
+                            .foregroundStyle(tint)
+                            .symbolSize(130)
+                    }
                 }
+                .chartXSelection(value: $scrubbedDay)
                 .chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand))
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 4))
                 }
+                .chartYAxisLabel(unit)
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                         AxisGridLine()
