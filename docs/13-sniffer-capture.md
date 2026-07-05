@@ -58,8 +58,9 @@ tshark -r whoop_official.pcapng -Y btatt -T json \
 ./tools/analyze_sniffer.py att.json
 ```
 
-Drop both `whoop_official.pcapng` and `att.json` into
-`docs/evidence/gate-b/sniffer/<timestamp>/` and commit (capture is the evidence).
+Keep both `whoop_official.pcapng` and `att.json` in an ignored local evidence
+folder such as `docs/evidence/gate-b/sniffer/<timestamp>/`. Do not commit raw
+captures to the public repo.
 
 ## STEP 4 — What we're looking for (decision)
 

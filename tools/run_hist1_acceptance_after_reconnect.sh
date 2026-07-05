@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-device_id=${ATRIA_DEVICE_ID:-3803F5B6-1666-56D3-A71A-62F131F6CE3B}
+device_id=${ATRIA_DEVICE_ID:-}
 bundle_id=${ATRIA_BUNDLE_ID:-com.adidshaft.atria}
 label="hist1-acceptance-$(date +%Y%m%d-%H%M%S)"
 gap_start=""
@@ -25,7 +25,7 @@ Required:
   --from-marker PATH Read gap_start from tools/start_hist1_phone_away_gap.sh output.
 
 Options:
-  --device ID        Physical iPhone CoreDevice id. Defaults to ATRIA_DEVICE_ID or known iPhone.
+  --device ID        Physical iPhone CoreDevice id. Defaults to ATRIA_DEVICE_ID.
   --bundle-id ID     Bundle id. Defaults to com.adidshaft.atria.
   --label NAME       Evidence label. Defaults to hist1-acceptance-<local timestamp>.
   --pull-time ISO    Timestamp for the post-reconnect pull. Defaults to current local time.

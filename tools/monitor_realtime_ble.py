@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_DEVICE = "3803F5B6-1666-56D3-A71A-62F131F6CE3B"
+DEFAULT_DEVICE = os.environ.get("ATRIA_DEVICE_ID", "")
 DEFAULT_BUNDLE = "com.adidshaft.atria"
 PREFS_SOURCE = "Library/Preferences/com.adidshaft.atria.plist"
 
