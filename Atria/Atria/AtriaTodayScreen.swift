@@ -1222,7 +1222,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.hrvValue,
-                                        detail: legendDetail(displayHero.hrvDetail),
+                                        detail: legendDetail(isPendingHeroValue(displayHero.hrvValue)
+                                                             ? baselineNightsProgress(store.baseline.freshHRVSampleCount())
+                                                             : displayHero.hrvDetail),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
@@ -1262,7 +1264,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.restingHeartRateText,
-                                        detail: legendDetail("bpm"),
+                                        detail: legendDetail(isPendingHeroValue(displayHero.restingHeartRateText)
+                                                             ? baselineNightsProgress(store.baseline.freshRestingSampleCount())
+                                                             : "bpm"),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
@@ -1486,6 +1490,21 @@ struct AtriaTodayScreen: View {
 
     private func legendDetail(_ detail: String) -> String {
         layoutConfig.legendStatStyle == .value ? "" : detail
+    }
+
+    /// Pending-value set matching the app-wide convention (see AtriaHomeView's
+    /// pending check): a metric that has no reading yet, so its tile can show
+    /// time-to-detect progress instead of the bare placeholder.
+    private func isPendingHeroValue(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed == "--" || trimmed == "\u{2014}"
+            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+    }
+
+    /// Honest "N of 14 nights" progress for the 14-night personal baselines
+    /// (HRV/RHR), so a pending tile says how far along detection is.
+    private func baselineNightsProgress(_ samples: Int) -> String {
+        "\(min(samples, PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
     }
 
     private func recoveryState(percent: Int) -> String {
