@@ -28,7 +28,7 @@ EXPECTED_OPERATOR_ACTIONS = {
 NEXT_ACTIONS = {
     "daytime_worn_monitor": {
         "command": (
-            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "ATRIA_DEVICE_ID=<physical-device-id> "
             "python3 tools/monitor_realtime_ble.py --samples 91 --interval 120 "
             "--label rt-daytime-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot"
         ),
@@ -36,7 +36,7 @@ NEXT_ACTIONS = {
     },
     "brief_contact_loss": {
         "command": (
-            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "ATRIA_DEVICE_ID=<physical-device-id> "
             "python3 tools/monitor_realtime_ble.py --samples 5 --interval 120 "
             "--label rt-brief-contact-loss-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
             "--event 1:brief_contact_loss_start --event 2:brief_contact_loss_reseat"
@@ -45,7 +45,7 @@ NEXT_ACTIONS = {
     },
     "sustained_silence_reseat": {
         "command": (
-            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "ATRIA_DEVICE_ID=<physical-device-id> "
             "python3 tools/monitor_realtime_ble.py --samples 7 --interval 120 "
             "--label rt-sustained-silence-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
             "--event 1:sustained_silence_start --event 3:sustained_silence_reseat"
@@ -54,7 +54,7 @@ NEXT_ACTIONS = {
     },
     "app_switch": {
         "command": (
-            "ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+            "ATRIA_DEVICE_ID=<physical-device-id> "
             "python3 tools/monitor_realtime_ble.py --samples 4 --interval 120 "
             "--label rt-app-switch-$(date -u +%Y%m%dT%H%M%SZ) --pull-state --audit-snapshot "
             "--event 1:app_switch_background --event 2:app_switch_return"
@@ -65,7 +65,7 @@ NEXT_ACTIONS = {
 
 COEXISTENCE_ACTION = {
     "command": (
-        "./pull_atria_state.sh --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B "
+        "./pull_atria_state.sh --device <physical-device-id> "
         "--bundle-id com.adidshaft.atria "
         "--evidence-dir logs/live-device/realtime-ble-monitor/whoop-cleared-final-$(date -u +%Y%m%dT%H%M%SZ) "
         "&& python3 tools/audit_realtime_ble_validation.py --markdown"

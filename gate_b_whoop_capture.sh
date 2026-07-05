@@ -7,7 +7,7 @@ Usage:
   ./gate_b_whoop_capture.sh [run-label] [--seconds N] [--device DEVICE_ID] [--no-build]
 
 Runs the known-good physical-iPhone Gate B WHOOP-side capture recipe:
-  - build/install/launch on adidshaft's cabled iPhone
+  - build/install/launch on the cabled physical iPhone
   - auto-start Capture
   - send the validated START, then the debug duplicate 0301 probe after 8s
   - stop at the first validation-ready 5-minute HRV window
