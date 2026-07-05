@@ -4473,7 +4473,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "UIApplication.shared.supportsAlternateIcons",
             "UIApplication.shared.setAlternateIconName(icon.alternateName)",
             "private func applyAppIcon(_ icon: AtriaAlternateAppIcon)",
-            "ToolbarItem(placement: .bottomBar)",
+            # 2026-07-05: reorder Edit control moved from the bottom toolbar into the
+            # "Metric order" section header (co-located with the list) for
+            # discoverability; pin its header styling instead of the bottomBar item.
+            ".textCase(nil)",
             "EditButton()",
             "Text(\"Metric order\")",
             "ForEach(selectedMetrics)",
@@ -4484,7 +4487,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func moveSelectedMetrics(from source: IndexSet, to destination: Int)",
             "metrics.move(fromOffsets: source, toOffset: destination)",
             "draft.glanceMetrics = metrics",
-            "Text(\"Use Edit to drag selected Today cards into the order you want.\")",
+            "Text(\"Tap Edit, then drag by the handle to reorder your Today cards.\")",
         ]:
             assert_contains(self, customize, needle)
 
