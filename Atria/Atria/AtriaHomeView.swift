@@ -2310,9 +2310,13 @@ struct AtriaHomeView: View {
                                  }
                              },
                              onOpenCollection: {
-                                 performMotionAwareUpdate {
-                                     selectedTab = .collection
-                                 }
+                                 // `.collection` is not one of the four TabView
+                                 // tags (overview/vitals/journal/chat), so
+                                 // selecting it showed a blank tab. The strap
+                                 // collection lives in a fullScreenCover -- open
+                                 // it the same way topChrome and the deep-link
+                                 // handler do (IA fix, 2026-07-06).
+                                 showStrapScreen = true
                              },
                              onOpenJournal: {
                                  selectedTab = .journal
@@ -7225,6 +7229,30 @@ private struct AtriaTopStatusChip: View {
         guard let age = pendingKnownReconnectAge else { return false }
         return age >= 0 && age <= Self.linkingWindow
     }
+    /// A genuinely FRESH live pulse -- a reading within the last ~15s. Used to
+    /// decide whether to keep painting "Live" after the radio link itself has
+    /// dropped. `hasPulseSignal` stays true for up to 180s off a stale value
+    /// (the value-display window), which used to paint a false green "Live" for
+    /// minutes after a real disconnect -- a status lie. The fresh window still
+    /// heals the legitimate state-restoration case, where notifications resume
+    /// and readings actively arrive without a didConnect (honesty pass
+    /// 2026-07-06). The chip re-renders on the periodic store refresh (the same
+    /// cadence that drives the "updated Xs ago" text), so this resolves to the
+    /// honest state within one refresh of the fresh window elapsing.
+    private static let freshPulseWindow: TimeInterval = 15
+    private var hasFreshPulseSignal: Bool {
+        guard let last = coreLiveStore.state.lastReadingAt else { return false }
+        let age = Date().timeIntervalSince(last)
+        return age >= 0 && age <= Self.freshPulseWindow
+    }
+    /// True only for a genuinely idle disconnect -- never connected in this
+    /// install and not actively reconnecting -- which is the branch that shows
+    /// the literal "Disconnected" label. Everything else in `.disconnected`
+    /// (Reconnecting…/Linking…/Waiting for Bluetooth) is an active attempt.
+    private var isIdleDisconnected: Bool {
+        displayStatus == .disconnected
+            && UserDefaults.standard.integer(forKey: AtriaBLEManager.LinkDefaults.successes) == 0
+    }
     private var displayStatus: AtriaBLEManager.Status {
         if isRecoveringLiveSignal {
             switch status {
@@ -7237,7 +7265,12 @@ private struct AtriaTopStatusChip: View {
         switch status {
         case .poweredOff:
             return status
-        case .connected, .connecting, .scanning, .disconnected:
+        case .disconnected:
+            // The radio link is actually down. Only keep "Live" while the pulse
+            // is genuinely fresh (the state-restoration heal); a stale value
+            // from the 180s display window must never paint green here.
+            return hasFreshPulseSignal ? .connected : .disconnected
+        case .connected, .connecting, .scanning:
             return .connected
         }
     }
@@ -7322,7 +7355,10 @@ private struct AtriaTopStatusChip: View {
         case .connecting: return isRecoveringLiveSignal ? .cyan : .yellow
         case .scanning: return .cyan
         case .poweredOff: return .red
-        case .disconnected: return .blue
+        // Severity language: a genuinely idle "Disconnected" is neutral gray
+        // (not an error, not a benign blue accent); an active reconnect reuses
+        // the .connecting yellow so the color matches the "Reconnecting…" copy.
+        case .disconnected: return isIdleDisconnected ? .secondary : .yellow
         }
     }
 
@@ -7335,7 +7371,7 @@ private struct AtriaTopStatusChip: View {
         case .connecting: return isRecoveringLiveSignal ? .cyan : .yellow
         case .scanning: return .cyan
         case .poweredOff: return .red
-        case .disconnected: return .blue
+        case .disconnected: return isIdleDisconnected ? .secondary : .yellow
         }
     }
 }

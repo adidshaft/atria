@@ -906,7 +906,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "if isRecoveringLiveSignal",
             "guard hasPulseSignal else { return status }",
             "case .poweredOff:\n            return status",
-            "case .connected, .connecting, .scanning, .disconnected:\n            return .connected",
+            # Pin migrated 2026-07-06 (connection-honesty pass): displayStatus
+            # now splits `.disconnected` into its own case so a real radio
+            # disconnect is only painted "Live" while the pulse is genuinely
+            # fresh (hasFreshPulseSignal), not for the full 180s display window.
+            "case .disconnected:\n            // The radio link is actually down.",
+            "return hasFreshPulseSignal ? .connected : .disconnected",
+            "case .connected, .connecting, .scanning:\n            return .connected",
             "if displayStatus != .connected { onTapWhenNotConnected() }",
             "return hasPulseSignal ? \"Live\" : \"No signal\"",
             "if isRecoveringLiveSignal { return \"Reading…\" }",
@@ -922,7 +928,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .connecting: return isRecoveringLiveSignal ? .cyan : .yellow",
             "case .scanning: return .cyan",
             "case .poweredOff: return .red",
-            "case .disconnected: return .blue",
+            # Pin migrated 2026-07-06 (connection-honesty pass): the idle
+            # `.disconnected` chip is now neutral gray (not a benign blue accent
+            # that read like a positive state), and an active reconnect reuses
+            # the .connecting yellow so the color matches the "Reconnecting…" copy.
+            "case .disconnected: return isIdleDisconnected ? .secondary : .yellow",
             "HStack(spacing: 5)",
             "private struct AtriaToolbarIcon: View, Equatable",
             "private struct AtriaHeaderActionButtonStyle: ButtonStyle",
@@ -4653,7 +4663,11 @@ class HandoffStaticChecks(unittest.TestCase):
             'Label("Log set", systemImage: "plus.circle.fill")',
             'Label(isPaused ? "Resume workout" : "Pause workout"',
             'systemImage: isPaused ? "play.circle.fill" : "pause.circle.fill"',
-            ".presentationDetents([.height(390)])",
+            # Pin migrated 2026-07-06 (scroll-trap pass): the set-logger sheet
+            # gained a `.large` detent and its body was wrapped in a ScrollView
+            # so the primary "Save set" button can never clip off the fixed
+            # 390pt sheet under Dynamic Type.
+            ".presentationDetents([.height(390), .large])",
             "private var setLoggerSheet: some View",
             "exerciseHistoryPanel",
             'Label("History", systemImage: "chart.xyaxis.line")',

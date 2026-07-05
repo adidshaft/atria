@@ -10169,13 +10169,28 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         var earlyPendingConnect: CBPeripheral?
         if central.state == .poweredOn {
             let defaults = UserDefaults.standard
+            // Connection-diagnostics logging (2026-07-06): this precheck used
+            // to log ONLY the success branch, so the two most common real-world
+            // causes of "auto-connect not working" -- no saved strap identifier
+            // yet, and a saved identifier iOS can no longer retrieve (unpaired /
+            // out of range at boot) -- left no trace in the ATRIADBG connection
+            // timeline. Log each branch explicitly (zero runtime cost). The
+            // connect call and its success line are byte-for-byte unchanged.
             if let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
-               let uuid = UUID(uuidString: uuidString),
-               let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first,
-               saved.state != .connected {
-                central.connect(saved, options: nil)
-                earlyPendingConnect = saved
-                AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=pending_connect_early")
+               let uuid = UUID(uuidString: uuidString) {
+                if let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
+                    if saved.state != .connected {
+                        central.connect(saved, options: nil)
+                        earlyPendingConnect = saved
+                        AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=pending_connect_early")
+                    } else {
+                        AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=already_connected saved_uuid=1")
+                    }
+                } else {
+                    AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=retrieve_empty saved_uuid=1")
+                }
+            } else {
+                AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=no_saved_uuid saved_uuid=0")
             }
         }
         Task { @MainActor in

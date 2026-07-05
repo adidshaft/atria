@@ -4512,36 +4512,38 @@ struct AtriaGlanceTargetEditorSheet: View {
     var body: some View {
         let summary = metric.targetEditorSummary
         NavigationStack {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 12) {
-                    Image(systemName: metric.systemImage)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(metric.targetEditorTint)
-                        .frame(width: 42, height: 42)
-                        .background(AtriaIconTileBackground(cornerRadius: 14, tint: metric.targetEditorTint))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 12) {
+                        Image(systemName: metric.systemImage)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(metric.targetEditorTint)
+                            .frame(width: 42, height: 42)
+                            .background(AtriaIconTileBackground(cornerRadius: 14, tint: metric.targetEditorTint))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(metric.label) target")
-                            .font(.headline.weight(.semibold))
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(metric.label) target")
+                                .font(.headline.weight(.semibold))
+                            Text(summary)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+
+                    editorContent
+                        .padding(14)
+                        .atriaInsetCard(tint: metric.targetEditorTint)
+
+                    Text("Guidance is general wellness information, not medical advice. Changes update Today cards immediately.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
                 }
-
-                editorContent
-                    .padding(14)
-                    .atriaInsetCard(tint: metric.targetEditorTint)
-
-                Text("Guidance is general wellness information, not medical advice. Changes update Today cards immediately.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
+                .padding(18)
             }
-            .padding(18)
             .navigationTitle("Target")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
