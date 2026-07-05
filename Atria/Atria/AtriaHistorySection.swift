@@ -510,7 +510,9 @@ private struct AtriaHistoryDeltaGlyph: View {
             .font(.caption2.weight(.bold).monospacedDigit())
             .foregroundStyle(tint(isUp: isUp))
         } else {
-            Text("Building median")
+            // Distinguish the two honest empty states: the day itself has no
+            // reading vs the median hasn't accumulated 3 samples yet.
+            Text(median != nil ? "No reading this day" : "Building median")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
