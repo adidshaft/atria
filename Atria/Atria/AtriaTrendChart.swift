@@ -112,7 +112,9 @@ struct AtriaTrendChartCard: View {
         .sheet(isPresented: $showExpandedChart) {
             AtriaTrendExpandedSheet(title: "\(metric.shortLabel) trend",
                                     subtitle: range.headerLabel,
-                                    chart: AnyView(chart))
+                                    chart: AnyView(chart),
+                                    explainer: metric.trendExplainer,
+                                    tint: metric.tint)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -2474,6 +2476,20 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
         case .hrv: return 120
         }
     }
+
+    /// Honest "how to read this trend" knowledge, shown in the expanded chart so
+    /// tapping to expand delivers understanding, not just a bigger chart. Trend-and-
+    /// baseline framing, never a single-day claim (matches Atria's honesty voice).
+    var trendExplainer: String {
+        switch self {
+        case .restingHR:
+            return "A lower resting heart rate over weeks usually means better cardiovascular fitness or good recovery. A sustained rise can flag fatigue, illness, or poor sleep. Read the trend against your own baseline — not any single day."
+        case .strain:
+            return "Strain is your daily cardiovascular load on a 0–21 scale, built from time spent in each heart-rate zone. Rising strain means harder days; healthy progress balances it with recovery rather than climbing every day."
+        case .hrv:
+            return "Higher heart-rate variability generally reflects better recovery and readiness. HRV is naturally noisy night to night, so the direction of the trend and your personal baseline matter far more than any single reading."
+        }
+    }
 }
 
 /// One session's trend-relevant values, prepared on the main-actor store side so
@@ -2572,18 +2588,40 @@ struct AtriaTrendExpandedSheet: View {
     let title: String
     let subtitle: String
     let chart: AnyView
+    // Added depth (2026-07-05): expand used to render only the same chart taller.
+    // It now also carries the metric's "how to read this" knowledge and tint so
+    // tapping to expand is a genuine deep-dive, not just a bigger chart.
+    var explainer: String = ""
+    var tint: Color = .secondary
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 14) {
-                chart
-                    .frame(maxHeight: .infinity)
-                Text("Drag across the chart to inspect a day.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    chart
+                        .frame(minHeight: 280)
+                    Text("Drag across the chart to inspect a day.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    if !explainer.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("How to read this", systemImage: "book")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(tint)
+                            Text(explainer)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: tint)
+                    }
+                }
+                .padding(20)
             }
-            .padding(20)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

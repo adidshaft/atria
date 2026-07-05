@@ -1485,8 +1485,9 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     /// Only chart-style metrics can be wide. A single-value metric (HRV, RHR,
     /// Recovery, Steps…) in a full-width card just leaves the row half-empty, so we
     /// clamp those to compact regardless of any saved override — keeps the glance a
-    /// clean, uniform 2-up grid.
-    fileprivate var canBeWideGlanceCard: Bool {
+    /// clean, uniform 2-up grid. Internal (not fileprivate) so the Today screen's
+    /// size clamp and the Customize sheet's resize control share this one rule.
+    var canBeWideGlanceCard: Bool {
         switch self {
         case .sleepHistory, .load, .trend, .insights: return true
         default: return false

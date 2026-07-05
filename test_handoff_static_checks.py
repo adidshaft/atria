@@ -1242,7 +1242,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize",
             # Only chart-style metrics may be wide; single-value tiles clamp to
             # compact so the glance stays a clean, uniform 2-up grid.
-            "fileprivate var canBeWideGlanceCard: Bool",
+            # 2026-07-05: relaxed fileprivate -> internal so the Today screen's size
+            # clamp and the Customize sheet's resize control share this one rule.
+            "var canBeWideGlanceCard: Bool",
             "case .sleepHistory, .load, .trend, .insights: return true",
             "static let sizeStorageKey = \"atria.overview.glanceSizeCSV\"",
             "static func sizeOverrides(from csv: String) -> [String: AtriaGlanceGridSize]",
