@@ -30,7 +30,7 @@ final class AtriaLayoutModelTests: XCTestCase {
                                                before: .hrv,
                                                in: order,
                                                hiddenCSV: hidden),
-                       "recovery,respiratoryRate,stress,hrv,sleep,rhr,steps,load,hrZones,workouts,strainCompare,vo2max,sleepHistory,sleepEfficiency,bodyTemp,calories,trend,insights,strain,bloodOxygen,bioAge")
+                       "recovery,respiratoryRate,stress,hrv,sleep,rhr,steps,load,hrZones,workouts,strainCompare,vo2max,sleepHistory,sleepEfficiency,sleepPerformance,bodyTemp,calories,trend,insights,strain,bloodOxygen,bioAge")
     }
 
     func testTodayMetricDragPayloadRejectsRawValues() {
@@ -41,7 +41,7 @@ final class AtriaLayoutModelTests: XCTestCase {
     func testTodayMetricLegacyPreferenceMigrationDropsNonMetricsAndMergesSteps() {
         let legacyOrder = "workout,recovery,strapSteps,backfill,hapticAlerts,sleep,unknown,steps"
         XCTAssertEqual(AtriaTodayMetric.ordered(from: legacyOrder),
-                       [.workouts, .recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .hrZones, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .strain, .bloodOxygen, .bioAge])
+                       [.workouts, .recovery, .steps, .sleep, .hrv, .stress, .rhr, .respiratoryRate, .load, .hrZones, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .sleepPerformance, .bodyTemp, .calories, .trend, .insights, .strain, .bloodOxygen, .bioAge])
 
         let legacyHidden = AtriaTodayMetric.hiddenStorageValue(for: Set(["strapSteps", "backfill", "hapticAlerts", "unknown", "bloodOxygen"]))
         XCTAssertEqual(legacyHidden, "bloodOxygen,steps")
@@ -50,5 +50,55 @@ final class AtriaLayoutModelTests: XCTestCase {
         XCTAssertFalse(visible.contains(.steps))
         XCTAssertTrue(visible.contains(.workouts))
         XCTAssertFalse(visible.map(\.rawValue).contains("workout"))
+    }
+
+    // MARK: - Visibility/IA fix (2026-07-05)
+
+    /// The default deck used to ship only 12 of the 14-card cap, hiding two
+    /// metrics (sleep efficiency, fitness age) that are fully computed today.
+    func testDefaultHomeLayoutConfigHas14TilesIncludingSleepEfficiencyAndBioAge() {
+        let config = AtriaHomeLayoutConfig.default.validated()
+
+        XCTAssertEqual(config.glanceMetrics.count, AtriaHomeLayoutConfig.maxTodayCards)
+        XCTAssertTrue(config.glanceMetrics.contains("sleepEfficiency"))
+        XCTAssertTrue(config.glanceMetrics.contains("bioAge"))
+    }
+
+    /// `AtriaHomeLayoutCatalog.metricKeys` and `AtriaTodayMetric` must stay
+    /// parallel -- `AtriaTodayScreen.glanceItems` silently drops any key
+    /// missing from either side.
+    func testHomeLayoutCatalogAndTodayMetricStayParallel() {
+        let catalogKeys = Set(AtriaHomeLayoutCatalog.metricKeys)
+        let enumKeys = Set(AtriaTodayMetric.allCases.map(\.rawValue))
+
+        XCTAssertEqual(catalogKeys, enumKeys)
+    }
+
+    /// Sleep performance and the honest SpO2 tile must be addable via BOTH
+    /// catalogs: the validation catalog (`AtriaHomeLayoutCatalog`) and the
+    /// Customize sheet's toggle-list catalog (`AtriaTodayMetric.defaultGlanceOrder`).
+    func testSleepPerformanceAndBloodOxygenAddableViaBothCatalogs() {
+        XCTAssertTrue(AtriaHomeLayoutCatalog.metricKeys.contains("sleepPerformance"))
+        XCTAssertTrue(AtriaHomeLayoutCatalog.metricKeys.contains("bloodOxygen"))
+        XCTAssertTrue(AtriaTodayMetric.defaultGlanceOrder.contains(.sleepPerformance))
+        XCTAssertTrue(AtriaTodayMetric.defaultGlanceOrder.contains(.bloodOxygen))
+
+        var config = AtriaHomeLayoutConfig.default
+        config.glanceMetrics = ["sleepPerformance", "bloodOxygen"]
+        XCTAssertEqual(config.validated().glanceMetrics, ["sleepPerformance", "bloodOxygen"])
+    }
+
+    /// Route audit (visibilitySpec §3): every glance tile that has a real or
+    /// honest-partial detail must map to an `AtriaMetricDetailKind`, so no
+    /// tile with a route silently dead-ends.
+    func testGlanceRouteMapCoversNewDetailKinds() {
+        let routedRawValues: Set<String> = [
+            "recovery", "strain", "strainCompare", "hrv", "rhr", "respiratoryRate",
+            "sleep", "sleepHistory", "sleepEfficiency", "sleepPerformance",
+            "vo2max", "bioAge", "bodyTemp", "hrZones"
+        ]
+        for raw in routedRawValues {
+            XCTAssertNotNil(AtriaTodayMetric(rawValue: raw), "\(raw) should still be a valid AtriaTodayMetric case")
+        }
     }
 }

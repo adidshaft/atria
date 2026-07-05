@@ -19,7 +19,14 @@ struct AtriaHealthScreen: View {
     @State private var isLoadingHistoricalHeartRatePoints = true
     @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
     @State private var educationTopic: AtriaVitalsEducationTopic?
+    // Visibility/IA fix (2026-07-05): route audit + mounted sections. The
+    // Health screen previously had no Trends surface, no sleep-stage
+    // breakdown, and three new rows (VO2, skin temp, SpO2) that need a real
+    // detail sheet rather than just the education sheet.
+    @State private var metricDetail: AtriaMetricDetailKind?
+    @State private var showBreathworkSession = false
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
 
     private static let stressRecomputeTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -38,6 +45,9 @@ struct AtriaHealthScreen: View {
             } else {
                 VStack(spacing: 12) {
                     healthMonitorCard
+                    sleepDetailCard
+                    trendsCard
+                    breathworkCard
                     AtriaHealthFitnessAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
                     // History surface (2026-07-05): memoized on the two revisions so
                     // live-pulse re-renders of this screen never rebuild it.
@@ -66,6 +76,123 @@ struct AtriaHealthScreen: View {
                                       numericRangeText: typicalRangeText(for: topic),
                                       sleepGoalHours: sleepGoalHours)
         }
+        .sheet(item: $metricDetail) { detail in
+            AtriaMetricDetailSheet(metric: detail,
+                                   rollups: store.dailyRollupHistory,
+                                   confirmedWorkouts: store.confirmedWorkouts,
+                                   baseline: AtriaBaselineTargetSnapshot(store.baseline),
+                                   sleepHistory: store.sleepHistorySnapshot,
+                                   guidance: heroStore.state.guidance,
+                                   recoveryEstimate: heroStore.state.recoveryEstimate,
+                                   sleepGoalHours: sleepGoalHours,
+                                   sleepBaseNeedHours: sleepBaseNeedHours,
+                                   hrZoneMinutes: heroStore.state.hrZoneMinutes,
+                                   vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+                                   skinTemperatureDeviation: store.imuAuditSummary.skinTemperatureDeviation)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .fullScreenCover(isPresented: $showBreathworkSession) {
+            AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,
+                                   currentRRSamples: pulseStore.state.recentRRSamples,
+                                   onSave: { session in
+                                       store.add(session)
+                                   }) {
+                showBreathworkSession = false
+            }
+        }
+    }
+
+    /// Mounts the sleep-stage hypnogram summary (SWS/REM/Light/Awake) that
+    /// previously rendered nowhere live, plus the performance/efficiency stat
+    /// pair -- both computed the same honest way the Today ring and its
+    /// caption are (visibilitySpec §2, 2026-07-05).
+    private var sleepDetailCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sleep detail")
+                .font(.title2.weight(.bold))
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                AtriaMetricTile(label: "Performance",
+                                value: sleepPerformanceValue,
+                                state: store.sleepHistorySnapshot.latest == nil ? .learning : .local,
+                                tint: Metrics.electricSleep,
+                                footnote: "of nightly need")
+                AtriaMetricTile(label: "Efficiency",
+                                value: store.sleepHistorySnapshot.latest?.sleepEfficiencyText ?? "--",
+                                state: store.sleepHistorySnapshot.latest?.sleepEfficiency == nil ? .learning : .research,
+                                tint: .cyan,
+                                footnote: "Duration-based estimate")
+            }
+
+            if let latestNight = store.sleepHistorySnapshot.latest {
+                if latestNight.displayStageSegments.isEmpty {
+                    AtriaSleepStageBuildingSummary(night: latestNight)
+                } else {
+                    AtriaSleepStageSummary(night: latestNight)
+                }
+            }
+        }
+        .padding(16)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var sleepPerformanceValue: String {
+        guard let latest = store.sleepHistorySnapshot.latest else { return "--" }
+        return "\(store.sleepHistorySnapshot.sleepPerformancePercent(for: latest, baseNeedHours: sleepBaseNeedHours))%"
+    }
+
+    /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
+    /// its own range picker) that previously rendered nowhere in the live
+    /// app -- the single highest-leverage fix in the visibility audit.
+    private var trendsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Trends")
+                .font(.title2.weight(.bold))
+            AtriaOverviewTrendChartHost(store: store)
+        }
+        .padding(16)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// First-class breathwork entry point (gap b, 2026-07-05): the pacer
+    /// already exists (`AtriaBreathworkSession`) and is complete, it just had
+    /// no front door on the Health screen.
+    private var breathworkCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "wind")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(Metrics.electricGreen)
+                    .frame(width: 36, height: 36)
+                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: Metrics.electricGreen))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Breathwork")
+                        .font(.headline.weight(.bold))
+                    Text("Guided paced breathing, tracked live from heart rate.")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+            }
+
+            Button {
+                showBreathworkSession = true
+            } label: {
+                Text("Start")
+                    .font(.subheadline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+            }
+            .atriaCardAction(tint: Metrics.electricGreen)
+            .accessibilityHint("Opens a guided breathwork session.")
+        }
+        .padding(16)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func recomputeStress() {
@@ -130,6 +257,29 @@ struct AtriaHealthScreen: View {
                                      tint: Metrics.electricSleep,
                                      hint: sleepHint,
                                      onTap: { educationTopic = .sleep })
+                // Visibility/IA fix (2026-07-05): three rows that previously had
+                // no home on the live Vitals tab. Each opens the real detail
+                // sheet (section 3), not just the education sheet, per spec.
+                AtriaHealthMetricRow(title: "VO2 max",
+                                     value: profileMetricsStore.state.vo2MaxEstimate.valueText,
+                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Building" : "Estimate",
+                                     systemImage: "lungs.fill",
+                                     tint: Metrics.electricGreen,
+                                     onTap: { metricDetail = .vo2max })
+                AtriaHealthMetricRow(title: "Skin temp",
+                                     value: store.imuAuditSummary.skinTemperatureDeviation.isReady
+                                        ? store.imuAuditSummary.skinTemperatureDeviation.valueText
+                                        : "--",
+                                     detail: store.imuAuditSummary.skinTemperatureDeviation.detailText,
+                                     systemImage: "thermometer.variable",
+                                     tint: .teal,
+                                     onTap: { metricDetail = .skinTemperature })
+                AtriaHealthMetricRow(title: "SpO2",
+                                     value: "\u{2014}",
+                                     detail: "Not available on this strap",
+                                     systemImage: "drop.degreesign",
+                                     tint: .secondary,
+                                     onTap: { metricDetail = .bloodOxygen })
             }
         }
         .padding(16)

@@ -14,6 +14,7 @@ struct AtriaJournalTab: View {
             AtriaJournalTypedInsightsSection(store: store)
             AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
             AtriaOverviewBehaviorJournalSection(store: store)
+            AtriaRoutineCard(store: store)
             AtriaJournalCycleCard()
         }
     }

@@ -5,6 +5,83 @@ import UIKit
 struct AtriaWorkoutSession: Identifiable {
     let id = UUID()
     let start: Date
+    /// User-picked pre-workout target (gap spec c, workout intensity picker,
+    /// 2026-07-05). Additive and optional so existing call sites
+    /// (`AtriaWorkoutSession(start:)`) keep compiling unchanged. The screens
+    /// that present this session (AtriaHomeView/AtriaTodayScreen) are outside
+    /// this feature's file ownership, so these fields are the forward-
+    /// compatible persistence surface the spec calls for; the live view
+    /// itself resolves its own in-session override via `userTargetChoice`
+    /// below, independent of whether a caller ever threads these through.
+    var targetStrain: Double? = nil
+    var targetZone: Int? = nil
+
+    /// The user's target choice re-derived from the persisted fields, if any.
+    var targetChoice: AtriaWorkoutTargetChoice? {
+        if let targetStrain { return .strain(targetStrain) }
+        if let targetZone { return .zone(targetZone) }
+        return nil
+    }
+}
+
+/// A user's workout target override: either a heart-rate zone (mapped to its
+/// equivalent strain band, see `AtriaWorkoutTargetMath`) or a direct numeric
+/// strain goal. `nil` anywhere this type is optional means "follow the auto
+/// guidance" -- never a fabricated default.
+enum AtriaWorkoutTargetChoice: Equatable {
+    case zone(Int)
+    case strain(Double)
+}
+
+/// Pure math for the workout target picker: zone -> strain band mapping and
+/// the ease/hold/build cue, both unit-testable without instantiating the
+/// live SwiftUI view (which needs live, connected ObservableObject stores).
+enum AtriaWorkoutTargetMath {
+    /// Top of the 0...21 Whoop-like strain scale already used throughout the
+    /// live workout HUD (see `strainTargetProgress`'s auto-guidance fallback).
+    static let strainCeiling: Double = 21.0
+
+    /// The strain band a heart-rate zone maps to, built from the same
+    /// `lowerFraction` boundaries the zone bar/target lane already render --
+    /// so a picked zone and the live zone bar always agree on where each zone
+    /// starts and ends.
+    static func strainBand(for zone: HRZone) -> ClosedRange<Double> {
+        let lower = zone.lowerFraction * strainCeiling
+        let upperFraction = HRZone(rawValue: zone.rawValue + 1)?.lowerFraction ?? 1.0
+        let upper = max(lower, upperFraction * strainCeiling)
+        return lower...upper
+    }
+
+    /// A single representative strain target for a zone: the midpoint of its band.
+    static func strainTarget(for zone: HRZone) -> Double {
+        let band = strainBand(for: zone)
+        return ((band.lowerBound + band.upperBound) / 2 * 10).rounded() / 10
+    }
+
+    /// Resolves the live strain target: a user override wins, otherwise the
+    /// auto guidance -- so leaving the picker untouched is always identical
+    /// to this feature not existing.
+    static func effectiveTarget(choice: AtriaWorkoutTargetChoice?, guidanceTarget: Double?) -> Double? {
+        switch choice {
+        case .zone(let rawZone):
+            guard let zone = HRZone(rawValue: rawZone) else { return guidanceTarget }
+            return strainTarget(for: zone)
+        case .strain(let value):
+            return value
+        case nil:
+            return guidanceTarget
+        }
+    }
+
+    /// Same ease/hold/build thresholds the strain-target card has always
+    /// used, extracted into a pure function so it can be driven directly in
+    /// tests without a live view.
+    static func cue(strain: Double, target: Double?) -> String {
+        guard let target else { return "building" }
+        if strain >= target + 1.0 { return "ease" }
+        if strain >= target { return "hold" }
+        return "build"
+    }
 }
 
 /// Live workout HUD: a full-screen, glanceable real-time view shown while a
@@ -29,6 +106,8 @@ struct AtriaLiveWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showSetLogger = false
+    @State private var showTargetPicker = false
+    @State private var userTargetChoice: AtriaWorkoutTargetChoice?
     @State private var selectedExercise = "Barbell bench press"
     @State private var loggerWeightKg = 60.0
     @State private var loggerReps = 8
@@ -85,6 +164,14 @@ struct AtriaLiveWorkoutView: View {
         .sheet(isPresented: $showSetLogger) {
             setLoggerSheet
                 .presentationDetents([.height(390)])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showTargetPicker) {
+            AtriaWorkoutTargetPicker(currentZone: zone,
+                                     guidanceTarget: strainTarget,
+                                     choice: $userTargetChoice)
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .preferredColorScheme(.dark)
         }
@@ -454,6 +541,18 @@ struct AtriaLiveWorkoutView: View {
                     .font(.caption.weight(.black))
                     .foregroundStyle(.white.opacity(0.90))
                 Spacer(minLength: 8)
+                Button {
+                    showTargetPicker = true
+                } label: {
+                    Label(targetSourceLabel, systemImage: "slider.horizontal.3")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.80))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
                 Text(coachCueTitle)
                     .font(.caption.weight(.black))
                     .foregroundStyle(coachCueTint)
@@ -661,10 +760,20 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private var strainTargetCue: String {
-        guard let strainTarget = effectiveStrainTarget else { return "building" }
-        if strain >= strainTarget + 1.0 { return "ease" }
-        if strain >= strainTarget { return "hold" }
-        return "build"
+        AtriaWorkoutTargetMath.cue(strain: strain, target: effectiveStrainTarget)
+    }
+
+    /// Short label for the target-lane edit affordance: shows whether the
+    /// live target is following auto guidance or a user pick, and which.
+    private var targetSourceLabel: String {
+        switch userTargetChoice {
+        case .zone(let rawZone):
+            return "Z\(rawZone) goal"
+        case .strain:
+            return "Your goal"
+        case nil:
+            return "Auto"
+        }
     }
 
     private var coachCueTitle: String {
@@ -705,7 +814,7 @@ struct AtriaLiveWorkoutView: View {
             return debugTarget
         }
         #endif
-        return strainTarget
+        return AtriaWorkoutTargetMath.effectiveTarget(choice: userTargetChoice, guidanceTarget: strainTarget)
     }
 
     #if DEBUG
@@ -1049,6 +1158,204 @@ struct AtriaLiveWorkoutView: View {
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%02d:%02d", m, s)
+    }
+}
+
+/// Pre-workout (or mid-workout) target picker: zone focus or a direct strain
+/// goal, styled to match the live HUD's dark glass surfaces (gap spec c).
+/// Presented from the target lane's edit affordance; commits into
+/// `userTargetChoice` on Done, or clears it back to "Auto" (the existing
+/// guidance default) -- never changes anything until the user confirms.
+private struct AtriaWorkoutTargetPicker: View {
+    let currentZone: HRZone
+    let guidanceTarget: Double?
+    @Binding var choice: AtriaWorkoutTargetChoice?
+    @Environment(\.dismiss) private var dismiss
+
+    private enum Mode: String, CaseIterable, Identifiable {
+        case auto = "Auto"
+        case zone = "Zone"
+        case strain = "Strain goal"
+        var id: String { rawValue }
+    }
+
+    @State private var mode: Mode
+    @State private var selectedZone: HRZone
+    @State private var strainGoal: Double
+
+    init(currentZone: HRZone, guidanceTarget: Double?, choice: Binding<AtriaWorkoutTargetChoice?>) {
+        self.currentZone = currentZone
+        self.guidanceTarget = guidanceTarget
+        self._choice = choice
+        let fallbackGoal = guidanceTarget ?? AtriaWorkoutTargetMath.strainTarget(for: currentZone)
+        switch choice.wrappedValue {
+        case .zone(let rawZone):
+            _mode = State(initialValue: .zone)
+            _selectedZone = State(initialValue: HRZone(rawValue: rawZone) ?? currentZone)
+            _strainGoal = State(initialValue: fallbackGoal)
+        case .strain(let value):
+            _mode = State(initialValue: .strain)
+            _selectedZone = State(initialValue: currentZone)
+            _strainGoal = State(initialValue: value)
+        case nil:
+            _mode = State(initialValue: .auto)
+            _selectedZone = State(initialValue: currentZone)
+            _strainGoal = State(initialValue: fallbackGoal)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("Workout target", systemImage: "target")
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(.white)
+                Spacer()
+                Button("Done") { commitAndDismiss() }
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Metrics.electricStrain)
+            }
+
+            modePicker
+
+            Group {
+                switch mode {
+                case .auto: autoContent
+                case .zone: zoneContent
+                case .strain: strainContent
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.black.ignoresSafeArea())
+    }
+
+    private var modePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(Mode.allCases) { candidate in
+                Button {
+                    withAnimation(.snappy) { mode = candidate }
+                } label: {
+                    Text(candidate.rawValue)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(mode == candidate ? Metrics.electricStrain.opacity(0.24) : Color.white.opacity(0.08),
+                                    in: Capsule())
+                        .overlay {
+                            if mode == candidate {
+                                Capsule().stroke(Metrics.electricStrain.opacity(0.6), lineWidth: 1)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var autoContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Follows Atria's live strain guidance.")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+            Text(guidanceTarget.map { String(format: "Currently %.1f", $0) } ?? "Learning your guidance target.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .padding(14)
+        .atriaWorkoutGlassSurface(cornerRadius: 18, tint: .white)
+    }
+
+    private var zoneContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pick a zone to hold. Atria maps it to a strain band.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.65))
+
+            VStack(spacing: 8) {
+                ForEach(HRZone.allCases, id: \.self) { zoneOption in
+                    zoneRow(zoneOption)
+                }
+            }
+        }
+    }
+
+    private func zoneRow(_ zoneOption: HRZone) -> some View {
+        let band = AtriaWorkoutTargetMath.strainBand(for: zoneOption)
+        let isSelected = selectedZone == zoneOption
+        return Button {
+            selectedZone = zoneOption
+        } label: {
+            HStack(spacing: 10) {
+                Capsule()
+                    .fill(zoneOption.color.opacity(isSelected ? 0.92 : 0.32))
+                    .frame(width: 8, height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Z\(zoneOption.rawValue) \u{00B7} \(zoneOption.name)")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(String(format: "%.1f\u{2013}%.1f strain", band.lowerBound, band.upperBound))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                Spacer(minLength: 8)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(zoneOption.color)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .atriaWorkoutGlassSurface(cornerRadius: 16, tint: isSelected ? zoneOption.color : .white)
+        .accessibilityLabel("Zone \(zoneOption.rawValue), \(zoneOption.name), \(String(format: "%.1f to %.1f strain", band.lowerBound, band.upperBound))\(isSelected ? ", selected" : "").")
+    }
+
+    private var strainContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Set a direct strain number to aim for.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.65))
+            HStack(spacing: 16) {
+                Button {
+                    strainGoal = max(1.0, strainGoal - 0.5)
+                } label: {
+                    Image(systemName: "minus.circle.fill").font(.title2)
+                }
+                Text(String(format: "%.1f", strainGoal))
+                    .font(.system(size: 34, weight: .black, design: .rounded))
+                    .monospacedDigit()
+                    .frame(minWidth: 90)
+                Button {
+                    strainGoal = min(AtriaWorkoutTargetMath.strainCeiling, strainGoal + 0.5)
+                } label: {
+                    Image(systemName: "plus.circle.fill").font(.title2)
+                }
+            }
+            .foregroundStyle(.white)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Strain goal \(String(format: "%.1f", strainGoal))")
+        }
+        .padding(14)
+        .atriaWorkoutGlassSurface(cornerRadius: 18, tint: Metrics.electricStrain)
+    }
+
+    private func commitAndDismiss() {
+        switch mode {
+        case .auto:
+            choice = nil
+        case .zone:
+            choice = .zone(selectedZone.rawValue)
+        case .strain:
+            choice = .strain((strainGoal * 10).rounded() / 10)
+        }
+        dismiss()
     }
 }
 

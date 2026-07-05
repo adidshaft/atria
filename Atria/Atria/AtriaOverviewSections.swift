@@ -1424,7 +1424,7 @@ struct AtriaOverviewReadinessSectionHost: View {
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
-    case recovery, strain, load, hrZones, workouts, strainCompare, hrv, stress, sleep, sleepHistory, sleepEfficiency, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
+    case recovery, strain, load, hrZones, workouts, strainCompare, hrv, stress, sleep, sleepHistory, sleepEfficiency, sleepPerformance, rhr, respiratoryRate, steps, calories, vo2max, bioAge, bloodOxygen, bodyTemp, trend, insights
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -1439,6 +1439,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleep: return "Sleep"
         case .sleepHistory: return "Sleep history"
         case .sleepEfficiency: return "Sleep eff"
+        case .sleepPerformance: return "Sleep perf"
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
         case .steps: return "Strap steps"
@@ -1471,6 +1472,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleep: return "bed.double.fill"
         case .sleepHistory: return "moon.zzz.fill"
         case .sleepEfficiency: return "percent"
+        case .sleepPerformance: return "gauge.with.dots.needle.50percent"
         case .rhr: return "heart.fill"
         case .respiratoryRate: return "lungs"
         case .steps: return "shoeprints.fill"
@@ -1567,7 +1569,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     // consistency, charts, calories) is VISIBLE by default — user feedback
     // 2026-07-05: hiding essentials behind Customize reads as "missing".
     static var defaultGlanceOrder: [AtriaTodayMetric] {
-        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .workouts, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
+        [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .workouts, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .sleepPerformance, .bodyTemp, .calories, .trend, .insights, .recovery, .strain, .sleep, .bloodOxygen, .bioAge]
     }
 
     static let defaultVisibleMetrics: [AtriaTodayMetric] = [.hrv, .stress, .rhr, .respiratoryRate, .steps, .load, .hrZones, .workouts, .strainCompare, .vo2max, .sleepHistory, .sleepEfficiency, .bodyTemp, .calories, .trend, .insights]
@@ -2832,6 +2834,18 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     ? "Sleep efficiency is building from saved sleep duration."
                                     : "Sleep efficiency duration-based estimate \(sleepHistory.latest?.sleepEfficiencyText ?? "Building").",
                                   calibratingDay: sleepEfficiencyCalibratingDay)
+        case .sleepPerformance:
+            detailButton(.sleepPerformance) {
+                // `dailyRollupHistory` is already day-descending (store invariant),
+                // so no `.sorted` here -- a render-path sort would recompute
+                // session metrics on every body eval (2026-07-05 perf hygiene).
+                AtriaGlanceMetricCard(title: "Sleep perf",
+                                      value: dailyRollupHistory.first?.sleepPerformance.map { "\($0)%" } ?? "Building",
+                                      detail: "of need",
+                                      systemImage: metric.systemImage,
+                                      tint: Metrics.electricSleep,
+                                      accessibilityDetail: "Sleep performance, percent of nightly need.")
+            }
         case .rhr:
             detailButton(.restingHeartRate) {
                 AtriaGlanceMetricCard(title: "RHR",
@@ -6244,6 +6258,18 @@ enum AtriaMetricDetailKind: String, Identifiable {
     case respiratoryRate
     case sleep
     case strain
+    // Visibility/IA route audit (2026-07-05): these extend detail coverage to
+    // every remaining glance tile that used to dead-end on tap. Some carry a
+    // real rollup-backed trend (sleepPerformance, fitnessAge); the rest render
+    // an honest "no trend saved yet" template instead of a dead tap.
+    case stress
+    case vo2max
+    case sleepPerformance
+    case sleepEfficiency
+    case skinTemperature
+    case fitnessAge
+    case hrZones
+    case bloodOxygen
 
     var id: String { rawValue }
 
@@ -6255,6 +6281,14 @@ enum AtriaMetricDetailKind: String, Identifiable {
         case .respiratoryRate: return "Respiratory rate"
         case .sleep: return "Sleep"
         case .strain: return "Strain"
+        case .stress: return "Stress"
+        case .vo2max: return "VO2max"
+        case .sleepPerformance: return "Sleep performance"
+        case .sleepEfficiency: return "Sleep efficiency"
+        case .skinTemperature: return "Skin temperature"
+        case .fitnessAge: return "Fitness age"
+        case .hrZones: return "HR zones"
+        case .bloodOxygen: return "Blood oxygen"
         }
     }
 
@@ -6265,6 +6299,13 @@ enum AtriaMetricDetailKind: String, Identifiable {
         case .respiratoryRate: return .teal
         case .sleep: return .cyan
         case .strain: return Metrics.electricStrain
+        case .stress: return .orange
+        case .vo2max: return Metrics.electricGreen
+        case .sleepPerformance, .sleepEfficiency: return Metrics.electricSleep
+        case .skinTemperature: return .teal
+        case .fitnessAge: return .purple
+        case .hrZones: return .orange
+        case .bloodOxygen: return .pink
         }
     }
 }
@@ -6278,6 +6319,14 @@ struct AtriaMetricDetailSheet: View {
     let recoveryEstimate: Metrics.RecoveryEstimate
     let sleepGoalHours: Double
     let sleepBaseNeedHours: Double
+    // Visibility/IA route audit (2026-07-05): live data for the new honest-
+    // partial detail kinds (VO2max, HR zones, skin temperature). All default
+    // to an honest "still building" value so the two pre-existing call sites
+    // (AtriaTodayScreen, and the dead orphaned AtriaVitalsTabContent/
+    // AtriaOverviewReadinessSection screens) keep compiling unchanged.
+    let hrZoneMinutes: TodayHRZoneMinutes
+    let vo2MaxEstimate: VO2MaxEstimateSummary?
+    let skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary?
     private let preparedHistory: AtriaPreparedMetricHistory
     @State private var range: AtriaTrendRange = .month
     @State private var showingMeaningSheet = false
@@ -6290,7 +6339,10 @@ struct AtriaMetricDetailSheet: View {
          guidance: Coach.Guidance,
          recoveryEstimate: Metrics.RecoveryEstimate,
          sleepGoalHours: Double,
-         sleepBaseNeedHours: Double) {
+         sleepBaseNeedHours: Double,
+         hrZoneMinutes: TodayHRZoneMinutes = .empty,
+         vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
+         skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil) {
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.baseline = baseline
@@ -6299,6 +6351,9 @@ struct AtriaMetricDetailSheet: View {
         self.recoveryEstimate = recoveryEstimate
         self.sleepGoalHours = sleepGoalHours
         self.sleepBaseNeedHours = sleepBaseNeedHours
+        self.hrZoneMinutes = hrZoneMinutes
+        self.vo2MaxEstimate = vo2MaxEstimate
+        self.skinTemperatureDeviation = skinTemperatureDeviation
         self.preparedHistory = AtriaPreparedMetricHistory(rollups: rollups, baseline: baseline, sleepGoalHours: sleepGoalHours)
     }
 
@@ -6481,7 +6536,127 @@ struct AtriaMetricDetailSheet: View {
             } about: {
                 aboutDisclosure
             }
+        case .sleepPerformance:
+            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
+                                      heroState: sleepPerformanceHeroState,
+                                      tint: Metrics.electricSleep) {
+                EmptyView()
+            } chart: {
+                chartSlot {
+                    metricChart(title: "Sleep performance",
+                                unit: "%",
+                                tint: Metrics.electricSleep,
+                                points: preparedHistory.sleepPerformance[range] ?? [],
+                                summary: preparedHistory.sleepPerformanceSummary[range],
+                                comparison: preparedHistory.sleepPerformanceComparison[range],
+                                baselineBand: nil,
+                                accessibilitySummary: "Sleep performance, percent of nightly need, over \(range.label).")
+                }
+            } about: {
+                aboutDisclosure
+            }
+        case .fitnessAge:
+            AtriaMetricDetailTemplate(heroValue: fitnessAgeHeroValue,
+                                      heroState: fitnessAgeHeroState,
+                                      tint: fitnessAgeTint) {
+                EmptyView()
+            } chart: {
+                if preparedHistory.fitnessAgeEntryCount >= 28 {
+                    chartSlot {
+                        metricChart(title: "Pace of aging",
+                                    unit: "y",
+                                    tint: fitnessAgeTint,
+                                    points: preparedHistory.fitnessAge[range] ?? [],
+                                    summary: preparedHistory.fitnessAgeSummary[range],
+                                    comparison: preparedHistory.fitnessAgeComparison[range],
+                                    baselineBand: nil,
+                                    accessibilitySummary: "Fitness-age delta over \(range.label).")
+                    }
+                } else {
+                    honestPartialCard(tint: fitnessAgeTint,
+                                      bodyText: "Calibrating a 28-day baseline before showing your pace of aging \u{2014} \(preparedHistory.fitnessAgeEntryCount) of 28 days saved so far.")
+                }
+            } about: {
+                aboutDisclosure
+            }
+        case .stress:
+            honestPartialDetail(heroValue: "Live read",
+                                heroState: "Not saved daily yet",
+                                tint: .orange,
+                                bodyText: "Stress is a live, moment-to-moment estimate from heart rate and beat-to-beat timing. Atria doesn't save a daily stress history yet, so there's no trend chart here \u{2014} check the Stress tile for the current read, or open guided breathwork to bring it down.")
+        case .vo2max:
+            honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
+                                heroState: (vo2MaxEstimate?.value == nil) ? "Building" : "Estimate",
+                                tint: Metrics.electricGreen,
+                                bodyText: vo2MaxEstimate?.narrative ?? "VO2max is estimated from your resting heart-rate baseline and measured max heart rate. It sharpens as Atria gathers more sessions.")
+        case .sleepEfficiency:
+            honestPartialDetail(heroValue: sleepHistory.latest?.sleepEfficiencyText ?? "--",
+                                heroState: sleepHistory.latest?.sleepEfficiency == nil ? "Building" : "Duration-based estimate",
+                                tint: Metrics.electricSleep,
+                                bodyText: "Sleep efficiency is estimated from time asleep versus time in bed. Atria doesn't save a night-by-night efficiency trend here yet \u{2014} the current estimate is shown above.")
+        case .skinTemperature:
+            honestPartialDetail(heroValue: (skinTemperatureDeviation?.isReady == true) ? skinTemperatureDeviation!.valueText : "--",
+                                heroState: (skinTemperatureDeviation?.isReady == true) ? "vs sleep baseline" : "Building",
+                                tint: .teal,
+                                bodyText: skinTemperatureDeviation?.footnoteText ?? "Skin temperature is a relative, sleep-only research signal compared with your own recent baseline \u{2014} not an absolute body temperature.")
+        case .hrZones:
+            honestPartialDetail(heroValue: hrZoneMinutes.valueText,
+                                heroState: hrZoneMinutes.hasSamples ? "today" : "No wear today",
+                                tint: .orange,
+                                bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
+        case .bloodOxygen:
+            honestPartialDetail(heroValue: "\u{2014}",
+                                heroState: "Not available on this strap",
+                                tint: .pink,
+                                bodyText: "This strap's hardware doesn't report blood oxygen. Atria won't fake a percentage \u{2014} the research probe only counts candidate signal frames, never a checked SpO2 reading.")
         }
+    }
+
+    /// Reusable honest-partial template for detail kinds that have a live
+    /// current value but no saved daily trend yet -- renders the hero value
+    /// plus an explanatory card instead of a fabricated chart.
+    private func honestPartialDetail(heroValue: String,
+                                     heroState: String = "Building",
+                                     tint: Color,
+                                     bodyText: String) -> some View {
+        AtriaMetricDetailTemplate(heroValue: heroValue, heroState: heroState, tint: tint) {
+            EmptyView()
+        } chart: {
+            honestPartialCard(tint: tint, bodyText: bodyText)
+        } about: {
+            aboutDisclosure
+        }
+    }
+
+    private func honestPartialCard(tint: Color, bodyText: String) -> some View {
+        Text(bodyText)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .atriaInsetCard(tint: tint)
+    }
+
+    private var sleepPerformanceHeroState: String {
+        preparedHistory.sleepPerformance[range]?.last == nil ? "Building" : "of nightly need"
+    }
+
+    private var fitnessAgeHeroValue: String {
+        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return "--" }
+        let delta = Int(latest.rounded())
+        return delta == 0 ? "0y" : "\(abs(delta))y"
+    }
+
+    private var fitnessAgeHeroState: String {
+        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return "Building" }
+        if latest == 0 { return "Matches your age" }
+        return latest < 0 ? "younger" : "older"
+    }
+
+    private var fitnessAgeTint: Color {
+        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return .orange }
+        return latest <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 
     private var rangeLens: (summary: AtriaDetailPeriodSummary, comparison: AtriaDetailComparisonSummary?)? {
@@ -6498,6 +6673,12 @@ struct AtriaMetricDetailSheet: View {
             return preparedHistory.sleepSummary[range].map { ($0, preparedHistory.sleepComparison[range]) }
         case .strain:
             return preparedHistory.strainSummary[range].map { ($0, preparedHistory.strainComparison[range]) }
+        case .sleepPerformance:
+            return preparedHistory.sleepPerformanceSummary[range].map { ($0, preparedHistory.sleepPerformanceComparison[range]) }
+        case .fitnessAge:
+            return preparedHistory.fitnessAgeSummary[range].map { ($0, preparedHistory.fitnessAgeComparison[range]) }
+        case .stress, .vo2max, .sleepEfficiency, .skinTemperature, .hrZones, .bloodOxygen:
+            return nil
         }
     }
 
@@ -7236,6 +7417,22 @@ private struct AtriaMetricMeaningInline: View {
             return String(format: "Sleep performance compares your night with a %.1f hour goal while consistency tracks recent timing.", sleepGoalHours)
         case .strain:
             return "Strain is your day-load target, not a score to max out every day."
+        case .stress:
+            return "This is a live autonomic-load read, not a lab measurement. Atria doesn't yet save a daily stress history to trend."
+        case .vo2max:
+            return "VO2max is estimated from your resting baseline and measured heart-rate max, not a lab gas-exchange test."
+        case .sleepPerformance:
+            return String(format: "Sleep performance compares last night's duration with a need that adjusts for debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
+        case .sleepEfficiency:
+            return "Sleep efficiency estimates time asleep versus time in bed from duration, not a checked sleep study."
+        case .skinTemperature:
+            return "Skin temperature is a relative, sleep-only research signal versus your own recent nights, never an absolute reading."
+        case .fitnessAge:
+            return "Fitness age blends VO2max-adjacent fitness signals into a single younger/older-than-your-years estimate."
+        case .hrZones:
+            return "Zone minutes split today's elevated heart rate into Z2 through Z5 bands."
+        case .bloodOxygen:
+            return "This strap's hardware does not report blood oxygen. Atria will never fabricate an SpO2 percentage."
         }
     }
 
@@ -7256,6 +7453,22 @@ private struct AtriaMetricMeaningInline: View {
                 return String(format: "Aim for the target arc around %.1f today and let recovery decide how hard to push.", target)
             }
             return "Use the active band to stay controlled while Atria learns your recovery-scaled target."
+        case .stress:
+            return "If it stays elevated, try a few slow paced breaths or lighten today's training rather than pushing through it."
+        case .vo2max:
+            return "Watch the multi-week trend rather than any single estimate; sustained aerobic training is what moves it."
+        case .sleepPerformance:
+            return "A string of nights under 100% adds up as debt \u{2014} an earlier bedtime pays it back faster than one long catch-up night."
+        case .sleepEfficiency:
+            return "Low efficiency with normal duration usually means restless time in bed \u{2014} a cooler, darker, screen-free wind-down tends to help."
+        case .skinTemperature:
+            return "A sustained rise versus your own baseline can line up with illness, heat, or hard training \u{2014} treat it as context, not a diagnosis."
+        case .fitnessAge:
+            return "This moves slowly by design \u{2014} consistent aerobic training and sleep are what shift the pace of aging over months, not days."
+        case .hrZones:
+            return "More time in Z2\u{2013}Z3 builds an aerobic base; Z4\u{2013}Z5 minutes are the hard efforts to keep purposeful, not accidental."
+        case .bloodOxygen:
+            return "There's nothing to act on here \u{2014} this strap simply doesn't measure it."
         }
     }
 
@@ -7629,6 +7842,22 @@ private struct AtriaMetricMeaningSheet: View {
             return "Sleep tracks whether you got enough time and consistency to restore."
         case .strain:
             return "Strain is your day-load target, not a score to max out every day."
+        case .stress:
+            return "Stress is a live autonomic-load read, not a saved daily trend."
+        case .vo2max:
+            return "VO2max estimates your aerobic capacity from resting and max heart rate."
+        case .sleepPerformance:
+            return "Sleep performance compares last night with how much sleep you actually needed."
+        case .sleepEfficiency:
+            return "Sleep efficiency estimates how much of your time in bed was spent asleep."
+        case .skinTemperature:
+            return "Skin temperature shows a relative overnight shift versus your own recent baseline."
+        case .fitnessAge:
+            return "Fitness age turns your training and recovery signals into a younger/older-than-your-years estimate."
+        case .hrZones:
+            return "HR zones split today's elevated heart rate into effort bands."
+        case .bloodOxygen:
+            return "This strap's hardware doesn't report blood oxygen."
         }
     }
 
@@ -7646,6 +7875,22 @@ private struct AtriaMetricMeaningSheet: View {
             return "The duration trend shows how much sleep you got. The stage bar is labeled as a heart-rate and motion estimate, not EEG."
         case .strain:
             return "The blue arc shows today’s accumulated load. The target arc and notch show where today’s plan says to land."
+        case .stress:
+            return "There's no chart here yet because Atria doesn't save a day-by-day stress history \u{2014} only today's live read."
+        case .vo2max:
+            return "Treat the number and its trend as an estimate, sharpening over more sessions, not a lab VO2 test result."
+        case .sleepPerformance:
+            return "The chart shows the saved daily percent of nightly sleep need met, factoring in recent debt and yesterday's strain."
+        case .sleepEfficiency:
+            return "The current estimate is duration-based; Atria doesn't yet save a night-by-night efficiency history to chart."
+        case .skinTemperature:
+            return "This is a relative research signal only \u{2014} no absolute temperature and no saved daily history yet."
+        case .fitnessAge:
+            return "The pace-of-aging chart only appears once 28 days of the estimate are saved; until then this shows the calibrating state."
+        case .hrZones:
+            return "Zone minutes are today's live total; Atria doesn't yet save a day-by-day zone-minutes history to chart."
+        case .bloodOxygen:
+            return "Atria will never fabricate a blood-oxygen percentage on hardware that can't measure it."
         }
     }
 
@@ -7666,6 +7911,22 @@ private struct AtriaMetricMeaningSheet: View {
             return String(format: "Sleep performance compares your night with a %.1f hour goal while consistency tracks how stable your recent timing has been.", sleepGoalHours)
         case .strain:
             return "Light, Moderate, High, and All-Out bands make it easier to read the number as a coaching zone instead of raw effort."
+        case .stress:
+            return "This estimates autonomic load right now from heart rate and beat-to-beat timing, not a lab cortisol measurement."
+        case .vo2max:
+            return "VO2max is derived from your resting heart-rate baseline and measured max heart rate, refined as more sessions come in."
+        case .sleepPerformance:
+            return String(format: "Sleep performance compares last night's duration against a need that adjusts for sleep debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
+        case .sleepEfficiency:
+            return "Sleep efficiency is time asleep divided by time in bed, estimated from duration rather than a checked sleep study."
+        case .skinTemperature:
+            return "Skin temperature compares tonight with your own recent overnight baseline \u{2014} a relative research signal, not an absolute reading."
+        case .fitnessAge:
+            return "Fitness age blends your recovery, training, and VO2max-adjacent signals into one younger/older-than-your-years read."
+        case .hrZones:
+            return "Zone minutes show how much of today was spent in each heart-rate effort band, from resting to max."
+        case .bloodOxygen:
+            return "This strap has no checked SpO2 sensor path — only research candidate frames, never a real percentage."
         }
     }
 
@@ -7686,6 +7947,22 @@ private struct AtriaMetricMeaningSheet: View {
                 return String(format: "Aim for the target arc around %.1f today. If recovery is still building, use the band label to stay controlled instead of pushing for max load.", target)
             }
             return "Use the active band to stay controlled while Atria learns your recovery-scaled target."
+        case .stress:
+            return "If it stays elevated, a few minutes of slow paced breathing is the fastest lever — open guided breathwork from the Stress tile."
+        case .vo2max:
+            return "Consistent aerobic training over weeks moves this more than any single session."
+        case .sleepPerformance:
+            return "A run of nights under 100% compounds as debt — pay it back with an earlier bedtime rather than one long catch-up night."
+        case .sleepEfficiency:
+            return "Low efficiency alongside normal duration usually means restless time in bed — a cooler, darker, screen-free wind-down tends to help."
+        case .skinTemperature:
+            return "A sustained rise versus your own baseline can line up with illness, heat, or hard training — treat it as context, not a diagnosis."
+        case .fitnessAge:
+            return "This moves slowly by design — consistent sleep and aerobic training are what shift the pace of aging over months."
+        case .hrZones:
+            return "More Z2–Z3 time builds an aerobic base; keep Z4–Z5 minutes purposeful rather than accidental."
+        case .bloodOxygen:
+            return "There's nothing to act on here — this is a hardware limitation, not a signal to chase."
         }
     }
 
@@ -8453,6 +8730,19 @@ private struct AtriaPreparedMetricHistory {
     let sleepComparison: [AtriaTrendRange: AtriaDetailComparisonSummary]
     let strainComparison: [AtriaTrendRange: AtriaDetailComparisonSummary]
     let latestNutrition: AtriaNutritionSummary?
+    // Visibility/IA trend coverage (2026-07-05), spec path B: reuses this
+    // already-shipping rollup-backed history instead of touching the
+    // launch-emergency Sessions.swift trend builder.
+    let sleepPerformance: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let sleepPerformanceSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
+    let sleepPerformanceComparison: [AtriaTrendRange: AtriaDetailComparisonSummary]
+    let fitnessAge: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let fitnessAgeSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
+    let fitnessAgeComparison: [AtriaTrendRange: AtriaDetailComparisonSummary]
+    /// Total saved days with a fitness-age delta, independent of range --
+    /// gates the pace-of-aging chart behind the same 28-day baseline used by
+    /// `AtriaFitnessAge.summary`.
+    let fitnessAgeEntryCount: Int
 
     init(rollups: [DailyRollupStoreEntry],
          baseline: AtriaBaselineTargetSnapshot,
@@ -8477,10 +8767,17 @@ private struct AtriaPreparedMetricHistory {
         var respiratoryComparisonByRange: [AtriaTrendRange: AtriaDetailComparisonSummary] = [:]
         var sleepComparisonByRange: [AtriaTrendRange: AtriaDetailComparisonSummary] = [:]
         var strainComparisonByRange: [AtriaTrendRange: AtriaDetailComparisonSummary] = [:]
+        var sleepPerformanceByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var sleepPerformanceSummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
+        var sleepPerformanceComparisonByRange: [AtriaTrendRange: AtriaDetailComparisonSummary] = [:]
+        var fitnessAgeByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var fitnessAgeSummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
+        var fitnessAgeComparisonByRange: [AtriaTrendRange: AtriaDetailComparisonSummary] = [:]
         let latestNutrition = rollups
             .sorted { $0.day > $1.day }
             .compactMap(\.nutrition)
             .first
+        let fitnessAgeEntryCount = rollups.compactMap(\.fitnessAgeDelta).count
 
         for range in AtriaTrendRange.allCases {
             let cutoff = range.cutoffDate(calendar: calendar)
@@ -8574,6 +8871,34 @@ private struct AtriaPreparedMetricHistory {
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
             latestStrainByRange[range] = filtered.last?.strain
+
+            let sleepPerformancePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
+                item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }
+            }
+            let priorSleepPerformancePoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+                item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }
+            }
+            sleepPerformanceByRange[range] = sleepPerformancePoints
+            sleepPerformanceSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPerformancePoints, unit: "%")
+            sleepPerformanceComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPerformancePoints, prior: priorSleepPerformancePoints, unit: "%")
+
+            let fitnessAgePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
+                item.fitnessAgeDelta.map { delta in
+                    AtriaDetailChartPoint(day: item.day,
+                                          value: Double(delta),
+                                          tint: delta <= 0 ? Metrics.electricGreen : Metrics.electricYellow)
+                }
+            }
+            let priorFitnessAgePoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+                item.fitnessAgeDelta.map { delta in
+                    AtriaDetailChartPoint(day: item.day,
+                                          value: Double(delta),
+                                          tint: delta <= 0 ? Metrics.electricGreen : Metrics.electricYellow)
+                }
+            }
+            fitnessAgeByRange[range] = fitnessAgePoints
+            fitnessAgeSummaryByRange[range] = AtriaDetailPeriodSummary(points: fitnessAgePoints, unit: "y")
+            fitnessAgeComparisonByRange[range] = AtriaDetailComparisonSummary(current: fitnessAgePoints, prior: priorFitnessAgePoints, unit: "y")
         }
 
         self.recovery = recoveryByRange
@@ -8596,6 +8921,13 @@ private struct AtriaPreparedMetricHistory {
         self.sleepComparison = sleepComparisonByRange
         self.strainComparison = strainComparisonByRange
         self.latestNutrition = latestNutrition
+        self.sleepPerformance = sleepPerformanceByRange
+        self.sleepPerformanceSummary = sleepPerformanceSummaryByRange
+        self.sleepPerformanceComparison = sleepPerformanceComparisonByRange
+        self.fitnessAge = fitnessAgeByRange
+        self.fitnessAgeSummary = fitnessAgeSummaryByRange
+        self.fitnessAgeComparison = fitnessAgeComparisonByRange
+        self.fitnessAgeEntryCount = fitnessAgeEntryCount
     }
 
     private static func hrvTint(value: Int, baseline: AtriaBaselineTargetSnapshot) -> Color {

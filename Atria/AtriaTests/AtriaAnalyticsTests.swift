@@ -2458,6 +2458,54 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(summary.blockers.contains("28 days of heart data"))
     }
 
+    func testFitnessAgePaceRequiresAtLeast28Entries() {
+        let calendar = Calendar(identifier: .gregorian)
+        func deltas(count: Int) -> [AtriaFitnessAge.DailyDelta] {
+            (0..<count).map { offset in
+                let day = calendar.date(byAdding: .day, value: offset, to: Date(timeIntervalSince1970: 1_780_000_000))!
+                return AtriaFitnessAge.DailyDelta(day: day, delta: 0)
+            }
+        }
+
+        let thin = AtriaFitnessAge.paceOfAging(deltas: deltas(count: 27))
+        XCTAssertFalse(thin.isReady)
+        XCTAssertNil(thin.yearsPerCalendarYear)
+        XCTAssertEqual(thin.copyText, AtriaFitnessAge.paceCalibratingCopy)
+
+        let ready = AtriaFitnessAge.paceOfAging(deltas: deltas(count: 28))
+        XCTAssertTrue(ready.isReady)
+        XCTAssertNotNil(ready.yearsPerCalendarYear)
+    }
+
+    func testFitnessAgePaceSlopeCopyMatchesDeltaTrend() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = Date(timeIntervalSince1970: 1_780_000_000)
+        // Fitness-age delta drifting up by exactly 1 year every 365.25 days
+        // (one calendar year) should read as aging ~1.0y/yr faster than the clock.
+        let agingFaster: [AtriaFitnessAge.DailyDelta] = (0..<40).map { offset in
+            let day = calendar.date(byAdding: .day, value: offset * 30, to: start)!
+            let delta = Int((Double(offset) * 30.0 / 365.25).rounded())
+            return AtriaFitnessAge.DailyDelta(day: day, delta: delta)
+        }
+        let faster = AtriaFitnessAge.paceOfAging(deltas: agingFaster)
+        XCTAssertTrue(faster.isReady)
+        let fasterSlope = try XCTUnwrap(faster.yearsPerCalendarYear)
+        XCTAssertEqual(fasterSlope, 1.0, accuracy: 0.15)
+        XCTAssertTrue(faster.copyText.contains("faster than the clock"), faster.copyText)
+        XCTAssertTrue(faster.copyText.hasPrefix("Aging ~"), faster.copyText)
+
+        // A flat -1 delta every day (no drift) should read as slower than the clock
+        // (or at least never as "faster"), matching the sign of the near-zero/negative slope.
+        let steadyYounger: [AtriaFitnessAge.DailyDelta] = (0..<40).map { offset in
+            let day = calendar.date(byAdding: .day, value: offset, to: start)!
+            return AtriaFitnessAge.DailyDelta(day: day, delta: -1)
+        }
+        let slower = AtriaFitnessAge.paceOfAging(deltas: steadyYounger)
+        XCTAssertTrue(slower.isReady)
+        XCTAssertEqual(slower.yearsPerCalendarYear ?? .nan, 0, accuracy: 0.01)
+        XCTAssertTrue(slower.copyText.contains("slower than the clock"), slower.copyText)
+    }
+
     @MainActor
     func testShareCardRendererOutputsStoryAndPostPNGsWithoutMetadata() throws {
         let snapshot = AtriaShareSnapshot(

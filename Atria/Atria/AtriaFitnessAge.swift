@@ -10,7 +10,70 @@ enum AtriaFitnessAge {
         let historyDays: Int
     }
 
+    /// One day's persisted fitness-age delta, as stored on
+    /// `DailyRollupStoreEntry.fitnessAgeDelta` — the raw input to the
+    /// pace-of-aging trend below.
+    struct DailyDelta: Equatable {
+        let day: Date
+        let delta: Int
+
+        init(day: Date, delta: Int) {
+            self.day = day
+            self.delta = delta
+        }
+    }
+
+    /// Honest "pace of aging" summary: the slope of the persisted daily
+    /// fitness-age delta over calendar time. Gated behind the same 28-entry
+    /// minimum used to gate `summary(inputs:)` itself — below that, the trend
+    /// is not shown, only a calibrating state.
+    struct PaceOfAging: Equatable {
+        let isReady: Bool
+        /// Years of biological aging per one calendar year, e.g. `0.8` means
+        /// aging faster than the clock, `-0.8` means slower. `nil` while not ready.
+        let yearsPerCalendarYear: Double?
+        let copyText: String
+    }
+
     static let footnoteText = "Estimate from heart data — not a medical measurement."
+    static let paceMinimumEntries = 28
+    static let paceCalibratingCopy = "Calibrating 28-day baseline"
+
+    /// Computes the pace-of-aging trend from persisted daily fitness-age deltas.
+    /// Requires at least `paceMinimumEntries` (28) entries — mirrors the 28-day
+    /// gate on `summary(inputs:)` above — otherwise reports the calibrating state.
+    static func paceOfAging(deltas: [DailyDelta]) -> PaceOfAging {
+        guard deltas.count >= paceMinimumEntries else {
+            return PaceOfAging(isReady: false, yearsPerCalendarYear: nil, copyText: paceCalibratingCopy)
+        }
+        let slope = agingSlopeYearsPerCalendarYear(deltas: deltas)
+        return PaceOfAging(isReady: true, yearsPerCalendarYear: slope, copyText: paceCopy(forSlope: slope))
+    }
+
+    /// Least-squares slope of fitness-age delta (years) against calendar time
+    /// (in years), sorted ascending by day. Two or fewer distinct days -> 0.
+    static func agingSlopeYearsPerCalendarYear(deltas: [DailyDelta]) -> Double {
+        let points = deltas.sorted { $0.day < $1.day }
+        guard let referenceDay = points.first?.day, points.count >= 2 else { return 0 }
+        let secondsPerYear = 365.25 * 24 * 60 * 60
+        let xs = points.map { $0.day.timeIntervalSince(referenceDay) / secondsPerYear }
+        let ys = points.map(\.delta).map(Double.init)
+        let n = Double(points.count)
+        let sumX = xs.reduce(0, +)
+        let sumY = ys.reduce(0, +)
+        let sumXY = zip(xs, ys).reduce(0) { $0 + $1.0 * $1.1 }
+        let sumXX = xs.reduce(0) { $0 + $1 * $1 }
+        let denominator = n * sumXX - sumX * sumX
+        guard denominator != 0 else { return 0 }
+        return (n * sumXY - sumX * sumY) / denominator
+    }
+
+    static func paceCopy(forSlope slope: Double) -> String {
+        let rounded = (slope * 10).rounded() / 10
+        let direction = rounded <= 0 ? "slower" : "faster"
+        let magnitudeText = String(format: "%.1f", abs(rounded))
+        return "Aging ~\(magnitudeText) y per calendar year \(direction) than the clock"
+    }
 
     static func summary(inputs: Inputs) -> BiologicalAgeSummary {
         var blockers: [String] = []

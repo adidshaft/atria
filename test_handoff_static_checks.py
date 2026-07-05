@@ -3893,10 +3893,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "let rows = 7",
             "Int(ceil(Double(nights.count) / Double(rows)))",
             "Sleep heat strip",
-            "private struct AtriaSleepStageSummary: View, Equatable",
+            # Pins migrated (2026-07-05, visibility/IA §2): de-privatized so
+            # AtriaHealthScreen (the live Vitals tab) can mount the
+            # sleep-stage summary directly -- no logic change, just dropped
+            # `private` on these two struct declarations.
+            "struct AtriaSleepStageSummary: View, Equatable",
             "Text(night.stageEvidence.label)",
             "AtriaSleepStageHypnogram(segments: night.displayStageSegments,",
-            "private struct AtriaSleepStageBuildingSummary: View, Equatable",
+            "struct AtriaSleepStageBuildingSummary: View, Equatable",
             "Text(\"Stages building\")",
             "Stage breakdown needs checked sleep-stage evidence; duration, RHR, HRV, and respiratory estimates stay visible while Atria learns.",
             "AtriaSleepStageBuildingSummary(night: latest)",
@@ -9162,9 +9166,16 @@ class HandoffStaticChecks(unittest.TestCase):
         today = source(ROOT / "Atria" / "Atria" / "AtriaTodayScreen.swift")
         breathwork = source(ROOT / "Atria" / "Atria" / "AtriaBreathworkSession.swift")
 
+        # Pin migrated (2026-07-05, visibility/IA route audit): the old
+        # `item.id == "Stress"` string check compared against `metricKey`,
+        # which is `AtriaTodayMetric.stress.rawValue` -- Swift auto-derives
+        # that as the lowercase `"stress"`, never the capitalized literal --
+        # so this branch never actually matched and the Stress tile silently
+        # dead-ended like every other tile. Replaced with a real enum
+        # comparison as part of routing every glance tile to its detail.
         for needle in [
             "@State private var showBreathworkSession = false",
-            'if item.id == "Stress"',
+            "if metric == .stress {",
             "showBreathworkSession = true",
             "AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,",
             "currentRRSamples: pulseStore.state.recentRRSamples",

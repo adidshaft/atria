@@ -36,7 +36,11 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     var accent: Accent
 
     static var `default`: AtriaHomeLayoutConfig {
-        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "respiratoryRate", "steps", "hrZones", "workouts", "strainCompare", "vo2max", "bodyTemp", "sleepHistory", "trend"],
+        // Visibility/IA fix (2026-07-05): the default deck used to ship only 12
+        // of the 14-card cap, hiding two metrics (sleep efficiency, fitness age)
+        // that are fully computed today. Filled the deck to the cap so nothing
+        // real is hidden behind Customize by default.
+        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "respiratoryRate", "steps", "hrZones", "workouts", "strainCompare", "vo2max", "bodyTemp", "sleepHistory", "trend", "sleepEfficiency", "bioAge"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
                               showHighlights: true,
@@ -94,6 +98,7 @@ enum AtriaHomeLayoutCatalog {
         "sleep",
         "sleepHistory",
         "sleepEfficiency",
+        "sleepPerformance",
         "rhr",
         "respiratoryRate",
         "steps",
