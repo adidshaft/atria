@@ -87,12 +87,12 @@ struct AtriaSettingsView: View {
     // Section-group expansion state. Dotted keys go through @AtriaDefault, not
     // @AppStorage — see AtriaDefault.swift for the dotted-key UserDefaults KVO
     // storm this avoids (documented against AtriaHomeView's 0x8BADF00D crash).
-    @AtriaDefault("atria.settings.expanded.profile") private var expandedProfile = true
-    @AtriaDefault("atria.settings.expanded.strap") private var expandedStrap = true
-    @AtriaDefault("atria.settings.expanded.notifications") private var expandedNotifications = false
-    @AtriaDefault("atria.settings.expanded.data") private var expandedData = false
-    @AtriaDefault("atria.settings.expanded.sharing") private var expandedSharing = false
-    @AtriaDefault("atria.settings.expanded.developer") private var expandedDeveloper = false
+    @AtriaDefault("atria.settings.v2.expanded.profile") private var expandedProfile = false
+    @AtriaDefault("atria.settings.v2.expanded.strap") private var expandedStrap = false
+    @AtriaDefault("atria.settings.v2.expanded.notifications") private var expandedNotifications = false
+    @AtriaDefault("atria.settings.v2.expanded.data") private var expandedData = false
+    @AtriaDefault("atria.settings.v2.expanded.sharing") private var expandedSharing = false
+    @AtriaDefault("atria.settings.v2.expanded.developer") private var expandedDeveloper = false
 
     /// Support destinations are shown as text only. Atria's core stays local-first
     /// with no in-app network/browser clients, so contact details are surfaced for
@@ -216,10 +216,25 @@ struct AtriaSettingsView: View {
     // flat scroll. Expansion state is remembered per section via @AtriaDefault
     // (dotted keys, so no @AppStorage KVO storm).
 
-    private func settingsGroupLabel(_ title: String, systemImage: String, tint: Color) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.headline.weight(.semibold))
-            .foregroundStyle(tint)
+    private func settingsGroupLabel(_ title: String,
+                                    subtitle: String,
+                                    systemImage: String,
+                                    tint: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(AtriaIconTileBackground(cornerRadius: 9, tint: tint))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
     }
 
     private var strapExpandedBinding: Binding<Bool> {
@@ -238,10 +253,13 @@ struct AtriaSettingsView: View {
                 appearanceSection
                 targetsSection
             } label: {
-                settingsGroupLabel("Profile & Preferences", systemImage: "person.crop.circle.fill", tint: .pink)
+                settingsGroupLabel("Profile & Preferences",
+                                   subtitle: "Today layout, profile, appearance, targets",
+                                   systemImage: "person.crop.circle.fill",
+                                   tint: .pink)
             }
         } footer: {
-            Text("Today layout, athlete profile, appearance, and target zones.")
+            Text("Open only when you want to tune how Atria feels and scores your day.")
         }
     }
 
@@ -253,19 +271,25 @@ struct AtriaSettingsView: View {
                 deviceSection
                 sensorAvailabilitySection
             } label: {
-                settingsGroupLabel("Strap & Sensors", systemImage: "antenna.radiowaves.left.and.right.circle.fill", tint: .cyan)
+                settingsGroupLabel("Strap & Sensors",
+                                   subtitle: "Connection, broadcast, device, sensor limits",
+                                   systemImage: "antenna.radiowaves.left.and.right.circle.fill",
+                                   tint: .cyan)
             }
         } footer: {
-            Text("Radio mode, HR broadcast, strap identity, and supported sensors.")
+            Text("Connection tools stay together so device troubleshooting is one stop.")
         }
-    }
+        }
 
     private var notificationsGroup: some View {
         Section {
             DisclosureGroup(isExpanded: $expandedNotifications) {
                 alertsSection
             } label: {
-                settingsGroupLabel("Notifications", systemImage: "bell.badge.fill", tint: .orange)
+                settingsGroupLabel("Notifications",
+                                   subtitle: "Haptics, strain targets, summaries",
+                                   systemImage: "bell.badge.fill",
+                                   tint: .orange)
             }
         } footer: {
             Text("Haptic alerts and on-device notification preferences.")
@@ -277,7 +301,10 @@ struct AtriaSettingsView: View {
             DisclosureGroup(isExpanded: dataExpandedBinding) {
                 dataSection
             } label: {
-                settingsGroupLabel("Data & Storage", systemImage: "internaldrive.fill", tint: .blue)
+                settingsGroupLabel("Data & Storage",
+                                   subtitle: "Backups, sync, Health export, local files",
+                                   systemImage: "internaldrive.fill",
+                                   tint: .blue)
             }
         } footer: {
             Text("Local backups, Apple Health export and sync, and on-device storage.")
@@ -290,7 +317,10 @@ struct AtriaSettingsView: View {
                 AtriaResearchSharingSection(buildBundle: buildResearchBundle)
                 aboutSection
             } label: {
-                settingsGroupLabel("Privacy & Sharing", systemImage: "hand.raised.fill", tint: .green)
+                settingsGroupLabel("Privacy & Sharing",
+                                   subtitle: "Research sharing, support, app info",
+                                   systemImage: "hand.raised.fill",
+                                   tint: .green)
             }
         } footer: {
             Text("Research bundle sharing, app version, and support contact.")
@@ -304,7 +334,10 @@ struct AtriaSettingsView: View {
                 DisclosureGroup(isExpanded: $expandedDeveloper) {
                     researchValidationSection
                 } label: {
-                    settingsGroupLabel("Developer", systemImage: "hammer.fill", tint: .secondary)
+                    settingsGroupLabel("Developer",
+                                       subtitle: "Internal validation tools",
+                                       systemImage: "hammer.fill",
+                                       tint: .secondary)
                 }
             } footer: {
                 Text("Internal validation tools, visible only in developer mode.")

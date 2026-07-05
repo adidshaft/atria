@@ -9,9 +9,58 @@ struct AtriaOnboardingFlow: View {
     let onRestoreBackup: ((URL) -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Step = .whatThisIs
+    @State private var focusMetric: OnboardingFocusMetric = .recovery
     @State private var didDebugCompleteFromConnectedStrap = false
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
+
+    private enum OnboardingFocusMetric: String, CaseIterable, Identifiable {
+        case recovery
+        case sleep
+        case strain
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .recovery: return "Recovery"
+            case .sleep: return "Sleep"
+            case .strain: return "Strain"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .recovery: return "Morning readiness"
+            case .sleep: return "Night review"
+            case .strain: return "Day load"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .recovery: return "heart.text.square.fill"
+            case .sleep: return "bed.double.fill"
+            case .strain: return "flame.fill"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .recovery: return Metrics.electricGreen
+            case .sleep: return Metrics.electricSleep
+            case .strain: return Metrics.electricStrain
+            }
+        }
+
+        var centerValue: String {
+            switch self {
+            case .recovery: return "64%"
+            case .sleep: return "7h 42m"
+            case .strain: return "13.1"
+            }
+        }
+    }
 
     private enum Step: Int, CaseIterable {
         case whatThisIs
@@ -91,8 +140,11 @@ struct AtriaOnboardingFlow: View {
                         }
                     } label: {
                         Text(primaryTitle)
+                            .font(.headline.weight(.bold))
                             .frame(maxWidth: .infinity)
+                            .frame(minHeight: 58)
                     }
+                    .controlSize(.large)
                     .atriaCardAction(tint: step == .strap && ble.status != .connected ? .blue : .green)
                 }
                 .padding(.horizontal, 20)
@@ -132,14 +184,25 @@ struct AtriaOnboardingFlow: View {
 
     private var whatThisIsPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            onboardingIcon("waveform.path.ecg", tint: .green)
             Text("Your WHOOP strap, no subscription. Data stays on your phone.")
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
+            onboardingRingCard
             VStack(alignment: .leading, spacing: 12) {
-                featureRow(icon: "heart.text.square.fill", tint: .green, title: "Recovery", detail: "Morning readiness from your overnight signal.")
-                featureRow(icon: "bed.double.fill", tint: .cyan, title: "Sleep", detail: "Wear it tonight and review sleep tomorrow.")
-                featureRow(icon: "flame.fill", tint: .orange, title: "Strain", detail: "Workout and day load from heart-rate effort.")
+                ForEach(OnboardingFocusMetric.allCases) { metric in
+                    Button {
+                        moveFocus(to: metric)
+                    } label: {
+                        featureRow(icon: metric.icon,
+                                   tint: metric.tint,
+                                   title: metric.title,
+                                   detail: metric.detail)
+                            .padding(10)
+                            .background(metric == focusMetric ? metric.tint.opacity(0.12) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
@@ -206,21 +269,15 @@ struct AtriaOnboardingFlow: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 16) {
-                Stepper(value: birthYear, in: 1926...2013, step: 1) {
-                    rowLabel("Birth year", value: "\(currentBirthYear)")
-                }
+                numericProfileField("Age", value: ageBinding, suffix: "years")
                 Picker("Sex", selection: $draft.biologicalSex) {
                     ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
                         Text(sex.label).tag(sex)
                     }
                 }
                 .pickerStyle(.segmented)
-                Stepper(value: $draft.heightCm, in: 0...230, step: 1) {
-                    rowLabel("Height", value: draft.heightCm > 0 ? "\(Int(draft.heightCm.rounded())) cm" : "Not set")
-                }
-                Stepper(value: $draft.weightKg, in: 0...250, step: 1) {
-                    rowLabel("Weight", value: draft.weightKg > 0 ? "\(Int(draft.weightKg.rounded())) kg" : "Not set")
-                }
+                numericProfileField("Height", value: heightBinding, suffix: "cm")
+                numericProfileField("Weight", value: weightBinding, suffix: "kg")
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
@@ -228,6 +285,60 @@ struct AtriaOnboardingFlow: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var onboardingRingCard: some View {
+        VStack(spacing: 16) {
+            AtriaTriRing(slots: onboardingRingSlots,
+                         centerValue: focusMetric.centerValue,
+                         centerState: focusMetric.title,
+                         accessibilitySummary: "Preview ring focused on \(focusMetric.title).",
+                         actions: [
+                            .sleep: { moveFocus(to: .sleep) },
+                            .recovery: { moveFocus(to: .recovery) },
+                            .strain: { moveFocus(to: .strain) }
+                         ])
+                .frame(maxWidth: 300)
+                .frame(maxWidth: .infinity)
+
+            HStack(spacing: 8) {
+                ForEach(OnboardingFocusMetric.allCases) { metric in
+                    Button {
+                        moveFocus(to: metric)
+                    } label: {
+                        Label(metric.title, systemImage: metric.icon)
+                            .font(.caption.weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 9)
+                    }
+                    .atriaCardAction(prominent: metric == focusMetric, tint: metric.tint)
+                }
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private var onboardingRingSlots: [AtriaTriRingSlotContent] {
+        [
+            AtriaTriRingSlotContent(slot: .sleep,
+                                    metric: onboardingMetric(.sleep, fill: focusMetric == .sleep ? 0.92 : 0.72)),
+            AtriaTriRingSlotContent(slot: .recovery,
+                                    metric: onboardingMetric(.recovery, fill: focusMetric == .recovery ? 0.78 : 0.58)),
+            AtriaTriRingSlotContent(slot: .strain,
+                                    metric: onboardingMetric(.strain, fill: focusMetric == .strain ? 0.66 : 0.42))
+        ]
+    }
+
+    private func onboardingMetric(_ metric: OnboardingFocusMetric, fill: Double) -> AtriaTriRingMetric {
+        AtriaTriRingMetric(title: metric.title,
+                           value: metric.centerValue,
+                           detail: metric.detail,
+                           systemImage: metric.icon,
+                           tint: metric.tint,
+                           fill: fill)
     }
 
     private var expectationsPage: some View {
@@ -261,12 +372,35 @@ struct AtriaOnboardingFlow: View {
         Calendar.current.component(.year, from: Date()) - draft.age
     }
 
-    private var birthYear: Binding<Int> {
+    private var ageBinding: Binding<Int> {
         Binding {
-            currentBirthYear
-        } set: { year in
-            let currentYear = Calendar.current.component(.year, from: Date())
-            draft.age = min(max(currentYear - year, 13), 100)
+            draft.age
+        } set: { age in
+            draft.age = min(max(age, 13), 100)
+        }
+    }
+
+    private var heightBinding: Binding<Double> {
+        Binding {
+            draft.heightCm
+        } set: { height in
+            draft.heightCm = min(max(height, 0), 230)
+        }
+    }
+
+    private var weightBinding: Binding<Double> {
+        Binding {
+            draft.weightKg
+        } set: { weight in
+            draft.weightKg = min(max(weight, 0), 250)
+        }
+    }
+
+    private func moveFocus(to next: OnboardingFocusMetric) {
+        if reduceMotion {
+            focusMetric = next
+        } else {
+            withAnimation(.snappy(duration: 0.22)) { focusMetric = next }
         }
     }
 
@@ -310,6 +444,38 @@ struct AtriaOnboardingFlow: View {
             Text(value)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+        }
+    }
+
+    private func numericProfileField(_ title: String, value: Binding<Int>, suffix: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+            Spacer()
+            TextField(title, value: value, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: 74)
+                .textFieldStyle(.roundedBorder)
+            Text(suffix)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func numericProfileField(_ title: String, value: Binding<Double>, suffix: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+            Spacer()
+            TextField(title, value: value, format: .number.precision(.fractionLength(0)))
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: 74)
+                .textFieldStyle(.roundedBorder)
+            Text(suffix)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
     }
 
