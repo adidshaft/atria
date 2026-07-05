@@ -7612,3 +7612,48 @@ OK / Release install / full unit suite) → on-device verification.
 State: directive backlog EMPTY. Overnight #2 validates the degraded sleep
 tier + hardened workout gates on fresh data. Pending user decisions unchanged
 (sharing server + network-ban exemption, Face-Off publish, duty-cycle default).
+
+## 27. Emergency day two: launch experience, re-mount, ground truth (2026-07-06)
+
+User escalation with screenshot evidence ("nowhere a working app... shows
+pretty much nothing... I'm tired of you") drove three Opus-specced waves, all
+gated + device-verified:
+
+- **Accuracy wave 2** (29e804c4): wake-boundary sleep finalize — the
+  continuous recording never closes, so candidates included the awake tail
+  and failed every gate; now finalizes at the learned wake boundary (VERIFIED
+  LIVE: sleep #9 saved at wake_point 05:01Z, the user's actual wake). Phantom
+  workout: the July-4 ghost bypassed contact gates via the STRENGTH path with
+  stitched-diluted artifact shares and a structurally-dead RR gate; fixed at
+  all three levels + a 24h staleness rule (VERIFIED LIVE: status=stale).
+  Detections surface: ring-buffer event log rendered in History with honest
+  reason copy. GROUND TRUTH: user reports 48h without working out — app
+  auto-confirmed zero workouts in that window.
+- **Launch emergency** (a0cc10e0): the user's screenshot showed SOLID BLACK
+  skeleton blobs on an otherwise empty, unscrollable first screen. Root
+  causes: bare RoundedRectangles inheriting Color.primary under .redacted
+  (shapes are not restyled by placeholder redaction); a full-screen
+  "Preparing" gate awaiting the 11MB session decode; connect queued behind
+  main-actor congestion. Fixes: gate DELETED (first frame renders real data
+  from rollups + last-known widget snapshot), quaternary skeleton fills,
+  decode QoS raised + finishDeferredLoad split, connect issued on
+  centralQueue pre-hop, honest pill sub-states, morning summary gains a
+  "Log how you feel" journal action. Device screenshot verified: real
+  rings/chips/cards at first paint.
+- **Re-mount wave** (c56b2ed5): Opus matrix proved the rich metric surfaces
+  were ORPHANED DEAD CODE (AtriaVitalsTabContent/AtriaOverviewTabContent/all
+  three trend hosts: zero live references). Mounted: hypnogram, sleep
+  performance/efficiency card, multi-metric Trends chart, VO2/skin-temp/
+  honest-SpO2 rows, Breathwork entry; every tile now routes to a real detail
+  (incl. a pre-existing Stress-route bug: "Stress" compared against rawValue
+  "stress" — never matched); 14-tile default deck; pace-of-aging persisted
+  daily (fitnessAgeDelta) with slope copy in the fitness-age detail; workout
+  intensity picker on the live-workout target lane; Routine card (per-day
+  bedtime/workout/journal checkmarks + streaks) in Journal.
+
+Suite grew to 177 tests. Sessions dipped 170→161 (one-time install-debris
+pruning; watched, stable). Device pending the usual developer re-trust after
+test cycles. LESSON RECORDED: verification pulls measured data presence, not
+seconds-after-tap experience — the launch-timeline screenshot protocol and
+launch time-to-content tests now exist so this class of failure is caught
+before the user sees it.

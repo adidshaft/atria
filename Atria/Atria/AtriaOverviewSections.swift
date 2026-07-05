@@ -6559,7 +6559,12 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: fitnessAgeHeroValue,
                                       heroState: fitnessAgeHeroState,
                                       tint: fitnessAgeTint) {
-                EmptyView()
+                if preparedHistory.paceOfAging.isReady {
+                    Text(preparedHistory.paceOfAging.copyText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(fitnessAgeTint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } chart: {
                 if preparedHistory.fitnessAgeEntryCount >= 28 {
                     chartSlot {
@@ -8743,6 +8748,7 @@ private struct AtriaPreparedMetricHistory {
     /// gates the pace-of-aging chart behind the same 28-day baseline used by
     /// `AtriaFitnessAge.summary`.
     let fitnessAgeEntryCount: Int
+    let paceOfAging: AtriaFitnessAge.PaceOfAging
 
     init(rollups: [DailyRollupStoreEntry],
          baseline: AtriaBaselineTargetSnapshot,
@@ -8778,6 +8784,10 @@ private struct AtriaPreparedMetricHistory {
             .compactMap(\.nutrition)
             .first
         let fitnessAgeEntryCount = rollups.compactMap(\.fitnessAgeDelta).count
+        let paceDeltas = rollups.compactMap { entry in
+            entry.fitnessAgeDelta.map { AtriaFitnessAge.DailyDelta(day: entry.day, delta: $0) }
+        }
+        self.paceOfAging = AtriaFitnessAge.paceOfAging(deltas: paceDeltas)
 
         for range in AtriaTrendRange.allCases {
             let cutoff = range.cutoffDate(calendar: calendar)
