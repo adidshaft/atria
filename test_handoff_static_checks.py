@@ -11009,7 +11009,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct LabelCheck: Equatable",
             "static let strainTRIMP = Check(name: \"banister_strain_score\"",
             "actual: Strain.score(fromTRIMP: 50)",
-            "expected: 14.98",
+            "expected: 3.81",
             "static let strainEdwards = Check(name: \"edwards_strain_score\"",
             "actual: Strain.score(fromEdwardsLoad: 120)",
             "static let recoveryHRV = Check(name: \"hrv_recovery_score\"",

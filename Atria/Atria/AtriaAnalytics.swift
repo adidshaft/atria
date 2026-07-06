@@ -853,9 +853,20 @@ enum AtriaAnalytics {
         }
 
         /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
+        ///
+        /// Time constant recalibrated 2026-07-07 from 40 to 250 after real-device
+        /// data showed a mostly-light all-day (TRIMP 132, only ~2.4min in zone 3)
+        /// reading 20.23 — the /40 curve saturated by TRIMP≈120, so any full day
+        /// of wear pinned near max. WHOOP's 0–21 strain is logarithmic precisely
+        /// to keep "long, easy days from inflating the score" (Light 0–9, Moderate
+        /// 10–13, High 14–17, All Out 18–21). /250 spreads the curve onto those
+        /// zones: that light day now reads ~8.6 (Light), a hard workout day
+        /// (~TRIMP 400) ~16.8 (High), an all-out day (~TRIMP 600) ~19.1 (All Out),
+        /// and truly sedentary (~TRIMP 37) ~2.9. The concave (saturating) shape is
+        /// kept — climbing 10→20 stays much harder than 0→10, as on WHOOP.
         static func score(fromTRIMP trimp: Double) -> Double {
             guard trimp > 0 else { return 0 }
-            return min(21.0 * (1 - exp(-trimp / 40.0)), 21.0)
+            return min(21.0 * (1 - exp(-trimp / 250.0)), 21.0)
         }
 
     }
@@ -1603,7 +1614,7 @@ enum AtriaAnalytics {
 
         static let strainTRIMP = Check(name: "banister_strain_score",
                                        actual: Strain.score(fromTRIMP: 50),
-                                       expected: 14.98,
+                                       expected: 3.81,
                                        tolerance: 0.05)
 
         static let strainEdwards = Check(name: "edwards_strain_score",
