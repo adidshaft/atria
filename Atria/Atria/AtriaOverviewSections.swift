@@ -3772,7 +3772,7 @@ struct AtriaWeeklyReportSheet: View {
                                                  value: dayText(report.bestDay),
                                                  detail: recoveryText(report.bestDay),
                                                  systemImage: "lightbulb.max.fill",
-                                                 tint: .yellow)
+                                                 tint: Metrics.electricYellow)
                         AtriaWeeklyReportStatRow(title: "Hardest day",
                                                  value: dayText(report.hardestDay),
                                                  detail: strainText(report.hardestDay),
@@ -3970,7 +3970,7 @@ struct AtriaMonthlyReportSheet: View {
                                                  value: consistencyText,
                                                  detail: "Bedtime routine from daily rollups",
                                                  systemImage: "clock.fill",
-                                                 tint: .yellow)
+                                                 tint: Metrics.electricYellow)
                     }
                 }
                 .padding(18)
