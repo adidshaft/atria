@@ -296,7 +296,10 @@ struct AtriaOnboardingFlow: View {
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
-            Text("Used for calories and heart-rate zones.")
+            // Footer used to repeat the header ("...calories and heart-rate
+            // zones") verbatim; now it adds the genuinely useful fact that these
+            // are optional and editable later instead of duplicating.
+            Text("Optional — you can update these anytime in Settings.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

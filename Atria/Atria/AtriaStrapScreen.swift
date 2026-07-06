@@ -189,10 +189,13 @@ struct AtriaStrapScreen: View {
     /// generation from the strap's own Device Information service, when known.
     /// Falls back to the plain identity — never a guess.
     private var identitySubtitle: String {
-        let identity = coreLiveStore.state.displayDeviceName.isEmpty ? "Strap" : coreLiveStore.state.displayDeviceName
+        let hasName = !coreLiveStore.state.displayDeviceName.isEmpty
+        let identity = hasName ? coreLiveStore.state.displayDeviceName : "Strap"
         let rawName = coreLiveStore.state.deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let looksLikeWhoop = rawName.uppercased().contains("WHOOP") || ble.strapModel != .unknown
-        guard looksLikeWhoop else { return identity }
+        // When the strap isn't identified yet and has no saved name, describe the
+        // device instead of echoing the "Strap" title verbatim ("Strap / Strap").
+        guard looksLikeWhoop else { return hasName ? identity : "Bluetooth heart-rate strap" }
 
         switch ble.strapModel {
         case .strapMG: return "WHOOP MG · \(identity)"
