@@ -7273,6 +7273,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     let contributors: Contributors
     let chart: ChartContent
     let about: About
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(heroValue: String,
          heroState: String,
@@ -7377,6 +7378,11 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                 .lineLimit(1)
                 .minimumScaleFactor(0.56)
                 .foregroundStyle(heroTint)
+                // Native numeric roll when the range switches (W→M→3M) so the
+                // value change reads as informative motion, not a hard cut.
+                // Skipped under Reduce Motion (matches the tri-ring center).
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: heroValue)
 
             HStack(spacing: 6) {
                 Circle()
