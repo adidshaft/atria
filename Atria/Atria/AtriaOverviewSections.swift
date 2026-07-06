@@ -10266,17 +10266,22 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
                     .background(.cyan.opacity(0.12), in: Capsule(style: .continuous))
             }
 
-            HStack(spacing: 8) {
-                impactLane(title: "Watch",
-                           value: pressureValue,
-                           count: pressureSummaries.count,
-                           tint: .orange,
-                           alignment: .trailing)
-                impactLane(title: "Support",
-                           value: supportValue,
-                           count: supportSummaries.count,
-                           tint: .cyan,
-                           alignment: .leading)
+            // Watch/Support lanes only once there are real links — in the
+            // learning state they showed "0 links" twice, which was noise that
+            // made the card feel busy without saying anything.
+            if summaries.contains(where: { $0.impactDelta != nil }) {
+                HStack(spacing: 8) {
+                    impactLane(title: "Watch",
+                               value: pressureValue,
+                               count: pressureSummaries.count,
+                               tint: .orange,
+                               alignment: .trailing)
+                    impactLane(title: "Support",
+                               value: supportValue,
+                               count: supportSummaries.count,
+                               tint: .cyan,
+                               alignment: .leading)
+                }
             }
 
             // Only show the watch↔support "impact map" once there are real
