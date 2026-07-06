@@ -3404,6 +3404,12 @@ final class SessionStore: ObservableObject {
     /// window ended longer ago than this is never surfaced, regardless of its
     /// contact/strength signal -- see latestWorkoutReviewCandidate.
     private static let workoutReviewStaleAfter: TimeInterval = 24 * 3600
+    /// A review candidate sharing at least this much real time with an
+    /// already-confirmed workout is the SAME effort (two workouts can't happen
+    /// at once), so it is suppressed even when the min-duration overlap ratio is
+    /// below 0.70 -- the common "user started the live workout partway through,
+    /// auto-detector flags the earlier partially-overlapping window" case.
+    private static let workoutReviewConfirmedOverlapSuppressSeconds: TimeInterval = 5 * 60
     private var sessionPersistenceRevision = 0
     private var lastCompletedSessionPersistenceRevision = 0
     private var pendingSessionPersistenceRevision = 0
@@ -7647,7 +7653,16 @@ final class SessionStore: ObservableObject {
 
         let id = confirmedWorkoutID(start: start, end: end, source: summary.bestSource)
         let alreadyConfirmed = cachedConfirmedWorkouts.contains { workout in
-            workout.id == id || workoutOverlapRatio(workout: workout, start: start, end: end) >= 0.70
+            if workout.id == id { return true }
+            // Two efforts can't overlap in time, so a candidate sharing a
+            // substantial window with a confirmed workout is the same effort the
+            // user already captured (e.g. they started the live workout partway
+            // through). The 0.70 min-duration ratio alone missed that -- a 46-min
+            // candidate over the first 18 min of an 83-min live workout is 39% --
+            // so also suppress on >= 5 min of raw overlap.
+            let rawOverlap = min(workout.end, end).timeIntervalSince(max(workout.start, start))
+            return rawOverlap >= Self.workoutReviewConfirmedOverlapSuppressSeconds
+                || workoutOverlapRatio(workout: workout, start: start, end: end) >= 0.70
         }
         guard !alreadyConfirmed else {
             AtriaDebugLog("ATRIADBG workout_review_candidate status=already_confirmed source=%@ candidate_source=%@ id=%@",
