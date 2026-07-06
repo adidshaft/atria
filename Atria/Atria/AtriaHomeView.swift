@@ -2030,12 +2030,19 @@ struct AtriaHomeView: View {
 #endif
     }
 
+    private static let chatComingSoonExamples = [
+        "Why is my recovery low today?",
+        "How did last night's sleep compare?",
+        "What's a smart strain target?",
+        "Is my HRV trending up or down?"
+    ]
+
     private var chatComingSoonContent: some View {
         VStack(spacing: 14) {
             Image(systemName: "bubble.left.and.bubble.right.fill")
                 .font(.system(size: 44, weight: .semibold))
                 .foregroundStyle(.tint)
-                .padding(.top, 48)
+                .padding(.top, 44)
             Text("ATRIA Intelligent Assistant")
                 .font(.title2.weight(.bold))
             Text("Coming Soon!")
@@ -2046,6 +2053,40 @@ struct AtriaHomeView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 28)
+
+            // Static preview of what it'll handle — gives the placeholder some
+            // life and hints at the value, without implying it's interactive yet.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("IT'LL ANSWER THINGS LIKE")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.6)
+                ForEach(Self.chatComingSoonExamples, id: \.self) { prompt in
+                    HStack(spacing: 10) {
+                        Image(systemName: "questionmark.bubble.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                        Text(prompt)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.tint.opacity(0.08), in: Capsule(style: .continuous))
+                    .accessibilityLabel("Example question: \(prompt)")
+                }
+            }
+            .padding(.top, 6)
+            .padding(.horizontal, 20)
+
+            Label("On-device · your data never leaves this phone", systemImage: "lock.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 28)
