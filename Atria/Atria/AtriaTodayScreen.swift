@@ -1888,12 +1888,24 @@ private struct AtriaStrainTargetCard: View, Equatable {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             } else {
-                // Honest learning state: recovery isn't trusted yet, so
-                // there is no real target to show progress against --
-                // never a fabricated placeholder bar.
-                Text("Target appears once recovery is trusted")
-                    .font(.caption.weight(.semibold))
+                // Honest learning state: recovery isn't trusted yet, so there is
+                // no *personalized* target to show progress against -- never a
+                // fabricated placeholder bar or target number. But the day strain
+                // itself IS real, so show it and explain what the target will do
+                // and when it unlocks (better than a bare gated message).
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(String(format: "%.1f", currentStrain))
+                        .font(.title3.weight(.bold).monospacedDigit())
+                        .foregroundStyle(tint)
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                    Text("strain today")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text("Your daily target unlocks after a few nights of recovery data — higher when you're well recovered, lower when you need rest.")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
@@ -1910,7 +1922,7 @@ private struct AtriaStrainTargetCard: View, Equatable {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(target.map { "Strain target. \(String(format: "%.1f of %.1f", currentStrain, $0))." }
-                             ?? "Strain target. Target appears once recovery is trusted.")
+                             ?? "Strain today \(String(format: "%.1f", currentStrain)). Your daily target unlocks after a few nights of recovery data.")
     }
 }
 
