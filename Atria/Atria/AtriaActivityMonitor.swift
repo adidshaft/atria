@@ -73,7 +73,7 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .sheet(item: $workoutDetail) { workout in
-            AtriaActivityWorkoutDetailSheet(workout: workout)
+            AtriaActivityWorkoutDetailSheet(store: store, workout: workout)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -246,19 +246,55 @@ struct AtriaActivityMonitorTab: View {
     }
 }
 
-/// Read-only detail for a confirmed workout in the Activity Monitor. Editing the
-/// window is intentionally deferred until the store exposes a mutate/delete path
-/// for confirmed workouts — this shows only what the session actually measured.
+/// Detail + editor for a confirmed workout in the Activity Monitor. The measured
+/// stats (times, HR, strain, calories) are read-only — they come straight from
+/// the recorded session and are never estimated. The editable parts are the
+/// label (rename) and removal (delete a wrong detection).
 private struct AtriaActivityWorkoutDetailSheet: View {
+    @ObservedObject var store: SessionStore
     let workout: UserConfirmedWorkout
     @Environment(\.dismiss) private var dismiss
+
+    @State private var label: String
+    @State private var showDeleteConfirm = false
+
+    init(store: SessionStore, workout: UserConfirmedWorkout) {
+        self.store = store
+        self.workout = workout
+        _label = State(initialValue: workout.label)
+    }
+
+    private var trimmedLabel: String {
+        label.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSaveName: Bool {
+        !trimmedLabel.isEmpty && trimmedLabel != workout.label
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    AtriaPanelSectionHeader(title: workout.label,
+                    AtriaPanelSectionHeader(title: "Workout",
                                             subtitle: Self.rangeText(workout))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("NAME")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            TextField("Workout name", text: $label)
+                                .textInputAutocapitalization(.words)
+                                .submitLabel(.done)
+                                .onSubmit(saveName)
+                            Button("Save", action: saveName)
+                                .font(.subheadline.weight(.bold))
+                                .disabled(!canSaveName)
+                        }
+                        .padding(12)
+                        .atriaInsetCard(tint: Metrics.electricStrain)
+                    }
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         if let strain = workout.strain {
@@ -276,6 +312,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete workout", systemImage: "trash")
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.glass)
+                    .tint(.red)
                 }
                 .padding(16)
             }
@@ -286,7 +333,24 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .confirmationDialog("Delete this workout?",
+                                isPresented: $showDeleteConfirm,
+                                titleVisibility: .visible) {
+                Button("Delete workout", role: .destructive) {
+                    store.deleteConfirmedWorkout(id: workout.id)
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes it from your history and strain. The recorded sensor data is kept; only this confirmed workout is deleted.")
+            }
         }
+    }
+
+    private func saveName() {
+        guard canSaveName else { return }
+        store.renameConfirmedWorkout(id: workout.id, label: trimmedLabel)
+        dismiss()
     }
 
     private func statTile(_ title: String, _ value: String, tint: Color) -> some View {

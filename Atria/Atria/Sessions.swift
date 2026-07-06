@@ -8087,6 +8087,61 @@ final class SessionStore: ObservableObject {
         return "\(startSeconds)-\(endSeconds)-\(source)"
     }
 
+    /// Remove a confirmed workout from history — e.g. a wrong auto-detection the
+    /// user wants gone. Returns false if no workout with that id exists.
+    /// Bumps `dashboardRevision` (the @Published trigger) so the UI refreshes;
+    /// `cachedConfirmedWorkouts` itself is not @Published.
+    @discardableResult
+    func deleteConfirmedWorkout(id: String) -> Bool {
+        let filtered = cachedConfirmedWorkouts.filter { $0.id != id }
+        guard filtered.count != cachedConfirmedWorkouts.count else { return false }
+        saveConfirmedWorkouts(filtered)
+        dashboardRevision &+= 1
+        return true
+    }
+
+    /// Relabel a confirmed workout without touching any of its measured metrics
+    /// (times, HR, strain, calories are all preserved). Returns false if the id
+    /// is unknown or the new label is blank.
+    @discardableResult
+    func renameConfirmedWorkout(id: String, label newLabel: String) -> Bool {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }),
+              cachedConfirmedWorkouts[index].label != trimmed else { return false }
+        let old = cachedConfirmedWorkouts[index]
+        var renamed = UserConfirmedWorkout(id: old.id,
+                                           createdAt: old.createdAt,
+                                           start: old.start,
+                                           end: old.end,
+                                           label: trimmed,
+                                           source: old.source,
+                                           confidence: old.confidence,
+                                           sessions: old.sessions,
+                                           samples: old.samples,
+                                           avgHR: old.avgHR,
+                                           peakHR: old.peakHR,
+                                           p95HR: old.p95HR,
+                                           p99HR: old.p99HR,
+                                           thresholdHR: old.thresholdHR,
+                                           streamCoveragePercent: old.streamCoveragePercent,
+                                           observedDuration: old.observedDuration,
+                                           reason: old.reason)
+        renamed.activityType = old.activityType
+        renamed.activitySubtype = old.activitySubtype
+        renamed.exerciseNames = old.exerciseNames
+        renamed.reviewSource = old.reviewSource
+        renamed.strain = old.strain
+        renamed.activeEnergyKilocalories = old.activeEnergyKilocalories
+        renamed.activeEnergyConfidence = old.activeEnergyConfidence
+        renamed.zoneSeconds = old.zoneSeconds
+        var updated = cachedConfirmedWorkouts
+        updated[index] = renamed
+        saveConfirmedWorkouts(updated)
+        dashboardRevision &+= 1
+        return true
+    }
+
     func confirmBestSleepCandidateForUI(rest: Int, source: String = "ui") -> UserConfirmedSleep? {
         confirmBestSleepCandidate(rest: rest, source: source)
     }
