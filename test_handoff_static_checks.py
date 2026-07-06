@@ -2903,15 +2903,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(\"Dismiss\")",
             "Atria is waiting for a steadier strap rise.",
             "private var savedWorkoutDecisionStrip: some View",
-            "decisionStep(systemImage: \"hand.tap.fill\"",
-            "decisionStep(systemImage: signalReviewIcon",
-            "title: \"Review\"",
-            "value: \"Window\"",
-            "title: \"Strap\"",
-            "decisionStep(systemImage: \"arrow.triangle.2.circlepath\"",
-            "title: \"Save\"",
-            "value: \"After type\"",
-            "Workout review path. Review the window, strap window \\(signalReviewTitle), then save after confirming type.",
+            # Decluttered 2026-07-07: the three fake-button decisionStep tiles
+            # became one non-button row surfacing strap-signal quality + the next
+            # action. reviewPathStrip (below) is a separate strip and unchanged.
+            "Text(\"Strap signal: \\(signalReviewTitle)\")",
+            "Text(\"Confirm the type to save\")",
             "private var reviewPathStrip: some View",
             "pathStep(\"1\", \"Window\", tint: .cyan)",
             "pathStep(\"2\", \"Type\", tint: .orange)",
