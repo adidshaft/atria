@@ -362,12 +362,17 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         }
     }
 
+    // One identity hue per metric, matching AtriaMetricDetailKind.tint and the
+    // Customize sheet (Metrics.electric* — adaptive, deepened on light). Was:
+    // RHR+HRV both `.pink`, respiration raw `.teal`, stress raw `.orange`, which
+    // collapsed distinct vitals and washed out on white.
     var tint: Color {
         switch self {
         case .recovery: return Metrics.electricGreen
-        case .restingHeartRate, .hrv: return .pink
-        case .respiration: return .teal
-        case .stress: return .orange
+        case .restingHeartRate: return Metrics.electricRHR
+        case .hrv: return Metrics.electricHRV
+        case .respiration: return Metrics.electricRespiratory
+        case .stress: return Metrics.electricStress
         case .sleep: return Metrics.electricSleep
         }
     }
@@ -792,13 +797,17 @@ private enum AtriaHealthMonitorVitalKind: String, CaseIterable {
         }
     }
 
+    // One identity hue per metric (adaptive, deepened on light). RHR/HRV were
+    // both `.pink` (indistinguishable); respiration+skin-temp share teal by
+    // design (both #00C7BE in the handoff palette). Blood oxygen keeps a
+    // distinct blue since it and RHR can appear together in this live list.
     var tint: Color {
         switch self {
-        case .restingHeartRate: return .pink
-        case .hrv: return .pink
-        case .respiratoryRate: return .teal
+        case .restingHeartRate: return Metrics.electricRHR
+        case .hrv: return Metrics.electricHRV
+        case .respiratoryRate: return Metrics.electricRespiratory
         case .bloodOxygen: return .blue
-        case .skinTemperature: return .teal
+        case .skinTemperature: return Metrics.electricRespiratory
         }
     }
 
@@ -889,7 +898,7 @@ private enum AtriaHealthMonitorRangeState: Equatable {
         case .inRange: return "In range"
         case .aboveTypical: return "Above typical"
         case .belowTypical: return "Below typical"
-        case .building: return "Building"
+        case .building: return "Learning"
         case .research: return "Early"
         }
     }

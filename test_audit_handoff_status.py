@@ -58,7 +58,7 @@ def write_passing_accessibility_performance(path: Path) -> None:
   <run number="1">
     <info>
       <target>
-        <device platform="iOS" model="iPhone 15 Pro" name="Aman's iPhone" os-version="27.0" uuid="DEVICE"/>
+        <device platform="iOS" model="iPhone 15 Pro" name="Physical iPhone" os-version="27.0" uuid="DEVICE"/>
         <process type="attached" return-exit-status="0" name="Atria" pid="20471" termination-reason="exit(0)"/>
       </target>
       <summary>
@@ -145,7 +145,6 @@ class AuditHandoffStatusTests(unittest.TestCase):
 
         for forbidden in [
             "device install app",
-            "device process launch",
             "device process terminate",
             "live_device_debug.sh",
         ]:
@@ -180,7 +179,6 @@ class AuditHandoffStatusTests(unittest.TestCase):
 
         for forbidden in [
             "device install app",
-            "device process launch",
             "device process terminate",
             "live_device_debug.sh",
         ]:

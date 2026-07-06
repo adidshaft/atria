@@ -9,9 +9,8 @@ which_script.txt
 # contains a copied Python interpreter; not source
 WhoopBLE.app/
 
-# Runtime transcripts from cabled iPhone WHOOPDBG sessions
-logs/live-device/
-logs/device-pulls/
+# Runtime transcripts, build logs, and device/simulator debug output.
+logs/
 
 # Generated physical-device evidence can include private health/device data.
 # Keep curated evidence tracked only when explicitly staged with -f.
@@ -37,12 +36,6 @@ GOAL.md
 # Local physical-device diagnostics and generated screenshots.
 tmp/
 artifacts/
-!artifacts/
-artifacts/*
-!artifacts/visual-checks/
-artifacts/visual-checks/*
-!artifacts/visual-checks/share-cards/
-!artifacts/visual-checks/share-cards/**
 
 # Local design experiments; curated public assets live in assets/.
 design/

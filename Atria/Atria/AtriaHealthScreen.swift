@@ -223,7 +223,7 @@ struct AtriaHealthScreen: View {
                                      value: restingHeartRateValue,
                                      detail: "overnight low",
                                      systemImage: "heart.text.square.fill",
-                                     tint: .cyan,
+                                     tint: Metrics.electricRHR,
                                      rangeText: restingHeartRateRangeText,
                                      hint: restingHeartRateHint,
                                      onTap: { educationTopic = .restingHeartRate })
@@ -231,7 +231,7 @@ struct AtriaHealthScreen: View {
                                      value: hrvValue,
                                      detail: "night signal",
                                      systemImage: "waveform.path.ecg",
-                                     tint: Metrics.electricGreen,
+                                     tint: Metrics.electricHRV,
                                      rangeText: hrvRangeText,
                                      hint: hrvHint,
                                      onTap: { educationTopic = .hrv })
@@ -246,7 +246,7 @@ struct AtriaHealthScreen: View {
                                      value: respiratoryValue,
                                      detail: "sleep average",
                                      systemImage: "lungs.fill",
-                                     tint: .teal,
+                                     tint: Metrics.electricRespiratory,
                                      rangeText: respiratoryRangeText,
                                      hint: respiratoryHint,
                                      onTap: { educationTopic = .respiration })
@@ -262,7 +262,7 @@ struct AtriaHealthScreen: View {
                 // sheet (section 3), not just the education sheet, per spec.
                 AtriaHealthMetricRow(title: "VO2 max",
                                      value: profileMetricsStore.state.vo2MaxEstimate.valueText,
-                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Building" : "Estimate",
+                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Learning" : "Estimate",
                                      systemImage: "lungs.fill",
                                      tint: Metrics.electricGreen,
                                      onTap: { metricDetail = .vo2max })
@@ -272,7 +272,7 @@ struct AtriaHealthScreen: View {
                                         : "--",
                                      detail: store.imuAuditSummary.skinTemperatureDeviation.detailText,
                                      systemImage: "thermometer.variable",
-                                     tint: .teal,
+                                     tint: Metrics.electricRespiratory,
                                      onTap: { metricDetail = .skinTemperature })
                 AtriaHealthMetricRow(title: "SpO2",
                                      value: "\u{2014}",
@@ -388,7 +388,9 @@ struct AtriaHealthScreen: View {
         if let live = liveRecoveryPercent {
             return "\(live)%"
         }
-        return "Building"
+        // "Learning" (not "Building") to match this card's own header pill and the
+        // Today recovery legend for the identical no-recovery-yet state.
+        return "Learning"
     }
 
     private var recoveryDetail: String {
@@ -404,9 +406,15 @@ struct AtriaHealthScreen: View {
     }
 
     private var restingHeartRateValue: String {
-        let liveRHR = heroStore.state.restingHeartRate
-        let rhr = latestRollup?.rhr.map(Double.init) ?? (liveRHR > 0 ? Double(liveRHR) : nil)
-        return AtriaMetricFormat.restingHeartRate(rhr)
+        // Honesty (2026-07-05): prefer a real saved rollup RHR. Otherwise only show
+        // the live hero value when it's a genuine reading -- its text is "Learning"
+        // when it's the 60 math-fallback (no baseline / live / session), and that
+        // must never be presented as a real "overnight low".
+        if let rollupRHR = latestRollup?.rhr {
+            return AtriaMetricFormat.restingHeartRate(Double(rollupRHR))
+        }
+        guard let liveRHR = Int(heroStore.state.restingHeartRateText) else { return "Learning" }
+        return AtriaMetricFormat.restingHeartRate(Double(liveRHR))
     }
 
     private var hrvValue: String {
@@ -420,7 +428,10 @@ struct AtriaHealthScreen: View {
     }
 
     private var respiratoryValue: String {
-        guard let value = latestRollup?.respiratoryRate else {
+        // Use the same source the hint uses (rollup, then latest recorded night) so
+        // the row can't show "--" while the hint reports an elevated reading -- and
+        // so Vitals shows the real value instead of "--" when only a night exists.
+        guard let value = latestRollup?.respiratoryRate ?? store.sleepHistorySnapshot.latest?.respiratoryRate else {
             return "--"
         }
         return String(format: "%.1f rpm", value)
@@ -430,7 +441,9 @@ struct AtriaHealthScreen: View {
         // Fall back to the latest recorded night (same source the Today ring
         // uses) when today's rollup hasn't persisted yet, so Vitals shows the
         // real "8h 12m" instead of "--".
-        let seconds = latestRollup?.sleepSeconds ?? store.sleepHistorySnapshot.latest?.duration
+        guard let seconds = latestRollup?.sleepSeconds ?? store.sleepHistorySnapshot.latest?.duration else {
+            return "Learning"   // canonical not-ready word, consistent with Today/Overview
+        }
         return AtriaMetricFormat.sleepDuration(seconds: seconds)
     }
 

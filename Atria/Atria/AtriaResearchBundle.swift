@@ -557,7 +557,7 @@ struct AtriaResearchConsentSheet: View {
                         Label("See exactly what leaves this phone", systemImage: "doc.text.magnifyingglass")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
 
                     Button {
                         AtriaResearchSharing.grantConsent()
@@ -567,7 +567,7 @@ struct AtriaResearchConsentSheet: View {
                         Text("I agree — share anonymously")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .disabled(!hasInspected)
 
                     if !hasInspected {
@@ -773,7 +773,7 @@ private struct AtriaResearchShareSheetHost: View {
                     Label("Send to Atria developers", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 Text("Send via any channel you trust — the file itself is the anonymized bundle you inspected.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

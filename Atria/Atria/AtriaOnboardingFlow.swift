@@ -142,7 +142,7 @@ struct AtriaOnboardingFlow: View {
                         Text(primaryTitle)
                             .font(.headline.weight(.bold))
                             .frame(maxWidth: .infinity)
-                            .frame(minHeight: 58)
+                            .frame(minHeight: 30)
                     }
                     .controlSize(.large)
                     .atriaCardAction(tint: step == .strap && ble.status != .connected ? .blue : .green)
@@ -189,19 +189,34 @@ struct AtriaOnboardingFlow: View {
                 .fixedSize(horizontal: false, vertical: true)
             onboardingRingCard
             VStack(alignment: .leading, spacing: 12) {
+                Text("SHOW IN THE CENTER")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.6)
                 ForEach(OnboardingFocusMetric.allCases) { metric in
+                    let isSelected = metric == focusMetric
                     Button {
                         moveFocus(to: metric)
                     } label: {
-                        featureRow(icon: metric.icon,
-                                   tint: metric.tint,
-                                   title: metric.title,
-                                   detail: metric.detail)
-                            .padding(10)
-                            .background(metric == focusMetric ? metric.tint.opacity(0.12) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        HStack(spacing: 12) {
+                            featureRow(icon: metric.icon,
+                                       tint: metric.tint,
+                                       title: metric.title,
+                                       detail: metric.detail)
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.body)
+                                .foregroundStyle(isSelected ? metric.tint : Color.secondary.opacity(0.4))
+                        }
+                        .padding(12)
+                        .background(isSelected ? metric.tint.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(isSelected ? metric.tint.opacity(0.35) : Color.clear, lineWidth: 1)
+                        )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
             }
             .padding(18)
@@ -213,7 +228,7 @@ struct AtriaOnboardingFlow: View {
                     Label("Restore backup from Files", systemImage: "tray.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 if let restoreMessage {
                     Text(restoreMessage)
                         .font(.footnote.weight(.semibold))
@@ -287,38 +302,25 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
+    // Ring preview only. The focus selector lives in the metric list below
+    // (whatThisIsPage) — before this, the same Recovery/Sleep/Strain choice was
+    // offered three times (ring taps, these pills, AND the list), which read as
+    // repetitive. The ring stays tappable, so nothing is lost.
     private var onboardingRingCard: some View {
-        VStack(spacing: 16) {
-            AtriaTriRing(slots: onboardingRingSlots,
-                         centerValue: focusMetric.centerValue,
-                         centerState: focusMetric.title,
-                         accessibilitySummary: "Preview ring focused on \(focusMetric.title).",
-                         actions: [
-                            .sleep: { moveFocus(to: .sleep) },
-                            .recovery: { moveFocus(to: .recovery) },
-                            .strain: { moveFocus(to: .strain) }
-                         ])
-                .frame(maxWidth: 300)
-                .frame(maxWidth: .infinity)
-
-            HStack(spacing: 8) {
-                ForEach(OnboardingFocusMetric.allCases) { metric in
-                    Button {
-                        moveFocus(to: metric)
-                    } label: {
-                        Label(metric.title, systemImage: metric.icon)
-                            .font(.caption.weight(.bold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                    }
-                    .atriaCardAction(prominent: metric == focusMetric, tint: metric.tint)
-                }
-            }
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
+        AtriaTriRing(slots: onboardingRingSlots,
+                     centerValue: focusMetric.centerValue,
+                     centerState: focusMetric.title,
+                     accessibilitySummary: "Preview ring focused on \(focusMetric.title). Choose a focus below.",
+                     actions: [
+                        .sleep: { moveFocus(to: .sleep) },
+                        .recovery: { moveFocus(to: .recovery) },
+                        .strain: { moveFocus(to: .strain) }
+                     ])
+            .frame(maxWidth: 300)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .atriaCard(emphasis: .soft)
     }
 
     private var onboardingRingSlots: [AtriaTriRingSlotContent] {

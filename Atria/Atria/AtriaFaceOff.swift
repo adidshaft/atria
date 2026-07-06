@@ -192,7 +192,7 @@ struct AtriaFaceOffView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glassProminent)
                     }
 
                     if let storyImage {
@@ -202,7 +202,7 @@ struct AtriaFaceOffView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                     }
                 }
                 .padding(20)

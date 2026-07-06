@@ -64,6 +64,7 @@ struct AtriaCustomizeSheet: View {
                 cardsSection
                 metricsSection
                 metricToggleSection
+                cardSizeSection
                 lookSection
                 appIconSection
                 resetSection
@@ -75,9 +76,6 @@ struct AtriaCustomizeSheet: View {
                     Button("Cancel") {
                         dismiss()
                     }
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    EditButton()
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
@@ -141,9 +139,18 @@ struct AtriaCustomizeSheet: View {
             }
             .onMove(perform: moveSelectedMetrics)
         } header: {
-            Text("Metric order")
+            // Discoverability (2026-07-05): the reorder Edit control used to live
+            // only in the bottom toolbar, so users rarely found it. Co-locate it in
+            // this section's header, right beside the list it reorders.
+            HStack {
+                Text("Metric order")
+                Spacer()
+                EditButton()
+                    .textCase(nil)
+                    .font(.footnote.weight(.semibold))
+            }
         } footer: {
-            Text("Use Edit to drag selected Today cards into the order you want.")
+            Text("Tap Edit, then drag by the handle to reorder your Today cards.")
         }
     }
 
@@ -158,8 +165,49 @@ struct AtriaCustomizeSheet: View {
         } header: {
             Text("Metrics")
         } footer: {
-            Text("Up to eight Today cards.")
+            Text("Showing \(draft.glanceMetrics.count) of \(AtriaHomeLayoutConfig.maxTodayCards) Today cards.")
         }
+    }
+
+    // Per-card resize (2026-07-05): the model always supported sizeOverrides but
+    // no UI wrote it (only a debug fixture). Offer a Wide toggle for the chart-style
+    // metrics that can actually fill a full row (canBeWideGlanceCard); single-value
+    // tiles are omitted because they'd render half-empty when stretched.
+    private var wideCapableSelectedMetrics: [AtriaTodayMetric] {
+        draft.validated().glanceMetrics
+            .compactMap(AtriaTodayMetric.init(rawValue:))
+            .filter { $0.canBeWideGlanceCard }
+    }
+
+    @ViewBuilder
+    private var cardSizeSection: some View {
+        let wideMetrics = wideCapableSelectedMetrics
+        if !wideMetrics.isEmpty {
+            Section {
+                ForEach(wideMetrics) { metric in
+                    Toggle(isOn: wideBinding(metric)) {
+                        Label(metric.label, systemImage: metric.systemImage)
+                    }
+                }
+            } header: {
+                Text("Card width")
+            } footer: {
+                Text("Chart-style cards can span the full row; other cards stay compact.")
+            }
+        }
+    }
+
+    private func wideBinding(_ metric: AtriaTodayMetric) -> Binding<Bool> {
+        Binding(
+            get: { draft.sizeOverrides[metric.rawValue] == "wide" },
+            set: { isWide in
+                if isWide {
+                    draft.sizeOverrides[metric.rawValue] = "wide"
+                } else {
+                    draft.sizeOverrides.removeValue(forKey: metric.rawValue)
+                }
+            }
+        )
     }
 
     private var selectedMetrics: [AtriaTodayMetric] {
@@ -421,10 +469,16 @@ private struct AtriaCustomizePreview: View {
         case .recovery: return Metrics.recoveryColor(64)
         case .strain, .load, .calories, .strainCompare: return Metrics.electricStrain
         case .sleep, .sleepHistory, .sleepEfficiency, .sleepPerformance: return Metrics.electricSleep
-        case .hrv, .rhr, .respiratoryRate, .bloodOxygen: return .pink
-        case .stress: return .cyan
+        // One identity hue per metric (design palette, adaptive on light) —
+        // was: HRV/RHR/respiration/SpO2 all `.pink` and stress `.cyan`, which
+        // clashed with the canonical AtriaMetricDetailKind.tint mapping.
+        case .hrv: return Metrics.electricHRV
+        case .rhr, .bloodOxygen: return Metrics.electricRHR
+        case .respiratoryRate: return Metrics.electricRespiratory
+        case .stress: return Metrics.electricStress
         case .steps, .vo2max, .bioAge: return Metrics.electricGreen
-        case .bodyTemp, .hrZones: return .orange
+        case .bodyTemp: return Metrics.electricRespiratory
+        case .hrZones: return Metrics.electricStrain
         case .workouts: return .mint
         case .trend, .insights, nil: return config.accent.color
         }

@@ -42,7 +42,11 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
 
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
-    var size: CGFloat = 38
+    // HIG-compliant default (2026-07-05): 44pt is the minimum tap target. Every
+    // current call site passes an explicit size, so this only governs future
+    // buttons — the existing sub-44 sizes are intentional in tight rows and need
+    // per-screen visual review before changing, not a blind global bump.
+    var size: CGFloat = 44
 
     func makeBody(configuration: Configuration) -> some View {
         // Native Liquid Glass: a real translucent glass circle with a clearly
@@ -93,6 +97,38 @@ private struct AtriaCardBackground: View {
     }
 }
 
+/// Real iOS 26 Liquid Glass surface for CONTENT cards. Opt-in on purpose: it is
+/// meant to be applied hero/prominent-first, NOT flipped onto every scrolling
+/// tile, because dense glass in a scroll view is GPU-costly — the reason large
+/// content cards deliberately shipped static fills (see the capsule-chrome note
+/// below). Honors Reduce Transparency by falling back to the opaque card so the
+/// surface is never unreadable. Nothing consumes this yet; apply + verify scroll
+/// performance and legibility on-device before any broad rollout.
+private struct AtriaGlassCardBackground: View {
+    let cornerRadius: CGFloat
+    let emphasis: AtriaPanelEmphasis
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            AtriaCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+        } else {
+            shape
+                .fill(Color.clear)
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    shape.stroke(colorScheme == .dark
+                                 ? Color.white.opacity(emphasis == .strong ? 0.10 : 0.07)
+                                 : Color.black.opacity(emphasis == .strong ? 0.12 : 0.08),
+                                 lineWidth: 1)
+                }
+        }
+    }
+}
+
 private struct AtriaRaisedCardBackground: View {
     let cornerRadius: CGFloat
     let emphasis: AtriaPanelEmphasis
@@ -126,6 +162,13 @@ private struct AtriaRaisedCardBackground: View {
 private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
+    /// Opt-in identity-forward chip surface. When true, the card carries a
+    /// visible wash + border in its metric hue (design-handoff "metric chip"
+    /// look — one identity hue per metric, on the surface itself, not just the
+    /// icon). Off by default so the ~100 existing neutral inset cards keep the
+    /// deliberately-subtle gray surface. Kept restrained (well under the
+    /// handoff's 0.12/0.25) to honor Atria's "Liquid Glass stays quiet" rule.
+    var hueTinted: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -135,7 +178,7 @@ private struct AtriaInsetCardBackground: View {
             .overlay(tintWash)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09), lineWidth: 1)
+                    .stroke(strokeColor, lineWidth: 1)
             )
     }
 
@@ -143,9 +186,27 @@ private struct AtriaInsetCardBackground: View {
         AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark)
     }
 
+    private var strokeColor: Color {
+        if hueTinted {
+            // Identity-hue hairline, matching the handoff's tinted-border chips.
+            return colorScheme == .dark ? tint.opacity(0.22) : tint.opacity(0.28)
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
+    }
+
     @ViewBuilder
     private var tintWash: some View {
-        if colorScheme == .dark {
+        if hueTinted {
+            // A gentle top-lit hue wash so the chip reads as its metric's color
+            // at a glance, without the flat saturated block the raw handoff uses.
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(colors: [
+                        tint.opacity(colorScheme == .dark ? 0.14 : 0.10),
+                        tint.opacity(colorScheme == .dark ? 0.05 : 0.03)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+        } else if colorScheme == .dark {
             // ~3% tint is invisible on the dark UI; skip the extra rounded-rect
             // layer so scrolling cards have less overdraw.
             EmptyView()
@@ -229,6 +290,18 @@ extension View {
             }
     }
 
+    /// Opt-in Liquid Glass content-card surface (see AtriaGlassCardBackground).
+    /// Use for hero/prominent cards; verify scroll performance before applying to
+    /// dense scrolling tiles.
+    @ViewBuilder
+    func atriaGlassCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
+                        emphasis: AtriaPanelEmphasis = .soft) -> some View {
+        self
+            .background {
+                AtriaGlassCardBackground(cornerRadius: cornerRadius, emphasis: emphasis)
+            }
+    }
+
     @ViewBuilder
     func atriaChromeCapsule(tint: Color) -> some View {
         self.background(AtriaCapsuleChromeBackground(tint: tint))
@@ -240,10 +313,16 @@ extension View {
             .background(AtriaIconChromeBackground())
     }
 
-    func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset, tint: Color) -> some View {
+    /// `hueTinted` opts a card into the identity-forward "metric chip" surface
+    /// (visible hue wash + hue hairline border, from the design handoff). Leave
+    /// it false — the default — for every neutral inset card; turn it on only
+    /// for small single-metric tiles whose whole job is to signal one hue.
+    func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset,
+                        tint: Color,
+                        hueTinted: Bool = false) -> some View {
         self
             .background {
-                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint)
+                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint, hueTinted: hueTinted)
             }
     }
 
@@ -259,7 +338,7 @@ extension View {
         }
     }
 
-    func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View {
+    func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View {
         self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
     }
 }
