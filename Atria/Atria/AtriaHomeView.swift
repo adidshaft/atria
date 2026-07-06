@@ -2248,7 +2248,10 @@ struct AtriaHomeView: View {
         let live = model.coreLiveStore.state
         let sleep = store.sleepHistorySnapshot.latest
         let sleepValue = sleep?.durationText ?? model.snapshotStore.state.sleepValue
-        let sleepFill = sleep.map { min(max($0.durationHours / 8.0, 0), 1) }
+        // Fill against the user's own sleep goal, not a hardcoded 8h — same key
+        // the Today sleep cards read (atria.target.sleep.goalHours).
+        let sleepGoalHours = (UserDefaults.standard.object(forKey: "atria.target.sleep.goalHours") as? Double) ?? 8.0
+        let sleepFill = sleep.map { min(max($0.durationHours / max(sleepGoalHours, 1), 0), 1) }
         let recoveryPercent = hero.recoveryEstimate.percent
         let recoveryTint: String
         switch recoveryPercent ?? 50 {
