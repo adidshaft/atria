@@ -247,21 +247,38 @@ struct AtriaActivityMonitorTab: View {
 }
 
 /// Detail + editor for a confirmed workout in the Activity Monitor. The measured
-/// stats (times, HR, strain, calories) are read-only — they come straight from
-/// the recorded session and are never estimated. The editable parts are the
-/// label (rename) and removal (delete a wrong detection).
+/// The measured stats (HR, strain, calories) are read-only — they come straight
+/// from the recorded session and are never estimated. Editable: the name, the
+/// activity type (Run / Walk / Dance …), the time window (re-derives metrics from
+/// the strap samples in the new window), and removal (delete a wrong detection).
 private struct AtriaActivityWorkoutDetailSheet: View {
     @ObservedObject var store: SessionStore
     let workout: UserConfirmedWorkout
     @Environment(\.dismiss) private var dismiss
 
     @State private var label: String
+    @State private var activityType: String
+    @State private var startTime: Date
+    @State private var endTime: Date
     @State private var showDeleteConfirm = false
+
+    /// Common activity types offered in the type picker (real workout kinds, not
+    /// fabricated data — just labels for what the effort was).
+    static let activityTypes = ["Run", "Walk", "Hike", "Cycle", "Strength", "HIIT",
+                                "Yoga", "Swim", "Row", "Dance", "Other"]
 
     init(store: SessionStore, workout: UserConfirmedWorkout) {
         self.store = store
         self.workout = workout
         _label = State(initialValue: workout.label)
+        _activityType = State(initialValue: workout.activityType ?? "")
+        _startTime = State(initialValue: workout.start)
+        _endTime = State(initialValue: workout.end)
+    }
+
+    private var timesChanged: Bool {
+        abs(startTime.timeIntervalSince(workout.start)) >= 60
+            || abs(endTime.timeIntervalSince(workout.end)) >= 60
     }
 
     private var trimmedLabel: String {
@@ -294,6 +311,57 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                         .padding(12)
                         .atriaInsetCard(tint: Metrics.electricStrain)
+                    }
+
+                    // Activity type — what the effort was (Run / Walk / Dance …).
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ACTIVITY TYPE")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Menu {
+                            ForEach(Self.activityTypes, id: \.self) { type in
+                                Button(type) { setType(type) }
+                            }
+                            if !activityType.isEmpty {
+                                Button("Clear", role: .destructive) { setType("") }
+                            }
+                        } label: {
+                            HStack {
+                                Text(activityType.isEmpty ? "Choose type" : activityType)
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(activityType.isEmpty ? .secondary : .primary)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(12)
+                            .atriaInsetCard(tint: .mint)
+                        }
+                    }
+
+                    // Time window — editable; saving re-derives every metric from
+                    // the strap samples in the new window (nothing fabricated).
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TIME")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        VStack(spacing: 6) {
+                            DatePicker("Start", selection: $startTime, displayedComponents: [.date, .hourAndMinute])
+                            DatePicker("End", selection: $endTime, in: startTime..., displayedComponents: [.date, .hourAndMinute])
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .padding(12)
+                        .atriaInsetCard(tint: .cyan)
+                        Button(action: saveTimes) {
+                            Text("Save times")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(.cyan)
+                        .disabled(!timesChanged)
                     }
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -350,6 +418,22 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     private func saveName() {
         guard canSaveName else { return }
         store.renameConfirmedWorkout(id: workout.id, label: trimmedLabel)
+        dismiss()
+    }
+
+    private func setType(_ type: String) {
+        activityType = type
+        store.setConfirmedWorkoutActivityType(id: workout.id, activityType: type)
+    }
+
+    private func saveTimes() {
+        guard timesChanged, endTime > startTime else { return }
+        let rest = store.baseline.restingInt ?? 60
+        _ = store.updateConfirmedWorkoutWindow(id: workout.id,
+                                               newStart: startTime,
+                                               newEnd: endTime,
+                                               rest: rest,
+                                               maxHR: store.profile.maxHR)
         dismiss()
     }
 
