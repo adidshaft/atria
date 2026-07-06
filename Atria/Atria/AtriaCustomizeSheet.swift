@@ -469,10 +469,16 @@ private struct AtriaCustomizePreview: View {
         case .recovery: return Metrics.recoveryColor(64)
         case .strain, .load, .calories, .strainCompare: return Metrics.electricStrain
         case .sleep, .sleepHistory, .sleepEfficiency, .sleepPerformance: return Metrics.electricSleep
-        case .hrv, .rhr, .respiratoryRate, .bloodOxygen: return .pink
-        case .stress: return .cyan
+        // One identity hue per metric (design palette, adaptive on light) —
+        // was: HRV/RHR/respiration/SpO2 all `.pink` and stress `.cyan`, which
+        // clashed with the canonical AtriaMetricDetailKind.tint mapping.
+        case .hrv: return Metrics.electricHRV
+        case .rhr, .bloodOxygen: return Metrics.electricRHR
+        case .respiratoryRate: return Metrics.electricRespiratory
+        case .stress: return Metrics.electricStress
         case .steps, .vo2max, .bioAge: return Metrics.electricGreen
-        case .bodyTemp, .hrZones: return .orange
+        case .bodyTemp: return Metrics.electricRespiratory
+        case .hrZones: return Metrics.electricStrain
         case .workouts: return .mint
         case .trend, .insights, nil: return config.accent.color
         }
