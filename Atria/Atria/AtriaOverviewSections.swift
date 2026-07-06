@@ -6312,7 +6312,7 @@ enum AtriaMetricDetailKind: String, Identifiable {
         case .skinTemperature: return Metrics.electricRespiratory
         case .fitnessAge: return Metrics.electricSleep
         case .hrZones: return Metrics.electricStrain
-        case .bloodOxygen: return Metrics.electricRHR
+        case .bloodOxygen: return .blue // distinct from RHR's sky-blue; the two can co-list
         }
     }
 }
