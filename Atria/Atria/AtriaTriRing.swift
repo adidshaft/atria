@@ -320,10 +320,16 @@ struct AtriaTriRing: View, Equatable {
                 Circle()
                     .trim(from: 0, to: min(max(fill, 0), 1))
                     .stroke(
+                        // The whole arc is rotated -90deg below so it starts at
+                        // 12 o'clock. The gradient must span the SAME angles as
+                        // the trimmed arc in that pre-rotation frame (0 -> fill),
+                        // NOT -90 -> -90+fill, or the bright leading edge lands
+                        // 90deg off the arc's start and each ring's fill appears
+                        // to begin at a different place.
                         AngularGradient(gradient: Gradient(colors: [metric.tint.opacity(0.85), metric.tint]),
                                         center: .center,
-                                        startAngle: .degrees(-90),
-                                        endAngle: .degrees(-90 + 360 * min(max(fill, 0), 1))),
+                                        startAngle: .degrees(0),
+                                        endAngle: .degrees(360 * min(max(fill, 0), 1))),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
