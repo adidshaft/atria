@@ -9281,12 +9281,17 @@ struct AtriaStrainBandGauge: View {
         VStack(spacing: 10) {
             ZStack {
                 Circle()
-                    .stroke(.primary.opacity(0.08), lineWidth: 16)
+                    .stroke(.primary.opacity(0.06), lineWidth: 16)
 
+                // Four effort bands (Light/Moderate/High/All-Out) as clean solid
+                // segments. Was a dashed stroke (dash [2,12] @ 16pt round caps)
+                // that rendered as fat scattered dots — read as broken, esp. at
+                // low strain where the fill arc is nearly invisible. The natural
+                // gaps between the band ranges now delineate the zones.
                 ForEach(Array(bands.enumerated()), id: \.offset) { _, band in
                     Circle()
                         .trim(from: band.range.lowerBound / 21, to: band.range.upperBound / 21)
-                        .stroke(.primary.opacity(0.14), style: StrokeStyle(lineWidth: 16, lineCap: .round, dash: [2, 12]))
+                        .stroke(.primary.opacity(0.12), style: StrokeStyle(lineWidth: 16, lineCap: .butt))
                         .rotationEffect(.degrees(-90))
                 }
 
