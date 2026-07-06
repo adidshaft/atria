@@ -171,7 +171,9 @@ enum AtriaShareCanvasStyle: String, CaseIterable, Identifiable {
 
     private var accentWash: Color {
         switch self {
-        case .midnight: return Color(red: 0.20, green: 0.85, blue: 0.95)
+        // Violet accent (was cyan) so the midnight canvas reads as the design's
+        // premium purple-black rather than teal — reinforces the purple base + wash.
+        case .midnight: return Color(red: 0.58, green: 0.35, blue: 0.95)
         case .pearl: return Color(red: 0.50, green: 0.90, blue: 0.82)
         case .blush: return Color(red: 1.00, green: 0.68, blue: 0.62)
         case .sage: return Color(red: 0.52, green: 0.82, blue: 0.56)
@@ -194,8 +196,12 @@ enum AtriaShareCanvasStyle: String, CaseIterable, Identifiable {
     private var backgroundColors: [Color] {
         switch self {
         case .midnight:
-            return [Color(red: 0.043, green: 0.055, blue: 0.078),
-                    Color(red: 0.020, green: 0.024, blue: 0.034)]
+            // Design-handoff share card: a premium deep-purple → black diagonal
+            // (#131022 → #000) instead of the cooler blue-black. The purple base
+            // reinforces the existing secondary purple wash for a richer,
+            // more shareable feel.
+            return [Color(red: 0.075, green: 0.063, blue: 0.133),
+                    Color(red: 0.0, green: 0.0, blue: 0.0)]
         case .pearl:
             return [Color(red: 0.992, green: 0.990, blue: 0.968),
                     Color(red: 0.890, green: 0.944, blue: 0.936)]
