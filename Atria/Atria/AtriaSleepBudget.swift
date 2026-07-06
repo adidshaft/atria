@@ -6,7 +6,13 @@ enum AtriaSleepBudget {
                           debtHours: Double,
                           sameDayNapHours: Double) -> Double {
         let safeBase = min(max(baseHours, 6), 10)
-        let strainAdder = (yesterdayStrain ?? 0) >= 14.0 ? 0.5 : 0
+        // Recent-strain sleep-need addition, continuous (WHOOP-style) instead of
+        // the old binary "+30 min above strain 14" step. Anchored to WHOOP's
+        // published "a 15.0 Day Strain adds ~37 min of Sleep Need": scale linearly
+        // from ~0 at strain 8 (a light day needs no extra) up the 0–21 scale, so a
+        // hard day (15) adds 37 min and an all-out day (21) adds ~69 min. The 8.0
+        // floor tracks the recalibrated strain scale (light all-day ≈ 8–9).
+        let strainAdder = max(0, min(yesterdayStrain ?? 0, 21) - 8.0) * (0.62 / 7.0)
         let debtAdder = max(0, debtHours) * 0.5
         let napCredit = max(0, sameDayNapHours) * 0.9
         return min(max(safeBase + strainAdder + debtAdder - napCredit, 6), 10)
