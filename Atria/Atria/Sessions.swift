@@ -3420,6 +3420,7 @@ final class SessionStore: ObservableObject {
     private var cachedCanonicalSessions: [SavedSession]
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
+    private var cachedTodayTRIMP: (rest: Int, maxHR: Int, value: Double)?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var hasCompletedDeferredSessionLoad = false
     private var pendingDeferredSessionBackupArguments: [String]?
@@ -4801,6 +4802,7 @@ final class SessionStore: ObservableObject {
         cachedLatestReferenceValidatedHRV = sessions.first(where: { $0.referenceValidatedHRV != nil })?.referenceValidatedHRV
         cachedCanonicalSessions = Self.makeCanonicalSessions(from: sessions)
         cachedHomeSavedAggregate = nil
+        cachedTodayTRIMP = nil
         cachedCurrentCollectionStatus = nil
         refreshMaxHRSuggestion(reason: "session_cache", force: false)
     }
@@ -4810,6 +4812,7 @@ final class SessionStore: ObservableObject {
         cachedCanonicalSessions = Self.makeCanonicalSessions(from: cachedCanonicalSessions + [session],
                                                              preferredSession: preferredSession)
         cachedHomeSavedAggregate = nil
+        cachedTodayTRIMP = nil
         cachedCurrentCollectionStatus = nil
         refreshMaxHRSuggestion(reason: "session_upsert", force: false)
     }
@@ -8890,6 +8893,144 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
+    /// Confirm (or re-confirm) a sleep over an explicit user-chosen window with
+    /// sensor-derived stages and honest metrics. This is the shared core of the
+    /// "adjust" flows and the honest alternative to `addManualSleep`: instead of
+    /// downgrading the night to a manual entry (dropping the sensor stage
+    /// timeline and collapsing `span` to `duration` so efficiency reads a fake
+    /// 100%), it re-derives the stage timeline and HR/HRV metrics over the NEW
+    /// `[start,end]` from the stored sensor sessions — the "adjust the
+    /// boundaries, keep the science" edit users expect from WHOOP.
+    ///
+    /// Honesty: stages come only from real samples inside the window, and
+    /// `duration` counts only sensor-covered time (never the whole in-bed span),
+    /// so efficiency (`duration / span`) stays truthful even if the user drags
+    /// the window over a stretch the strap did not record. Pass `replacing` to
+    /// remove a prior record for the same night (an edit rather than an add).
+    @discardableResult
+    func confirmSleepWindow(start: Date,
+                            end: Date,
+                            isNap: Bool,
+                            rest: Int,
+                            replacing existingID: String? = nil,
+                            motionValidated: Bool = false,
+                            motionSource: String = "user_adjusted",
+                            fromSource: String = "user") -> UserConfirmedSleep? {
+        guard end > start else { return nil }
+        let adjustedSource = isNap ? "user_adjusted_nap" : "user_adjusted_sleep"
+        let id = confirmedSleepID(start: start, end: end, source: adjustedSource)
+        let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
+        let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                            start: start,
+                                                            end: end,
+                                                            restingHR: metrics.restingHR,
+                                                            isNap: isNap,
+                                                            motionValidated: motionValidated)
+        let span = end.timeIntervalSince(start)
+        // Sensor-covered time inside the window (sum of overlapping session spans
+        // clipped to [start,end]); mirrors how an AggregateSleepCandidate's
+        // `duration` excludes gaps the strap did not record.
+        let sensorCovered = canonicalSessions()
+            .filter { $0.end > start && $0.start < end }
+            .reduce(0.0) { total, session in
+                let overlapStart = Swift.max(session.start, start)
+                let overlapEnd = Swift.min(session.end, end)
+                return total + Swift.max(0, overlapEnd.timeIntervalSince(overlapStart))
+            }
+        let duration = Swift.min(span, sensorCovered)
+        // Keep the re-derived sensor stages: a non-manual source plus an
+        // hr_only / motion-validated confidence marks the timeline as
+        // sensor-research rather than a manual estimate (see
+        // `shouldPreserveConfirmedSleepStageSegments`).
+        let confidence = motionValidated ? "user_adjusted_motion_validated" : "user_adjusted_hr_only"
+        var remaining = cachedConfirmedSleeps.filter { $0.id != id && (existingID == nil || $0.id != existingID) }
+        let confirmed = UserConfirmedSleep(id: id,
+                                           createdAt: Date(),
+                                           start: start,
+                                           end: end,
+                                           source: adjustedSource,
+                                           confidence: confidence,
+                                           sessions: metrics.sessions,
+                                           samples: metrics.samples,
+                                           avgHR: metrics.avgHR,
+                                           peakHR: metrics.peakHR,
+                                           restingHR: metrics.restingHR,
+                                           hrv: metrics.hrv,
+                                           hrvWindowCount: metrics.hrvWindowCount,
+                                           duration: duration,
+                                           span: span,
+                                           reason: "user_adjusted_window from \(fromSource)",
+                                           motionSource: motionSource,
+                                           motionValidated: motionValidated,
+                                           stageSegments: stageSegments.isEmpty ? nil : stageSegments)
+        remaining.append(confirmed)
+        saveConfirmedSleeps(remaining)
+        AtriaDebugLog("ATRIADBG sleep_adjust status=saved id=%@ from_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f stages=%d",
+                      confirmed.id,
+                      fromSource,
+                      isoString(confirmed.start),
+                      isoString(confirmed.end),
+                      confirmed.duration,
+                      confirmed.span,
+                      confirmed.stageSegments?.count ?? 0)
+        return confirmed
+    }
+
+    /// Non-destructive edit of an already-confirmed sleep: replaces `existing`
+    /// with a re-derived confirmation over the new window, preserving its motion
+    /// lineage. See `confirmSleepWindow`.
+    @discardableResult
+    func adjustConfirmedSleepWindow(existing: UserConfirmedSleep,
+                                    start: Date,
+                                    end: Date,
+                                    isNap: Bool,
+                                    rest: Int) -> UserConfirmedSleep? {
+        let result = confirmSleepWindow(start: start,
+                                        end: end,
+                                        isNap: isNap,
+                                        rest: rest,
+                                        replacing: existing.id,
+                                        motionValidated: existing.motionValidated,
+                                        motionSource: existing.motionSource,
+                                        fromSource: existing.source)
+        if result != nil, autoSleepLoggedBanner?.sleepID == existing.id {
+            autoSleepLoggedBanner = nil
+        }
+        return result
+    }
+
+    /// UI entry point for the "Adjust" affordances. Given the night's ORIGINAL
+    /// window and the user's NEW window, it edits the existing confirmed sleep
+    /// for that night non-destructively, or — for a still-pending review night
+    /// with no confirmed record yet — confirms the new window with re-derived
+    /// sensor stages (never a blank-stage manual entry, which is what the old
+    /// `addManualSleep`-based adjust did).
+    @discardableResult
+    func adjustSleepNight(originalStart: Date?,
+                          originalEnd: Date?,
+                          newStart: Date,
+                          newEnd: Date,
+                          isNap: Bool,
+                          rest: Int,
+                          source: String = "review_adjust") -> UserConfirmedSleep? {
+        // The night's own window locates the record to edit; if the review night
+        // carried no bounds yet, fall back to the user's chosen window.
+        let lookupStart = originalStart ?? newStart
+        let lookupEnd = originalEnd ?? newEnd
+        if let existing = cachedConfirmedSleeps.first(where: { $0.start < lookupEnd && $0.end > lookupStart }) {
+            return adjustConfirmedSleepWindow(existing: existing,
+                                              start: newStart,
+                                              end: newEnd,
+                                              isNap: isNap,
+                                              rest: rest)
+        }
+        return confirmSleepWindow(start: newStart,
+                                  end: newEnd,
+                                  isNap: isNap,
+                                  rest: rest,
+                                  fromSource: source)
+    }
+
     private static func defaultSleepStageEstimate(start: Date,
                                                   end: Date,
                                                   isNap: Bool,
@@ -9653,11 +9794,17 @@ final class SessionStore: ObservableObject {
         let aggregateCandidates = includeAggregates
             ? aggregateWorkoutCandidates(rest: rest, maxHR: maxHR, calendar: Calendar.current, thresholdFraction: thresholdFraction)
             : []
-        let readySessions = replaySessions.filter { $0.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction).ready }.count
+        // Perf: workoutReadiness walks a session's whole points array, so compute
+        // it ONCE per session and reuse it for both the ready-count and the
+        // per-session loop below (previously evaluated twice per session per call,
+        // which ran every ~3s on the overview tab as saved sessions accumulated).
+        let sessionReadiness = replaySessions.map { session in
+            (session: session, readiness: session.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction))
+        }
+        let readySessions = sessionReadiness.filter { $0.readiness.ready }.count
             + aggregateCandidates.filter { $0.readiness.ready }.count
         let evaluated = replaySessions.count + aggregateCandidates.count
-        for session in replaySessions {
-            let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
+        for (session, readiness) in sessionReadiness {
             let candidate = WorkoutReplaySummary(rawSessions: rawSessions,
                                                  canonicalSessions: replaySessions.count,
                                                  sessionsEvaluated: evaluated,
@@ -10272,9 +10419,17 @@ final class SessionStore: ObservableObject {
     /// Sum of today's saved sessions' TRIMP — combine with the live session to
     /// get day strain (strain accumulates across the whole day).
     func todayTRIMP(rest: Int, max: Int) -> Double {
+        // Cached because the widget/day-strain publish path calls this on the ~3s
+        // dashboard tick; invalidated alongside cachedHomeSavedAggregate whenever
+        // the session caches refresh (refreshSessionDerivedCaches[AfterUpsert]).
+        if let cachedTodayTRIMP, cachedTodayTRIMP.rest == rest, cachedTodayTRIMP.maxHR == max {
+            return cachedTodayTRIMP.value
+        }
         let cal = Calendar.current
-        return canonicalSessions().filter { cal.isDateInToday($0.start) }
+        let value = canonicalSessions().filter { cal.isDateInToday($0.start) }
             .reduce(0) { $0 + $1.trimp(rest: rest, max: max) }
+        cachedTodayTRIMP = (rest: rest, maxHR: max, value: value)
+        return value
     }
 
     func detectedActivities(rest: Int, maxHR: Int) -> [ActivityDetection] {
@@ -14559,12 +14714,15 @@ struct HistoryView: View {
         .sheet(item: $adjustmentNight) { adjustment in
             AtriaManualSleepSheet(initialStart: adjustment.start,
                                   initialEnd: adjustment.end,
-                                  initialIsNap: adjustment.isNapEvidence) { start, end, isNap in
-                _ = store.addManualSleep(start: start,
-                                         end: end,
-                                         isNap: isNap,
-                                         rest: store.baseline.restingInt ?? 60,
-                                         source: "history_sleep_review_adjust")
+                                  initialIsNap: adjustment.isNapEvidence,
+                                  preservesSensorStages: true) { start, end, isNap in
+                _ = store.adjustSleepNight(originalStart: adjustment.start,
+                                           originalEnd: adjustment.end,
+                                           newStart: start,
+                                           newEnd: end,
+                                           isNap: isNap,
+                                           rest: store.baseline.restingInt ?? 60,
+                                           source: "history_sleep_review_adjust")
                 adjustmentNight = nil
             }
         }
@@ -15122,7 +15280,8 @@ struct SleepHistorySnapshot: Equatable {
             "manual_nap",
             "auto_nap",
             "nap_candidate",
-            "hr_only_nap"
+            "hr_only_nap",
+            "user_adjusted_nap"
         ]
 
         fileprivate static let explicitSleepSources: Set<String> = [
@@ -15136,7 +15295,8 @@ struct SleepHistorySnapshot: Equatable {
             "overnight_sleep",
             "sleep_candidate",
             "single_session_sleep_candidate",
-            "incomplete_fragmented_sleep"
+            "incomplete_fragmented_sleep",
+            "user_adjusted_sleep"
         ]
 
         private static let napSizedSleepCandidateSources: Set<String> = [

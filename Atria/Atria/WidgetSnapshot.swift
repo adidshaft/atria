@@ -222,14 +222,62 @@ enum WidgetSnapshotPublisher {
         return true
     }
 
+    // Perf (overnight-hang fix): dayStrain previously recomputed live-session
+    // TRIMP over the ENTIRE in-memory `ble.session` array on every publish (~3s
+    // cadence while foregrounded). Across a night that array grows to tens of
+    // thousands of samples, so the O(n) map + exp() loop ran on the main actor
+    // and produced accumulating frame hangs. We now keep an incremental
+    // accumulator (mirrors AtriaHomeView.nextLiveSessionDerived) keyed on the
+    // sample prefix, so each publish only integrates the NEW samples. State is
+    // MainActor-isolated like `cachedDiagnostics`, so writes are race-free.
+    private static var liveTRIMPSampleCount = 0
+    private static var liveTRIMPLastTimestamp: Date?
+    private static var liveTRIMPRest = 0
+    private static var liveTRIMPMax = 0
+    private static var liveTRIMPValue = 0.0
+
     private static func dayStrain(store: SessionStore, ble: AtriaBLEManager, rest: Int) -> Double {
         let saved = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
-        let live = ble.session.first.map { first in
-            Metrics.trimp(ble.session.map { (t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
-                          rest: rest,
-                          max: store.profile.maxHR)
-        } ?? 0
+        let live = incrementalLiveTRIMP(samples: ble.session, rest: rest, max: store.profile.maxHR)
         return Metrics.strain(fromTRIMP: saved + live)
+    }
+
+    /// Same TRIMP math as `Metrics.trimp` / `AtriaHomeView.liveSessionTRIMP`, but
+    /// extends a cached running total instead of re-integrating the whole array.
+    /// Falls back to a full recompute when the sample prefix, rest, or max HR no
+    /// longer match the cached state (e.g. after a live-session rollover clears
+    /// `ble.session`, or the resting/max baseline changed).
+    private static func incrementalLiveTRIMP(samples: [HRSample], rest: Int, max: Int) -> Double {
+        guard max > rest, samples.count > 1 else {
+            liveTRIMPSampleCount = samples.count
+            liveTRIMPLastTimestamp = samples.last?.t
+            liveTRIMPRest = rest
+            liveTRIMPMax = max
+            liveTRIMPValue = 0
+            return 0
+        }
+        let canExtend = rest == liveTRIMPRest
+            && max == liveTRIMPMax
+            && liveTRIMPSampleCount > 0
+            && liveTRIMPSampleCount <= samples.count
+            && liveTRIMPLastTimestamp == samples[liveTRIMPSampleCount - 1].t
+        let span = Double(max - rest)
+        var total = canExtend ? liveTRIMPValue : 0
+        var index = canExtend ? liveTRIMPSampleCount : 1
+        while index < samples.count {
+            let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
+            if dtMin > 0, dtMin < 5 {
+                let hrr = Swift.min(Swift.max((Double(samples[index].bpm) - Double(rest)) / span, 0), 1)
+                total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
+            }
+            index += 1
+        }
+        liveTRIMPSampleCount = samples.count
+        liveTRIMPLastTimestamp = samples.last?.t
+        liveTRIMPRest = rest
+        liveTRIMPMax = max
+        liveTRIMPValue = total
+        return total
     }
 
     private static func currentHomeLayoutConfig() -> AtriaHomeLayoutConfig {

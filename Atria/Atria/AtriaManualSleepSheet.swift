@@ -3,6 +3,10 @@ import SwiftUI
 struct AtriaManualSleepSheet: View {
     let onSave: (Date, Date, Bool) -> Void
     private let reviewDetectedTypeText: String?
+    /// True when saving re-derives sensor stage bars over the chosen window
+    /// (the "adjust an auto-detected sleep" flow) rather than saving a blank
+    /// manual entry. Drives honest Stages copy — see `stageEvidenceCard`.
+    private let preservesSensorStages: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var isNap = false
     @State private var typeWasManuallyEdited = false
@@ -12,8 +16,10 @@ struct AtriaManualSleepSheet: View {
     init(initialStart: Date? = nil,
          initialEnd: Date? = nil,
          initialIsNap: Bool? = nil,
+         preservesSensorStages: Bool = false,
          onSave: @escaping (Date, Date, Bool) -> Void) {
         self.onSave = onSave
+        self.preservesSensorStages = preservesSensorStages
         self.reviewDetectedTypeText = initialIsNap.map { $0 ? "Nap" : "Sleep" }
         let resolvedEnd = initialEnd ?? Date()
         let resolvedStart = initialStart ?? resolvedEnd.addingTimeInterval(-8 * 60 * 60)
@@ -191,21 +197,25 @@ struct AtriaManualSleepSheet: View {
     private var stageEvidenceCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaManualSleepCardHeader(title: "Stages",
-                                       detail: "Manual entries save the window only.",
-                                       systemImage: "checklist.unchecked",
+                                       detail: preservesSensorStages ? "Re-derived from sensor data for this window." : "Manual entries save the window only.",
+                                       systemImage: preservesSensorStages ? "waveform.path.ecg" : "checklist.unchecked",
                                        tint: .purple)
 
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "waveform.path.ecg")
                     .foregroundStyle(.secondary)
                     .frame(width: 22)
-                Text("Awake, Light, REM, SWS, and Deep stay blank until Atria has sensor-derived stage evidence. This manual \(isNap ? "nap" : "sleep") will not fabricate stage bars.")
+                Text(preservesSensorStages
+                     ? "Atria recomputes Awake, Light, REM, SWS, and Deep from the heart-rate samples inside this window. Adjusting the boundaries keeps the sensor-derived stages — it does not blank them, and it does not fabricate any."
+                     : "Awake, Light, REM, SWS, and Deep stay blank until Atria has sensor-derived stage evidence. This manual \(isNap ? "nap" : "sleep") will not fabricate stage bars.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("No manual stage estimate. Sleep stages stay blank until sensor-derived stage evidence exists.")
+            .accessibilityLabel(preservesSensorStages
+                                ? "Sleep stages are re-derived from sensor data for the chosen window."
+                                : "No manual stage estimate. Sleep stages stay blank until sensor-derived stage evidence exists.")
         }
         .manualSleepCard(tint: .purple)
     }

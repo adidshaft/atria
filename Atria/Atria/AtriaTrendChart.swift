@@ -19,6 +19,11 @@ struct AtriaTrendChartCard: View {
     @State private var showExpandedChart = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
     @State private var rangeCoverage: [AtriaTrendRange: Int] = [:]
+    // Real progressive disclosure: the compact card shows just the chart; the
+    // stacked context sub-cards (range dock, report, balance map, glance board,
+    // range lens, position band, dot strip) collapse behind this toggle so the
+    // card is no longer a long "box inside box" accordion by default.
+    @State private var showMoreInsights = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -53,55 +58,91 @@ struct AtriaTrendChartCard: View {
                 .pickerStyle(.segmented)
             }
 
-            AtriaTrendRangeDock(selectedRange: $range,
-                                coverage: rangeCoverage,
-                                tint: metric.tint)
-                .equatable()
-
-            if periodReadout.hasEnoughSignal {
-                AtriaTrendRangeReportCard(readout: periodReadout)
-                AtriaTrendPeriodBalanceMap(readout: periodReadout)
-                AtriaTrendGlanceBoard(readout: periodReadout)
-            }
-
-            AtriaTrendRangeLens(range: range,
-                                metric: metric,
-                                summary: prepared.summary,
-                                sampleCount: prepared.series.count)
-
-            if let assessment = prepared.assessment, !periodReadout.hasEnoughSignal {
-                AtriaTrendRangeAssessmentCard(assessment: assessment)
-            }
-
-            if let action = prepared.action, !periodReadout.hasEnoughSignal {
-                AtriaTrendActionReadoutCard(action: action)
-            } else if let summary = prepared.summary {
-                AtriaTrendRangeSummaryStrip(summary: summary, tint: metric.tint)
-            }
-
-            if prepared.series.count >= 3 {
-                AtriaTrendRangePositionBand(series: prepared.series,
-                                            metric: metric)
-            }
-
-            if prepared.series.count >= 3 {
-                AtriaTrendSessionDotStrip(series: prepared.series,
-                                          metric: metric)
-            }
-
+            // Chart-first (2026-07-06): the trend chart was buried at the BOTTOM of
+            // this card beneath ~8 stacked context sub-cards ("box inside box"), so
+            // the primary visualization was the last thing the user reached. It now
+            // sits directly under the pickers; the range dock, report, balance map,
+            // glance board, range lens, position band and dot-strip context follow
+            // below the chart as supporting detail.
             if prepared.series.count < 2 {
                 emptyState
             } else {
                 chart
-                    .frame(height: 168)
+                    .frame(height: 210)
+                    // Clip the AreaMark gradient to the chart bounds. Without this
+                    // the area fill bleeds below the 210pt frame; it was previously
+                    // hidden because the chart sat at the card's bottom edge, but
+                    // chart-first ordering now places content beneath it.
+                    .clipped()
                 if let ghostCaptionText {
                     Text(ghostCaptionText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if prepared.series.count >= 2 {
+                Button {
+                    showMoreInsights.toggle()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.black))
+                            .rotationEffect(.degrees(showMoreInsights ? 180 : 0))
+                        Text(showMoreInsights ? "Hide insights" : "More insights")
+                            .font(.caption.weight(.bold))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.primary.opacity(0.05), in: Capsule(style: .continuous))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showMoreInsights ? "Hide insights" : "More insights")
+            }
+
+            if showMoreInsights {
+                AtriaTrendRangeDock(selectedRange: $range,
+                                    coverage: rangeCoverage,
+                                    tint: metric.tint)
+                    .equatable()
+
+                if periodReadout.hasEnoughSignal {
+                    AtriaTrendRangeReportCard(readout: periodReadout)
+                    AtriaTrendPeriodBalanceMap(readout: periodReadout)
+                    AtriaTrendGlanceBoard(readout: periodReadout)
+                }
+
+                AtriaTrendRangeLens(range: range,
+                                    metric: metric,
+                                    summary: prepared.summary,
+                                    sampleCount: prepared.series.count)
+
+                if let assessment = prepared.assessment, !periodReadout.hasEnoughSignal {
+                    AtriaTrendRangeAssessmentCard(assessment: assessment)
+                }
+
+                if let action = prepared.action, !periodReadout.hasEnoughSignal {
+                    AtriaTrendActionReadoutCard(action: action)
+                } else if let summary = prepared.summary {
+                    AtriaTrendRangeSummaryStrip(summary: summary, tint: metric.tint)
+                }
+
+                if prepared.series.count >= 3 {
+                    AtriaTrendRangePositionBand(series: prepared.series,
+                                                metric: metric)
+                }
+
+                if prepared.series.count >= 3 {
+                    AtriaTrendSessionDotStrip(series: prepared.series,
+                                              metric: metric)
+                }
+            }
         }
         .padding(16)
+        .animation(.snappy(duration: 0.28), value: showMoreInsights)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
         .animation(.snappy(duration: 0.25), value: metric)
         .animation(.snappy(duration: 0.25), value: range)
@@ -276,7 +317,10 @@ struct AtriaTrendChartCard: View {
                     )
                     .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                    .foregroundStyle(metric.tint.opacity(0.35))
+                    // Prior-period line in neutral gray, not the metric tint: a
+                    // faint-tint ghost overlapped the solid tinted current line
+                    // illegibly. Gray reads clearly as "before" against the tint.
+                    .foregroundStyle(Color.secondary.opacity(0.55))
                 }
             }
 
@@ -340,14 +384,14 @@ struct AtriaTrendChartCard: View {
         .chartYScale(domain: prepared.yDomain)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
                 AxisValueLabel(format: .dateTime.month(.abbreviated).day())
                     .font(.caption2)
             }
         }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
                 AxisValueLabel().font(.caption2)
             }
         }

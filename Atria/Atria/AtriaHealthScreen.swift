@@ -395,7 +395,10 @@ struct AtriaHealthScreen: View {
 
     private var recoveryDetail: String {
         if latestRollup?.recovery != nil { return "saved" }
-        return liveRecoveryPercent != nil ? "today · estimate" : "building"
+        // Honesty/consistency: never the banned "building" word here — it
+        // contradicts the row's own "Learning" value (see recoveryValue) and the
+        // Today/Overview "Day X of 4" calibration language for this same state.
+        return liveRecoveryPercent != nil ? "today · estimate" : "needs a few nights"
     }
 
     private var recoveryTint: Color {
@@ -432,7 +435,10 @@ struct AtriaHealthScreen: View {
         // the row can't show "--" while the hint reports an elevated reading -- and
         // so Vitals shows the real value instead of "--" when only a night exists.
         guard let value = latestRollup?.respiratoryRate ?? store.sleepHistorySnapshot.latest?.respiratoryRate else {
-            return "--"
+            // Canonical not-ready word, matching every sibling Health Monitor row
+            // (Recovery/RHR/HRV/Sleep) instead of the banned "--". Respiration is
+            // sleep-derived, so it genuinely learns after a night — not "unavailable".
+            return "Learning"
         }
         return String(format: "%.1f rpm", value)
     }
