@@ -55,6 +55,9 @@ struct AtriaTodayScreen: View {
     /// Optional display name set elsewhere in the app. Empty -- the default
     /// -- means no greeting is shown; never a fabricated name.
     @AtriaDefault("atria.user.nickname") private var nickname: String = ""
+    // Glance layout: false = 2-up box grid (default), true = one full-width
+    // horizontal bar per metric. The "boxes vs bars" user choice.
+    @AtriaDefault("atria.overview.glanceLayoutBars") private var glanceLayoutBars: Bool = false
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
@@ -113,15 +116,29 @@ struct AtriaTodayScreen: View {
                 }
             }
 
-            LazyVGrid(columns: glanceColumns, spacing: 10) {
-                ForEach(glanceItems) { item in
-                    glanceTile(for: item)
-                        .gridCellColumns(glanceColumnSpan(for: item))
-                        .contextMenu {
-                            Button(action: onCustomizeToday) {
-                                Label("Customize Today", systemImage: "slider.horizontal.3")
+            if glanceLayoutBars {
+                // Bars layout: one full-width horizontal bar per metric.
+                VStack(spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item, isBar: true)
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
                             }
-                        }
+                    }
+                }
+            } else {
+                LazyVGrid(columns: glanceColumns, spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item)
+                            .gridCellColumns(glanceColumnSpan(for: item))
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                    }
                 }
             }
 
@@ -258,24 +275,24 @@ struct AtriaTodayScreen: View {
     /// `metricDetail`; anything without one renders as a plain, non-tappable
     /// tile rather than a fake affordance.
     @ViewBuilder
-    private func glanceTile(for item: AtriaTodayGlanceItem) -> some View {
+    private func glanceTile(for item: AtriaTodayGlanceItem, isBar: Bool = false) -> some View {
         let metric = AtriaTodayMetric(rawValue: item.metricKey)
         if metric == .stress {
             Button {
                 showBreathworkSession = true
             } label: {
-                AtriaTodayGlanceTile(item: item)
+                AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
             .buttonStyle(.plain)
         } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
             Button {
                 metricDetail = detail
             } label: {
-                AtriaTodayGlanceTile(item: item)
+                AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
             .buttonStyle(.plain)
         } else {
-            AtriaTodayGlanceTile(item: item)
+            AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
     }
 
@@ -284,6 +301,14 @@ struct AtriaTodayScreen: View {
             Spacer(minLength: 0)
             ringShareToolbarButton
             Menu {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        glanceLayoutBars.toggle()
+                    }
+                } label: {
+                    Label(glanceLayoutBars ? "Show as grid" : "Show as bars",
+                          systemImage: glanceLayoutBars ? "square.grid.2x2" : "rectangle.grid.1x2")
+                }
                 Button(action: onCustomizeToday) {
                     Label("Customize Today", systemImage: "slider.horizontal.3")
                 }
@@ -2007,15 +2032,67 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
 
 private struct AtriaTodayGlanceTile: View, Equatable {
     let item: AtriaTodayGlanceItem
+    /// Horizontal "bar" layout (icon + label left, value right) for the
+    /// one-per-row bars glance layout; false renders the default 2-up tile.
+    var isBar: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaTodayGlanceTile, rhs: AtriaTodayGlanceTile) -> Bool {
-        lhs.item == rhs.item
+        lhs.item == rhs.item && lhs.isBar == rhs.isBar
     }
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayGlanceTile")
+        if isBar {
+            barBody
+        } else {
+            tileBody
+        }
+    }
+
+    private var barBody: some View {
+        HStack(spacing: 12) {
+            Image(systemName: item.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(item.tint)
+                .frame(width: 30, height: 30)
+                .background(item.tint.opacity(0.14), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+            Spacer(minLength: 8)
+            Text(item.value)
+                .font(.headline.weight(.bold).monospacedDigit())
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(minHeight: 48)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
+                .stroke(item.tint.opacity(0.18), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
+    }
+
+    private var tileBody: some View {
         VStack(alignment: .leading, spacing: 7) {
             Image(systemName: item.systemImage)
                 .font(.subheadline.weight(.bold))
