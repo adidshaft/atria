@@ -242,6 +242,10 @@ struct AtriaHomeView: View {
         case overview
         case vitals
         case journal
+        // Repurposed 2026-07-06: this slot was the "Plan" tab, whose weekly-plan
+        // and routine cards already lived on Today and Journal (pure redundancy).
+        // It now hosts the Activity Monitor. The case name / "plan" raw value are
+        // kept so the deep-link token and the pinned tabItem code stay valid.
         case plan
         case chat
         case collection
@@ -283,7 +287,7 @@ struct AtriaHomeView: View {
             case .overview: return "Overview"
             case .vitals: return "Vitals"
             case .journal: return "Journal"
-            case .plan: return "Plan"
+            case .plan: return "Activity"
             case .chat: return "Assistant"
             case .collection: return "Strap"
             }
@@ -294,7 +298,7 @@ struct AtriaHomeView: View {
             case .overview: return "house.fill"
             case .vitals: return "heart.text.square"
             case .journal: return "square.and.pencil"
-            case .plan: return "calendar"
+            case .plan: return "list.bullet.rectangle.fill"
             case .chat: return "bubble.left.and.bubble.right.fill"
             case .collection: return "applewatch.radiowaves.left.and.right"
             }
@@ -595,7 +599,7 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
 
-                tabNavigation(title: "Plan", showsHero: false) {
+                tabNavigation(title: "Activity", showsHero: false) {
                     planContent
                 }
                 .tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }
@@ -2255,7 +2259,12 @@ struct AtriaHomeView: View {
         default:
             recoveryTint = "#ff6b6b"
         }
+        // Fill against the strain target when one exists, otherwise against the
+        // 0-21 strain scale (same basis as the workout share ring) so the strain
+        // ring always reflects the real value instead of rendering empty when no
+        // target has been set yet.
         let strainFill = hero.guidance.target.map { min(max(hero.strain / max($0, 0.1), 0), 1) }
+            ?? (hero.strain > 0 ? min(max(hero.strain / 21, 0), 1) : nil)
         let recoveryValue = recoveryPercent.map { "\($0)%" } ?? ""
         let stats = [
             AtriaShareSnapshot.Stat(id: "recovery",
@@ -2649,8 +2658,20 @@ struct AtriaHomeView: View {
         AtriaJournalTab(store: store)
     }
 
+    // The former Plan tab is now the Activity Monitor: every logged sleep, nap
+    // and workout in one place, each row routing to the existing editors. Sleep
+    // rows reuse the same manual-sleep sheet the rest of the app adjusts nights
+    // with (seeded night = edit, nil = add).
     private var planContent: some View {
-        AtriaPlanTab(store: store)
+        AtriaActivityMonitorTab(store: store,
+                                onEditSleep: { night in
+                                    sleepReviewSheetNight = night
+                                    showSleepReviewSheet = true
+                                },
+                                onAddSleep: {
+                                    sleepReviewSheetNight = nil
+                                    showSleepReviewSheet = true
+                                })
     }
 
     private func makeFaceOffChallengeURL() -> URL? {

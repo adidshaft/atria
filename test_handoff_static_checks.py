@@ -8505,9 +8505,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaStrapScreen(statusStore:",
             "coreLiveStore: model.coreLiveStore",
             "pulseLiveStore: model.pulseLiveStore",
-            # Assistant tab moved to a top-right icon (2026-07-06); the Plan tab
-            # now occupies that bottom-bar slot. Assistant still opens via cover.
-            'tabNavigation(title: "Plan", showsHero: false)',
+            # Assistant tab moved to a top-right icon (2026-07-06); that bottom-bar
+            # slot became the Plan tab, then was repurposed into the Activity
+            # Monitor (2026-07-06) since Plan's cards were redundant with Today/
+            # Journal. Assistant still opens via cover.
+            'tabNavigation(title: "Activity", showsHero: false)',
             '"sleep-plan-bedtime", "north-star-highlights"',
             'ProcessInfo.processInfo.environment["ATRIA_UI_SCREEN"]',
             "--atria-open-connection-guide",
