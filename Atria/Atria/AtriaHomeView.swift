@@ -4443,10 +4443,10 @@ private struct AtriaWorkoutReviewFlow: View {
                 if row.currentPRSet != nil {
                     Label("PR", systemImage: "trophy.fill")
                         .font(.caption2.weight(.black))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(Metrics.electricYellow)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.yellow.opacity(0.12), in: Capsule(style: .continuous))
+                        .background(Metrics.electricYellow.opacity(0.12), in: Capsule(style: .continuous))
                 }
             }
 
