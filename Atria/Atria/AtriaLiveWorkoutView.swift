@@ -137,15 +137,19 @@ struct AtriaLiveWorkoutView: View {
                         header
                         heartBlock(zone)
                             .padding(.top, 2)
+                        // Decongested 2026-07-06 (10 cards -> 5): zone was drawn
+                        // 4x and strain-vs-target 3x. Now one coach cue, one zone
+                        // module (zoneBar absorbs the old zoneFocus samples), one
+                        // strain/target module (strainTargetCard absorbs the old
+                        // targetLane picker), strength log, and one controls card
+                        // (pauseResumeCard absorbs the broadcast toggle). The old
+                        // workoutSourceStrip / workoutTargetLane / zoneFocusCard /
+                        // broadcastHeartRateCard were pure duplication.
                         workoutCoachCueCard(zone)
+                        zoneBar(zone)
+                        strainTargetCard
                         strengthLoggerCard
                         pauseResumeCard
-                        broadcastHeartRateCard
-                        workoutTargetLane(zone)
-                        workoutSourceStrip(zone)
-                        zoneBar(zone)
-                        zoneFocusCard(zone)
-                        strainTargetCard
                     }
                     .padding(22)
                     .padding(.top, 8)
@@ -240,15 +244,6 @@ struct AtriaLiveWorkoutView: View {
         } else {
             icon.symbolEffect(.pulse, options: .repeating)
         }
-    }
-
-    private func workoutSourceStrip(_ zone: HRZone) -> some View {
-        HStack(spacing: 9) {
-            stripPill(title: "Source", value: "Strap HR", systemImage: "bolt.heart.fill", tint: zone.color)
-            stripPill(title: "Review", value: "Confirm later", systemImage: "checkmark.bubble.fill", tint: .white)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout source is strap heart rate. End workout to confirm or adjust the session later.")
     }
 
     private var strengthLoggerCard: some View {
@@ -368,6 +363,26 @@ struct AtriaLiveWorkoutView: View {
             }
             .buttonStyle(.glassProminent)
             .tint(isPaused ? .green : .orange)
+
+            // Absorbed from the old broadcastHeartRateCard: a secondary control,
+            // now a compact toggle in the same session-controls card.
+            Divider().overlay(.white.opacity(0.12))
+
+            Toggle(isOn: $heartRateBroadcastEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Broadcast heart rate", systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.caption.weight(.black))
+                        .foregroundStyle(.white)
+                    Text(broadcastPersistsAfterWorkout
+                         ? "Stays on after this workout. Extra battery while active."
+                         : "Ends with this workout. Extra battery while active.")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(.cyan)
         }
         .padding(12)
         .atriaWorkoutGlassSurface(cornerRadius: 22, tint: isPaused ? .orange : .white)
@@ -485,20 +500,6 @@ struct AtriaLiveWorkoutView: View {
                         .background(zone.color.opacity(0.16), in: Capsule())
                 }
 
-                GeometryReader { proxy in
-                    let width = max(proxy.size.width, 1)
-                    HStack(spacing: 4) {
-                        Capsule(style: .continuous)
-                            .fill(zone.color.opacity(0.82))
-                            .frame(width: max(10, width * 0.52 * heartRateProgress))
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricStrain.opacity(0.78))
-                            .frame(width: max(10, width * 0.44 * strainTargetProgress))
-                    }
-                }
-                .frame(height: 9)
-                .accessibilityHidden(true)
-
                 Text(coachCueDetail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.70))
@@ -513,131 +514,19 @@ struct AtriaLiveWorkoutView: View {
         .accessibilityLabel("Workout cue. \(coachCueTitle). \(coachCueDetail). Current zone \(zone.rawValue), \(zone.name).")
     }
 
-    private var broadcastHeartRateCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $heartRateBroadcastEnabled) {
-                Label("Broadcast heart rate", systemImage: "antenna.radiowaves.left.and.right")
-                    .font(.caption.weight(.black))
-                    .foregroundStyle(.white)
-            }
-            .tint(.cyan)
-
-            Text(broadcastPersistsAfterWorkout
-                 ? "Stays available after this workout from Settings. Uses extra phone and strap battery while on."
-                 : "Turns off when this workout ends. Uses extra phone and strap battery while on.")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.62))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Broadcast heart rate \(heartRateBroadcastEnabled ? "on" : "off"). \(broadcastPersistsAfterWorkout ? "Stays available after this workout from Settings." : "Turns off when this workout ends.") Uses extra phone and strap battery while on.")
-    }
-
-    private func workoutTargetLane(_ zone: HRZone) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Target lane")
-                    .font(.caption.weight(.black))
-                    .foregroundStyle(.white.opacity(0.90))
-                Spacer(minLength: 8)
-                Button {
-                    showTargetPicker = true
-                } label: {
-                    Label(targetSourceLabel, systemImage: "slider.horizontal.3")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white.opacity(0.80))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.white.opacity(0.12), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
-                Text(coachCueTitle)
-                    .font(.caption.weight(.black))
-                    .foregroundStyle(coachCueTint)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(coachCueTint.opacity(0.16), in: Capsule())
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let markerX = min(max(width * strainTargetProgress, 0), width)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.white.opacity(0.10))
-                        .frame(height: 12)
-
-                    HStack(spacing: 4) {
-                        ForEach(HRZone.allCases, id: \.self) { candidate in
-                            Capsule(style: .continuous)
-                                .fill(candidate == zone ? candidate.color.opacity(0.92) : candidate.color.opacity(0.26))
-                                .frame(height: candidate == zone ? 16 : 8)
-                        }
-                    }
-
-                    Circle()
-                        .fill(coachCueTint)
-                        .overlay {
-                            Circle()
-                                .stroke(.white.opacity(0.86), lineWidth: 2)
-                        }
-                        .shadow(color: coachCueTint.opacity(0.44), radius: 10, y: 3)
-                        .frame(width: 18, height: 18)
-                        .offset(x: min(max(markerX - 9, 0), max(width - 18, 0)))
-                        .animation(.snappy(duration: 0.28), value: strainTargetProgress)
-                }
-            }
-            .frame(height: 20)
-            .accessibilityHidden(true)
-
-            HStack(spacing: 8) {
-                targetLaneChip(title: "Zone", value: "Z\(zone.rawValue)", tint: zone.color)
-                targetLaneChip(title: "Strain", value: String(format: "%.1f", strain), tint: Metrics.electricStrain)
-                targetLaneChip(title: "Target", value: strainTargetValueText, tint: coachCueTint)
-            }
-        }
-        .padding(12)
-        .atriaWorkoutGlassSurface(cornerRadius: 22, tint: coachCueTint)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Target lane. Heart rate zone \(zone.rawValue), strain \(String(format: "%.1f", strain)), target \(strainTargetValueText), \(coachCueTitle).")
-    }
-
-    private func stripPill(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.58))
-                Text(value)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .atriaWorkoutGlassSurface(cornerRadius: 18, tint: tint)
-    }
-
     private func zoneBar(_ zone: HRZone) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Heart-rate zones")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white.opacity(0.70))
                 Spacer(minLength: 8)
-                Text("Z\(zone.rawValue)")
-                    .font(.caption.weight(.black).monospacedDigit())
+                Text(zone.name)
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(zone.color)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(zone.color.opacity(0.16), in: Capsule())
             }
 
             HStack(spacing: 4) {
@@ -654,27 +543,9 @@ struct AtriaLiveWorkoutView: View {
                     }
                 }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Heart-rate zones. Current zone \(zone.rawValue), \(zone.name).")
-    }
 
-    private func zoneFocusCard(_ zone: HRZone) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Label("Zone focus", systemImage: "scope")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.92))
-                Spacer(minLength: 8)
-                Text(zone.name)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(zone.color)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(zone.color.opacity(0.16), in: Capsule())
-            }
-
+            // Absorbed from the old zoneFocusCard: where inside the current band
+            // the live HR sits, plus the evidence readout.
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
                 let progress = heartRateProgress
@@ -700,17 +571,31 @@ struct AtriaLiveWorkoutView: View {
         }
         .padding(12)
         .atriaWorkoutGlassSurface(cornerRadius: 20, tint: zone.color)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Zone focus. \(zone.name), \(zoneBandText(zone)), \(liveStore.state.sessionSampleCount) samples.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Heart-rate zones. Current zone \(zone.rawValue), \(zone.name), \(zoneBandText(zone)), \(liveStore.state.sessionSampleCount) samples.")
     }
 
     private var strainTargetCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Label("Target strain", systemImage: "target")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white.opacity(0.92))
                 Spacer(minLength: 8)
+                // Absorbed from the old workoutTargetLane: edit whether the target
+                // follows auto guidance or a user pick.
+                Button {
+                    showTargetPicker = true
+                } label: {
+                    Label(targetSourceLabel, systemImage: "slider.horizontal.3")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.80))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
                 Text(strainTargetValueText)
                     .font(.caption.weight(.bold).monospacedDigit())
                     .foregroundStyle(Metrics.electricStrain)
@@ -1091,26 +976,6 @@ struct AtriaLiveWorkoutView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-
-    private func targetLaneChip(title: String, value: String, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(tint)
-                .frame(width: 6, height: 6)
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white.opacity(0.58))
-            Text(value)
-                .font(.caption.weight(.black).monospacedDigit())
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.white.opacity(0.07), in: Capsule())
     }
 
     // Uncalled in code but pinned by test_handoff_static_checks
