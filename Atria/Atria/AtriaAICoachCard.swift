@@ -77,7 +77,7 @@ struct AtriaAICoachCard: View, Equatable {
                 if !fabricationFlags.isEmpty {
                     Text("⚠ Contains figures not from your data")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(Metrics.electricYellow)
                 }
             }
             .padding(10)
