@@ -223,7 +223,7 @@ struct AtriaHealthScreen: View {
                                      value: restingHeartRateValue,
                                      detail: "overnight low",
                                      systemImage: "heart.text.square.fill",
-                                     tint: .cyan,
+                                     tint: Metrics.electricRHR,
                                      rangeText: restingHeartRateRangeText,
                                      hint: restingHeartRateHint,
                                      onTap: { educationTopic = .restingHeartRate })
@@ -231,7 +231,7 @@ struct AtriaHealthScreen: View {
                                      value: hrvValue,
                                      detail: "night signal",
                                      systemImage: "waveform.path.ecg",
-                                     tint: Metrics.electricGreen,
+                                     tint: Metrics.electricHRV,
                                      rangeText: hrvRangeText,
                                      hint: hrvHint,
                                      onTap: { educationTopic = .hrv })
@@ -246,7 +246,7 @@ struct AtriaHealthScreen: View {
                                      value: respiratoryValue,
                                      detail: "sleep average",
                                      systemImage: "lungs.fill",
-                                     tint: .teal,
+                                     tint: Metrics.electricRespiratory,
                                      rangeText: respiratoryRangeText,
                                      hint: respiratoryHint,
                                      onTap: { educationTopic = .respiration })
@@ -272,7 +272,7 @@ struct AtriaHealthScreen: View {
                                         : "--",
                                      detail: store.imuAuditSummary.skinTemperatureDeviation.detailText,
                                      systemImage: "thermometer.variable",
-                                     tint: .teal,
+                                     tint: Metrics.electricRespiratory,
                                      onTap: { metricDetail = .skinTemperature })
                 AtriaHealthMetricRow(title: "SpO2",
                                      value: "\u{2014}",
