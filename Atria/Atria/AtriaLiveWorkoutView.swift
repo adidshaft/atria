@@ -291,7 +291,7 @@ struct AtriaLiveWorkoutView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(.mint)
         }
         .padding(12)
@@ -366,7 +366,7 @@ struct AtriaLiveWorkoutView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(isPaused ? .green : .orange)
         }
         .padding(12)
@@ -430,7 +430,7 @@ struct AtriaLiveWorkoutView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(.mint)
             }
             .padding(18)
