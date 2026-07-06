@@ -10279,7 +10279,14 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
                            alignment: .leading)
             }
 
-            AtriaJournalImpactMap(summaries: summaries)
+            // Only show the watch↔support "impact map" once there are real
+            // links to place on it. In the sparse/learning state its tag icons
+            // collapsed to the center axis and stacked into a broken-looking
+            // column (the "weird journal" report) — gate it so it appears only
+            // when it actually communicates something.
+            if summaries.contains(where: { $0.impactDelta != nil }) {
+                AtriaJournalImpactMap(summaries: summaries)
+            }
 
             HStack(spacing: 7) {
                 glanceChip(title: "Logged",
