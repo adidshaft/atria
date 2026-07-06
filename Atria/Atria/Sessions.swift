@@ -8157,6 +8157,58 @@ final class SessionStore: ObservableObject {
         return true
     }
 
+    /// Set (or clear) a confirmed workout's activity type -- e.g. relabel a
+    /// generic effort as "Run", "Walk", "Dance". Measured metrics are untouched.
+    @discardableResult
+    func setConfirmedWorkoutActivityType(id: String, activityType: String) -> Bool {
+        let trimmed = activityType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newType = trimmed.isEmpty ? nil : trimmed
+        guard let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }),
+              cachedConfirmedWorkouts[index].activityType != newType else { return false }
+        var updated = cachedConfirmedWorkouts
+        updated[index].activityType = newType
+        saveConfirmedWorkouts(updated)
+        dashboardRevision &+= 1
+        return true
+    }
+
+    /// Change a confirmed workout's time window. Re-derives every metric (HR,
+    /// strain, calories, zones) from the strap samples inside the new window --
+    /// no fabrication -- by re-confirming it exactly, preserving the label/type/
+    /// exercises. Returns the updated workout, or nil (and restores the original)
+    /// when the new window has too little strap data to save.
+    @discardableResult
+    func updateConfirmedWorkoutWindow(id: String,
+                                      newStart: Date,
+                                      newEnd: Date,
+                                      rest: Int,
+                                      maxHR: Int) -> UserConfirmedWorkout? {
+        guard newEnd > newStart,
+              let old = cachedConfirmedWorkouts.first(where: { $0.id == id }) else { return nil }
+        let filtered = cachedConfirmedWorkouts.filter { $0.id != id }
+        saveConfirmedWorkouts(filtered)
+        let confirmed = confirmWorkoutWindowForUI(start: newStart,
+                                                  end: newEnd,
+                                                  rest: rest,
+                                                  maxHR: maxHR,
+                                                  source: "manual_window_edit",
+                                                  activityType: old.activityType,
+                                                  activitySubtype: old.activitySubtype,
+                                                  exerciseNames: old.exerciseNames ?? [],
+                                                  reviewSource: old.reviewSource)
+        guard let confirmed else {
+            // New window had no usable strap data -- restore the original.
+            saveConfirmedWorkouts(filtered + [old])
+            return nil
+        }
+        // Preserve a user-customised label (a plain "Live workout" is the default).
+        if old.label != "Live workout", old.label != confirmed.label {
+            _ = renameConfirmedWorkout(id: confirmed.id, label: old.label)
+        }
+        dashboardRevision &+= 1
+        return cachedConfirmedWorkouts.first(where: { $0.id == confirmed.id })
+    }
+
     func confirmBestSleepCandidateForUI(rest: Int, source: String = "ui") -> UserConfirmedSleep? {
         confirmBestSleepCandidate(rest: rest, source: source)
     }
