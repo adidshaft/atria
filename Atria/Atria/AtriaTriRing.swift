@@ -349,9 +349,13 @@ struct AtriaTriRing: View, Equatable {
             } else {
                 // Learning: a short static cap gives the ring life without
                 // implying a real scored value exists yet (honesty rule --
-                // never fabricate progress).
+                // never fabricate progress). It MUST start at trim 0 (12 o'clock,
+                // same as a real fill) -- starting at 0.06 made learning rings
+                // begin ~1 o'clock while data-filled rings began at 12, so the
+                // rings visibly "didn't start at the same place". The dim opacity
+                // + the "Learning" legend already distinguish it from a real fill.
                 Circle()
-                    .trim(from: 0.06, to: 0.16)
+                    .trim(from: 0, to: 0.10)
                     .stroke(metric.tint.opacity(0.5),
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
