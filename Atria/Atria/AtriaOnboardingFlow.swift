@@ -228,7 +228,7 @@ struct AtriaOnboardingFlow: View {
                     Label("Restore backup from Files", systemImage: "tray.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 if let restoreMessage {
                     Text(restoreMessage)
                         .font(.footnote.weight(.semibold))

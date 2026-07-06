@@ -4336,7 +4336,7 @@ private struct AtriaWorkoutReviewFlow: View {
                 Label("Share workout", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(.orange)
 
             if !selectedExercises.isEmpty {

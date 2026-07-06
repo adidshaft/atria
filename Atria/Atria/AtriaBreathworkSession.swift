@@ -139,7 +139,7 @@ struct AtriaBreathworkSession: View {
                     .font(.headline.weight(.black))
                     .frame(maxWidth: 260)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(Metrics.electricStrain)
             .controlSize(.large)
         }
@@ -221,7 +221,7 @@ struct AtriaBreathworkSession: View {
                     .font(.headline.weight(.black))
                     .frame(maxWidth: 220)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(.mint)
             .controlSize(.large)
         }
