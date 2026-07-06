@@ -7121,7 +7121,10 @@ struct AtriaMetricDetailSheet: View {
                         AxisValueLabel(format: .dateTime.month(.abbreviated).day())
                     }
                 }
-                .frame(height: 190)
+                .frame(height: 210)
+                // Guarantee the plot can never bleed past its frame in any data
+                // state (matches AtriaTrendChartCard's clip).
+                .clipped()
                 .accessibilityLabel(accessibilitySummary)
             }
         }
