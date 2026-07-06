@@ -3402,7 +3402,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                             AxisValueLabel(format: .dateTime.weekday(.narrow))
                         }
                     }
-                    .frame(height: 140)
+                    .frame(height: 168)
+                    .clipped()
                     .padding(12)
                     .atriaInsetCard(tint: .cyan)
                 }
