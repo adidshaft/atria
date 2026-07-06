@@ -792,9 +792,12 @@ class HandoffStaticChecks(unittest.TestCase):
             ".tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }",
             ".tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }",
             ".tag(HomeTab.journal)",
-            # Strap moved to the top chrome (2026-07-05); Chat placeholder tab took its slot.
-            ".tabItem { Label(HomeTab.chat.title, systemImage: HomeTab.chat.systemImage) }",
+            # Strap moved to the top chrome (2026-07-05). Assistant (still "Coming
+            # Soon") also moved to a top-right icon (2026-07-06); the Plan tab took
+            # the bottom-bar slot.
+            ".tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }",
             'Button(action: onShowStrap) {',
+            'Button(action: onShowAssistant) {',
             'AtriaToolbarIcon(symbol: "applewatch.radiowaves.left.and.right")',
             '"Coming Soon!"',
             ".tabBarMinimizeBehavior(.onScrollDown)",
@@ -8492,8 +8495,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaStrapScreen(statusStore:",
             "coreLiveStore: model.coreLiveStore",
             "pulseLiveStore: model.pulseLiveStore",
-            # Chat tab renamed to "Assistant" (2026-07-05, chrome-fixes pass).
-            'tabNavigation(title: "Assistant", showsHero: false)',
+            # Assistant tab moved to a top-right icon (2026-07-06); the Plan tab
+            # now occupies that bottom-bar slot. Assistant still opens via cover.
+            'tabNavigation(title: "Plan", showsHero: false)',
             '"sleep-plan-bedtime", "north-star-highlights"',
             'ProcessInfo.processInfo.environment["ATRIA_UI_SCREEN"]',
             "--atria-open-connection-guide",
@@ -8559,9 +8563,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, top_chrome, forbidden)
 
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
-        # 2 header actions since 2026-07-05: Strap (moved off the tab bar at
-        # user direction) + Settings/Help.
-        self.assertEqual(top_chrome_body.count(".buttonStyle(AtriaHeaderActionButtonStyle())"), 2)
+        # 3 header actions since 2026-07-06: Strap + Assistant (both moved off the
+        # tab bar at user direction) + Settings/Help.
+        self.assertEqual(top_chrome_body.count(".buttonStyle(AtriaHeaderActionButtonStyle())"), 3)
         assert_contains(self, top_chrome_body, "Button(action: showHelp ? onShowHelp : onShowSettings)")
         assert_contains(self, home, "private var shouldShowTopChromeHelp: Bool")
         assert_contains(self, home, "if model.pulseLiveStore.state.hasPulseSignal || model.coreLiveStore.state.hasRecentHeartRateSample")
