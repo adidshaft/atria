@@ -266,6 +266,7 @@ struct AtriaHomeView: View {
             guard let token = pieces.first(where: { $0 != "tab" }) else { return nil }
             switch token {
             case "overview", "today": return .overview
+            case "sleep-review", "sleep": return .overview
             case "vitals": return .vitals
             case "journal": return .journal
             case "plan": return .plan
@@ -358,6 +359,11 @@ struct AtriaHomeView: View {
     @State private var showAssistant = false
     @State private var showShareSheet = false
     @State private var incomingFaceOff: AtriaFaceOffPayload?
+    // Force-present the sleep review/edit sheet from the "Review your sleep"
+    // notification deep link, independent of the inline Overview review card's
+    // gating (so the tap always lands somewhere actionable).
+    @State private var showSleepReviewSheet = false
+    @State private var sleepReviewSheetNight: SleepHistorySnapshot.Night?
     // Plain read, not @AppStorage: this key has dots, which is the exact
     // KVO-storm hazard documented above for persistentHeartRateBroadcastEnabled
     // and homeLayoutConfigStorage (~790 evals/sec self-invalidation, 0x8BADF00D
@@ -530,6 +536,21 @@ struct AtriaHomeView: View {
             handleDeepLink(url)
         }
         .onOpenURL(perform: handleDeepLink)
+        .sheet(isPresented: $showSleepReviewSheet) {
+            AtriaManualSleepSheet(initialStart: sleepReviewSheetNight?.start,
+                                  initialEnd: sleepReviewSheetNight?.end,
+                                  initialIsNap: sleepReviewSheetNight?.isNapEvidence,
+                                  preservesSensorStages: true) { start, end, isNap in
+                _ = store.adjustSleepNight(originalStart: sleepReviewSheetNight?.start,
+                                           originalEnd: sleepReviewSheetNight?.end,
+                                           newStart: start,
+                                           newEnd: end,
+                                           isNap: isNap,
+                                           rest: store.baseline.restingInt ?? 60,
+                                           source: "notification_sleep_review")
+                showSleepReviewSheet = false
+            }
+        }
         .onDisappear {
             connectionGuidePresentationTask?.cancel()
             connectionGuidePresentationTask = nil
@@ -837,6 +858,21 @@ struct AtriaHomeView: View {
             hasUnlockedPrimaryContent = true
             return
         }
+        if Self.isSleepReviewDeepLink(url) {
+            // Land on Overview AND force-present the review/edit sheet for the
+            // latest reviewable night, so a "Review your sleep" notification tap
+            // always opens something actionable even if the inline card is hidden.
+            selectedTab = .overview
+            hasUnlockedPrimaryContent = true
+            hasUnlockedSecondarySections = true
+            sleepReviewSheetNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
+                                                                      source: "notification_sleep_review")
+            showSleepReviewSheet = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=sleep_review has_night=%d url=%@",
+                          sleepReviewSheetNight == nil ? 0 : 1,
+                          url.absoluteString)
+            return
+        }
         guard let tab = HomeTab.deepLinkDestination(for: url) else { return }
 #if DEBUG
         if url.absoluteString.lowercased().contains("heart-rate-timeline") {
@@ -858,6 +894,13 @@ struct AtriaHomeView: View {
         AtriaDebugLog("ATRIADBG deeplink status=handled target=%@ url=%@",
                       tab.deepLinkPath,
                       url.absoluteString)
+    }
+
+    private static func isSleepReviewDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.contains("sleep-review") || pieces.contains("sleep")
     }
 
     private func postDebugNotificationDeepLinkIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -1467,7 +1510,9 @@ struct AtriaHomeView: View {
         liveActivityCoordinator.update(AtriaLiveActivityCoordinator.Snapshot(
             isRecording: model.collectionLiveStore.state.isRecording,
             heartRate: model.pulseLiveStore.state.heartRate,
-            strain: Metrics.strain(fromTRIMP: model.coreLiveStore.state.liveTRIMP),
+            // Match the hero ring: total day strain (saved + live TRIMP), not
+            // live-only — otherwise the Live Activity under-reports vs the app.
+            strain: model.heroStore.state.strain,
             batteryLevel: model.coreLiveStore.state.batteryLevel,
             batteryChargeStatus: model.coreLiveStore.state.batteryChargeStatus,
             readingCount: model.coreLiveStore.state.sessionSampleCount,
@@ -1521,8 +1566,9 @@ struct AtriaHomeView: View {
         let heartRate = model.pulseLiveStore.state.heartRate
         let rest = model.homeStatsStore.state.restingHeartRate
         let samples = model.coreLiveStore.state.sessionSampleCount
-        let liveTRIMP = model.coreLiveStore.state.liveTRIMP
-        let strain = Metrics.strain(fromTRIMP: liveTRIMP)
+        // Show the same day-strain the hero ring shows (saved + live TRIMP) so
+        // the workout prompt never disagrees with the number on the main screen.
+        let strain = model.heroStore.state.strain
         let bpmOverRest = max(0, heartRate - rest)
         let evaluation = AtriaWorkoutPromptEvaluator.evaluate(samples: ble.session,
                                                              currentHeartRate: heartRate,

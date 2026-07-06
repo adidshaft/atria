@@ -806,7 +806,8 @@ enum LocalNotificationScheduler {
                                                detail: recovery.detail),
                 reason: "percent_\(percent)_confidence_\(recovery.confidence.rawValue)",
                 shouldSchedule: true,
-                delay: 5
+                delay: 5,
+                userInfo: ["deepLink": "atria://overview"]
             )
         } else {
             let reason = recovery.percent == nil
@@ -851,7 +852,8 @@ enum LocalNotificationScheduler {
                 body: String(format: "Nice work. You reached today's strain target with %.1f strain against a %.1f goal.", strain, target),
                 reason: String(format: "strain_%.1f_target_%.1f", strain, target),
                 shouldSchedule: true,
-                delay: 7
+                delay: 7,
+                userInfo: ["deepLink": "atria://overview"]
             )
         } else {
             strainDecision = NotificationDecision(
@@ -1072,7 +1074,8 @@ enum LocalNotificationScheduler {
             body: body,
             reason: "candidate_\(latest.id)",
             shouldSchedule: true,
-            delay: 6
+            delay: 6,
+            userInfo: ["deepLink": "atria://sleep-review"]
         )
     }
 
@@ -1180,7 +1183,8 @@ enum LocalNotificationScheduler {
             body: workoutReviewNotificationBody(for: candidate),
             reason: "candidate_\(candidate.id)",
             shouldSchedule: true,
-            delay: 6
+            delay: 6,
+            userInfo: ["deepLink": "atria://overview"]
         )
     }
 

@@ -442,7 +442,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct Bar: Equatable, Identifiable",
             "private let bars: [Bar]",
             "AtriaDetailPeriodSummaryStrip(summary: summary,",
-            "AtriaDetailPeriodReportCard(summary: summary,",
+            # 2026-07-06: AtriaDetailPeriodReportCard call removed from metricChart
+            # (detail-sheet redesign collapsed 3 redundant latest/avg/change cards
+            # into the single AtriaDetailPeriodSummaryStrip). Struct definition kept
+            # as uncalled scaffolding, so its declaration/internal pins still hold.
             "comparison: comparison,",
             "let latestPosition: Double",
             "private enum AtriaDetailPeriodChangeDirection",
@@ -5890,8 +5893,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "rollups: debugMetricDetailRollups ?? dailyRollupHistory",
             "private var debugMetricDetailRollups: [DailyRollupStoreEntry]?",
             "DailyRollupStoreEntry(day: day,",
-            "if let rangeLens",
-            "AtriaDetailRangeLensCard(range: range,",
+            # 2026-07-06: the `if let rangeLens { AtriaDetailRangeLensCard(...) }`
+            # "Trend snapshot" card was removed from chartSlot (detail redesign —
+            # it duplicated the metricChart summary strip, giving two stacked
+            # summary cards before the chart). The rangeLens property and the
+            # AtriaDetailRangeLensCard struct are kept as scaffolding, so their
+            # pins below still hold.
             "sleepGoalHours: sleepGoalHours",
             "private var rangeLens: (summary: AtriaDetailPeriodSummary, comparison: AtriaDetailComparisonSummary?)?",
             "private struct AtriaDetailRangeLensCard: View, Equatable",
@@ -5914,7 +5921,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "comparisonBar(title: \"Prior\"",
             "comparisonBar(title: \"This\"",
             "This versus prior. This \\(comparison.currentText), prior \\(comparison.priorText), change \\(comparison.deltaText).",
-            "AtriaDetailRangeRhythmCard(range: range,",
+            # 2026-07-06: AtriaDetailRangeRhythmCard call removed from metricChart
+            # (detail-sheet redesign collapsed 3 redundant summary cards into one).
+            # Struct definition kept as uncalled scaffolding — declaration pin below
+            # and its internal pins still hold.
             "private struct AtriaDetailRangeRhythmCard: View",
             "Label(\"Range rhythm\", systemImage: \"waveform.path.ecg\")",
             "rhythmChip(title: rangeAnchorTitle",

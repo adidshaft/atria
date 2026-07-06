@@ -82,7 +82,12 @@ enum Coach {
                       strain: Double,
                       load: TrainingLoadSummary? = nil) -> Guidance {
         guard let percent = estimate.percent else {
-            let detail = estimate.detail.isEmpty ? "more data" : estimate.detail.replacingOccurrences(of: "_", with: " ")
+            // estimate.detail is an internal "learning: <reason>" status string;
+            // strip the redundant "learning:" prefix (the headline already says
+            // "Guidance learning") so the sentence doesn't read the awkward
+            // "…recovery data: learning: need resting HR."
+            let rawDetail = estimate.detail.isEmpty ? "more data" : estimate.detail.replacingOccurrences(of: "_", with: " ")
+            let detail = rawDetail.replacingOccurrences(of: "learning: ", with: "")
             return Guidance(headline: "Guidance learning",
                             detail: "Waiting for enough recovery data: \(detail).",
                             color: .secondary,

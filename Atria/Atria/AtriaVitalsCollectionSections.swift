@@ -1379,11 +1379,13 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
                                       start: Date,
                                       end: Date,
                                       isNap: Bool) {
-        _ = store.addManualSleep(start: start,
-                                 end: end,
-                                 isNap: isNap,
-                                 rest: store.baseline.restingInt ?? 60,
-                                 source: "vitals_sleep_history_adjust")
+        _ = store.adjustSleepNight(originalStart: night.start,
+                                   originalEnd: night.end,
+                                   newStart: start,
+                                   newEnd: end,
+                                   isNap: isNap,
+                                   rest: store.baseline.restingInt ?? 60,
+                                   source: "vitals_sleep_history_adjust")
     }
 
     private func confirmSleepCandidate() {
@@ -3437,7 +3439,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         .sheet(item: $adjustmentNight) { night in
             AtriaManualSleepSheet(initialStart: night.start,
                                   initialEnd: night.end,
-                                  initialIsNap: night.isNapEvidence) { start, end, isNap in
+                                  initialIsNap: night.isNapEvidence,
+                                  preservesSensorStages: true) { start, end, isNap in
                 onAdjustSleep(night, start, end, isNap)
                 adjustmentNight = nil
             }

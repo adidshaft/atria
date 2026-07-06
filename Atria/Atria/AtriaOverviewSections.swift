@@ -622,12 +622,15 @@ private struct AtriaSleepReviewHost: View {
                 .sheet(item: $adjustmentNight) { adjustment in
                     AtriaManualSleepSheet(initialStart: adjustment.start,
                                           initialEnd: adjustment.end,
-                                          initialIsNap: adjustment.isNapEvidence) { start, end, isNap in
-                        _ = store.addManualSleep(start: start,
-                                                 end: end,
-                                                 isNap: isNap,
-                                                 rest: store.baseline.restingInt ?? 60,
-                                                 source: "overview_sleep_review_adjust")
+                                          initialIsNap: adjustment.isNapEvidence,
+                                          preservesSensorStages: true) { start, end, isNap in
+                        _ = store.adjustSleepNight(originalStart: adjustment.start,
+                                                   originalEnd: adjustment.end,
+                                                   newStart: start,
+                                                   newEnd: end,
+                                                   isNap: isNap,
+                                                   rest: store.baseline.restingInt ?? 60,
+                                                   source: "overview_sleep_review_adjust")
                         dismissedID = adjustment.id
                         adjustmentNight = nil
                     }
@@ -716,12 +719,15 @@ private struct AtriaAutoSleepLoggedBanner: View {
             .sheet(item: $adjustment) { banner in
                 AtriaManualSleepSheet(initialStart: banner.start,
                                       initialEnd: banner.end,
-                                      initialIsNap: false) { start, end, isNap in
-                    _ = store.addManualSleep(start: start,
-                                             end: end,
-                                             isNap: isNap,
-                                             rest: store.baseline.restingInt ?? 60,
-                                             source: "auto_sleep_logged_banner_edit")
+                                      initialIsNap: false,
+                                      preservesSensorStages: true) { start, end, isNap in
+                    _ = store.adjustSleepNight(originalStart: banner.start,
+                                               originalEnd: banner.end,
+                                               newStart: start,
+                                               newEnd: end,
+                                               isNap: isNap,
+                                               rest: store.baseline.restingInt ?? 60,
+                                               source: "auto_sleep_logged_banner_edit")
                     store.dismissAutoSleepLoggedBanner(id: banner.id)
                     adjustment = nil
                 }
@@ -1818,6 +1824,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onStartWorkout: () -> Void
     @State private var isEditingGlance = false
     @State private var showWidgetManager = false
+    // When true the glance renders every metric as a full-width horizontal bar
+    // (one per row) instead of the default 2-up box grid — the "boxes vs bars"
+    // user choice.
+    @AtriaDefault("atria.overview.glanceLayoutBars") private var glanceLayoutBars: Bool = false
+    // The Daily focus rail duplicates the tri-ring's Recovery/Strain/Sleep, so it
+    // is off by default; users can restore it from the Add-widget sheet.
+    @AtriaDefault("atria.overview.showDailyFocusRail") private var showDailyFocusRail: Bool = false
     @State private var showManualSleepSheet = false
     @State private var showWeeklyReport = false
     @State private var showMonthlyReport = false
@@ -1902,6 +1915,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.visibleMetrics == rhs.visibleMetrics
             && lhs.hiddenMetrics == rhs.hiddenMetrics
             && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
+            && lhs.glanceLayoutBars == rhs.glanceLayoutBars
+            && lhs.showDailyFocusRail == rhs.showDailyFocusRail
     }
 
     var body: some View {
@@ -1927,7 +1942,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
             AtriaTriRingLiveStatusStrip(live: live, pulse: pulse)
 
-            AtriaDailyFocusRail(items: dailyFocusItems)
+            if showDailyFocusRail {
+                AtriaDailyFocusRail(items: dailyFocusItems)
+            }
 
             if weeklyReportHighlight != nil || monthlyReportHighlight != nil {
                 VStack(alignment: .leading, spacing: 8) {
@@ -2002,16 +2019,24 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
-                    VStack(spacing: Self.glanceGridSpacing) {
-                        ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
-                            let rowHeight = computedRowHeight(for: row, sizeOverrides: glanceSizeOverrides)
-                            HStack(spacing: Self.glanceGridSpacing) {
-                                glanceRowContent(row, rowHeight: rowHeight, sizeOverrides: glanceSizeOverrides)
+                    if glanceLayoutBars {
+                        VStack(spacing: Self.glanceGridSpacing) {
+                            ForEach(visibleMetrics) { metric in
+                                glanceBarCell(metric, sizeOverrides: glanceSizeOverrides)
                             }
-                            .frame(maxWidth: .infinity,
-                                   minHeight: rowHeight,
-                                   maxHeight: rowHeight,
-                                   alignment: .topLeading)
+                        }
+                    } else {
+                        VStack(spacing: Self.glanceGridSpacing) {
+                            ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
+                                let rowHeight = computedRowHeight(for: row, sizeOverrides: glanceSizeOverrides)
+                                HStack(spacing: Self.glanceGridSpacing) {
+                                    glanceRowContent(row, rowHeight: rowHeight, sizeOverrides: glanceSizeOverrides)
+                                }
+                                .frame(maxWidth: .infinity,
+                                       minHeight: rowHeight,
+                                       maxHeight: rowHeight,
+                                       alignment: .topLeading)
+                            }
                         }
                     }
                 }
@@ -2313,6 +2338,21 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                     .transition(.scale.combined(with: .opacity))
                 }
 
+                if !isEditingGlance {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            glanceLayoutBars.toggle()
+                        }
+                    } label: {
+                        Image(systemName: glanceLayoutBars ? "square.grid.2x2.fill" : "rectangle.grid.1x2.fill")
+                            .font(.callout.weight(.semibold))
+                            .frame(width: 20, height: 20)
+                    }
+                    .atriaGlassIconAction(tint: .secondary, size: 38)
+                    .accessibilityLabel(glanceLayoutBars ? "Show widgets as a grid" : "Show widgets as horizontal bars")
+                    .accessibilityHint("Switches the Today widgets between a two-up box grid and a single-column list of horizontal bars.")
+                }
+
                 Button {
                     showWidgetManager = true
                 } label: {
@@ -2543,12 +2583,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private func glanceCardCell(_ metric: AtriaTodayMetric,
-                                width: CGFloat,
+                                width: CGFloat?,
                                 rowHeight: CGFloat,
-                                sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
+                                sizeOverrides: [String: AtriaGlanceGridSize],
+                                forceCompactRow: Bool = false) -> some View {
         let upLabel = Text("Move \(metric.label) up")
         let downLabel = Text("Move \(metric.label) down")
-        let isCompactRow = metric.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort
+        // In bars layout every metric is a full-width compact row regardless of
+        // its saved grid size; otherwise honour the wideShort override.
+        let isCompactRow = forceCompactRow || metric.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort
 
         return glanceCard(metric)
             .environment(\.glanceCompactRow, isCompactRow)
@@ -2657,6 +2700,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
             .accessibilityHint("Drag to reorder, or long press to edit with target, resize, and remove controls.")
+    }
+
+    /// One metric rendered as a full-width horizontal bar (the "bars" layout).
+    /// Reuses `glanceCardCell` so editing, drag-reorder and target controls all
+    /// behave exactly as they do in the grid — only the shape changes.
+    private func glanceBarCell(_ metric: AtriaTodayMetric,
+                               sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
+        // Sleep-history / trend / insights are custom chart cards that ignore the
+        // compact-row layout -- keep them at their natural full-width height so
+        // bars mode doesn't squash a chart into a 76pt strip.
+        let isChartCard = [AtriaTodayMetric.sleepHistory, .trend, .insights].contains(metric)
+        return glanceCardCell(metric,
+                              width: nil,
+                              rowHeight: isChartCard ? Self.glanceRowHeight : AtriaGlanceMetricCard.compactRowHeight,
+                              sizeOverrides: sizeOverrides,
+                              forceCompactRow: !isChartCard)
     }
 
     @ViewBuilder
@@ -2971,7 +3030,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         }
         if sleepHistory.candidateCount > 0 { return "Review" }
         if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue == "Maybe" ? "Review" : "Last" }
-        return sleepCalibratingDay.map { "Day \($0) of 4" } ?? "Calibrating"
+        // Canonical not-ready word, and consistent with sleepGlanceValueText above:
+        // sleep is available after ONE night (not a 4-night calibration like
+        // recovery), so it shows "Learning" — never a "Day X of 4" countdown or the
+        // non-canonical "Calibrating".
+        return "Learning"
     }
 
     private var sleepGlanceTint: Color {
@@ -3527,6 +3590,7 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(pulse.heartRateText)
                         .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(pulse.heartRateZone != nil ? tint : .primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                         .layoutPriority(1)
@@ -3577,7 +3641,10 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // HR-section accent: when a live zone is known, wash the strip in the
+        // zone tint so the current effort reads at a glance; stay neutral otherwise.
+        .background(pulse.heartRateZone != nil ? tint.opacity(0.10) : .secondary.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Live status. Heart rate \(pulse.heartRateText) beats per minute. Zone \(zoneText).\(pulse.heartRateBroadcastActive ? " Broadcast heart rate active." : "") \(live.batteryAccessibilityText)")
     }
@@ -4106,6 +4173,10 @@ private struct AtriaGlanceWidgetManagerSheet: View {
     let onEditWidgets: () -> Void
     let onShowMetric: (AtriaTodayMetric) -> Void
 
+    // Same key the Today screen reads; AtriaDefault syncs both instances via the
+    // UserDefaults change notification, so toggling here updates the rail live.
+    @AtriaDefault("atria.overview.showDailyFocusRail") private var showDailyFocusRail: Bool = false
+
     private var hiddenMoreMetrics: [AtriaTodayMetric] {
         hiddenMetrics.filter { AtriaTodayMetric.moreMetrics.contains($0) }
     }
@@ -4118,6 +4189,22 @@ private struct AtriaGlanceWidgetManagerSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    managerSection(title: "Layout",
+                                   subtitle: "The daily focus rail repeats Recovery, Strain and Sleep from the ring above. It is off by default.") {
+                        Toggle(isOn: $showDailyFocusRail) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Daily focus rail")
+                                    .font(.footnote.weight(.bold))
+                                Text("Show the Recovery / Strain / Sleep / Live rail under the ring.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(12)
+                        .atriaInsetCard(tint: .secondary)
+                        .accessibilityHint("Restores the focus rail beneath the tri-ring. It duplicates the ring metrics, so it stays off unless you turn it on.")
+                    }
+
                     managerSection(title: "More metrics",
                                    subtitle: hiddenMetrics.isEmpty ? "All glance widgets are already visible." : "Bring hidden cards back to Today at a glance.") {
                         if hiddenMoreMetrics.isEmpty {
@@ -6707,14 +6794,13 @@ struct AtriaMetricDetailSheet: View {
             }
             .pickerStyle(.segmented)
 
-            if let rangeLens {
-                AtriaDetailRangeLensCard(range: range,
-                                         summary: rangeLens.summary,
-                                         comparison: rangeLens.comparison,
-                                         tint: metric.tint,
-                                         sleepGoalHours: sleepGoalHours)
-            }
-
+            // Detail redesign (2026-07-06): the "Trend snapshot"
+            // AtriaDetailRangeLensCard was removed here — it restated the exact
+            // Latest/Avg/Change the metricChart's summary strip already shows
+            // (plus a secondary this-vs-prior seesaw), producing two stacked
+            // summary cards ("box inside box") before the chart. One canonical
+            // summary now lives in metricChart. The RangeLensCard struct is kept
+            // as uncalled scaffolding so its gate pins/reuse stay intact.
             content()
         }
     }
@@ -6738,7 +6824,9 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var recoveryHeroState: String {
-        guard let percent = recoveryEstimate.percent else { return "Building" }
+        // Canonical not-ready word is "Learning" (never "Building") — must match
+        // the recovery ring center + legend chip for the same Day-1 state.
+        guard let percent = recoveryEstimate.percent else { return "Learning" }
         switch percent {
         case 67...: return "Good"
         case 34..<67: return "Typical"
@@ -6749,7 +6837,7 @@ struct AtriaMetricDetailSheet: View {
     private var strainHeroState: String {
         guard let latest = preparedHistory.latestStrain[range],
               let target = guidance.target else {
-            return "Building"
+            return "Learning"   // canonical not-ready word (was "Building"), consistent with HRV/RHR/respiration hero states
         }
         if latest >= target + 1 { return "Strained" }
         if latest >= target - 1 { return "On target" }
@@ -6809,7 +6897,8 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var sleepHeroState: String {
-        guard let latest = sleepHistory.latest, latest.confirmed else { return "Building" }
+        // canonical not-ready word (was "Building"), consistent with the other metric hero states
+        guard let latest = sleepHistory.latest, latest.confirmed else { return "Learning" }
         let performance = sleepHistory.sleepPerformancePercent(for: latest, baseNeedHours: sleepBaseNeedHours)
         return "\(performance)% of need"
     }
@@ -7036,21 +7125,18 @@ struct AtriaMetricDetailSheet: View {
             }
 
             if let summary {
-                AtriaDetailRangeRhythmCard(range: range,
-                                           points: points,
-                                           summary: summary,
-                                           comparison: comparison,
-                                           tint: tint)
+                // Detail redesign (2026-07-06): ONE canonical summary block.
+                // Previously this stacked AtriaDetailRangeRhythmCard +
+                // AtriaDetailPeriodSummaryStrip + AtriaDetailPeriodReportCard
+                // (+ an AtriaDetailComparisonCard), all restating the same
+                // latest/avg/change/prior numbers as separate boxed cards — the
+                // "box inside box" the user flagged. The summary strip already
+                // carries latest, the change-vs-prior pill, the range rail, and
+                // avg/range, so the other three are redundant. Their struct
+                // definitions are kept (uncalled scaffolding) so the static gate
+                // and any future reuse stay intact.
                 AtriaDetailPeriodSummaryStrip(summary: summary,
                                               tint: tint)
-                AtriaDetailPeriodReportCard(summary: summary,
-                                            comparison: comparison,
-                                            tint: tint)
-            }
-
-            if let comparison {
-                AtriaDetailComparisonCard(comparison: comparison,
-                                          tint: tint)
             }
 
             if points.count < 2 {
@@ -7277,6 +7363,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     let contributors: Contributors
     let chart: ChartContent
     let about: About
+    @State private var showDetails = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(heroValue: String,
@@ -7311,31 +7398,44 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     var body: some View {
-        // Progressive disclosure: first screen is the WHOOP-like simple view
-        // (value + graph). Scrolling/pulling the lower card up reveals the
-        // heavier contributor/context material, so metric taps no longer dump
-        // every stat at once.
+        // Real progressive disclosure: the first screen is the WHOOP-like simple
+        // view — value, graph, and the metric's own signature visual (hypnogram /
+        // strain gauge / contributor map). The generic contributor rows and the
+        // education copy are collapsed behind an explicit "Show details" tap, so a
+        // metric tap no longer dumps every stat in one long scroll.
         VStack(alignment: .leading, spacing: 16) {
             hero
             chart
+            betweenHeroAndContributors
             revealAffordance
-            detailPanel
+            if showDetails {
+                detailPanel
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .animation(.snappy(duration: 0.28), value: showDetails)
     }
 
     private var revealAffordance: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "chevron.up")
-                .font(.caption.weight(.black))
-            Text("Pull up for details")
-                .font(.caption.weight(.bold))
-            Spacer(minLength: 0)
+        Button {
+            showDetails.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.black))
+                    .rotationEffect(.degrees(showDetails ? 180 : 0))
+                Text(showDetails ? "Hide details" : "Show details")
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.primary.opacity(0.05), in: Capsule(style: .continuous))
+            .contentShape(Capsule())
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.primary.opacity(0.035), in: Capsule(style: .continuous))
-        .accessibilityHidden(true)
+        .buttonStyle(.plain)
+        .accessibilityLabel(showDetails ? "Hide details" : "Show details")
     }
 
     private var detailPanel: some View {
@@ -7349,7 +7449,6 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .foregroundStyle(tint)
             }
 
-            betweenHeroAndContributors
             contributors
             about
         }
@@ -9381,12 +9480,15 @@ struct AtriaOverviewMorningJournalHost: View {
             .sheet(item: $adjustmentNight) { adjustment in
                 AtriaManualSleepSheet(initialStart: adjustment.start,
                                       initialEnd: adjustment.end,
-                                      initialIsNap: adjustment.isNapEvidence) { start, end, isNap in
-                    _ = store.addManualSleep(start: start,
-                                             end: end,
-                                             isNap: isNap,
-                                             rest: store.baseline.restingInt ?? 60,
-                                             source: "morning_journal_adjust")
+                                      initialIsNap: adjustment.isNapEvidence,
+                                      preservesSensorStages: true) { start, end, isNap in
+                    _ = store.adjustSleepNight(originalStart: adjustment.start,
+                                               originalEnd: adjustment.end,
+                                               newStart: start,
+                                               newEnd: end,
+                                               isNap: isNap,
+                                               rest: store.baseline.restingInt ?? 60,
+                                               source: "morning_journal_adjust")
                     adjustmentNight = nil
                 }
             }
