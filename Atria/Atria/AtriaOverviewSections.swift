@@ -6293,20 +6293,26 @@ enum AtriaMetricDetailKind: String, Identifiable {
         }
     }
 
+    /// One identity hue per metric, drawn from the design palette and deepened
+    /// on light via the Metrics.electric* constants (see Metrics.swift). Fixes a
+    /// prior coherence bug where `.sleep` returned `.cyan` here — clashing with
+    /// sleep's purple ring/chips everywhere else — and where HRV+RHR and
+    /// respiration+skin-temp collapsed onto shared raw hues.
     var tint: Color {
         switch self {
         case .recovery: return Metrics.electricGreen
-        case .hrv, .restingHeartRate: return .pink
-        case .respiratoryRate: return .teal
-        case .sleep: return .cyan
+        case .hrv: return Metrics.electricHRV
+        case .restingHeartRate: return Metrics.electricRHR
+        case .respiratoryRate: return Metrics.electricRespiratory
+        case .sleep: return Metrics.electricSleep
         case .strain: return Metrics.electricStrain
-        case .stress: return .orange
+        case .stress: return Metrics.electricStress
         case .vo2max: return Metrics.electricGreen
         case .sleepPerformance, .sleepEfficiency: return Metrics.electricSleep
-        case .skinTemperature: return .teal
-        case .fitnessAge: return .purple
-        case .hrZones: return .orange
-        case .bloodOxygen: return .pink
+        case .skinTemperature: return Metrics.electricRespiratory
+        case .fitnessAge: return Metrics.electricSleep
+        case .hrZones: return Metrics.electricStrain
+        case .bloodOxygen: return Metrics.electricRHR
         }
     }
 }
@@ -6415,19 +6421,19 @@ struct AtriaMetricDetailSheet: View {
         case .hrv:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
                                       heroState: hrvBand == nil ? "Learning" : "Typical",
-                                      tint: .pink) {
+                                      tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
                                               name: "HRV",
                                               value: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
                                               comparison: hrvBand.map { "typical \(Int($0.lower.rounded()))-\(Int($0.upper.rounded())) ms" } ?? "typical range building",
                                               direction: 0)
-                ], tint: .pink)
+                ], tint: metric.tint)
             } chart: {
                 chartSlot {
                     metricChart(title: "HRV",
                                 unit: "ms",
-                                tint: .pink,
+                                tint: metric.tint,
                                 points: preparedHistory.hrv[range] ?? [],
                                 summary: preparedHistory.hrvSummary[range],
                                 comparison: preparedHistory.hrvComparison[range],
@@ -6440,19 +6446,19 @@ struct AtriaMetricDetailSheet: View {
         case .restingHeartRate:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
                                       heroState: restingBand == nil ? "Learning" : "Typical",
-                                      tint: .pink) {
+                                      tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
                                               name: "Resting HR",
                                               value: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
                                               comparison: restingBand.map { "typical \(Int($0.lower.rounded()))-\(Int($0.upper.rounded())) bpm" } ?? "typical range building",
                                               direction: 0)
-                ], tint: .pink)
+                ], tint: metric.tint)
             } chart: {
                 chartSlot {
                     metricChart(title: "Resting HR",
                                 unit: "bpm",
-                                tint: .pink,
+                                tint: metric.tint,
                                 points: preparedHistory.restingHeartRate[range] ?? [],
                                 summary: preparedHistory.restingHeartRateSummary[range],
                                 comparison: preparedHistory.restingHeartRateComparison[range],
@@ -6465,19 +6471,19 @@ struct AtriaMetricDetailSheet: View {
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
                                       heroState: respiratoryBand == nil ? "Learning" : "Typical",
-                                      tint: .teal) {
+                                      tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "lungs.fill",
                                               name: "Respiratory rate",
                                               value: latestMetricText(points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
                                               comparison: respiratoryBand.map { String(format: "typical %.1f-%.1f/min", $0.lower, $0.upper) } ?? "typical range building",
                                               direction: 0)
-                ], tint: .teal)
+                ], tint: metric.tint)
             } chart: {
                 chartSlot {
                     metricChart(title: "Respiratory rate",
                                 unit: "/min",
-                                tint: .teal,
+                                tint: metric.tint,
                                 points: preparedHistory.respiratoryRate[range] ?? [],
                                 summary: preparedHistory.respiratoryRateSummary[range],
                                 comparison: preparedHistory.respiratoryRateComparison[range],
