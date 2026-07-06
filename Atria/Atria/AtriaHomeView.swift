@@ -7394,7 +7394,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             return AtriaConnectionDiagnosis(title: "Strap battery too low",
                                             action: "Charge your strap to resume live heart rate.",
                                             systemImage: "battery.25percent",
-                                            tint: .yellow)
+                                            tint: Metrics.electricYellow)
         case .connected where needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
@@ -7414,7 +7414,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
                                             systemImage: "battery.25percent",
-                                            tint: .yellow)
+                                            tint: Metrics.electricYellow)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",
