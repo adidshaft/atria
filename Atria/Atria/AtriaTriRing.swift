@@ -327,7 +327,11 @@ struct AtriaTriRing: View, Equatable {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: metric.tint.opacity(0.45), radius: 3, x: 0, y: 0)
+                    // Soft depth cue, not a neon halo. The heavier glow made the
+                    // rings read as glowing tubes (esp. the dominant outer ring)
+                    // — "why does the ring look weird". Dialed down toward the
+                    // design's clean flat arcs while keeping a hint of lift.
+                    .shadow(color: metric.tint.opacity(0.22), radius: 2, x: 0, y: 0)
 
                 if (metric.fill ?? 0) > 1 {
                     Circle()
