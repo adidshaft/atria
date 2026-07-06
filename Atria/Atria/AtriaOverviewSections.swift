@@ -3583,7 +3583,8 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
     }
 }
 
-private struct AtriaWeeklyPlanCard: View, Equatable {
+// Internal (was private) so the Plan tab can reuse it — see AtriaPlanTab.
+struct AtriaWeeklyPlanCard: View, Equatable {
     let plan: WeeklyPlan
 
     var body: some View {

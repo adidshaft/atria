@@ -242,6 +242,7 @@ struct AtriaHomeView: View {
         case overview
         case vitals
         case journal
+        case plan
         case chat
         case collection
 
@@ -252,6 +253,7 @@ struct AtriaHomeView: View {
             case .overview: return "overview"
             case .vitals: return "vitals"
             case .journal: return "journal"
+            case .plan: return "plan"
             case .chat: return "chat"
             case .collection: return "strap"
             }
@@ -266,6 +268,7 @@ struct AtriaHomeView: View {
             case "overview", "today": return .overview
             case "vitals": return .vitals
             case "journal": return .journal
+            case "plan": return .plan
             case "chat": return .chat
             // Static handoff compatibility marker for the previous aliases:
             // case "data", "collection": return .collection
@@ -279,6 +282,7 @@ struct AtriaHomeView: View {
             case .overview: return "Overview"
             case .vitals: return "Vitals"
             case .journal: return "Journal"
+            case .plan: return "Plan"
             case .chat: return "Assistant"
             case .collection: return "Strap"
             }
@@ -289,6 +293,7 @@ struct AtriaHomeView: View {
             case .overview: return "house.fill"
             case .vitals: return "heart.text.square"
             case .journal: return "square.and.pencil"
+            case .plan: return "calendar"
             case .chat: return "bubble.left.and.bubble.right.fill"
             case .collection: return "applewatch.radiowaves.left.and.right"
             }
@@ -350,6 +355,7 @@ struct AtriaHomeView: View {
     @State private var showConnectionGuide = false
     @State private var showSettings = false
     @State private var showStrapScreen = false
+    @State private var showAssistant = false
     @State private var showShareSheet = false
     @State private var incomingFaceOff: AtriaFaceOffPayload?
     // Plain read, not @AppStorage: this key has dots, which is the exact
@@ -568,11 +574,11 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
 
-                tabNavigation(title: "Assistant", showsHero: false) {
-                    chatComingSoonContent
+                tabNavigation(title: "Plan", showsHero: false) {
+                    planContent
                 }
-                .tabItem { Label(HomeTab.chat.title, systemImage: HomeTab.chat.systemImage) }
-                .tag(HomeTab.chat)
+                .tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }
+                .tag(HomeTab.plan)
             }
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory && (selectedTab != .overview || liveWorkoutMinimized)) {
@@ -773,6 +779,29 @@ struct AtriaHomeView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") {
                             showStrapScreen = false
+                        }
+                    }
+                }
+            }
+        }
+        // Assistant moved out of the bottom bar (it's still "Coming Soon"); it
+        // now opens from a top-right icon, mirroring how Strap is presented.
+        .fullScreenCover(isPresented: $showAssistant) {
+            NavigationStack {
+                ScrollView {
+                    chatComingSoonContent
+                }
+                .scrollContentBackground(.hidden)
+                .background {
+                    AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                        .ignoresSafeArea()
+                }
+                .navigationTitle("Assistant")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            showAssistant = false
                         }
                     }
                 }
@@ -1154,7 +1183,9 @@ struct AtriaHomeView: View {
         case "journal":
             selectedTab = .journal
         case "chat":
-            selectedTab = .chat
+            showAssistant = true
+        case "plan":
+            selectedTab = .plan
         case "strap", "data", "collection", "history":
             showStrapScreen = true
             model.loadDeferredDiagnosticsIfNeeded(reason: "debug_ui_screen")
@@ -2068,6 +2099,9 @@ struct AtriaHomeView: View {
                            onShowStrap: {
                                showStrapScreen = true
                            },
+                           onShowAssistant: {
+                               showAssistant = true
+                           },
                            onTapStatusWhenNotConnected: {
                                ble.startScan(reason: "home_status_chip")
                            })
@@ -2567,6 +2601,10 @@ struct AtriaHomeView: View {
 
     private var journalContent: some View {
         AtriaJournalTab(store: store)
+    }
+
+    private var planContent: some View {
+        AtriaPlanTab(store: store)
     }
 
     private func makeFaceOffChallengeURL() -> URL? {
@@ -7113,6 +7151,7 @@ private struct AtriaHomeTopChrome: View {
     let onShowHelp: () -> Void
     let onShowSettings: () -> Void
     let onShowStrap: () -> Void
+    let onShowAssistant: () -> Void
     let onTapStatusWhenNotConnected: () -> Void
 
     var body: some View {
@@ -7129,6 +7168,13 @@ private struct AtriaHomeTopChrome: View {
             }
             .buttonStyle(AtriaHeaderActionButtonStyle())
             .accessibilityLabel("Strap")
+
+            // Assistant (Coming Soon) — relocated here from the bottom tab bar.
+            Button(action: onShowAssistant) {
+                AtriaToolbarIcon(symbol: "bubble.left.and.bubble.right.fill")
+            }
+            .buttonStyle(AtriaHeaderActionButtonStyle())
+            .accessibilityLabel("Assistant")
 
             Button(action: showHelp ? onShowHelp : onShowSettings) {
                 AtriaToolbarIcon(symbol: showHelp ? "questionmark.circle" : "gearshape")
