@@ -7346,19 +7346,45 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         .atriaInsetCard(tint: tint)
     }
 
+    /// Confidence-ladder hero (design-handoff detail template): the big number
+    /// is painted in the metric's identity hue and the state sits in a small
+    /// dot+capsule confidence pill — the SAME hue the ring and chips use, so
+    /// the whole sheet reads as one metric. HONESTY GUARD: when there's no
+    /// trusted value yet (empty / "—" placeholder, or a Learning state) the
+    /// number and pill fall back to neutral grey — a colored number never
+    /// implies a confidence the data hasn't earned.
+    private var heroIsUncertain: Bool {
+        let v = heroValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if v.isEmpty || v == "—" || v == "--" { return true }
+        return heroState.localizedCaseInsensitiveContains("learning")
+    }
+
+    private var heroTint: Color {
+        heroIsUncertain ? Color.secondary : tint
+    }
+
     private var hero: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(heroValue)
                 .font(.system(size: 56, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.56)
-                .foregroundStyle(.primary)
-            Text(heroState)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .foregroundStyle(heroTint)
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(heroTint)
+                    .frame(width: 6, height: 6)
+                Text(heroState)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(heroTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(heroTint.opacity(0.14), in: Capsule(style: .continuous))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
