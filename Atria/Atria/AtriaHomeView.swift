@@ -3322,45 +3322,31 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
         return min(max(value, 0), 1)
     }
 
+    // Was three button-looking tiles ("Review Window", "Strap <signal>", "Save
+    // After type") that weren't tappable — a false affordance that just narrated
+    // the flow the Confirm/Dismiss buttons already drive. Replaced with one clear
+    // non-button row that keeps the genuinely useful bit — the strap signal
+    // quality — and states the next action plainly.
     private var savedWorkoutDecisionStrip: some View {
-        HStack(spacing: 7) {
-            decisionStep(systemImage: "hand.tap.fill",
-                         title: "Review",
-                         value: "Window",
-                         tint: .orange)
-            decisionStep(systemImage: signalReviewIcon,
-                         title: "Strap",
-                         value: signalReviewTitle,
-                         tint: signalReviewTint)
-            decisionStep(systemImage: "arrow.triangle.2.circlepath",
-                         title: "Save",
-                         value: "After type",
-                         tint: .mint)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review path. Review the window, strap window \(signalReviewTitle), then save after confirming type.")
-    }
-
-    private func decisionStep(systemImage: String, title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Image(systemName: systemImage)
+        HStack(spacing: 8) {
+            Image(systemName: signalReviewIcon)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 22)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
+                .foregroundStyle(signalReviewTint)
+            Text("Strap signal: \(signalReviewTitle)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(signalReviewTint)
+            Spacer(minLength: 8)
+            Text("Confirm the type to save")
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .atriaInsetCard(tint: tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(signalReviewTint.opacity(0.10), in: Capsule(style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Strap signal \(signalReviewTitle). Confirm the activity type to save.")
     }
 
     // Uncalled in code but pinned by test_handoff_static_checks
