@@ -3301,14 +3301,21 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
             }
             .frame(height: 17)
 
-            HStack {
+            // Colour the labels to match the two bars above (orange = peak HR,
+            // cyan = average HR) so the bars are self-explanatory instead of two
+            // unlabelled lines.
+            HStack(spacing: 8) {
                 Label("Peak \(candidate.peakHR)", systemImage: "waveform.path.ecg")
-                Spacer(minLength: 8)
-                Text("Avg \(candidate.avgHR) · \(durationText)")
+                    .foregroundStyle(.orange)
+                Label("Avg \(candidate.avgHR)", systemImage: "smallcircle.filled.circle")
+                    .foregroundStyle(.cyan)
                     .monospacedDigit()
+                Spacer(minLength: 8)
+                Text(durationText)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
