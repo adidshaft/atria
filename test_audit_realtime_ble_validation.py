@@ -225,16 +225,11 @@ class AuditRealtimeBLEValidationTests(unittest.TestCase):
     def tearDown(self):
         self._state_pull_tmp.cleanup()
 
-    def test_documented_commands_match_audit_next_actions(self):
-        doc = " ".join(
-            Path("docs/15-codex-realtime-ble-validation.md")
-            .read_text(encoding="utf-8")
-            .replace("\\\n", " ")
-            .split()
-        )
-
+    def test_next_actions_use_public_safe_device_placeholders(self):
         for action in audit.NEXT_ACTIONS.values():
-            self.assertIn(action["command"], doc)
+            self.assertNotRegex(action["command"], r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}")
+            self.assertNotIn("known iPhone", action["command"])
+            self.assertIn("<physical-device-id>", action["command"])
 
     def test_incomplete_when_required_physical_evidence_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

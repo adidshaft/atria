@@ -245,7 +245,7 @@ private struct AtriaHeroStatusCardHost: View, Equatable {
                                     detail: "Strap battery is too low for live heart rate.",
                                     actionLabel: "Charge strap",
                                     systemImage: "battery.25percent",
-                                    tint: .yellow)
+                                    tint: Metrics.electricYellow)
                 .equatable()
                 .accessibilityLabel("Strap battery too low for live heart rate. Charge your strap to resume tracking.")
             } else if hasPulseSignal {

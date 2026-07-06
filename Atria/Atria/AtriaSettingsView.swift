@@ -192,6 +192,15 @@ struct AtriaSettingsView: View {
         }
         .onAppear { computeStorageFootprint() }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
+        // Keep the editable form in sync with the source of truth. Without this,
+        // `draft` was seeded once at init; if the stored profile changed after
+        // the sheet appeared (e.g. it finished loading, or a measured max-HR
+        // landed), the form kept showing the stale/default values — reading as
+        // "my details never saved". The guard avoids a redundant write-back loop
+        // (the user's own edits already made profile == draft).
+        .onChange(of: profile) { _, newValue in
+            if newValue != draft { draft = newValue }
+        }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: heartRateBroadcast) { _, value in onUpdateHeartRateBroadcast(value) }
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
@@ -570,12 +579,16 @@ struct AtriaSettingsView: View {
                 LabeledContent("Weight") {
                     Text(draft.weightKg > 0 ? "\(Int(draft.weightKg.rounded())) kg" : "Not set")
                         .monospacedDigit()
+                        .foregroundStyle(draft.weightKg > 0 ? .primary : .secondary)
                 }
             }
             Stepper(value: $draft.heightCm, in: 0...230, step: 1) {
                 LabeledContent("Height") {
-                    Text(draft.heightCm > 0 ? "\(Int(draft.heightCm.rounded())) cm" : "Optional")
+                    // "Not set" (matching Weight) rather than "Optional" — a value
+                    // slot reading "Optional" looked like a broken/placeholder state.
+                    Text(draft.heightCm > 0 ? "\(Int(draft.heightCm.rounded())) cm" : "Not set")
                         .monospacedDigit()
+                        .foregroundStyle(draft.heightCm > 0 ? .primary : .secondary)
                 }
             }
             if let restingBaseline {

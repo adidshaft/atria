@@ -180,6 +180,21 @@ enum Metrics {
     /// Electric sleep indigo — sleep owns purple so it stays distinct from strain.
     static let electricSleep = adaptive(dark: (0.51, 0.35, 1.0), light: (0.39, 0.25, 0.78))
 
+    // Secondary-vital identity hues. Each metric owns ONE hue (the "one hue per
+    // metric" rule) drawn from the design-handoff palette, and — like the bands
+    // above — is deepened on light so a tinted chip/number stays legible on
+    // white (raw SwiftUI `.pink`/`.teal`/`.orange` wash out there). Before this,
+    // HRV+RHR both rendered `.pink` and respiration+skin-temp both `.teal`, so
+    // distinct vitals were indistinguishable and low-contrast in light mode.
+    /// Resting-HR sky blue (#64D2FF on dark) — cool, distinct from HRV's rose.
+    static let electricRHR = adaptive(dark: (0.392, 0.824, 1.0), light: (0.0, 0.44, 0.68))
+    /// HRV rose/magenta — warm heart-derived hue, clearly apart from RHR blue.
+    static let electricHRV = adaptive(dark: (1.0, 0.36, 0.62), light: (0.80, 0.09, 0.40))
+    /// Respiration teal (#00C7BE on dark) — also carries skin temperature.
+    static let electricRespiratory = adaptive(dark: (0.0, 0.78, 0.745), light: (0.0, 0.49, 0.46))
+    /// Stress amber (#FF9F0A on dark), deepened to a readable amber on light.
+    static let electricStress = adaptive(dark: (1.0, 0.624, 0.039), light: (0.80, 0.42, 0.0))
+
     static func recoveryColor(_ pct: Int) -> Color {
         switch pct {
         case 67...: return electricGreen

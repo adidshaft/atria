@@ -802,7 +802,7 @@ struct AtriaTodayScreen: View {
         // before ever falling back to a bare percent as the primary number.
         let value = latestSleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
-            ?? "Building"
+            ?? "Learning"   // canonical not-ready word (was "Building"); consistent across tabs
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
                                   detail: sleepNeedDetailText(performance: performance),
@@ -861,7 +861,20 @@ struct AtriaTodayScreen: View {
         if let stored = newestStored?.recovery {
             return ("\(stored)%", todayHasReading ? "this morning" : "yesterday", stored)
         }
-        return ("Learning", "Recovery", nil)
+        // Time-to-detect (2026-07-05): recovery calibrates over ~4 nights. Instead
+        // of a bare "Learning", show how far into that window the user is (matches
+        // the overview surface's "Day X of 4"), so they know when a score arrives.
+        return ("Learning", "Day \(recoveryCalibratingDay) of 4", nil)
+    }
+
+    /// Which day of the ~4-night recovery calibration the user is on. Shared by the
+    /// ring center (`centerValue`) and the recovery legend chip (`displayRecovery`)
+    /// so the two never disagree — the center used to hardcode "Day 1" while the
+    /// legend showed the real day, which read as a bug on-device.
+    private var recoveryCalibratingDay: Int {
+        let samples = max(store.baseline.freshHRVSampleCount(),
+                          store.baseline.freshRestingSampleCount())
+        return min(max(samples + 1, 1), 4)
     }
 
     private var recoveryMetric: AtriaTriRingMetric {
@@ -953,7 +966,11 @@ struct AtriaTodayScreen: View {
             fill = nil
         }
         return AtriaTriRingMetric(title: "RHR",
-                                  value: current > 0 ? "\(current)" : displayHero.restingHeartRateText,
+                                  // Honest value: `current` is the 60 math-fallback (always > 0),
+                                  // so the old `current > 0 ? "\(current)"` always showed a
+                                  // fabricated 60. restingHeartRateText is "Learning" until there
+                                  // is a real reading, matching the RHR glance tile and Vitals row.
+                                  value: displayHero.restingHeartRateText,
                                   detail: legendDetail("bpm"),
                                   systemImage: "heart.fill",
                                   tint: .pink,
@@ -988,7 +1005,7 @@ struct AtriaTodayScreen: View {
     private var centerValue: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            return displayRecovery.percent != nil ? displayRecovery.value : "Day 1"
+            return displayRecovery.percent != nil ? displayRecovery.value : "Day \(recoveryCalibratingDay)"
         case .sleep:
             // Hours-first: never the bare "82%" this used to show -- the
             // percent moves to `centerState` as a small "82% of need"
@@ -1004,7 +1021,9 @@ struct AtriaTodayScreen: View {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
             if displayRecovery.detail == "yesterday" { return "yesterday" }
-            return displayRecovery.percent.map(recoveryState) ?? "Building"
+            // "Learning" (not "Building") to match the recovery legend chip's word
+            // for the same calibrating state.
+            return displayRecovery.percent.map(recoveryState) ?? "Learning"
         case .sleep:
             return sleepPerformancePercent.map { "\($0)% of need" } ?? sleepMetric.detail
         case .strain:
@@ -1060,7 +1079,7 @@ struct AtriaTodayScreen: View {
     }
 
     private var healthValue: String {
-        displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Building"
+        displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Learning"
     }
 
     private var strapValue: String {
@@ -1216,7 +1235,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.hrvValue,
-                                        detail: legendDetail(displayHero.hrvDetail),
+                                        detail: legendDetail(isPendingHeroValue(displayHero.hrvValue)
+                                                             ? baselineNightsProgress(store.baseline.freshHRVSampleCount())
+                                                             : displayHero.hrvDetail),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
@@ -1247,7 +1268,10 @@ struct AtriaTodayScreen: View {
         case .sleepPerformance:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: latestRollup?.sleepPerformance.map { "\($0)%" } ?? "Building",
+                                        // Same source the sleep ring uses (computed from the latest
+                                        // sleep, falling back to the rollup) so the tile and ring can't
+                                        // show two different sleep-performance percentages.
+                                        value: sleepPerformancePercent.map { "\($0)%" } ?? "Learning",
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
@@ -1256,6 +1280,10 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.restingHeartRateText,
+                                        // RHR is measured nightly and is shown from night 1, so unlike
+                                        // HRV it has no multi-night "calibrating" value state — its text
+                                        // is always numeric. Keep the plain unit; a nights-progress
+                                        // caption here would mislabel a ready reading as pending.
                                         detail: legendDetail("bpm"),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
@@ -1269,34 +1297,53 @@ struct AtriaTodayScreen: View {
                                         tint: .teal,
                                         layoutSize: layoutSize(for: metric))
         case .steps:
+            // Consistency + detection fix (2026-07-05): the Today deck hard-coded
+            // "Building" while the overview surface (AtriaOverviewReadinessSection)
+            // already shows the real strap-movement step estimate. Mirror it exactly:
+            // this strap has no validated pedometer, only an experimental IMU step
+            // count, so show it when present and say so honestly when it isn't.
+            let stepSensor = store.imuAuditSummary
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail(strapValue),
+                                        value: stepSensor.strapStepText,
+                                        detail: legendDetail(stepSensor.strapStepCount > 0 ? "Strap movement" : "Not available on this strap"),
                                         systemImage: metric.systemImage,
-                                        tint: liveStore.state.status == .connected ? .green : .secondary,
+                                        tint: stepSensor.strapStepCount > 0 ? .green : .secondary,
                                         layoutSize: layoutSize(for: metric))
         case .calories:
+            // Detection fix (2026-07-05): the card hard-coded "Building" and never
+            // showed a number, though the live active-calorie estimate is already
+            // computed and surfaced elsewhere (AtriaHomeView/live workout). Wire the
+            // real value; fall back to an honest "Profile needed" when the estimate
+            // can't be produced (missing athlete profile), never a fake placeholder.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail("Active"),
+                                        value: liveStore.state.liveActiveCaloriesText,
+                                        detail: legendDetail(liveStore.state.liveActiveCalories == nil ? "Needs profile" : "Estimate"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric))
         case .vo2max:
+            // Time-to-detect (2026-07-05): when the estimate isn't ready yet, show
+            // the summary's specific calibration progress ("12/14 RHR", "Need HRmax")
+            // instead of a generic "Estimate", so users see how far off a reading is.
+            let vo2 = profileMetricsStore.state.vo2MaxEstimate
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: profileMetricsStore.state.vo2MaxEstimate.valueText,
-                                        detail: legendDetail("Estimate"),
+                                        value: vo2.valueText,
+                                        detail: legendDetail(vo2.value == nil ? vo2.detail : "Estimate"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
         case .bioAge:
+            // Time-to-detect (2026-07-05): surface the calibration state
+            // ("Calibrating 28-day baseline") while the fitness-age baseline is still
+            // forming, rather than a generic "Estimate" that implies a ready value.
+            let bioAge = profileMetricsStore.state.biologicalAgeSummary
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: profileMetricsStore.state.biologicalAgeSummary.valueText,
-                                        detail: legendDetail("Estimate"),
+                                        value: bioAge.valueText,
+                                        detail: legendDetail(bioAge.isReady ? "Estimate" : bioAge.narrative),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
@@ -1313,10 +1360,16 @@ struct AtriaTodayScreen: View {
                                         tint: .secondary,
                                         layoutSize: layoutSize(for: metric))
         case .bodyTemp:
+            // Detection fix (2026-07-05): the card hard-coded "Building" while the
+            // real relative skin-temperature deviation is already computed and shown
+            // on the Vitals tab (AtriaHealthScreen). Surface the same value/detail so
+            // the primary deck stops hiding data the app already has. valueText is
+            // "--" until the sleep baseline matures, so this stays honest.
+            let skinTemp = store.imuAuditSummary.skinTemperatureDeviation
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "Building",
-                                        detail: legendDetail("Sleep"),
+                                        value: skinTemp.valueText,
+                                        detail: legendDetail(skinTemp.detailText),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric))
@@ -1340,7 +1393,11 @@ struct AtriaTodayScreen: View {
     }
 
     private func layoutSize(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem.LayoutSize {
-        AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
+        // Clamp non-chart metrics to compact regardless of any saved override (a
+        // single-value tile stretched full-width leaves the row half-empty). Mirrors
+        // the System-B glance clamp so both surfaces agree on which cards can be wide.
+        guard metric.canBeWideGlanceCard else { return .compact }
+        return AtriaTodayGlanceItem.LayoutSize(rawValue: layoutConfig.sizeOverrides[metric.rawValue] ?? "compact") ?? .compact
     }
 
     /// Measured-perf pass (2026-07-05): `store.confirmedWorkouts` is already
@@ -1451,6 +1508,21 @@ struct AtriaTodayScreen: View {
 
     private func legendDetail(_ detail: String) -> String {
         layoutConfig.legendStatStyle == .value ? "" : detail
+    }
+
+    /// Pending-value set matching the app-wide convention (see AtriaHomeView's
+    /// pending check): a metric that has no reading yet, so its tile can show
+    /// time-to-detect progress instead of the bare placeholder.
+    private func isPendingHeroValue(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed == "--" || trimmed == "\u{2014}"
+            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+    }
+
+    /// Honest "N of 14 nights" progress for the 14-night personal baselines
+    /// (HRV/RHR), so a pending tile says how far along detection is.
+    private func baselineNightsProgress(_ samples: Int) -> String {
+        "\(min(samples, PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
     }
 
     private func recoveryState(percent: Int) -> String {
@@ -1612,7 +1684,7 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
                                tint: pulse.heartRate > 0 ? .green : .secondary)
             AtriaTodayLivePill(title: "Zone",
-                               value: pulse.heartRateZone?.shortLabel ?? "Building",
+                               value: pulse.heartRateZone?.shortLabel ?? "Learning",
                                systemImage: "waveform.path.ecg",
                                tint: pulse.heartRateZone?.tint ?? .secondary)
             AtriaTodayLivePill(title: "Battery",
@@ -1674,7 +1746,7 @@ private struct AtriaTodayLivePill: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
         .padding(.horizontal, 10)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -1728,7 +1800,7 @@ private struct AtriaTodayPlanCard: View, Equatable {
         }
         .padding(12)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Today's Plan. \(title). \(detail). \(target).")
     }
@@ -1800,14 +1872,15 @@ private struct AtriaStrainTargetCard: View, Equatable {
             }
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Prominent full-width card: subtle Liquid Glass + the shared `tile` radius,
+        // matching the weekly-plan card so the big cards read as one intentional tier
+        // (dense glance tiles stay flat for scroll perf). Verified legible on-sim in
+        // light and dark before applying to the sibling prominent cards.
+        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
         .overlay {
-            // Same secondary-surface + tint-stroke chrome as the glance
-            // tiles and weekly-plan card it sits beside, instead of the
-            // flatter tertiary card the info rows use -- this is a live
-            // metric widget, not a passive row.
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            // Keep the per-metric tint stroke (its identity) on top of the glass --
+            // same tint-stroke chrome as the glance tiles it sits beside.
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
                 .stroke(tint.opacity(0.18), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -1850,10 +1923,12 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                 }
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Prominent full-width card: subtle Liquid Glass + the shared `tile`
+            // radius, matching the strain-target card so the big cards read as one
+            // intentional tier (dense glance tiles stay flat for scroll perf).
+            .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
                     .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
             }
         }
@@ -1967,10 +2042,13 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .leading)
         .padding(10)
+        // Consistency (2026-07-05): route the glance tile's corner radius through the
+        // shared chip token instead of a hardcoded 8, so the deck's dominant card
+        // shares one radius scale (chip < tile < card).
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(item.tint.opacity(0.18), lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
@@ -2005,9 +2083,9 @@ private struct AtriaTodayInfoRow: View, Equatable {
         .frame(minHeight: 46)
         .padding(.horizontal, 12)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(tint.opacity(0.16), lineWidth: 1)
         }
     }
@@ -2087,7 +2165,7 @@ private struct AtriaTodayHighlightsStrip: View, Equatable {
         }
         .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -2128,7 +2206,7 @@ private struct AtriaTodayActionRow: View, Equatable {
             .frame(maxWidth: .infinity, minHeight: compact ? 50 : 54, alignment: .leading)
             .padding(.horizontal, compact ? 10 : 12)
             .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
     }

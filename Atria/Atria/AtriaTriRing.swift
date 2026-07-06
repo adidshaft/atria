@@ -327,7 +327,11 @@ struct AtriaTriRing: View, Equatable {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: metric.tint.opacity(0.45), radius: 3, x: 0, y: 0)
+                    // Soft depth cue, not a neon halo. The heavier glow made the
+                    // rings read as glowing tubes (esp. the dominant outer ring)
+                    // — "why does the ring look weird". Dialed down toward the
+                    // design's clean flat arcs while keeping a hint of lift.
+                    .shadow(color: metric.tint.opacity(0.22), radius: 2, x: 0, y: 0)
 
                 if (metric.fill ?? 0) > 1 {
                     Circle()
@@ -415,7 +419,14 @@ struct AtriaTriRing: View, Equatable {
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 8)
-            .background(metric.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Identity-forward chip, unified with the glance tiles and trend
+            // summary pills (design-handoff "metric chip": hue wash + hue
+            // hairline). Radius snapped off the stray 8 to the `chip` token.
+            .background(metric.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
+                    .stroke(metric.tint.opacity(0.22), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(metric.title) \(metric.value), \(metric.detail)")

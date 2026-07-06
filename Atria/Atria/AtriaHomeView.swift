@@ -4336,7 +4336,7 @@ private struct AtriaWorkoutReviewFlow: View {
                 Label("Share workout", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .tint(.orange)
 
             if !selectedExercises.isEmpty {
@@ -4443,10 +4443,10 @@ private struct AtriaWorkoutReviewFlow: View {
                 if row.currentPRSet != nil {
                     Label("PR", systemImage: "trophy.fill")
                         .font(.caption2.weight(.black))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(Metrics.electricYellow)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.yellow.opacity(0.12), in: Capsule(style: .continuous))
+                        .background(Metrics.electricYellow.opacity(0.12), in: Capsule(style: .continuous))
                 }
             }
 
@@ -6265,6 +6265,20 @@ final class AtriaHomeModel {
         store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
     }
 
+    /// Honest resting-HR DISPLAY text (2026-07-05). `currentRestingHeartRate` falls
+    /// back to a hardcoded 60 when there is no baseline, no live BLE reading, and no
+    /// saved session — that 60 is fine as a math fallback but must NOT be shown as a
+    /// real "overnight low" to a no-data user (violates Atria's honesty rule). Return
+    /// "Learning" for that case so RHR reads like the other calibrating metrics.
+    private static func currentRestingHeartRateText(ble: AtriaBLEManager, store: SessionStore) -> String {
+        if store.baseline.restingInt == nil,
+           ble.restingHR == nil,
+           store.sessions.first?.restingStable == nil {
+            return "Learning"
+        }
+        return "\(currentRestingHeartRate(ble: ble, store: store))"
+    }
+
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived) -> CoreLiveState {
         let deviceName = ble.resolvedDeviceName
@@ -6381,6 +6395,9 @@ final class AtriaHomeModel {
                                          savedAggregate: SavedAggregate,
                                          deferredDetails: DeferredDetails?) -> HeroSnapshot {
         let rest = currentRestingHeartRate(ble: ble, store: store)
+        // Numeric `rest` (60 fallback) drives the math; `restText` is the honest
+        // DISPLAY ("Learning" when there is no real resting reading yet).
+        let restText = currentRestingHeartRateText(ble: ble, store: store)
         let fallbackHrv = fallbackHeroHRVState(ble: ble, store: store)
         let headline = deferredDetails?.headline ?? defaultHeroHeadline(status: ble.status)
         let nextAction = deferredDetails?.nextAction ?? defaultHeroNextAction(status: ble.status)
@@ -6391,7 +6408,8 @@ final class AtriaHomeModel {
                                                 fallbackHrv: fallbackHrv,
                                                 headline: headline,
                                                 nextAction: nextAction,
-                                                rest: rest)
+                                                rest: rest,
+                                                restText: restText)
         }
 
         let maxHR = store.profile.maxHR
@@ -6451,7 +6469,7 @@ final class AtriaHomeModel {
                             backupValue: deferredDetails?.backupValue ?? "Preparing",
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
                             restingHeartRate: rest,
-                            restingHeartRateText: "\(rest)",
+                            restingHeartRateText: restText,
                             strainNarrative: String(format: "TRIMP %.1f from saved %.1f + live %.1f", totalTRIMP, savedAggregate.savedTodayTRIMP, liveTRIMP),
                             loadRatioText: load.ratioText,
                             loadTargetText: load.targetBandText,
@@ -6682,7 +6700,8 @@ final class AtriaHomeModel {
                                                      fallbackHrv: FallbackHeroHRVState,
                                                      headline: String,
                                                      nextAction: String,
-                                                     rest: Int) -> HeroSnapshot {
+                                                     rest: Int,
+                                                     restText: String) -> HeroSnapshot {
         let guidance: Coach.Guidance
         switch live.status {
         case .scanning:
@@ -6748,7 +6767,7 @@ final class AtriaHomeModel {
                             backupValue: hasSavedBackup ? "Ready" : "Learning",
                             backupDetail: hasSavedBackup ? "saved on device" : "no backup yet",
                             restingHeartRate: rest,
-                            restingHeartRateText: "\(rest)",
+                            restingHeartRateText: restText,
                             strainNarrative: "Live strain resumes after the strap reconnects.",
                             loadRatioText: "Learning",
                             loadTargetText: "Learning",
@@ -7375,7 +7394,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             return AtriaConnectionDiagnosis(title: "Strap battery too low",
                                             action: "Charge your strap to resume live heart rate.",
                                             systemImage: "battery.25percent",
-                                            tint: .yellow)
+                                            tint: Metrics.electricYellow)
         case .connected where needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
@@ -7395,7 +7414,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
                                             systemImage: "battery.25percent",
-                                            tint: .yellow)
+                                            tint: Metrics.electricYellow)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",

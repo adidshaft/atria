@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-device_id=${ATRIA_DEVICE_ID:-3803F5B6-1666-56D3-A71A-62F131F6CE3B}
+device_id=${ATRIA_DEVICE_ID:-}
 bundle_id=${ATRIA_BUNDLE_ID:-com.adidshaft.atria}
 label="hist1-phone-away-gap"
 preflight_pull=0

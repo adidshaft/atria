@@ -819,7 +819,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.tint(tint).buttonStyle(.glassProminent)",
             "self.tint(tint).buttonStyle(.glass)",
             "struct AtriaGlassIconButtonStyle: ButtonStyle",
-            "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 38) -> some View",
+            # 2026-07-05: default raised 38 -> 44 for HIG tap-target compliance.
+            "func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View",
             "self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))",
         ]:
             assert_contains(self, text, needle)
@@ -1242,7 +1243,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "fileprivate var defaultGlanceGridSize: AtriaGlanceGridSize",
             # Only chart-style metrics may be wide; single-value tiles clamp to
             # compact so the glance stays a clean, uniform 2-up grid.
-            "fileprivate var canBeWideGlanceCard: Bool",
+            # 2026-07-05: relaxed fileprivate -> internal so the Today screen's size
+            # clamp and the Customize sheet's resize control share this one rule.
+            "var canBeWideGlanceCard: Bool",
             "case .sleepHistory, .load, .trend, .insights: return true",
             "static let sizeStorageKey = \"atria.overview.glanceSizeCSV\"",
             "static func sizeOverrides(from csv: String) -> [String: AtriaGlanceGridSize]",
@@ -1408,7 +1411,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "title: \"Training load readiness\"",
             "AtriaGlanceMetricCard(title: \"VO2max\"",
             "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
-            "detail: vo2MaxEstimate.value == nil ? \"Building\" : vo2MaxDetailText",
+            # 2026-07-06: not-ready word standardized "Building" -> "Learning".
+            "detail: vo2MaxEstimate.value == nil ? \"Learning\" : vo2MaxDetailText",
             "private var vo2MaxDetailText: String",
             "let confidence = vo2MaxEstimate.confidence.capitalized",
             "guard vo2MaxEstimate.trendText != \"Learning\" else { return confidence }",
@@ -1457,7 +1461,8 @@ class HandoffStaticChecks(unittest.TestCase):
             # longer read anywhere -- Data/backfill status now surfaces via
             # onOpenCollection instead of its own glance card. Not re-adding it.
             "AtriaGlanceMetricCard(title: \"Sleep eff\"",
-            "value: sleepHistory.latest?.sleepEfficiencyText ?? \"Building\"",
+            # 2026-07-06: not-ready word standardized "Building" -> "Learning".
+            "value: sleepHistory.latest?.sleepEfficiencyText ?? \"Learning\"",
             "Duration-based",
             "accessibilityDetail: sleepHistory.latest?.sleepEfficiency == nil",
             "Sleep efficiency is building from saved sleep duration",
@@ -4471,7 +4476,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "UIApplication.shared.supportsAlternateIcons",
             "UIApplication.shared.setAlternateIconName(icon.alternateName)",
             "private func applyAppIcon(_ icon: AtriaAlternateAppIcon)",
-            "ToolbarItem(placement: .bottomBar)",
+            # 2026-07-05: reorder Edit control moved from the bottom toolbar into the
+            # "Metric order" section header (co-located with the list) for
+            # discoverability; pin its header styling instead of the bottomBar item.
+            ".textCase(nil)",
             "EditButton()",
             "Text(\"Metric order\")",
             "ForEach(selectedMetrics)",
@@ -4482,7 +4490,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func moveSelectedMetrics(from source: IndexSet, to destination: Int)",
             "metrics.move(fromOffsets: source, toOffset: destination)",
             "draft.glanceMetrics = metrics",
-            "Text(\"Use Edit to drag selected Today cards into the order you want.\")",
+            "Text(\"Tap Edit, then drag by the handle to reorder your Today cards.\")",
         ]:
             assert_contains(self, customize, needle)
 
