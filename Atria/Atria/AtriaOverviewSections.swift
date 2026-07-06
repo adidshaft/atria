@@ -4385,7 +4385,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)
         .padding(12)
-        .atriaInsetCard(tint: tint)
+        .atriaInsetCard(tint: tint, hueTinted: true)
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
@@ -4438,7 +4438,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: Self.compactRowHeight, maxHeight: Self.compactRowHeight, alignment: .center)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .atriaInsetCard(tint: tint)
+        .atriaInsetCard(tint: tint, hueTinted: true)
         .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 

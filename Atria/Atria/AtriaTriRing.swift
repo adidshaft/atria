@@ -415,7 +415,14 @@ struct AtriaTriRing: View, Equatable {
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 8)
-            .background(metric.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Identity-forward chip, unified with the glance tiles and trend
+            // summary pills (design-handoff "metric chip": hue wash + hue
+            // hairline). Radius snapped off the stray 8 to the `chip` token.
+            .background(metric.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
+                    .stroke(metric.tint.opacity(0.22), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(metric.title) \(metric.value), \(metric.detail)")

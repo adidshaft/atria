@@ -162,6 +162,13 @@ private struct AtriaRaisedCardBackground: View {
 private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
+    /// Opt-in identity-forward chip surface. When true, the card carries a
+    /// visible wash + border in its metric hue (design-handoff "metric chip"
+    /// look — one identity hue per metric, on the surface itself, not just the
+    /// icon). Off by default so the ~100 existing neutral inset cards keep the
+    /// deliberately-subtle gray surface. Kept restrained (well under the
+    /// handoff's 0.12/0.25) to honor Atria's "Liquid Glass stays quiet" rule.
+    var hueTinted: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -171,7 +178,7 @@ private struct AtriaInsetCardBackground: View {
             .overlay(tintWash)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09), lineWidth: 1)
+                    .stroke(strokeColor, lineWidth: 1)
             )
     }
 
@@ -179,9 +186,27 @@ private struct AtriaInsetCardBackground: View {
         AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark)
     }
 
+    private var strokeColor: Color {
+        if hueTinted {
+            // Identity-hue hairline, matching the handoff's tinted-border chips.
+            return colorScheme == .dark ? tint.opacity(0.22) : tint.opacity(0.28)
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
+    }
+
     @ViewBuilder
     private var tintWash: some View {
-        if colorScheme == .dark {
+        if hueTinted {
+            // A gentle top-lit hue wash so the chip reads as its metric's color
+            // at a glance, without the flat saturated block the raw handoff uses.
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(colors: [
+                        tint.opacity(colorScheme == .dark ? 0.14 : 0.10),
+                        tint.opacity(colorScheme == .dark ? 0.05 : 0.03)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+        } else if colorScheme == .dark {
             // ~3% tint is invisible on the dark UI; skip the extra rounded-rect
             // layer so scrolling cards have less overdraw.
             EmptyView()
@@ -288,10 +313,16 @@ extension View {
             .background(AtriaIconChromeBackground())
     }
 
-    func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset, tint: Color) -> some View {
+    /// `hueTinted` opts a card into the identity-forward "metric chip" surface
+    /// (visible hue wash + hue hairline border, from the design handoff). Leave
+    /// it false — the default — for every neutral inset card; turn it on only
+    /// for small single-metric tiles whose whole job is to signal one hue.
+    func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset,
+                        tint: Color,
+                        hueTinted: Bool = false) -> some View {
         self
             .background {
-                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint)
+                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint, hueTinted: hueTinted)
             }
     }
 
