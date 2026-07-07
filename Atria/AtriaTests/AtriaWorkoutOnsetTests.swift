@@ -55,4 +55,36 @@ final class AtriaWorkoutOnsetTests: XCTestCase {
         s += samples([(600, 100)], start: start.addingTimeInterval(605))
         XCTAssertNil(AtriaWorkoutOnset.firstSustainedElevatedOnset(samples: s, rest: 66, maxHR: 190))
     }
+
+    // windowStats: the trimmed-window HR stats must reflect ONLY the given
+    // (trimmed) samples — the honesty bug the self-review caught was avg being
+    // computed over the untrimmed window.
+    func testWindowStatsAveragesOnlyTheGivenSamples() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let s = samples([(39 * 60, 150)], start: start) // 39 min of real effort at 150
+        let stats = AtriaWorkoutOnset.windowStats(samples: s, windowSeconds: 39 * 60)
+        XCTAssertNotNil(stats)
+        XCTAssertEqual(stats!.avgHR, 150)
+        XCTAssertEqual(stats!.peakHR, 150)
+        XCTAssertEqual(stats!.streamCoveragePercent, 100)
+    }
+
+    func testWindowStatsCoverageExcludesGaps() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var s = samples([(75, 140)], start: start)
+        s += samples([(75, 140)], start: start.addingTimeInterval(225)) // 150s gap in a 300s window
+        let stats = AtriaWorkoutOnset.windowStats(samples: s, windowSeconds: 300)
+        XCTAssertNotNil(stats)
+        XCTAssertLessThan(stats!.streamCoveragePercent, 60)
+        XCTAssertGreaterThan(stats!.streamCoveragePercent, 40)
+    }
+
+    func testWindowStatsPercentiles() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let s: [(t: Date, bpm: Int)] = (0..<100).map { (start.addingTimeInterval(TimeInterval($0)), 100 + $0) }
+        let stats = AtriaWorkoutOnset.windowStats(samples: s, windowSeconds: 100)
+        XCTAssertNotNil(stats)
+        XCTAssertEqual(stats!.peakHR, 199)
+        XCTAssertGreaterThanOrEqual(stats!.p95HR, 190)
+    }
 }
