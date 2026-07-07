@@ -454,8 +454,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "summaryRangeRail",
             "summaryMiniStat(label: \"Avg\", value: summary.averageText)",
             "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
-            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand))",
-            "private func chartDomain(points: [AtriaDetailChartPoint], baselineBand: AtriaDetailBaselineBand?) -> ClosedRange<Double>",
+            # 2026-07-07: domain also covers the dashed prior-average rule
+            # added by the design-handoff chart-language pass.
+            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))",
+            # 2026-07-07: signature gained the optional comparison param (same
+            # chart-language pass as the .chartYScale pin above).
+            "private func chartDomain(points: [AtriaDetailChartPoint],",
             "return AtriaTrendChartScale.domain(values: values)",
         ]:
             assert_contains(self, overview, needle)
