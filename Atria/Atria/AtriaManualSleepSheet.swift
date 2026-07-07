@@ -127,7 +127,6 @@ struct AtriaManualSleepSheet: View {
                     timeCard
                     durationCard
                     stageEvidenceCard
-                    footnoteCard
                 }
                 .padding(20)
             }
@@ -339,20 +338,20 @@ struct AtriaManualSleepSheet: View {
             .accessibilityLabel(preservesSensorStages
                                 ? "Sleep stages are re-derived from sensor data for the chosen window."
                                 : "No manual stage estimate. Sleep stages stay blank until sensor-derived stage evidence exists.")
+
+            stageFooterNote
         }
         .manualSleepCard(tint: .purple)
     }
 
-    private var footnoteCard: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(.secondary)
-            Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Manual entries improve duration, nap, and sleep-history continuity; sleep stages require sensor evidence.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .manualSleepCard(tint: .secondary)
+    // Folded into stageEvidenceCard 2026-07-07 (UX audit): this card
+    // repeated the Stages card's sensor-evidence message; the one unique
+    // clause (saved locally) now rides as the Stages card's footer line.
+    private var stageFooterNote: some View {
+        Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Manual entries improve duration, nap, and sleep-history continuity; sleep stages require sensor evidence.")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func applyInferredTypeIfNeeded() {
