@@ -95,7 +95,9 @@ struct AtriaTodayScreen: View {
             }
 
             if layoutConfig.showHighlights && !highlights.isEmpty {
-                AtriaTodayHighlightsStrip(highlights: highlights)
+                AtriaTodayHighlightsStrip(highlights: highlights) { metric in
+                    metricDetail = metric
+                }
             }
 
             if layoutConfig.showPlan {
@@ -2216,46 +2218,72 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
 }
 
 private struct AtriaTodayHighlightsStrip: View, Equatable {
+    static func == (lhs: AtriaTodayHighlightsStrip, rhs: AtriaTodayHighlightsStrip) -> Bool {
+        lhs.highlights == rhs.highlights
+    }
+
     let highlights: [AtriaHighlight]
+    let onOpen: (AtriaMetricDetailKind) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
             ForEach(highlights) { highlight in
-                HStack(spacing: 10) {
-                    Image(systemName: highlight.systemImage)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(highlight.tint)
-                        .frame(width: 24, height: 24)
-
-                    Text(highlight.valuePhrase)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(highlight.tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .layoutPriority(1)
-
-                    Text(highlight.sentence)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .layoutPriority(2)
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                // Rows with a metric route are real buttons; unrouted rows
+                // stay plain and chevron-free (no fake affordances -- route
+                // audit rule, 2026-07-07 design handoff).
+                if let metric = highlight.metric {
+                    Button {
+                        onOpen(metric)
+                    } label: {
+                        highlightRow(highlight, showsChevron: true)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
+                    .accessibilityHint("Opens the \(metric.title) detail.")
+                } else {
+                    highlightRow(highlight, showsChevron: false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
                 }
-                .frame(minHeight: 44)
-                .padding(.horizontal, 12)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
             }
         }
         .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+    }
+
+    private func highlightRow(_ highlight: AtriaHighlight, showsChevron: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: highlight.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(highlight.tint)
+                .frame(width: 24, height: 24)
+
+            Text(highlight.valuePhrase)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(highlight.tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .layoutPriority(1)
+
+            Text(highlight.sentence)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .layoutPriority(2)
+
+            Spacer(minLength: 8)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
     }
 }
 
