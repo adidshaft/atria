@@ -262,7 +262,10 @@ enum WidgetSnapshotPublisher {
     /// Falls back to a full recompute when the sample prefix, rest, or max HR no
     /// longer match the cached state (e.g. after a live-session rollover clears
     /// `ble.session`, or the resting/max baseline changed).
-    private static func incrementalLiveTRIMP(samples: [HRSample], rest: Int, max: Int) -> Double {
+    // Internal (was private) so LocalNotificationScheduler reuses this same
+    // incremental accumulator instead of re-integrating the whole live session
+    // (2026-07-08 perf audit). Both are @MainActor, so the cache stays race-free.
+    static func incrementalLiveTRIMP(samples: [HRSample], rest: Int, max: Int) -> Double {
         guard max > rest, samples.count > 1 else {
             liveTRIMPSampleCount = samples.count
             liveTRIMPLastTimestamp = samples.last?.t
