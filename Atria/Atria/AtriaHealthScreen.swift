@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct AtriaHealthScreen: View {
     #if DEBUG
@@ -310,6 +311,7 @@ struct AtriaHealthScreen: View {
                                      tint: stressTint,
                                      hint: stressHint,
                                      onTap: { educationTopic = .stress })
+                stressHistoryStrip
             }
             .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
 
@@ -560,6 +562,54 @@ struct AtriaHealthScreen: View {
 
     private var stressDetail: String {
         stressMonitorStore.state.detail.isEmpty ? stressMonitorStore.state.label : stressMonitorStore.state.detail
+    }
+
+    /// Session stress timeline (WHOOP-research follow-up 2026-07-07): the
+    /// scored readings since the app has been reading, as an area strip with
+    /// the Medium/High thresholds marked. In-memory history — stretches with
+    /// no reading are real gaps, and under 10 minutes of data shows nothing.
+    @ViewBuilder
+    private var stressHistoryStrip: some View {
+        let history = stressMonitorStore.history
+        if let first = history.first, let last = history.last,
+           last.t.timeIntervalSince(first.t) >= 10 * 60 {
+            VStack(alignment: .leading, spacing: 6) {
+                Chart(history) { point in
+                    AreaMark(x: .value("Time", point.t),
+                             y: .value("Stress", point.activation * 3))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(point.level.tint.opacity(0.25))
+                    LineMark(x: .value("Time", point.t),
+                             y: .value("Stress", point.activation * 3))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(.orange.gradient)
+                    RuleMark(y: .value("Medium", 1))
+                        .foregroundStyle(.secondary.opacity(0.25))
+                        .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    RuleMark(y: .value("High", 2))
+                        .foregroundStyle(.secondary.opacity(0.25))
+                        .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                }
+                .chartYScale(domain: 0...3)
+                .chartYAxis(.hidden)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                        AxisValueLabel(format: .dateTime.hour().minute())
+                    }
+                }
+                .frame(height: 56)
+                .clipped()
+                Text("Stress while Atria has been reading today \u{00b7} dashes mark Medium and High")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Stress history for this session, \(history.count) readings.")
+        }
     }
 
     private var stressTint: Color {
