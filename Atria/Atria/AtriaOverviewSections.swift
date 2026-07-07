@@ -6364,7 +6364,11 @@ private struct AtriaSleepPlanStrip: View, Equatable {
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @State private var alarmStatusText: String?
+    /// Efficiencies of the user's real confirmed nights, for the planner's
+    /// time-in-bed assumption. Passed in so this card stays store-free.
+    var nightEfficiencies: [Double] = []
 
     static func == (lhs: AtriaSleepPlanStrip, rhs: AtriaSleepPlanStrip) -> Bool {
         lhs.statusText == rhs.statusText
@@ -6899,7 +6903,8 @@ struct AtriaMetricDetailSheet: View {
                                             neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                     baseNeedHours: sleepBaseNeedHours,
                                                                                     yesterdayStrain: yesterdayStrainForLatestNight),
-                                            consistencyPercent: sleepHistory.sleepConsistencyPercent)
+                                            consistencyPercent: sleepHistory.sleepConsistencyPercent,
+                                            nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
                     sleepDebtTrendCard
                 }
@@ -8073,6 +8078,13 @@ struct AtriaMetricDetailSheet: View {
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricGreen)
         }
+    }
+
+    /// Shaped outside the render block per the perf rule (no compactMap in
+    /// view-builder bodies): real confirmed nights' efficiencies for the
+    /// sleep planner's time-in-bed assumption.
+    private var confirmedNightEfficiencies: [Double] {
+        sleepHistory.nights.filter(\.confirmed).compactMap(\.sleepEfficiency)
     }
 
     /// Overlay candidates for "Edit this chart": the two sibling metrics the
@@ -10185,7 +10197,11 @@ private struct AtriaSleepHypnogramCard: View {
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @State private var alarmStatusText: String?
+    /// Efficiencies of the user's real confirmed nights, for the planner's
+    /// time-in-bed assumption. Passed in so this card stays store-free.
+    var nightEfficiencies: [Double] = []
 
     private var wakeAlarmPlan: AtriaWakeAlarmPlan {
         AtriaWakeAlarmPlan(mode: AtriaWakeAlarmPlan.Mode(rawValue: wakeAlarmMode) ?? .smartWindow,
@@ -10234,6 +10250,8 @@ private struct AtriaSleepHypnogramCard: View {
 
             wakeAlarmCard
 
+            sleepPlannerCard
+
             if let consistencyPercent {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: Double(consistencyPercent), total: 100)
@@ -10246,6 +10264,49 @@ private struct AtriaSleepHypnogramCard: View {
         }
         .padding(14)
         .atriaInsetCard(tint: .cyan)
+    }
+
+    /// Sleep Planner (2026-07-07, WHOOP-research adaptation): pick a goal,
+    /// get an in-bed-by time worked back from the wake alarm using tonight's
+    /// need and the user's own typical efficiency.
+    private var sleepPlannerCard: some View {
+        let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
+        let plan = AtriaSleepPlanner.plan(needHours: neededHours,
+                                          goal: goal,
+                                          wakeByMinutes: wakeByMinutes,
+                                          nightEfficiencies: nightEfficiencies)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "bed.double.circle.fill")
+                    .foregroundStyle(Metrics.electricSleep)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Tonight's plan")
+                        .font(.caption.weight(.bold))
+                    Text("In bed by \(plan.inBedByText) \u{00b7} \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) asleep")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Picker("Sleep goal", selection: Binding(
+                get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
+                set: { plannerGoalRaw = $0.rawValue })) {
+                ForEach(AtriaSleepPlannerGoal.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text("\(goal.detail) tonight, assuming your \(plan.efficiencyIsDefault ? "typical-population" : "own typical") efficiency (\(Int((plan.assumedEfficiency * 100).rounded()))%)\(plan.efficiencyIsDefault ? " \u{2014} learning yours" : ""). Anchored to your wake-by time above.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Tonight's plan. \(goal.title): in bed by \(plan.inBedByText) for \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) of sleep.")
     }
 
     private var wakeAlarmCard: some View {
