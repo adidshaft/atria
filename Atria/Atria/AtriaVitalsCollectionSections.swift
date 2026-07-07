@@ -2988,7 +2988,9 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             }
         }
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+            // Trailing axis: the leading bpm gutter (~28pt) was the largest
+            // single left inset on the Vitals tab (space audit 2026-07-07).
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
                 AxisGridLine()
                 AxisTick()
                 AxisValueLabel {
