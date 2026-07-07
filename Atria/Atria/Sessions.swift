@@ -4046,6 +4046,22 @@ final class SessionStore: ObservableObject {
         .sorted { $0.day > $1.day }
     }
 
+    /// Per-DAY strain values (day-summed TRIMP → score), NOT per-session
+    /// scores. score() saturates, so averaging per-session scores under-reports
+    /// a day's strain ~2x versus the day-summed strain every other surface
+    /// shows — trend charts must use this (2026-07-08 calc-consistency audit).
+    nonisolated static func perDayStrains(_ sessions: [SavedSession],
+                                          rest: Int,
+                                          maxHR: Int,
+                                          calendar: Calendar = .current) -> [Double] {
+        var trimpByDay: [Date: Double] = [:]
+        for session in sessions {
+            let day = calendar.startOfDay(for: session.start)
+            trimpByDay[day, default: 0] += session.trimp(rest: rest, max: maxHR)
+        }
+        return trimpByDay.values.map { Metrics.strain(fromTRIMP: $0) }
+    }
+
     private nonisolated static func makeHistoryTrendSummaries(sessions: [SavedSession],
                                                               rollups: [DailyRollup],
                                                               baseline: PersonalBaseline,
@@ -4064,7 +4080,7 @@ final class SessionStore: ObservableObject {
                 let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
                 return evidence.accepted ? evidence.value : nil
             }
-            let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+            let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap {
                 $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
@@ -11610,7 +11626,7 @@ final class SessionStore: ObservableObject {
                 let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
                 return evidence.accepted ? evidence.value : nil
             }
-            let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+            let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap {
                 $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
@@ -11752,7 +11768,7 @@ final class SessionStore: ObservableObject {
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
             return evidence.accepted ? evidence.value : nil
         }
-        let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+        let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
         let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
         let respiratoryRates = recent.compactMap {
             $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
