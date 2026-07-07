@@ -4934,13 +4934,14 @@ final class SessionStore: ObservableObject {
             return cachedHomeSavedAggregate
         }
 
-        var savedTodayTRIMP = 0.0
-        var hasSavedToday = false
-        for session in sessions {
-            guard calendar.isDateInToday(session.start) else { break }
-            hasSavedToday = true
-            savedTodayTRIMP += session.trimp(rest: rest, max: maxHR)
-        }
+        // Deduped, today-filtered (2026-07-08 consistency audit): the hero
+        // ring's day strain must sum the SAME session set as the widget's
+        // todayTRIMP — canonicalSessions() (deduped), not the raw `sessions`
+        // array with a break, which double-counted BLE-reconnect fragments and
+        // assumed the today rows were strictly sorted contiguously at the front.
+        let todaySessions = canonicalSessions().filter { calendar.isDateInToday($0.start) }
+        let savedTodayTRIMP = todaySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
+        let hasSavedToday = !todaySessions.isEmpty
 
         let aggregate = HomeSavedAggregate(rest: rest,
                                            maxHR: maxHR,
