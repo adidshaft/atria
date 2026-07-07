@@ -4478,8 +4478,12 @@ final class SessionStore: ObservableObject {
         }
         let daySessionsExist = !wearSessionsToday.isEmpty
         let wearRestingHR = wearSessionsToday.map(\.restingStable).filter { $0 > 0 }.min()
+        // Same rest anchor as the primary rollup strain (2026-07-08 audit #14:
+        // baseline.restingInt ?? 60), so today's strain is identical whether it
+        // comes from computedToday or this wear fallback. Previously this branch
+        // added `?? wearRestingHR`, diverging when no baseline exists yet.
         let wearStrainTRIMP = wearSessionsToday.reduce(0.0) {
-            $0 + $1.trimp(rest: baseline.restingInt ?? wearRestingHR ?? 60, max: maxHR)
+            $0 + $1.trimp(rest: baseline.restingInt ?? 60, max: maxHR)
         }
         let wearStrain = wearStrainTRIMP > 0 ? Metrics.strain(fromTRIMP: wearStrainTRIMP) : nil
 
