@@ -2086,6 +2086,26 @@ struct AtriaHomeView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
+                .background {
+                    // Occluding scrim (2026-07-08, device-reported): the chrome
+                    // band is transparent between the status chip and the icon
+                    // buttons, so scrolled content bled through behind them
+                    // ("This week", glance rows showing through the pill). A
+                    // thin top-anchored fade — NOT a second full AtriaBackdropLayer
+                    // (overdraw trap) — occludes content under the band and
+                    // dissolves it into the page at the lower edge.
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color(.systemBackground), location: 0.0),
+                            .init(color: Color(.systemBackground), location: 0.62),
+                            .init(color: Color(.systemBackground).opacity(0), location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
