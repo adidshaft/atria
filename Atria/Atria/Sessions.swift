@@ -3980,7 +3980,14 @@ final class SessionStore: ObservableObject {
             let dayDetections = detectionsByDay[day] ?? []
             let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
             let aggregateSleep = aggregateSleeps[day]
-            let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
+            // Sleep-ready aligned with the app's own auto-confirm gate
+            // (2026-07-08, device-reported "Sleep --" after 3 nights): the old
+            // flag required motionEvidenceValidated, structurally impossible on
+            // an accelerometer-less chest strap, so overnight sleep this app
+            // already confirms from HR alone was dropped from the readiness
+            // counter. isStrongAutoConfirmableSleepCandidate keeps the motion
+            // path preferred and still fails naps/marginal nights closed.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
             let singleSessionSleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
             let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\.start).min()
             let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\.end).max()
@@ -10637,7 +10644,14 @@ final class SessionStore: ObservableObject {
             let restCandidates = detections.filter { $0.kind == .restCandidate }.count
             let singleSessionSleepCandidates = detections.filter { $0.kind == .sleepCandidate }.count
             let aggregateSleep = aggregateSleeps[day]
-            let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
+            // Sleep-ready aligned with the app's own auto-confirm gate
+            // (2026-07-08, device-reported "Sleep --" after 3 nights): the old
+            // flag required motionEvidenceValidated, structurally impossible on
+            // an accelerometer-less chest strap, so overnight sleep this app
+            // already confirms from HR alone was dropped from the readiness
+            // counter. isStrongAutoConfirmableSleepCandidate keeps the motion
+            // path preferred and still fails naps/marginal nights closed.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
             let singleSessionSleepDuration = detections
                 .filter { $0.kind == .sleepCandidate }
