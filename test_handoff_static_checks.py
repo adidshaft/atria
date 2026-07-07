@@ -8092,7 +8092,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "sleepDurationHours: latestSleep?.durationHours")
         assert_contains(self, notifications, "sleepEfficiency: latestSleep?.sleepEfficiency")
         assert_contains(self, notifications, "sleepDurationHours: latestSleep?.durationHours")
-        assert_contains(self, sessions, "private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double?")
+        # 2026-07-08: de-privatized so the unknown-span honesty rule is testable.
+        assert_contains(self, sessions, "nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double?")
         assert_contains(self, sessions, "sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,")
         assert_contains(self, sessions, "sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 }")
 

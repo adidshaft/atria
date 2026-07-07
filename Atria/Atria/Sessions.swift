@@ -4216,10 +4216,14 @@ final class SessionStore: ObservableObject {
         return (mean, sqrt(variance), values.count)
     }
 
-    private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
-        guard let duration, duration > 0 else { return nil }
-        let denominator = max(span ?? duration, duration)
-        guard denominator > 0 else { return nil }
+    // Internal (was private) so the honesty rule below is unit-testable.
+    nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
+        // Honesty (2026-07-08 audit): when the in-bed span is unknown we do NOT
+        // know efficiency — return nil so recovery skips the sleep signal,
+        // instead of `max(span ?? duration, duration)` which made an unknown
+        // span read as a fabricated 100% and inflated the recovery score.
+        guard let duration, duration > 0, let span, span > 0 else { return nil }
+        let denominator = max(span, duration)
         return min(max(duration / denominator, 0), 1)
     }
 
