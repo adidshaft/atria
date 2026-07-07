@@ -2363,6 +2363,11 @@ struct AtriaHomeView: View {
                 AtriaWorkoutReviewHoldBanner(state: holdState)
             }
 
+            // Morning sleep decision surfaces (detected-sleep review card +
+            // auto-logged banner) lead the Today scroll so the first screen
+            // behaves like a decision point (2026-07-07, design handoff).
+            AtriaTodaySleepReviewSection(store: store)
+
             AtriaTodayScreen(statusStore: model.statusStore,
                              liveStore: model.coreLiveStore,
                              pulseStore: model.heroPulseStore,

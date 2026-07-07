@@ -397,7 +397,9 @@ class HandoffStaticChecks(unittest.TestCase):
             'Label("Dismiss", systemImage: "xmark.circle")',
             '.accessibilityHint("Change the time window or save this as sleep or nap.")',
             '.accessibilityHint("Dismisses this review without saving it.")',
-            'private var title: String { isNap ? "Review your nap" : "Review last night" }',
+            # 2026-07-07: review-card title migrated to the design handoff's
+            # detection-provenance copy ("Sleep detected" / "Nap detected").
+            'private var title: String { isNap ? "Nap detected" : "Sleep detected" }',
             "Circle()",
             "sleepReviewActionButtons",
             "private var sleepReviewActionButtons: some View",

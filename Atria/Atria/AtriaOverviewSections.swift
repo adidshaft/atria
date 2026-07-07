@@ -876,7 +876,9 @@ private struct AtriaSleepReviewCard: View {
     let onDismiss: () -> Void
 
     private var isNap: Bool { night.isNapEvidence }
-    private var title: String { isNap ? "Review your nap" : "Review last night" }
+    // 2026-07-07 design handoff: title leads with detection provenance
+    // ("Sleep detected") instead of the older imperative copy.
+    private var title: String { isNap ? "Nap detected" : "Sleep detected" }
 
     private var rangeText: String {
         if let start = night.start, let end = night.end {
@@ -965,7 +967,7 @@ private struct AtriaSleepReviewCard: View {
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
-            .atriaCardAction(tint: .cyan)
+            .atriaCardAction(tint: Metrics.electricSleep)
             .accessibilityHint("Saves this detected \(isNap ? "nap" : "sleep") to your local history.")
 
             Button(action: onAdjust) {
@@ -973,7 +975,7 @@ private struct AtriaSleepReviewCard: View {
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
-            .atriaCardAction(prominent: false, tint: .cyan)
+            .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
             .accessibilityHint("Change the time window or save this as sleep or nap.")
 
             Button(action: onDismiss) {
@@ -991,27 +993,27 @@ private struct AtriaSleepReviewCard: View {
             nightArcNode(title: "Start",
                          value: startText,
                          systemImage: isNap ? "moon.zzz.fill" : "bed.double.fill",
-                         tint: isNap ? .indigo : .cyan,
+                         tint: isNap ? .indigo : Metrics.electricSleep,
                          active: night.start != nil)
             nightArcConnector(active: night.start != nil && night.end != nil)
             nightArcNode(title: "Window",
                          value: night.durationText,
                          systemImage: "clock.fill",
-                         tint: isNap ? .indigo : .cyan,
+                         tint: isNap ? .indigo : Metrics.electricSleep,
                          active: true)
             nightArcConnector(active: true)
             nightArcNode(title: "Wake",
                          value: endText,
                          systemImage: isNap ? "alarm.fill" : "sunrise.fill",
-                         tint: isNap ? .indigo : .cyan,
+                         tint: isNap ? .indigo : Metrics.electricSleep,
                          active: night.end != nil)
         }
         .padding(10)
-        .background((isNap ? Color.indigo : Color.cyan).opacity(0.06),
+        .background((isNap ? Color.indigo : Metrics.electricSleep).opacity(0.06),
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke((isNap ? Color.indigo : Color.cyan).opacity(0.12), lineWidth: 1)
+                .stroke((isNap ? Color.indigo : Metrics.electricSleep).opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Sleep review night arc. Start \(startText), window \(night.durationText), wake \(endText).")
@@ -1043,7 +1045,7 @@ private struct AtriaSleepReviewCard: View {
 
     private func nightArcConnector(active: Bool) -> some View {
         Capsule(style: .continuous)
-            .fill((active ? (isNap ? Color.indigo : Color.cyan) : Color.secondary).opacity(active ? 0.58 : 0.18))
+            .fill((active ? (isNap ? Color.indigo : Metrics.electricSleep) : Color.secondary).opacity(active ? 0.58 : 0.18))
             .frame(width: 14, height: 3)
             .accessibilityHidden(true)
     }
@@ -1051,15 +1053,31 @@ private struct AtriaSleepReviewCard: View {
     private var reviewIcon: some View {
         ZStack {
             Circle()
-                .fill(.cyan.opacity(0.14))
+                .fill(Metrics.electricSleep.opacity(0.14))
             Image(systemName: isNap ? "moon.zzz.fill" : "bed.double.fill")
                 .font(.headline.weight(.semibold))
-                .foregroundStyle(.cyan)
+                .foregroundStyle(Metrics.electricSleep)
         }
         .frame(width: 50, height: 50)
     }
 
 }
+
+/// Live Today host for the morning sleep decision surfaces: the auto-logged
+/// "Sleep logged" banner and the detected-sleep review card
+/// (Confirm / Adjust / Dismiss). Rendered from AtriaHomeView.overviewContent
+/// (2026-07-07, design handoff) — the private hosts keep their pinned
+/// structure in this file; this wrapper only exposes them to the live path.
+/// Both render nothing when there is no real pending state (never fabricated).
+struct AtriaTodaySleepReviewSection: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        AtriaAutoSleepLoggedBanner(store: store)
+        AtriaSleepReviewHost(store: store)
+    }
+}
+
 struct AtriaOverviewLeadingSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.HeroPulseStore
