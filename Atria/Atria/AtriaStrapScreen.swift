@@ -163,8 +163,8 @@ struct AtriaStrapScreen: View {
                     Text(identitySubtitle)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Spacer(minLength: 8)
@@ -175,6 +175,8 @@ struct AtriaStrapScreen: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
+                    .fixedSize()
+                    .layoutPriority(1)
             }
 
             Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")
