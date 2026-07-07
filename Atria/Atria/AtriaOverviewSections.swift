@@ -3879,6 +3879,10 @@ struct AtriaWeeklyReportSheet: View {
                                                  tint: Metrics.electricStrain)
                     }
 
+                    if weekRecoveryPoints.count >= 2 {
+                        weekRecoveryChart(weekRecoveryPoints)
+                    }
+
                     if let note = report.strainRecoveryNote {
                         Label(note, systemImage: "exclamationmark.triangle.fill")
                             .font(.subheadline.weight(.semibold))
@@ -3940,6 +3944,50 @@ struct AtriaWeeklyReportSheet: View {
         formatter.setLocalizedDateFormatFromTemplate("MMM d")
         return formatter
     }()
+
+    /// Week recovery sparkline (2026-07-07 design handoff): only real
+    /// recovery days plot -- a nil day is a gap in the dots, never invented.
+    /// Points are shaped OUTSIDE any render block (perf gate: no compactMap
+    /// in some-View bodies).
+    private var weekRecoveryPoints: [(day: Date, recovery: Int)] {
+        (report.recoverySeries ?? []).compactMap { day in
+            guard let recovery = day.recovery else { return nil }
+            return (day.day, recovery)
+        }
+    }
+
+    private func weekRecoveryChart(_ points: [(day: Date, recovery: Int)]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recovery through the week")
+                .font(.subheadline.weight(.semibold))
+            Chart {
+                ForEach(points, id: \.day) { point in
+                    LineMark(x: .value("Day", point.day, unit: .day),
+                             y: .value("Recovery", point.recovery))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(Metrics.electricGreen)
+                    PointMark(x: .value("Day", point.day, unit: .day),
+                              y: .value("Recovery", point.recovery))
+                        .foregroundStyle(Metrics.recoveryColor(point.recovery))
+                }
+            }
+            .chartYScale(domain: 0...100)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0, 50, 100])
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                }
+            }
+            .frame(height: 120)
+            .clipped()
+            .accessibilityLabel("Recovery for each day of the week.")
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricGreen)
+    }
 
     private var strainAverageText: String {
         report.strainAvg.map { String(format: "%.1f", $0) } ?? "--"
