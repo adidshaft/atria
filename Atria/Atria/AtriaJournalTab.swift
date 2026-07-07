@@ -12,8 +12,10 @@ struct AtriaJournalTab: View {
         Group {
             AtriaJournalCheckInDeck(store: store)
             AtriaJournalTypedInsightsSection(store: store)
-            AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
             AtriaOverviewBehaviorJournalSection(store: store)
+            // Heat strip rides directly under the behavior-impact section it
+            // visualizes (UX audit 2026-07-07) instead of orphaned mid-stack.
+            AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
             AtriaRoutineCard(store: store)
             AtriaJournalCycleCard()
         }
@@ -131,6 +133,8 @@ private struct AtriaJournalCycleCard: View {
                     isEnabled = false
                 }
                 .font(.caption)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
                 .foregroundStyle(.secondary)
             }
         }
@@ -639,6 +643,7 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 }
                 .font(.caption.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
                 .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
@@ -664,6 +669,7 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 }
                 .font(.caption.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
                 .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
