@@ -6747,6 +6747,7 @@ struct AtriaMetricDetailSheet: View {
                                        priorPoints: config.prior,
                                        baselineBand: config.band,
                                        events: expandedChartEvents,
+                                       overlays: expandedChartOverlays,
                                        onDismiss: { showExpandedChart = false })
             }
         }
@@ -8071,6 +8072,27 @@ struct AtriaMetricDetailSheet: View {
             }
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricGreen)
+        }
+    }
+
+    /// Overlay candidates for "Edit this chart": the two sibling metrics the
+    /// inline chart already pairs as scrub companions, in raw daily form.
+    private var expandedChartOverlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] {
+        switch metric {
+        case .recovery, .strain:
+            return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
+                    ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
+        case .hrv, .restingHeartRate:
+            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
+                    ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
+        case .sleep:
+            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
+                    ("Strain", "", Metrics.electricStrain, preparedHistory.strainRaw[range] ?? [])]
+        case .respiratoryRate:
+            return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
+                    ("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? [])]
+        default:
+            return []
         }
     }
 
