@@ -6601,6 +6601,8 @@ struct AtriaMetricDetailSheet: View {
     // AtriaOverviewReadinessSection screens) keep compiling unchanged.
     let hrZoneMinutes: TodayHRZoneMinutes
     let maxHeartRate: Int?
+    private let rollups: [DailyRollupStoreEntry]
+    @State private var openedHistoryDay: AtriaHistoryDay?
     let vo2MaxEstimate: VO2MaxEstimateSummary?
     let skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary?
     private let preparedHistory: AtriaPreparedMetricHistory
@@ -6639,6 +6641,7 @@ struct AtriaMetricDetailSheet: View {
         self.maxHeartRate = maxHeartRate
         self.vo2MaxEstimate = vo2MaxEstimate
         self.skinTemperatureDeviation = skinTemperatureDeviation
+        self.rollups = rollups
         self.preparedHistory = AtriaPreparedMetricHistory(rollups: rollups, baseline: baseline, sleepGoalHours: sleepGoalHours)
     }
 
@@ -6669,6 +6672,14 @@ struct AtriaMetricDetailSheet: View {
                                     recoveryEstimate: recoveryEstimate,
                                     sleepGoalHours: sleepGoalHours)
         }
+        .sheet(item: $openedHistoryDay) { day in
+            AtriaHistoryDayDetailSheet(day: day,
+                                       medians: AtriaHistoryModel.make(rollups: rollups,
+                                                                       workouts: confirmedWorkouts,
+                                                                       sleeps: []).medianWindow(around: day))
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     @ViewBuilder
@@ -6697,7 +6708,8 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "Recovery over \(range.label).",
                                 priorPoints: preparedHistory.recoveryPrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
-                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
+                                onOpenDay: { day in openHistoryDay(for: day) })
                 }
             } about: {
                 aboutDisclosure
@@ -6726,7 +6738,8 @@ struct AtriaMetricDetailSheet: View {
                                 emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
                                 priorPoints: preparedHistory.hrvPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
-                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
+                                onOpenDay: { day in openHistoryDay(for: day) })
                 }
             } about: {
                 aboutDisclosure
@@ -6755,7 +6768,8 @@ struct AtriaMetricDetailSheet: View {
                                 emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
                                 priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
-                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])])
+                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])],
+                                onOpenDay: { day in openHistoryDay(for: day) })
                 }
             } about: {
                 aboutDisclosure
@@ -6813,7 +6827,8 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "Sleep duration over \(range.label).",
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
-                                             ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])])
+                                             ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])],
+                                onOpenDay: { day in openHistoryDay(for: day) })
                 }
             } about: {
                 aboutDisclosure
@@ -6843,7 +6858,8 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "Strain over \(range.label).",
                                 priorPoints: preparedHistory.strainPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
-                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
+                                onOpenDay: { day in openHistoryDay(for: day) })
                 }
             } about: {
                 aboutDisclosure
@@ -7449,7 +7465,8 @@ struct AtriaMetricDetailSheet: View {
                              accessibilitySummary: String,
                              emptyExplanation: String? = nil,
                              priorPoints: [AtriaDetailChartPoint] = [],
-                             companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = []) -> some View {
+                             companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
+                             onOpenDay: ((Date) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
@@ -7628,6 +7645,13 @@ struct AtriaMetricDetailSheet: View {
                 // Guarantee the plot can never bleed past its frame in any data
                 // state (matches AtriaTrendChartCard's clip).
                 .clipped()
+                // Double-tap opens the scrubbed day (design handoff Graph
+                // Interactions). Without a selection it does nothing; never a guessed day.
+                .onTapGesture(count: 2) {
+                    if let target = scrubbedDay, let onOpenDay {
+                        onOpenDay(target)
+                    }
+                }
                 .accessibilityLabel(accessibilitySummary)
 
                 if points.first(where: { $0.bandLower != nil }) != nil {
@@ -7646,6 +7670,12 @@ struct AtriaMetricDetailSheet: View {
                 // is selected, sibling metrics for THAT day appear beneath the
                 // chart. A companion with no real value that day shows nothing
                 // for it (fail closed, never interpolated).
+                if scrubbedDay != nil, onOpenDay != nil {
+                    Text("Double-tap the chart to open this day")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
                 if let target = scrubbedDay, !companions.isEmpty {
                     HStack(spacing: 8) {
                         ForEach(Array(companions.enumerated()), id: \.offset) { _, companion in
@@ -7687,6 +7717,16 @@ struct AtriaMetricDetailSheet: View {
             values.append(comparison.priorAverage)
         }
         return AtriaTrendChartScale.domain(values: values)
+    }
+
+    /// Double-tap route: resolve the scrubbed date to its history-day model
+    /// and open the existing day-vs-median sheet. Unknown day: does nothing.
+    private func openHistoryDay(for date: Date) {
+        let model = AtriaHistoryModel.make(rollups: rollups,
+                                           workouts: confirmedWorkouts,
+                                           sleeps: [])
+        guard let day = model.days.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) else { return }
+        openedHistoryDay = day
     }
 
     private func latestText(value: Double, unit: String) -> String {
