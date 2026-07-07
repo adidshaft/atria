@@ -1281,6 +1281,23 @@ private struct AtriaDutyCycleToggleCard: View {
     }
 }
 
+/// Memoizes the live+historical HR merge (2026-07-08 perf audit): the merge is
+/// an O(n) dict build + O(n log n) sort over up to 6000 points and was rebuilt
+/// on every `body` eval (~1-2x/sec on the pulse tick). A reference cache keyed
+/// on the cheap array identities recomputes ONLY when the HR data changes —
+/// live is append-only and historical is replaced wholesale, so (count, last
+/// timestamp) fully captures a change.
+private final class AtriaHeartRateMergeCache {
+    struct Key: Equatable {
+        let historicalCount: Int
+        let historicalLast: Date?
+        let liveCount: Int
+        let liveLast: Date?
+    }
+    var key: Key?
+    var value: [AtriaHomeModel.HeartRateChartPoint] = []
+}
+
 private struct AtriaVitalsPulseCardHost: View {
     @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
@@ -1289,11 +1306,21 @@ private struct AtriaVitalsPulseCardHost: View {
     @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
     @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+    @State private var mergeCache = AtriaHeartRateMergeCache()
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     private var chartPoints: [AtriaHomeModel.HeartRateChartPoint] {
-        AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: pulseSparklineStore.state.chartPoints,
-                                                           historical: historicalHeartRatePoints)
+        let live = pulseSparklineStore.state.chartPoints
+        let key = AtriaHeartRateMergeCache.Key(historicalCount: historicalHeartRatePoints.count,
+                                               historicalLast: historicalHeartRatePoints.last?.t,
+                                               liveCount: live.count,
+                                               liveLast: live.last?.t)
+        if mergeCache.key == key { return mergeCache.value }
+        let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: live,
+                                                                        historical: historicalHeartRatePoints)
+        mergeCache.key = key
+        mergeCache.value = merged
+        return merged
     }
 
     var body: some View {
