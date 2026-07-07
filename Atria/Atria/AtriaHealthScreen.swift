@@ -243,7 +243,7 @@ struct AtriaHealthScreen: View {
                     }
                     .font(.caption.weight(.bold))
                     .buttonStyle(.glass)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -838,6 +838,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
     }
 
     private var rowContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.subheadline.weight(.bold))
@@ -851,7 +852,8 @@ private struct AtriaHealthMetricRow: View, Equatable {
                 Text(detail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 // Fixed-height slot rendered on every row (even when this
                 // metric has no trusted range yet) so all six rows share
                 // one height and every reference-range line that does
@@ -866,18 +868,21 @@ private struct AtriaHealthMetricRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(value)
-                    .font(.headline.weight(.bold))
-                    .monospacedDigit()
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+            Text(value)
+                .font(.headline.weight(.bold))
+                .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
 
-                if let hint {
-                    AtriaVitalsHintChip(text: hint, tint: Metrics.electricYellow)
-                }
-            }
+        // Full-width hint line (UX audit 2026-07-07): sentence-length hints
+        // ("↓ 1h 20m debt — earlier bedtime tonight") were squeezed into the
+        // trailing column and shrank unreadably; they now get the whole row.
+        if let hint {
+            AtriaVitalsHintChip(text: hint, tint: Metrics.electricYellow)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
         }
         .frame(minHeight: 64)
         .padding(.horizontal, 12)
