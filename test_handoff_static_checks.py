@@ -8646,7 +8646,9 @@ class HandoffStaticChecks(unittest.TestCase):
             (today, "return store.dailyRollupHistory"),
             (today, 'arguments[valueIndex] == "north-star-highlights"'),
             (today, "debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail"),
-            (today, "AtriaTodayHighlightsStrip(highlights: highlights)"),
+            # 2026-07-07: strip gained the onOpen route (insight rows are
+            # real buttons now, not fake chevrons).
+            (today, "AtriaTodayHighlightsStrip(highlights: highlights) { metric in"),
             (today, "private struct AtriaTodayHighlightsStrip: View, Equatable"),
             (today, "AtriaTodayLiveStatusStrip(live: liveStore.state,"),
             (today, "AtriaTodayPlanCard(title: planTitle,"),
@@ -8819,7 +8821,8 @@ class HandoffStaticChecks(unittest.TestCase):
             # ordering marker migrates from the (now-hoisted) topTwo call to the
             # section's guard condition, which occupies the same position.
             "if layoutConfig.showHighlights && !highlights.isEmpty",
-            "AtriaTodayHighlightsStrip(highlights: highlights)",
+            # 2026-07-07: same onOpen-route migration as above.
+            "AtriaTodayHighlightsStrip(highlights: highlights) { metric in",
             "AtriaTodayPlanCard(title: planTitle,",
             "LazyVGrid(columns: glanceColumns, spacing: 10)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
