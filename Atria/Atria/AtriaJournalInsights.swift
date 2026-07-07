@@ -50,6 +50,16 @@ struct JournalInsight: Identifiable, Equatable {
         return p <= 0.05 ? "high confidence" : "moderate confidence"
     }
 
+    /// Signed effect on next-day recovery: positive = helpful, negative =
+    /// harmful (2026-07-07 design handoff direction-coding).
+    var signedEffect: Double {
+        switch kind {
+        case .booleanImpact(let impact, _, _, _): return impact
+        case .thresholdSplit(_, let delta, _, _, _): return delta
+        case .rankCorrelation(let rho, _, _): return rho
+        }
+    }
+
     var effectMagnitude: Double {
         switch kind {
         case .booleanImpact(let impact, _, _, _): return abs(impact)

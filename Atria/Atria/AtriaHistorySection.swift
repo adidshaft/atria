@@ -206,14 +206,9 @@ struct AtriaHistorySection: View, Equatable {
 
     private var historyHeroCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
-                Spacer(minLength: 8)
-                Text("\(model.sessionsCount)")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Metrics.electricStrain)
-            }
+            // The big trailing number duplicated the Sessions chip directly
+            // below it (UX audit 2026-07-07) -- the chip keeps the value.
+            AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
                 Button {
@@ -274,7 +269,9 @@ struct AtriaHistorySection: View, Equatable {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Detections", subtitle: "What the app detected and why")
             VStack(spacing: 8) {
-                ForEach(model.detections.prefix(5)) { event in
+                // 3-row preview (UX audit density): the full log lives one
+                // tap away behind "See all".
+                ForEach(model.detections.prefix(3)) { event in
                     AtriaDetectionRow(event: event)
                 }
             }
@@ -305,7 +302,9 @@ struct AtriaHistorySection: View, Equatable {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             LazyVStack(spacing: 8) {
-                ForEach(model.days.prefix(14)) { day in
+                // 7 rows before "See all history" (UX audit density): 14
+                // tappable inset rows made the card a second scroll.
+                ForEach(model.days.prefix(7)) { day in
                     Button {
                         selectedDay = day
                     } label: {
@@ -437,25 +436,41 @@ struct AtriaHistoryDayRow: View, Equatable {
                 .font(.subheadline.weight(.bold).monospacedDigit())
                 .foregroundStyle(day.strain != nil ? Metrics.electricStrain : .secondary)
                 .lineLimit(1)
+                .layoutPriority(1)
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
     }
 
+    /// At most two chips render inline (UX audit 2026-07-07): an active day
+    /// used to pack four chips into the row and everything shrank/cropped. An
+    /// honest "+N" chip stands in for the overflow; the day sheet has it all.
+    private var chipItems: [(text: String, tint: Color)] {
+        var items: [(String, Color)] = []
+        if day.savedDurationSeconds > 0 {
+            items.append(("\(SleepHistorySnapshot.formatDuration(day.savedDurationSeconds)) Saved", .orange))
+        }
+        if day.confirmedWorkoutCount > 0 {
+            items.append(("\(day.confirmedWorkoutCount) Confirmed", .orange))
+        }
+        if day.confirmedSleepCount > 0 {
+            items.append(("\(day.confirmedSleepCount) Sleep", .blue))
+        }
+        if day.reviewPending > 0 {
+            items.append(("\(day.reviewPending) Review", .cyan))
+        }
+        return items
+    }
+
     @ViewBuilder
     private var chipRow: some View {
+        let items = chipItems
         HStack(spacing: 6) {
-            if day.savedDurationSeconds > 0 {
-                AtriaVitalsHintChip(text: "\(SleepHistorySnapshot.formatDuration(day.savedDurationSeconds)) Saved", tint: .orange)
+            ForEach(Array(items.prefix(2).enumerated()), id: \.offset) { _, item in
+                AtriaVitalsHintChip(text: item.text, tint: item.tint)
             }
-            if day.confirmedWorkoutCount > 0 {
-                AtriaVitalsHintChip(text: "\(day.confirmedWorkoutCount) Confirmed", tint: .orange)
-            }
-            if day.confirmedSleepCount > 0 {
-                AtriaVitalsHintChip(text: "\(day.confirmedSleepCount) Sleep", tint: .blue)
-            }
-            if day.reviewPending > 0 {
-                AtriaVitalsHintChip(text: "\(day.reviewPending) Review", tint: .cyan)
+            if items.count > 2 {
+                AtriaVitalsHintChip(text: "+\(items.count - 2)", tint: .secondary)
             }
         }
     }
