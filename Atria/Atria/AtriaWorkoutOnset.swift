@@ -57,4 +57,36 @@ enum AtriaWorkoutOnset {
         }
         return nil
     }
+
+    /// HR stats over a workout window's real samples. Pure so the
+    /// honesty-critical averages (which must match a trimmed start/duration)
+    /// are unit-testable. `windowSeconds` is the displayed span for coverage.
+    static func windowStats(samples: [(t: Date, bpm: Int)],
+                            windowSeconds: TimeInterval,
+                            continuityGapLimit: TimeInterval = 15)
+        -> (avgHR: Int, peakHR: Int, p95HR: Int, p99HR: Int,
+            observedDuration: TimeInterval, streamCoveragePercent: Int, samples: Int)? {
+        guard samples.count > 1 else { return nil }
+        let bpms = samples.map(\.bpm)
+        let sorted = bpms.sorted()
+        func percentile(_ fraction: Double) -> Int {
+            let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * fraction).rounded())))
+            return sorted[index]
+        }
+        var observed: TimeInterval = 0
+        for index in 1..<samples.count {
+            let dt = samples[index].t.timeIntervalSince(samples[index - 1].t)
+            if dt <= continuityGapLimit { observed += dt }
+        }
+        let coverage = windowSeconds > 0
+            ? min(100, max(0, Int((observed / windowSeconds * 100).rounded())))
+            : 0
+        return (bpms.reduce(0, +) / bpms.count,
+                bpms.max() ?? 0,
+                percentile(0.95),
+                percentile(0.99),
+                observed,
+                coverage,
+                samples.count)
+    }
 }

@@ -7723,16 +7723,19 @@ final class SessionStore: ObservableObject {
                                                  detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%",
                                                  windowStart: displayStart,
                                                  windowEnd: end))
+        // Trimmed-window HR stats so the review card's avg/coverage match its
+        // shown (trimmed) start + duration (honesty rule); nil when no trim.
+        let reviewStats = displayStart != start ? workoutWindowHRStats(start: displayStart, end: end) : nil
         return WorkoutReviewCandidate(id: id,
                                       start: displayStart,
                                       end: end,
                                       kind: summary.readySessions > 0 ? .workout : .activityCandidate,
                                       confidence: reviewConfidence,
                                       duration: end.timeIntervalSince(displayStart),
-                                      avgHR: summary.bestAvgHR,
-                                      peakHR: summary.bestPeakHR,
-                                      streamCoveragePercent: summary.bestStreamCoveragePercent,
-                                      observedDuration: summary.bestObservedDuration,
+                                      avgHR: reviewStats?.avgHR ?? summary.bestAvgHR,
+                                      peakHR: reviewStats?.peakHR ?? summary.bestPeakHR,
+                                      streamCoveragePercent: reviewStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
+                                      observedDuration: reviewStats?.observedDuration ?? summary.bestObservedDuration,
                                       droppedGapSeconds: summary.bestDroppedGapSeconds,
                                       maxSampleGap: summary.bestMaxSampleGap,
                                       gapCount: summary.bestGapCount,
@@ -7851,6 +7854,10 @@ final class SessionStore: ObservableObject {
         // was already decided from the untrimmed window; only start + strain
         // tighten. Fails closed to bestStart when there's no honest onset.
         let displayStart = sustainedWorkoutOnsetStart(start: bestStart, end: bestEnd, rest: rest, maxHR: maxHR) ?? bestStart
+        // When the start was trimmed, recompute the DISPLAYED HR stats over the
+        // trimmed window so avg/coverage/observed/percentiles match the shown
+        // start+duration+strain (honesty rule). nil = no trim -> summary values.
+        let trimmedStats = displayStart != bestStart ? workoutWindowHRStats(start: displayStart, end: bestEnd) : nil
         let enriched = confirmedWorkoutMetrics(start: displayStart,
                                                end: bestEnd,
                                                rest: rest,
@@ -7864,14 +7871,14 @@ final class SessionStore: ObservableObject {
                                              source: summary.bestSource,
                                              confidence: confidence,
                                              sessions: summary.bestChunkCount,
-                                             samples: summary.bestSamples,
-                                             avgHR: summary.bestAvgHR,
-                                             peakHR: summary.bestPeakHR,
-                                             p95HR: summary.bestP95HR,
-                                             p99HR: summary.bestP99HR,
+                                             samples: trimmedStats?.samples ?? summary.bestSamples,
+                                             avgHR: trimmedStats?.avgHR ?? summary.bestAvgHR,
+                                             peakHR: trimmedStats?.peakHR ?? summary.bestPeakHR,
+                                             p95HR: trimmedStats?.p95HR ?? summary.bestP95HR,
+                                             p99HR: trimmedStats?.p99HR ?? summary.bestP99HR,
                                              thresholdHR: summary.bestThresholdHR,
-                                             streamCoveragePercent: summary.bestStreamCoveragePercent,
-                                             observedDuration: summary.bestObservedDuration,
+                                             streamCoveragePercent: trimmedStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
+                                             observedDuration: trimmedStats?.observedDuration ?? summary.bestObservedDuration,
                                              reason: summary.bestReason,
                                              strain: enriched.strain,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
@@ -8110,6 +8117,32 @@ final class SessionStore: ObservableObject {
               end.timeIntervalSince(onset) >= 5 * 60
         else { return nil }
         return onset
+    }
+
+    /// Displayed HR stats recomputed over an (onset-trimmed) window from the
+    /// REAL samples, so avgHR/coverage/observed/percentiles match the trimmed
+    /// start + duration + strain instead of the old untrimmed summary values
+    /// (honesty rule: a 39-min effort must not show an average diluted by the
+    /// trimmed-off getting-ready lead-in). nil if the window has no samples.
+    private func workoutWindowHRStats(start: Date, end: Date)
+        -> (avgHR: Int, peakHR: Int, p95HR: Int, p99HR: Int,
+            observedDuration: TimeInterval, streamCoveragePercent: Int, samples: Int)? {
+        let overlapping = canonicalSessions().filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return nil }
+        var points: [(t: Date, bpm: Int)] = []
+        for session in overlapping {
+            for point in session.points where point.bpm > 0 {
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end { points.append((t, point.bpm)) }
+            }
+        }
+        guard points.count > 1 else { return nil }
+        points.sort { $0.t < $1.t }
+        return AtriaWorkoutOnset.windowStats(samples: points,
+                                             windowSeconds: end.timeIntervalSince(start),
+                                             continuityGapLimit: SavedSession.workoutContinuityGapLimit)
     }
 
     private func confirmedWorkoutMetrics(start: Date,
