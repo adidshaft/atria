@@ -431,10 +431,10 @@ struct AtriaTodayScreen: View {
                              accessibilitySummary: accessibilitySummary,
                              actions: ringActions)
             }
-
-            AtriaStrainTargetCard(currentStrain: displayHero.strain,
-                                  target: displayHero.guidance.target,
-                                  tint: Metrics.electricStrain)
+            // Strain Target card removed (user's strict screen-space rule,
+            // 2026-07-07): strain appeared four times on one screen. The
+            // strain legend chip carries value + target ("3.1 of 10.3") and
+            // the plan card carries the guidance + remaining-to-target.
         }
     }
 
@@ -1184,7 +1184,12 @@ struct AtriaTodayScreen: View {
     }
 
     private var planTargetText: String {
-        displayHero.guidance.target.map { String(format: "Target %.1f", $0) } ?? "Target building"
+        guard let target = displayHero.guidance.target else { return "Target building" }
+        let remaining = target - displayHero.strain
+        if remaining > 0.05 {
+            return String(format: "Target %.1f \u{00b7} %.1f to go", target, remaining)
+        }
+        return String(format: "Target %.1f \u{00b7} met", target)
     }
 
     private var journalValue: String {
