@@ -8027,7 +8027,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func estimate(samples: [(t: Date, ms: Double)],",
             "lookback: TimeInterval = 90",
             "static func estimate(resampledRR: [Double], sampleRate: Double = 4.0) -> Double?",
-            "for breathsPerMinute in stride(from: 6.0, through: 30.0, by: 0.5)",
+            # 2026-07-08: floor raised 6.0 -> 9.0 bpm (0.15 Hz HF-band floor)
+            # so HRV LF / Mayer-wave drift can no longer be reported as
+            # breathing (device showed a fabricated 6.5-8.2 bpm).
+            "for breathsPerMinute in stride(from: 9.0, through: 30.0, by: 0.5)",
             "bestPower / max(bandPower, bestPower) >= 0.18",
         ]:
             assert_contains(self, text, needle)
