@@ -15739,6 +15739,18 @@ struct SleepHistorySnapshot: Equatable {
                                    sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
     }
 
+    /// Itemized version of sleepNeedHours (2026-07-07 design-handoff ledger).
+    func sleepNeedComponents(for night: Night,
+                             baseNeedHours: Double,
+                             yesterdayStrain: Double? = nil,
+                             calendar: Calendar = .current) -> AtriaSleepBudget.NeedComponents {
+        AtriaSleepBudget.sleepNeedComponents(baseHours: baseNeedHours,
+                                             yesterdayStrain: yesterdayStrain,
+                                             debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
+                                                                             excluding: night.id),
+                                             sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+    }
+
     func sleepPerformancePercent(for night: Night,
                                   baseNeedHours: Double,
                                   yesterdayStrain: Double? = nil,
