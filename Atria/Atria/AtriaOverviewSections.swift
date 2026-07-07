@@ -6604,6 +6604,7 @@ struct AtriaMetricDetailSheet: View {
     private let rollups: [DailyRollupStoreEntry]
     @State private var openedHistoryDay: AtriaHistoryDay?
     @State private var showChartOptions = false
+    @State private var showExpandedChart = false
     @State private var bucketOverride: AtriaChartBucketOverride
     @State private var showMinMaxBand: Bool
     let vo2MaxEstimate: VO2MaxEstimateSummary?
@@ -6693,6 +6694,18 @@ struct AtriaMetricDetailSheet: View {
                                     recoveryEstimate: recoveryEstimate,
                                     sleepGoalHours: sleepGoalHours)
         }
+        .fullScreenCover(isPresented: $showExpandedChart) {
+            if let config = expandedChartConfig {
+                AtriaExpandedChartView(title: config.title,
+                                       unit: config.unit,
+                                       tint: config.tint,
+                                       points: config.points,
+                                       priorPoints: config.prior,
+                                       baselineBand: config.band,
+                                       events: expandedChartEvents,
+                                       onDismiss: { showExpandedChart = false })
+            }
+        }
         .sheet(isPresented: $showChartOptions) {
             AtriaChartOptionsSheet(bucketOverride: $bucketOverride,
                                    showMinMaxBand: $showMinMaxBand)
@@ -6736,7 +6749,8 @@ struct AtriaMetricDetailSheet: View {
                                 priorPoints: preparedHistory.recoveryPrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) })
+                                onOpenDay: { day in openHistoryDay(for: day) },
+                                onExpand: { showExpandedChart = true })
                 }
             } about: {
                 aboutDisclosure
@@ -6766,7 +6780,8 @@ struct AtriaMetricDetailSheet: View {
                                 priorPoints: preparedHistory.hrvPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) })
+                                onOpenDay: { day in openHistoryDay(for: day) },
+                                onExpand: { showExpandedChart = true })
                 }
             } about: {
                 aboutDisclosure
@@ -6796,7 +6811,8 @@ struct AtriaMetricDetailSheet: View {
                                 priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
                                              ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) })
+                                onOpenDay: { day in openHistoryDay(for: day) },
+                                onExpand: { showExpandedChart = true })
                 }
             } about: {
                 aboutDisclosure
@@ -6855,7 +6871,8 @@ struct AtriaMetricDetailSheet: View {
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
                                              ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) })
+                                onOpenDay: { day in openHistoryDay(for: day) },
+                                onExpand: { showExpandedChart = true })
                 }
             } about: {
                 aboutDisclosure
@@ -6886,7 +6903,8 @@ struct AtriaMetricDetailSheet: View {
                                 priorPoints: preparedHistory.strainPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) })
+                                onOpenDay: { day in openHistoryDay(for: day) },
+                                onExpand: { showExpandedChart = true })
                 }
             } about: {
                 aboutDisclosure
@@ -7493,7 +7511,8 @@ struct AtriaMetricDetailSheet: View {
                              emptyExplanation: String? = nil,
                              priorPoints: [AtriaDetailChartPoint] = [],
                              companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
-                             onOpenDay: ((Date) -> Void)? = nil) -> some View {
+                             onOpenDay: ((Date) -> Void)? = nil,
+                             onExpand: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
@@ -7503,6 +7522,16 @@ struct AtriaMetricDetailSheet: View {
                     Text(latestText(value: latest.value, unit: unit))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(tint)
+                }
+                if let onExpand, points.count >= 2 {
+                    Button(action: onExpand) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Expand chart: landscape, zoom, range selection, activity markers")
                 }
             }
 
@@ -7744,6 +7773,60 @@ struct AtriaMetricDetailSheet: View {
             values.append(comparison.priorAverage)
         }
         return AtriaTrendChartScale.domain(values: values)
+    }
+
+    /// Real saved activity for the expanded chart's marker lane: confirmed
+    /// workouts (strain hue) and confirmed sleep nights (sleep hue). Only
+    /// records that exist — an empty day has no marker.
+    private var expandedChartEvents: [AtriaChartEvent] {
+        var events: [AtriaChartEvent] = confirmedWorkouts.map { workout in
+            AtriaChartEvent(id: "workout-\(workout.id)",
+                            day: workout.start,
+                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                            systemImage: "flame.fill",
+                            tint: Metrics.electricStrain)
+        }
+        events.append(contentsOf: sleepHistory.nights.filter(\.confirmed).map { night in
+            AtriaChartEvent(id: "sleep-\(night.id)",
+                            day: night.day,
+                            label: "Sleep",
+                            systemImage: "bed.double.fill",
+                            tint: Metrics.electricSleep)
+        })
+        return events
+    }
+
+    /// The expanded chart mirrors whatever the inline chart currently shows
+    /// for the six core metrics (same override, same ghost, same band).
+    private var expandedChartConfig: (title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint], prior: [AtriaDetailChartPoint], band: AtriaDetailBaselineBand?)? {
+        switch metric {
+        case .recovery:
+            return ("Recovery", "%", Metrics.electricGreen,
+                    displayedPoints(auto: preparedHistory.recovery[range] ?? [], raw: preparedHistory.recoveryRaw[range] ?? []),
+                    preparedHistory.recoveryPrior[range] ?? [], nil)
+        case .hrv:
+            return ("HRV", "ms", metric.tint,
+                    displayedPoints(auto: preparedHistory.hrv[range] ?? [], raw: preparedHistory.hrvRaw[range] ?? []),
+                    preparedHistory.hrvPrior[range] ?? [], hrvBand)
+        case .restingHeartRate:
+            return ("Resting HR", "bpm", metric.tint,
+                    displayedPoints(auto: preparedHistory.restingHeartRate[range] ?? [], raw: preparedHistory.restingHeartRateRaw[range] ?? []),
+                    preparedHistory.restingHeartRatePrior[range] ?? [], restingBand)
+        case .respiratoryRate:
+            return ("Respiratory rate", "/min", metric.tint,
+                    displayedPoints(auto: preparedHistory.respiratoryRate[range] ?? [], raw: preparedHistory.respiratoryRateRaw[range] ?? []),
+                    preparedHistory.respiratoryRatePrior[range] ?? [], respiratoryBand)
+        case .sleep:
+            return ("Sleep duration", "h", Metrics.electricSleep,
+                    displayedPoints(auto: preparedHistory.sleep[range] ?? [], raw: preparedHistory.sleepRaw[range] ?? []),
+                    preparedHistory.sleepPrior[range] ?? [], nil)
+        case .strain:
+            return ("Strain", "", Metrics.electricStrain,
+                    displayedPoints(auto: preparedHistory.strain[range] ?? [], raw: preparedHistory.strainRaw[range] ?? []),
+                    preparedHistory.strainPrior[range] ?? [], nil)
+        default:
+            return nil
+        }
     }
 
     private var chartSupportsOptions: Bool {
@@ -9810,7 +9893,7 @@ private struct AtriaPreparedMetricHistory {
     }
 }
 
-private struct AtriaDetailChartPoint: Identifiable {
+struct AtriaDetailChartPoint: Identifiable {
     let day: Date
     let value: Double
     let tint: Color
@@ -9822,7 +9905,7 @@ private struct AtriaDetailChartPoint: Identifiable {
     var id: Date { day }
 }
 
-private struct AtriaDetailBaselineBand {
+struct AtriaDetailBaselineBand {
     let lower: Double
     let upper: Double
     let tint: Color
