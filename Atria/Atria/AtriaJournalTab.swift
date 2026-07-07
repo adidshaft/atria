@@ -826,7 +826,8 @@ private struct AtriaJournalCheckInDeck: View {
 }
 
 /// 90-day logging history: one cell per day, brightness by how much was logged.
-private struct AtriaJournalHeatStrip: View, Equatable {
+// Internal (was private) so the empty-vs-full history modes are render-testable.
+struct AtriaJournalHeatStrip: View, Equatable {
     let entries: [BehaviorJournalEntry]
 
     static func == (lhs: AtriaJournalHeatStrip, rhs: AtriaJournalHeatStrip) -> Bool {
@@ -859,12 +860,34 @@ private struct AtriaJournalHeatStrip: View, Equatable {
         return days.filter { (counts[$0] ?? 0) > 0 }.count
     }
 
+    /// The full 90-day grid only earns its space once there's enough history to
+    /// show a pattern; before that it's ~88 empty cells advertising emptiness
+    /// (UX audit 2026-07-08). Until ~3 weeks of history, show a 2-week strip.
+    private static let compactDayCount = 14
+    private var hasEnoughHistoryForFullGrid: Bool {
+        guard let earliest = entries.map({ Calendar.current.startOfDay(for: $0.day) }).min() else { return false }
+        let span = Calendar.current.dateComponents([.day], from: earliest,
+                                                    to: Calendar.current.startOfDay(for: Date())).day ?? 0
+        return span >= 21
+    }
+
+    private var recentDays: [Date] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        return (0..<Self.compactDayCount).compactMap {
+            calendar.date(byAdding: .day, value: -(Self.compactDayCount - 1 - $0), to: today)
+        }
+    }
+
     var body: some View {
         let counts = countsByDay
+        let fullGrid = hasEnoughHistoryForFullGrid
+        let shownDays = fullGrid ? days : recentDays
+        let columnCount = fullGrid ? 30 : Self.compactDayCount
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Logging history",
-                                        subtitle: "Last 90 days")
+                                        subtitle: fullGrid ? "Last 90 days" : "Last 2 weeks")
 
                 Spacer(minLength: 0)
 
@@ -873,16 +896,24 @@ private struct AtriaJournalHeatStrip: View, Equatable {
                                 tint: .cyan)
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 30),
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: columnCount),
                       spacing: 3) {
-                ForEach(days, id: \.self) { day in
+                ForEach(shownDays, id: \.self) { day in
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                         .fill(cellColor(count: counts[day] ?? 0))
                         .aspectRatio(1, contentMode: .fit)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Journal logging history: \(loggedDayCount) of the last \(Self.dayCount) days logged.")
+            .accessibilityLabel("Journal logging history: \(loggedDayCount) of the last \(fullGrid ? Self.dayCount : Self.compactDayCount) days logged.")
+
+            if !fullGrid {
+                Text(loggedDayCount == 0
+                     ? "Log today to start your pattern — the full 90-day view builds as history grows."
+                     : "Your full 90-day pattern unlocks as history builds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
