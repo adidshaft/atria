@@ -95,6 +95,7 @@ struct AtriaHealthScreen: View {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    hrZoneMinutes: heroStore.state.hrZoneMinutes,
+                                   maxHeartRate: store.profile.maxHR,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: store.imuAuditSummary.skinTemperatureDeviation)
                 .presentationDetents([.medium, .large])

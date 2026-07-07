@@ -6475,6 +6475,7 @@ struct AtriaMetricDetailSheet: View {
     // (AtriaTodayScreen, and the dead orphaned AtriaVitalsTabContent/
     // AtriaOverviewReadinessSection screens) keep compiling unchanged.
     let hrZoneMinutes: TodayHRZoneMinutes
+    let maxHeartRate: Int?
     let vo2MaxEstimate: VO2MaxEstimateSummary?
     let skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary?
     private let preparedHistory: AtriaPreparedMetricHistory
@@ -6494,6 +6495,7 @@ struct AtriaMetricDetailSheet: View {
          sleepGoalHours: Double,
          sleepBaseNeedHours: Double,
          hrZoneMinutes: TodayHRZoneMinutes = .empty,
+         maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil) {
         self.metric = metric
@@ -6505,6 +6507,7 @@ struct AtriaMetricDetailSheet: View {
         self.sleepGoalHours = sleepGoalHours
         self.sleepBaseNeedHours = sleepBaseNeedHours
         self.hrZoneMinutes = hrZoneMinutes
+        self.maxHeartRate = maxHeartRate
         self.vo2MaxEstimate = vo2MaxEstimate
         self.skinTemperatureDeviation = skinTemperatureDeviation
         self.preparedHistory = AtriaPreparedMetricHistory(rollups: rollups, baseline: baseline, sleepGoalHours: sleepGoalHours)
@@ -6767,10 +6770,21 @@ struct AtriaMetricDetailSheet: View {
                                 tint: .teal,
                                 bodyText: skinTemperatureDeviation?.footnoteText ?? "Skin temperature is a relative, sleep-only research signal compared with your own recent baseline \u{2014} not an absolute body temperature.")
         case .hrZones:
-            honestPartialDetail(heroValue: hrZoneMinutes.valueText,
-                                heroState: hrZoneMinutes.hasSamples ? "today" : "No wear today",
-                                tint: .orange,
-                                bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
+            // Design handoff (2026-07-07): the sheet lists the user's real
+            // per-zone bpm boundaries, computed from the same percent-of-max
+            // model the live workout zones use. Card hides when max HR is
+            // unknown (never a fabricated boundary).
+            AtriaMetricDetailTemplate(heroValue: hrZoneMinutes.valueText,
+                                      heroState: hrZoneMinutes.hasSamples ? "today" : "No wear today",
+                                      tint: .orange) {
+                hrZoneBoundariesCard
+            } contributors: {
+                EmptyView()
+            } chart: {
+                honestPartialCard(tint: .orange, bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
+            } about: {
+                aboutDisclosure
+            }
         case .bloodOxygen:
             honestPartialDetail(heroValue: "\u{2014}",
                                 heroState: "Not available on this strap",
@@ -6792,6 +6806,43 @@ struct AtriaMetricDetailSheet: View {
             honestPartialCard(tint: tint, bodyText: bodyText)
         } about: {
             aboutDisclosure
+        }
+    }
+
+    /// The user's per-zone bpm boundaries from their profile max HR
+    /// (percent-of-max bands, HRZone.lowerFraction) -- the exact math the
+    /// live workout zone bar uses. Renders nothing without a real max HR.
+    @ViewBuilder
+    private var hrZoneBoundariesCard: some View {
+        if let maxHR = maxHeartRate, maxHR > 0 {
+            let zones = Array(HRZone.allCases)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your zones")
+                    .font(.headline.weight(.semibold))
+                ForEach(Array(zones.enumerated().reversed()), id: \.element.rawValue) { index, zone in
+                    let lower = Int((zone.lowerFraction * Double(maxHR)).rounded())
+                    let upper = index + 1 < zones.count
+                        ? Int((zones[index + 1].lowerFraction * Double(maxHR)).rounded()) - 1
+                        : maxHR
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(zone.color)
+                            .frame(width: 9, height: 9)
+                        Text(zone.name)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text(zone.lowerFraction == 0 ? "under \(upper + 1) bpm" : "\(lower)\u{2013}\(upper) bpm")
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("From your max heart rate (\(maxHR) bpm) \u{2014} percent-of-max bands, the same math the live workout zones use.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: .orange)
         }
     }
 
