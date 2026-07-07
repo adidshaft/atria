@@ -3250,7 +3250,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private let summary: SessionDetailSummary",
             "init(session: SavedSession)",
             "self.displayedPoints = Self.downsampledPoints(session.points)",
-            "self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)",
+            # 2026-07-08: SessionDetailSummary now takes the baseline `rest`
+            # (matching the rollups) so a workout's strain reconciles everywhere.
+            "self.summary = SessionDetailSummary(session: session,",
             "private static func downsampledPoints",
             "Chart(Array(displayedPoints.enumerated()), id: \\.offset)",
             "private struct SessionDetailSummary",
