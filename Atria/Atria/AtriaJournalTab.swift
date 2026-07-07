@@ -17,7 +17,7 @@ struct AtriaJournalTab: View {
             // visualizes (UX audit 2026-07-07) instead of orphaned mid-stack.
             AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
             AtriaRoutineCard(store: store)
-            AtriaJournalCycleCard()
+            AtriaJournalCycleCard(sessionStore: store)
         }
     }
 }
@@ -29,6 +29,9 @@ struct AtriaJournalTab: View {
 /// explicit, one-tap opt-in from here, never implied by anything else in the
 /// app.
 private struct AtriaJournalCycleCard: View {
+    /// Recovery history for the phase-patterns rows (design backlog item 10).
+    let sessionStore: SessionStore
+
     // Dotted UserDefaults key: must use @AtriaDefault, not @AppStorage — see
     // AtriaDefault.swift for why plain @AppStorage on a dotted key storms the
     // whole view tree under high-frequency sibling writes.
@@ -36,12 +39,50 @@ private struct AtriaJournalCycleCard: View {
     @StateObject private var store = AtriaCycleTrackingStore()
     @State private var showLogSheet = false
 
+    /// Cycle-phase patterns (design backlog item 10): average recovery per
+    /// estimated phase over the trailing 90 days. Gated on a PERSONALIZED
+    /// estimate (>=2 completed cycles) and >=3 classified days per phase;
+    /// always labeled an estimate/association per the honesty rules.
+    @ViewBuilder
+    private var phasePatternRows: some View {
+        let patterns = store.recoveryPatternsByPhase(
+            days: sessionStore.dailyRollupHistory.map { (day: $0.day, recovery: $0.recovery) })
+        if !patterns.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RECOVERY BY PHASE (ESTIMATE)")
+                    .font(.caption2.weight(.black))
+                    .foregroundStyle(.tertiary)
+                    .kerning(0.8)
+                ForEach(patterns, id: \.phase) { pattern in
+                    HStack {
+                        Text(pattern.phase.title)
+                            .font(.caption.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text("\(pattern.averageRecovery)% avg")
+                            .font(.caption.weight(.bold).monospacedDigit())
+                            .foregroundStyle(Metrics.recoveryColor(pattern.averageRecovery))
+                        Text("\u{00B7} \(pattern.dayCount)d")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Averages across your last 90 days, grouped by estimated phase. An association from your logs, not a prediction.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .atriaInsetCard(tint: .pink)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Cycle",
                                     subtitle: isEnabled ? "Phase estimate from your logged dates" : "Optional, off by default")
             if isEnabled {
                 enabledContent
+                phasePatternRows
             } else {
                 disabledContent
             }

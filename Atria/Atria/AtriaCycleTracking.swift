@@ -282,6 +282,51 @@ final class AtriaCycleTrackingStore: ObservableObject {
 
         return AtriaCycleEstimate(phase: phase, cycleDay: wrappedDay, confidence: confidence)
     }
+
+    /// Phase estimate for a PAST day, or nil when the day can't honestly be
+    /// classified: before the first logged period, or beyond one median
+    /// cycle length after its anchoring period start (unlike
+    /// `currentEstimate`, history never wraps — an unlogged stretch stays
+    /// unclassified rather than guessed).
+    func phaseEstimate(on day: Date, calendar: Calendar = .current) -> AtriaCyclePhase? {
+        loadIfNeeded()
+        let target = calendar.startOfDay(for: day)
+        guard let anchor = entries.last(where: { calendar.startOfDay(for: $0.start) <= target }) else { return nil }
+        let cycleLength = medianCycleLengthDays ?? Self.calendarDefaultCycleLength
+        let periodLength = min(medianPeriodLengthDays, cycleLength - 1)
+        let dayIndex = (calendar.dateComponents([.day], from: calendar.startOfDay(for: anchor.start), to: target).day ?? 0) + 1
+        guard dayIndex >= 1, dayIndex <= cycleLength else { return nil }
+        let ovulationDay = max(periodLength + 1, cycleLength - Self.lutealPhaseLength)
+        if dayIndex <= periodLength { return .menstrual }
+        if dayIndex < ovulationDay - 1 { return .follicular }
+        if dayIndex <= ovulationDay + 1 { return .ovulatory }
+        return .luteal
+    }
+
+    /// Average recovery per phase over the trailing 90 days. Only rendered
+    /// once the estimate is personalized (>=2 completed cycles) and only for
+    /// phases with at least `minimumDaysPerPhase` classified recovery days.
+    static let minimumDaysPerPhase = 3
+
+    func recoveryPatternsByPhase(days: [(day: Date, recovery: Int?)],
+                                 now: Date = Date(),
+                                 calendar: Calendar = .current) -> [(phase: AtriaCyclePhase, averageRecovery: Int, dayCount: Int)] {
+        loadIfNeeded()
+        guard completedCycleCount >= 2 else { return [] }
+        let windowStart = calendar.date(byAdding: .day, value: -90, to: calendar.startOfDay(for: now))
+            ?? calendar.startOfDay(for: now)
+        var buckets: [AtriaCyclePhase: [Int]] = [:]
+        for entry in days {
+            guard let recovery = entry.recovery,
+                  entry.day >= windowStart,
+                  let phase = phaseEstimate(on: entry.day, calendar: calendar) else { continue }
+            buckets[phase, default: []].append(recovery)
+        }
+        return AtriaCyclePhase.allCases.compactMap { phase in
+            guard let values = buckets[phase], values.count >= Self.minimumDaysPerPhase else { return nil }
+            return (phase: phase, averageRecovery: values.reduce(0, +) / values.count, dayCount: values.count)
+        }
+    }
 }
 
 extension JSONEncoder {
