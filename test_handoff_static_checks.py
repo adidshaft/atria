@@ -686,7 +686,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let priorAverageText: String?",
             "self.rangeText = metric.rangeText(low: low, high: high)",
             "AtriaTrendRangeSummaryStrip(summary: summary, tint: metric.tint)",
-            "summaryPill(label: \"Range\", value: summary.rangeText)",
+            # 2026-07-07 dedup audit: Range pill removed (position band
+            # states low/high with position context).
+            "summaryPill(label: \"Avg\", value: summary.averageText)",
             "summaryPill(label: \"Prior\", value: priorAverageText)",
             "AtriaTrendRangePositionBand(series: prepared.series,",
             "private struct AtriaTrendRangePositionBand: View, Equatable",
@@ -5745,7 +5747,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityLabel(chartAccessibilityLabel)",
             "private var chartAccessibilityLabel: String",
             "\\(prepared.series.count) days in view.",
-            "Latest \\(summary.latestText), average \\(summary.averageText), range \\(summary.rangeText)",
+            # 2026-07-07 dedup audit: Latest/Range pills removed from the
+            # summary strip (position band owns them).
+            "Average \\(summary.averageText)",
             "private struct AtriaTrendPreparedSeries",
             "@State private var prepared = AtriaTrendPreparedSeries.empty",
             "@State private var periodReadout = AtriaTrendPeriodReadout.empty",
@@ -5814,7 +5818,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "cuePill(title: \"Cue\"",
             "cuePill(title: \"Reserve\"",
             "cuePill(title: \"Load\"",
-            "Reserve \\(Int((readout.recoveryReserve * 100).rounded())) percent. Load \\(Int((readout.loadPressure * 100).rounded())) percent.",
+            # 2026-07-07 dedup audit: the report card's Reserve/Load bars
+            # moved to single ownership by the balance map.
+            "Balance map. Recovery reserve",
             "periodGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "periodGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
             "private struct AtriaTrendPeriodReadout",
@@ -5861,15 +5867,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "reportTile(strongestSignal)",
             "reportTile(pressureSignal)",
             "reportTile(nextStep)",
-            "reportBar(label: \"Res\", value: readout.recoveryReserve, tint: .cyan)",
-            "reportBar(label: \"Load\", value: readout.loadPressure, tint: Metrics.electricStrain)",
+            # 2026-07-07 dedup audit: the report card's Res/Load bars were
+            # the third rendering of the reserve/load pair in one stack —
+            # the balance map is now the single owner.
+            "reportTile(strongestSignal)",
             "Trend range report. Best signal",
             "private struct AtriaTrendPeriodBalanceMap: View, Equatable",
             "Label(\"Balance map\", systemImage: \"circle.grid.cross\")",
             "mapCorner(\"Ready\", alignment: .leading)",
             "mapCorner(\"Protect\", alignment: .trailing)",
-            "balancePill(\"Reserve\", value: readout.recoveryReserve, tint: .cyan)",
-            "balancePill(\"Load\", value: readout.loadPressure, tint: Metrics.electricStrain)",
+            # 2026-07-07 dedup audit: the balance map's pill row repeated
+            # the pair its 2D dot already encodes; the dot + a11y label are
+            # the single owner now.
+            "Balance map. Recovery reserve",
             "func directionScore(positiveDeltaIsGood: Bool) -> Double?",
             "private struct AtriaTrendSignalStack: View, Equatable",
             "Label(\"Signal stack\", systemImage: \"waveform.path\")",

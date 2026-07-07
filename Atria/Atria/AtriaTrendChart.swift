@@ -905,10 +905,8 @@ private struct AtriaTrendPeriodBalanceMap: View, Equatable {
             }
             .frame(height: 116)
 
-            HStack(spacing: 8) {
-                balancePill("Reserve", value: readout.recoveryReserve, tint: .cyan)
-                balancePill("Load", value: readout.loadPressure, tint: Metrics.electricStrain)
-            }
+            // Reserve/Load pills removed (dedup audit 2026-07-07): the map
+            // dot IS the pair; the numbers live in its accessibility label.
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
@@ -1004,15 +1002,13 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
                 reportTile(nextStep)
             }
 
-            HStack(spacing: 8) {
-                reportBar(label: "Res", value: readout.recoveryReserve, tint: .cyan)
-                reportBar(label: "Load", value: readout.loadPressure, tint: Metrics.electricStrain)
-            }
+            // Reserve/Load bars removed (dedup audit 2026-07-07): the
+            // balance map below is the single owner of that pair.
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value). Reserve \(Int((readout.recoveryReserve * 100).rounded())) percent. Load \(Int((readout.loadPressure * 100).rounded())) percent.")
+        .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value).")
     }
 
     private func reportTile(_ item: (title: String, value: String, tint: Color, symbol: String)) -> some View {
@@ -1743,21 +1739,9 @@ private struct AtriaTrendRangeLens: View, Equatable {
             }
 
             Spacer(minLength: 6)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(summary?.latestText ?? "--")
-                    .font(.title3.weight(.black).monospacedDigit())
-                    .foregroundStyle(metric.tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.66)
-                    .contentTransition(.numericText())
-                    .animation(.snappy(duration: 0.3), value: summary?.latestText ?? "--")
-                Text(metric.shortLabel)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-            }
+            // Latest-number block removed (dedup audit 2026-07-07): the
+            // chart's end annotation and the position band own "latest";
+            // this lens keeps its coverage role only.
         }
         .padding(12)
         .background(metric.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -2097,13 +2081,11 @@ private struct AtriaTrendRangeSummaryStrip: View {
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
-                            GridItem(.flexible(), spacing: 8),
-                            GridItem(.flexible(), spacing: 8),
                             GridItem(.flexible(), spacing: 8)],
                   spacing: 8) {
-            summaryPill(label: "Latest", value: summary.latestText)
+            // Latest + Range pills removed (dedup audit 2026-07-07): the
+            // position band below states both with position context.
             summaryPill(label: "Avg", value: summary.averageText)
-            summaryPill(label: "Range", value: summary.rangeText)
             if let priorAverageText = summary.priorAverageText {
                 summaryPill(label: "Prior", value: priorAverageText)
             } else {
@@ -2111,7 +2093,7 @@ private struct AtriaTrendRangeSummaryStrip: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText).")
+        .accessibilityLabel("Trend summary. Average \(summary.averageText), \(summary.comparisonAccessibilityText).")
     }
 
     private func summaryPill(label: String, value: String) -> some View {
