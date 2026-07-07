@@ -1087,8 +1087,21 @@ struct AtriaTodaySleepReviewSection: View {
     @ObservedObject var store: SessionStore
 
     var body: some View {
-        AtriaAutoSleepLoggedBanner(store: store)
-        AtriaSleepReviewHost(store: store)
+        // Strict screen-space rule (2026-07-07): at most ONE sleep
+        // notification at a time — a pending review outranks the
+        // already-logged banner (the banner's Edit is redundant while the
+        // richer review card is on screen).
+        if hasPendingReview {
+            AtriaSleepReviewHost(store: store)
+        } else {
+            AtriaAutoSleepLoggedBanner(store: store)
+        }
+    }
+
+    private var hasPendingReview: Bool {
+        if let latest = store.sleepHistorySnapshot.latest, !latest.confirmed { return true }
+        return store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
+                                                 source: "today_sleep_section_gate") != nil
     }
 }
 
