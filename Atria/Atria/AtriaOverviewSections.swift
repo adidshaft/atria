@@ -6896,6 +6896,7 @@ struct AtriaMetricDetailSheet: View {
                                                                                     yesterdayStrain: yesterdayStrainForLatestNight),
                                             consistencyPercent: sleepHistory.sleepConsistencyPercent)
                     sleepNeedLedgerCard(for: latest)
+                    sleepDebtTrendCard
                 }
             } contributors: {
                 AtriaMetricContributorRows(rows: sleepContributorRows, tint: Metrics.electricSleep)
@@ -7225,6 +7226,69 @@ struct AtriaMetricDetailSheet: View {
     /// "How much you needed" ledger (design handoff): itemizes the four real
     /// terms of the sleep-need math. The total is the exact number the
     /// hypnogram card's need uses -- never a separately computed figure.
+    /// One night's surplus/deficit vs the clamped base need, for the debt
+    /// trend card. Real confirmed nights only.
+    private var sleepDebtTrendPoints: [(day: Date, deltaHours: Double)] {
+        let clampedNeed = min(max(sleepBaseNeedHours, 6), 10)
+        return sleepHistory.nights
+            .filter { !$0.isNapEvidence }
+            .prefix(14)
+            .map { (day: $0.day, deltaHours: $0.durationHours - clampedNeed) }
+            .reversed()
+    }
+
+    /// Sleep-debt trend (design backlog item 4): nightly surplus/deficit
+    /// bars vs the base need, headlined by the SAME 7-night debt number the
+    /// need ledger uses — one math, two views of it.
+    @ViewBuilder
+    private var sleepDebtTrendCard: some View {
+        let points = sleepDebtTrendPoints
+        if points.count >= 3 {
+            let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Sleep debt")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(debt > 0.05 ? "\(AtriaMetricFormat.sleepHours(debt)) owed" : "None owed")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(debt > 0.05 ? .orange : Metrics.electricGreen)
+                }
+
+                Chart(points, id: \.day) { point in
+                    BarMark(x: .value("Night", point.day, unit: .day),
+                            y: .value("vs need", point.deltaHours))
+                        .foregroundStyle(point.deltaHours >= 0 ? Metrics.electricSleep.opacity(0.85) : Color.orange.opacity(0.85))
+                        .cornerRadius(3)
+                    RuleMark(y: .value("Need met", 0))
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .lineStyle(StrokeStyle(lineWidth: 1))
+                }
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let hours = value.as(Double.self) {
+                                Text(String(format: "%+.0fh", hours))
+                            }
+                        }
+                    }
+                }
+                .frame(height: 96)
+                .clipped()
+
+                Text("Each bar: that night vs your base need (\(AtriaMetricFormat.sleepHours(min(max(sleepBaseNeedHours, 6), 10)))). Debt counts the last 7 nights.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricSleep)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Sleep debt trend. \(debt > 0.05 ? AtriaMetricFormat.sleepHours(debt) + " owed" : "No debt owed"). Bars show each night versus base need.")
+        }
+    }
+
     private func sleepNeedLedgerCard(for night: SleepHistorySnapshot.Night) -> some View {
         let comps = sleepHistory.sleepNeedComponents(for: night,
                                                      baseNeedHours: sleepBaseNeedHours,
