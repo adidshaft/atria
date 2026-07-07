@@ -698,6 +698,8 @@ private struct AtriaJournalCheckInDeck: View {
                         advance()
                     } label: {
                         Text(Self.scaleEmoji[level - 1])
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                             .font(.system(size: 30))
                             .opacity(existing == nil || existing == level ? 1 : 0.35)
                             .scaleEffect(existing == level ? 1.15 : 1)

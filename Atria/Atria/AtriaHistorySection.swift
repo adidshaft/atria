@@ -437,25 +437,41 @@ struct AtriaHistoryDayRow: View, Equatable {
                 .font(.subheadline.weight(.bold).monospacedDigit())
                 .foregroundStyle(day.strain != nil ? Metrics.electricStrain : .secondary)
                 .lineLimit(1)
+                .layoutPriority(1)
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
     }
 
+    /// At most two chips render inline (UX audit 2026-07-07): an active day
+    /// used to pack four chips into the row and everything shrank/cropped. An
+    /// honest "+N" chip stands in for the overflow; the day sheet has it all.
+    private var chipItems: [(text: String, tint: Color)] {
+        var items: [(String, Color)] = []
+        if day.savedDurationSeconds > 0 {
+            items.append(("\(SleepHistorySnapshot.formatDuration(day.savedDurationSeconds)) Saved", .orange))
+        }
+        if day.confirmedWorkoutCount > 0 {
+            items.append(("\(day.confirmedWorkoutCount) Confirmed", .orange))
+        }
+        if day.confirmedSleepCount > 0 {
+            items.append(("\(day.confirmedSleepCount) Sleep", .blue))
+        }
+        if day.reviewPending > 0 {
+            items.append(("\(day.reviewPending) Review", .cyan))
+        }
+        return items
+    }
+
     @ViewBuilder
     private var chipRow: some View {
+        let items = chipItems
         HStack(spacing: 6) {
-            if day.savedDurationSeconds > 0 {
-                AtriaVitalsHintChip(text: "\(SleepHistorySnapshot.formatDuration(day.savedDurationSeconds)) Saved", tint: .orange)
+            ForEach(Array(items.prefix(2).enumerated()), id: \.offset) { _, item in
+                AtriaVitalsHintChip(text: item.text, tint: item.tint)
             }
-            if day.confirmedWorkoutCount > 0 {
-                AtriaVitalsHintChip(text: "\(day.confirmedWorkoutCount) Confirmed", tint: .orange)
-            }
-            if day.confirmedSleepCount > 0 {
-                AtriaVitalsHintChip(text: "\(day.confirmedSleepCount) Sleep", tint: .blue)
-            }
-            if day.reviewPending > 0 {
-                AtriaVitalsHintChip(text: "\(day.reviewPending) Review", tint: .cyan)
+            if items.count > 2 {
+                AtriaVitalsHintChip(text: "+\(items.count - 2)", tint: .secondary)
             }
         }
     }
