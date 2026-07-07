@@ -7701,7 +7701,9 @@ final class SessionStore: ObservableObject {
                       summary.strengthCandidate ? 1 : 0,
                       summary.moderateStrengthReviewCandidate ? 1 : 0)
         DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
-                                                 detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%"))
+                                                 detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%",
+                                                 windowStart: start,
+                                                 windowEnd: end))
         return WorkoutReviewCandidate(id: id,
                                       start: start,
                                       end: end,
@@ -7881,7 +7883,9 @@ final class SessionStore: ObservableObject {
               confirmed.zoneSeconds?["max"] ?? 0)
         DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
                                                  reason: "confirmed",
-                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s"))
+                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s",
+                                                 windowStart: confirmed.start,
+                                                 windowEnd: confirmed.end))
         return confirmed
     }
 
@@ -8049,7 +8053,9 @@ final class SessionStore: ObservableObject {
               confirmed.zoneSeconds?["max"] ?? 0)
         DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
                                                  reason: "confirmed",
-                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s"))
+                                                 detail: "\(confirmed.label), \(Int(confirmed.duration))s",
+                                                 windowStart: confirmed.start,
+                                                 windowEnd: confirmed.end))
         return confirmed
     }
 
