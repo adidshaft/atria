@@ -2748,7 +2748,12 @@ struct AtriaHomeView: View {
                          hrImportStatus: $hrImportStatus,
                          hapticSettings: $hapticSettings,
                          officialAppInstalled: officialAppInstalled,
-                         developerModeEnabled: developerModeEnabled)
+                         developerModeEnabled: developerModeEnabled,
+                         onShowConnectionGuide: {
+                             showStrapScreen = false
+                             connectionGuideSnoozedUntil = nil
+                             showConnectionGuide = true
+                         })
     }
 
     private var researchValidationContent: some View {
