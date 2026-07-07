@@ -2564,7 +2564,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, "Workout cue. \\(coachCueTitle). \\(coachCueDetail). Current zone")
         assert_contains(self, live_workout, "strainTargetCard")
         assert_contains(self, live_workout, "Text(\"Heart-rate zones\")")
-        assert_contains(self, live_workout, "Text(\"Z\\(zone.rawValue)\")")
+        # 2026-07-07 dedup audit: the coach-cue "Z<n>" chip was the third
+        # zone readout on one screen (hero caption + zone-bar chip remain),
+        # so its pin is retired with it.
         assert_contains(self, live_workout, "Text(\"Z\\(z.rawValue)\")")
         assert_contains(self, live_workout, "private var strainTargetCard: some View")
         assert_contains(self, live_workout, "Label(\"Target strain\", systemImage: \"target\")")
@@ -2576,7 +2578,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-build\")")
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-hold\")")
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-ease\")")
-        assert_contains(self, live_workout, "focusPill(title: \"Now\", value: String(format: \"%.1f\", strain))")
+        # 2026-07-07 dedup audit: the "Now" pill duplicated the stats row's
+        # Strain tile on the same HUD; the tile is the single live readout.
         assert_contains(self, live_workout, "focusPill(title: \"Target\", value: strainTargetValueText)")
         assert_contains(self, live_workout, "focusPill(title: \"Cue\", value: strainTargetCue)")
         assert_contains(self, live_workout, "Target strain. Current")
