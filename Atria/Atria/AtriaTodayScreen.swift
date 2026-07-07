@@ -100,6 +100,12 @@ struct AtriaTodayScreen: View {
                 }
             }
 
+            // Cognitive-relief grouping (UX audit 2026-07-07): the screen
+            // stacked ten card-alike blocks with no breather. Two small
+            // kickers split "now" content from planning tools and the
+            // glance grid; extra top padding gives each group air.
+            sectionKicker("Plan & tools")
+
             if layoutConfig.showPlan {
                 AtriaTodayPlanCard(title: planTitle,
                                    detail: planDetail,
@@ -117,6 +123,8 @@ struct AtriaTodayScreen: View {
                     showWeeklyReport = true
                 }
             }
+
+            sectionKicker("At a glance")
 
             if glanceLayoutBars {
                 // Bars layout: one full-width horizontal bar per metric.
@@ -154,10 +162,6 @@ struct AtriaTodayScreen: View {
                                  onDeleteAPIKey: onDeleteAICoachAPIKey)
             }
 
-            AtriaTodayInfoRow(title: "Journal",
-                              value: journalValue,
-                              systemImage: "checklist",
-                              tint: .teal)
             }
         }
         .sheet(item: $metricDetail) { detail in
@@ -297,6 +301,18 @@ struct AtriaTodayScreen: View {
         } else {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
+    }
+
+    /// Tiny uppercase group kicker: enough structure to breathe, not a
+    /// full header card (UX audit 2026-07-07).
+    private func sectionKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 10)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private var topActionMenu: some View {

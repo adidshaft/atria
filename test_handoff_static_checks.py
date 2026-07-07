@@ -8662,7 +8662,9 @@ class HandoffStaticChecks(unittest.TestCase):
             # AtriaTodayMetric via the generic AtriaTodayGlanceItem(title: metric.label,
             # pattern pinned below.
             (today, "AtriaTodayGlanceItem(title: metric.label,"),
-            (today, "AtriaTodayInfoRow(title: \"Journal\","),
+            # 2026-07-07 UX audit: the Journal info row duplicated the
+            # shortcut strip's Journal value on the same screen and was
+            # removed; the shortcut strip (pinned below) carries the value.
             (today, "private struct AtriaTodayLiveStatusStrip: View, Equatable"),
             (today, "private struct AtriaTodayPlanCard: View, Equatable"),
             (today, "private struct AtriaTodayGlanceTile: View, Equatable"),
@@ -8826,7 +8828,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaTodayPlanCard(title: planTitle,",
             "LazyVGrid(columns: glanceColumns, spacing: 10)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
-            "AtriaTodayInfoRow(title: \"Journal\",",
+            # 2026-07-07: Journal info row removed (duplicate of shortcut
+            # strip value) — see UX-audit commit.
         ]
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
