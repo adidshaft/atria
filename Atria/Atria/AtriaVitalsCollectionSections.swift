@@ -1439,6 +1439,18 @@ enum AtriaVitalsHeartRateTimeline {
             visible[Int((Double(index) * stride).rounded())]
         }
     }
+
+    /// Maps a pinch to a new window-slider index (2026-07-08, native zoom feel).
+    /// Pinch OUT (magnification > 1) zooms IN → a shorter window → lower index;
+    /// pinch IN zooms out. log2 so each doubling of the pinch moves ~2 steps.
+    /// Pure + clamped, so it's unit-testable and can't run off the slider.
+    static func windowIndex(fromPinchAnchor anchor: Double,
+                            magnification: Double,
+                            maxIndex: Double,
+                            sensitivity: Double = 2.0) -> Double {
+        let delta = log2(max(magnification, 0.01)) * sensitivity
+        return min(max((anchor - delta).rounded(), 0), maxIndex)
+    }
 }
 
 private struct AtriaVitalsHRVCardHost: View {
@@ -2844,6 +2856,9 @@ struct AtriaHeartRateExplorer: View {
     /// 8 = 24 hr), defaulting to 12 hr. Time-window zoom (user request
     /// 2026-07-07) instead of the old point-count zoom.
     @State private var windowIndex: Double = Double(AtriaVitalsHeartRateTimeline.Window.defaultWindow.rawValue)
+    /// windowIndex captured when a pinch begins, so magnification maps to an
+    /// absolute zoom rather than compounding each frame.
+    @State private var pinchAnchorIndex: Double?
     @State private var series: AtriaHeartRateChartSeries
     @State private var didDebugLoadMetricArchive = false
     @Environment(\.colorScheme) private var colorScheme
@@ -2898,13 +2913,28 @@ struct AtriaHeartRateExplorer: View {
                                         selectedTime: $selectedTime)
                     .frame(maxHeight: .infinity)
                     .frame(minHeight: 320)
+                    // Native pinch-to-zoom over the same window the slider drives
+                    // (2026-07-08). Two-finger, so it never fights the one-finger
+                    // tap/drag inspection.
+                    .gesture(
+                        MagnifyGesture()
+                            .onChanged { value in
+                                let anchor = pinchAnchorIndex ?? windowIndex
+                                if pinchAnchorIndex == nil { pinchAnchorIndex = anchor }
+                                windowIndex = AtriaVitalsHeartRateTimeline.windowIndex(
+                                    fromPinchAnchor: anchor,
+                                    magnification: value.magnification,
+                                    maxIndex: Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1))
+                            }
+                            .onEnded { _ in pinchAnchorIndex = nil }
+                    )
 
                 VStack(spacing: 6) {
                     HStack {
                         Text("Showing last \(currentWindow.label)")
                             .font(.subheadline.weight(.bold))
                         Spacer(minLength: 0)
-                        Text("drag to zoom \u{00b7} tap to inspect")
+                        Text("pinch or drag to zoom \u{00b7} tap to inspect")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }

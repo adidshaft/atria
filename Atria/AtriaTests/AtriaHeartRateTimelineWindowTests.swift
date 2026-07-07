@@ -52,4 +52,26 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertGreaterThan(merged.count, 180, "must not pre-downsample to 180 or the 1-min zoom loses detail")
         XCTAssertEqual(merged, merged.sorted { $0.t < $1.t })
     }
+    func testPinchOutZoomsIn() {
+        // anchor 12h (index 7), pinch out 2x -> ~2 steps shorter window (6h, index 5).
+        let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 7, magnification: 2, maxIndex: 8)
+        XCTAssertEqual(idx, 5, accuracy: 0.5)
+    }
+
+    func testPinchInZoomsOutAndClamps() {
+        // anchor 12h, pinch in to 0.5 -> ~2 steps wider (24h, clamped to 8).
+        let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 7, magnification: 0.5, maxIndex: 8)
+        XCTAssertEqual(idx, 8, accuracy: 0.01)
+    }
+
+    func testPinchClampsAtFloor() {
+        let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 0, magnification: 8, maxIndex: 8)
+        XCTAssertEqual(idx, 0, accuracy: 0.01)
+    }
+
+    func testNoPinchKeepsAnchor() {
+        let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 4, magnification: 1, maxIndex: 8)
+        XCTAssertEqual(idx, 4, accuracy: 0.01)
+    }
 }
+
