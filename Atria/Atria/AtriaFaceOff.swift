@@ -15,6 +15,9 @@ struct AtriaFaceOffPayload: Codable, Equatable, Identifiable {
         let s: Double?
         /// Sleep hours, tenths.
         let z: Double?
+        /// Resting HR bpm (Face-Off RHR row, 2026-07-07). Optional so links
+        /// from older builds decode with nil and older builds ignore it.
+        var h: Int? = nil
     }
 
     static let currentVersion = 1
@@ -45,6 +48,12 @@ struct AtriaFaceOffPayload: Codable, Equatable, Identifiable {
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
     }
+
+    var averageRestingHR: Int? {
+        let values = days.compactMap(\.h)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / values.count
+    }
 }
 
 enum AtriaFaceOff {
@@ -71,7 +80,8 @@ enum AtriaFaceOff {
             stats.append(AtriaFaceOffPayload.DayStat(o: offset,
                                                      r: metric.recoveryPercent,
                                                      s: strainTenths,
-                                                     z: sleepHoursTenths))
+                                                     z: sleepHoursTenths,
+                                                     h: metric.restingHR))
         }
         guard stats.contains(where: { $0.r != nil || $0.s != nil || $0.z != nil }) else { return nil }
         let cleanName = String(name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -134,7 +144,8 @@ enum AtriaFaceOff {
             AtriaFaceOffPayload.DayStat(o: min(max(day.o, 0), 30),
                                         r: day.r.map { min(max($0, 1), 99) },
                                         s: day.s.map { min(max($0, 0), 21) },
-                                        z: day.z.map { min(max($0, 0), 16) })
+                                        z: day.z.map { min(max($0, 0), 16) },
+                                        h: day.h.map { min(max($0, 25), 120) })
         }
         return AtriaFaceOffPayload(v: raw.v,
                                    name: name.isEmpty ? "A friend" : name,
@@ -285,6 +296,12 @@ struct AtriaFaceOffView: View {
                         value: payload.averageStrain.map { String(format: "%.1f", $0) } ?? "--")
                 statRow(label: "Sleep",
                         value: payload.averageSleepHours.map { String(format: "%.1f h", $0) } ?? "--")
+                // RHR only renders when the link carried it — links from
+                // older builds simply don't show the row's value.
+                if payload.averageRestingHR != nil || mine?.averageRestingHR != nil {
+                    statRow(label: "Resting HR",
+                            value: payload.averageRestingHR.map { "\($0) bpm" } ?? "--")
+                }
                 statRow(label: "Days", value: "\(payload.days.count)")
             } else {
                 Text("Your week is still learning — wear the strap and check back.")
