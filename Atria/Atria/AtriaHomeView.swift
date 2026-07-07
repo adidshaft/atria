@@ -3202,7 +3202,7 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.85)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3294,7 +3294,8 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
                     .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.76)
+                    .minimumScaleFactor(0.85)
+                    .layoutPriority(1)
             }
 
             GeometryReader { proxy in

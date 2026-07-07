@@ -3690,7 +3690,7 @@ private struct AtriaSleepContextLens: View, Equatable {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.85)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)

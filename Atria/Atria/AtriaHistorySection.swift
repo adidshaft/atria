@@ -206,14 +206,9 @@ struct AtriaHistorySection: View, Equatable {
 
     private var historyHeroCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
-                Spacer(minLength: 8)
-                Text("\(model.sessionsCount)")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Metrics.electricStrain)
-            }
+            // The big trailing number duplicated the Sessions chip directly
+            // below it (UX audit 2026-07-07) -- the chip keeps the value.
+            AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
                 Button {
