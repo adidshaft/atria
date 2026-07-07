@@ -405,6 +405,13 @@ struct AtriaTriRing: View, Equatable {
                     .frame(width: 14)
 
                 VStack(alignment: .leading, spacing: 1) {
+                    // Metric NAME leads the chip (user feedback 2026-07-07:
+                    // "it's not mentioned what they are — Sleep, Recovery,
+                    // Strain") — value and context alone weren't legible.
+                    Text(metric.title)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     HStack(spacing: 4) {
                         // Tiny zone-tint dot -- an at-a-glance under/optimal/
                         // over cue that doesn't depend on reading the number.
@@ -423,11 +430,15 @@ struct AtriaTriRing: View, Equatable {
                             .lineLimit(1)
                             .minimumScaleFactor(0.80)
                     }
-                    Text(metric.detail)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.80)
+                    // The name line above already says it -- don't repeat
+                    // it when a learning-state detail defaults to the name.
+                    if metric.detail != metric.title {
+                        Text(metric.detail)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.80)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

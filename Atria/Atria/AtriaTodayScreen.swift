@@ -31,6 +31,10 @@ struct AtriaTodayScreen: View {
     let onStartWorkout: () -> Void
     let onCustomizeToday: () -> Void
     @State private var metricDetail: AtriaMetricDetailKind?
+    @State private var draggingSection: AtriaTodaySection?
+    // User-arranged order of the big sections below the ring (2026-07-07
+    // user feedback: "let people drag drop and arrange entire big sections").
+    @AtriaDefault("atria.today.sectionOrder") private var todaySectionOrderCSV: String = ""
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
     @State private var ringShareImage: UIImage?
@@ -100,66 +104,20 @@ struct AtriaTodayScreen: View {
                 }
             }
 
-            // Cognitive-relief grouping (UX audit 2026-07-07): the screen
-            // stacked ten card-alike blocks with no breather. Two small
-            // kickers split "now" content from planning tools and the
-            // glance grid; extra top padding gives each group air.
-            sectionKicker("Plan & tools")
-
-            if layoutConfig.showPlan {
-                AtriaTodayPlanCard(title: planTitle,
-                                   detail: planDetail,
-                                   target: planTargetText,
-                                   tint: displayHero.guidance.color)
-            }
-
-            AtriaTodayShortcutStrip(journalValue: journalValue,
-                                    onOpenJournal: onOpenJournal,
-                                    onOpenShare: onOpenShare,
-                                    onStartWorkout: onStartWorkout)
-
-            if layoutConfig.showPlan {
-                AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
-                    showWeeklyReport = true
-                }
-            }
-
-            sectionKicker("At a glance")
-
-            if glanceLayoutBars {
-                // Bars layout: one full-width horizontal bar per metric.
-                VStack(spacing: 10) {
-                    ForEach(glanceItems) { item in
-                        glanceTile(for: item, isBar: true)
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
-                            }
+            // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
+            // big sections (user feedback 2026-07-07): the major blocks below
+            // the ring render in a persisted order and reorder by
+            // long-press-drag. Kickers travel with their sections.
+            ForEach(orderedTodaySections) { section in
+                todaySection(section)
+                    .onDrag {
+                        draggingSection = section
+                        return NSItemProvider(object: section.rawValue as NSString)
                     }
-                }
-            } else {
-                LazyVGrid(columns: glanceColumns, spacing: 10) {
-                    ForEach(glanceItems) { item in
-                        glanceTile(for: item)
-                            .gridCellColumns(glanceColumnSpan(for: item))
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
-                            }
-                    }
-                }
-            }
-
-            if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
-                AtriaAICoachCard(context: coachContext,
-                                 preparedPayload: coachPayload,
-                                 settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey,
-                                 onSettingsChange: onAICoachSettingsChange,
-                                 onSaveAPIKey: onSaveAICoachAPIKey,
-                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+                    .onDrop(of: [.text],
+                            delegate: AtriaTodaySectionDropDelegate(item: section,
+                                                                    order: todaySectionOrderBinding,
+                                                                    dragging: $draggingSection))
             }
 
             }
@@ -300,6 +258,86 @@ struct AtriaTodayScreen: View {
             .buttonStyle(.plain)
         } else {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
+        }
+    }
+
+    private var orderedTodaySections: [AtriaTodaySection] {
+        let stored = todaySectionOrderCSV
+            .split(separator: ",")
+            .compactMap { AtriaTodaySection(rawValue: String($0)) }
+        var order = stored.filter { AtriaTodaySection.defaultOrder.contains($0) }
+        for section in AtriaTodaySection.defaultOrder where !order.contains(section) {
+            order.append(section)
+        }
+        return order
+    }
+
+    private var todaySectionOrderBinding: Binding<[AtriaTodaySection]> {
+        Binding(get: { orderedTodaySections },
+                set: { todaySectionOrderCSV = $0.map(\.rawValue).joined(separator: ",") })
+    }
+
+    @ViewBuilder
+    private func todaySection(_ section: AtriaTodaySection) -> some View {
+        switch section {
+        case .plan:
+            sectionKicker("Plan & tools")
+
+            if layoutConfig.showPlan {
+                AtriaTodayPlanCard(title: planTitle,
+                                   detail: planDetail,
+                                   target: planTargetText,
+                                   tint: displayHero.guidance.color)
+            }
+        case .shortcuts:
+            AtriaTodayShortcutStrip(journalValue: journalValue,
+                                    onOpenJournal: onOpenJournal,
+                                    onOpenShare: onOpenShare,
+                                    onStartWorkout: onStartWorkout)
+        case .weeklyPlan:
+            if layoutConfig.showPlan {
+                AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
+                    showWeeklyReport = true
+                }
+            }
+        case .glance:
+            sectionKicker("At a glance")
+
+            if glanceLayoutBars {
+                // Bars layout: one full-width horizontal bar per metric.
+                VStack(spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item, isBar: true)
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                    }
+                }
+            } else {
+                LazyVGrid(columns: glanceColumns, spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item)
+                            .gridCellColumns(glanceColumnSpan(for: item))
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                    }
+                }
+            }
+        case .coach:
+            if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
+                AtriaAICoachCard(context: coachContext,
+                                 preparedPayload: coachPayload,
+                                 settings: effectiveAICoachSettings,
+                                 hasAPIKey: aiCoachHasAPIKey,
+                                 onSettingsChange: onAICoachSettingsChange,
+                                 onSaveAPIKey: onSaveAICoachAPIKey,
+                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+            }
         }
     }
 
@@ -2343,5 +2381,48 @@ private struct AtriaTodayActionRow: View, Equatable {
                         in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+/// The user-arrangeable big sections of the Today screen (everything below
+/// the ring/live/highlights cluster). Raw values persist in
+/// `atria.today.sectionOrder`; unknown values are dropped and missing ones
+/// appended so the set can evolve.
+enum AtriaTodaySection: String, CaseIterable, Identifiable {
+    case plan, shortcuts, weeklyPlan, glance, coach
+
+    var id: String { rawValue }
+
+    static let defaultOrder: [AtriaTodaySection] = [.plan, .shortcuts, .weeklyPlan, .glance, .coach]
+}
+
+/// Classic SwiftUI reorder delegate: sections swap as the drag passes over
+/// them; the persisted CSV updates on every move so the arrangement survives
+/// even an interrupted drag.
+private struct AtriaTodaySectionDropDelegate: DropDelegate {
+    let item: AtriaTodaySection
+    @Binding var order: [AtriaTodaySection]
+    @Binding var dragging: AtriaTodaySection?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging,
+              dragging != item,
+              let from = order.firstIndex(of: dragging),
+              let to = order.firstIndex(of: item) else { return }
+        var next = order
+        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        withAnimation(.snappy(duration: 0.25)) {
+            order = next
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }
