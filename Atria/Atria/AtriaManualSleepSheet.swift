@@ -54,6 +54,13 @@ struct AtriaManualSleepSheet: View {
             return duration >= AggregateSleepCandidate.napMinimumDuration
                 && duration <= AggregateSleepCandidate.napMaximumSpan
         }
+        // Sensor-backed adjustments may save a SHORT sleep: the 3-hour floor
+        // is a fabrication guard for blank manual adds, but it blocked the
+        // real correction "this detected nap was actually sleep" whenever the
+        // captured window was under 3h (user-reported 2026-07-07).
+        if preservesSensorStages {
+            return duration >= AggregateSleepCandidate.napMinimumDuration
+        }
         return duration >= AggregateSleepCandidate.strictMinimumDuration
     }
 
@@ -98,6 +105,12 @@ struct AtriaManualSleepSheet: View {
                 return "Longer than 3 hours should be saved as sleep."
             }
             return "Ready to save as a nap."
+        }
+        if preservesSensorStages {
+            if duration < AggregateSleepCandidate.napMinimumDuration {
+                return "Sleep needs at least 20 minutes."
+            }
+            return "Ready to save as sleep."
         }
         if duration < AggregateSleepCandidate.strictMinimumDuration {
             return "Sleep needs at least 3 hours."
