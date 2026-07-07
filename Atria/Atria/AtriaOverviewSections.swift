@@ -4141,6 +4141,9 @@ struct AtriaMonthlyReportSheet: View {
                     .padding(16)
                     .atriaInsetCard(cornerRadius: 18, tint: .cyan)
 
+                    // Same grouping idiom as the weekly report (UX audit
+                    // density tail): month load vs. body signals.
+                    monthlyKicker("Month at a glance")
                     VStack(spacing: 10) {
                         AtriaWeeklyReportStatRow(title: "Recovery average",
                                                  value: recoveryAverageText,
@@ -4157,6 +4160,10 @@ struct AtriaMonthlyReportSheet: View {
                                                  detail: sleepPerformanceDeltaText,
                                                  systemImage: "moon.zzz.fill",
                                                  tint: .indigo)
+                    }
+
+                    monthlyKicker("Body signals")
+                    VStack(spacing: 10) {
                         AtriaWeeklyReportStatRow(title: "Resting heart rate",
                                                  value: rhrText,
                                                  detail: rhrDeltaText,
@@ -4185,6 +4192,15 @@ struct AtriaMonthlyReportSheet: View {
                 }
             }
         }
+    }
+
+    private func monthlyKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private var heroText: String {
