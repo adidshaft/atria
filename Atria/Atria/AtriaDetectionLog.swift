@@ -20,13 +20,21 @@ struct DetectionEvent: Codable, Equatable, Identifiable {
     /// fabricated, only ever built from real fields already computed at the
     /// call site.
     let detail: String
+    /// The detected activity's real window (2026-07-07, design backlog:
+    /// actionable workout rows). Optional and additive — events logged by
+    /// older builds decode without them and stay read-only.
+    var windowStart: Date? = nil
+    var windowEnd: Date? = nil
 
-    init(kind: String, reason: String? = nil, date: Date = Date(), detail: String) {
+    init(kind: String, reason: String? = nil, date: Date = Date(), detail: String,
+         windowStart: Date? = nil, windowEnd: Date? = nil) {
         self.id = UUID()
         self.kind = kind
         self.reason = reason
         self.date = date
         self.detail = detail
+        self.windowStart = windowStart
+        self.windowEnd = windowEnd
     }
 }
 

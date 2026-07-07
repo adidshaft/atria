@@ -131,6 +131,7 @@ struct AtriaTodayScreen: View {
             AtriaMetricDetailSheet(metric: detail,
                                    rollups: highlightRollups,
                                    confirmedWorkouts: debugMetricDetailWorkouts ?? store.confirmedWorkouts,
+                                   behaviorImpacts: store.behaviorImpactSummariesCache,
                                    baseline: AtriaBaselineTargetSnapshot(store.baseline),
                                    sleepHistory: store.sleepHistorySnapshot,
                                    guidance: displayHero.guidance,
@@ -451,12 +452,28 @@ struct AtriaTodayScreen: View {
     /// the hero, the share-as-picture render, and the accessibility
     /// summary so all three always agree.
     private func metric(for slot: AtriaTriRingSlot) -> AtriaTriRingMetric {
+        var metric: AtriaTriRingMetric
         switch slot {
-        case .sleep: return sleepMetric
-        case .recovery: return recoveryMetric
-        case .strain: return strainMetric
-        case .hrv: return hrvMetric
-        case .rhr: return restingHeartRateMetric
+        case .sleep: metric = sleepMetric
+        case .recovery: metric = recoveryMetric
+        case .strain: metric = strainMetric
+        case .hrv: metric = hrvMetric
+        case .rhr: metric = restingHeartRateMetric
+        }
+        // The ring center already shows this slot's numeral — the chip
+        // keeps title + detail only (dedup audit 2026-07-07).
+        if slotMatchesRingCenter(slot) {
+            metric.suppressesValue = true
+        }
+        return metric
+    }
+
+    private func slotMatchesRingCenter(_ slot: AtriaTriRingSlot) -> Bool {
+        switch (slot, layoutConfig.ringCenterMetric) {
+        case (.sleep, .sleep), (.recovery, .recovery), (.strain, .strain):
+            return true
+        default:
+            return false
         }
     }
 
