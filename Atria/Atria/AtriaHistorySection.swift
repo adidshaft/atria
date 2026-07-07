@@ -165,6 +165,10 @@ struct AtriaHistorySection: View, Equatable {
     @State private var selectedDay: AtriaHistoryDay?
     @State private var showAllDetections = false
 
+    /// Store access for the detections inbox's Adjust routing only —
+    /// deliberately NOT part of ==, which memoizes on the revisions.
+    let store: SessionStore
+
     static func == (lhs: AtriaHistorySection, rhs: AtriaHistorySection) -> Bool {
         lhs.rollupRevision == rhs.rollupRevision
             && lhs.workoutsRevision == rhs.workoutsRevision
@@ -194,7 +198,7 @@ struct AtriaHistorySection: View, Equatable {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showAllDetections) {
-            AtriaDetectionsListSheet(detections: model.detections)
+            AtriaDetectionsListSheet(detections: model.detections, store: store)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -533,6 +537,8 @@ struct AtriaDetectionRow: View, Equatable {
 /// "Detected" chip or the detections card's "See all" row.
 struct AtriaDetectionsListSheet: View {
     let detections: [DetectionEvent]
+    let store: SessionStore
+    @State private var adjustmentNight: SleepHistorySnapshot.Night?
 
     var body: some View {
         NavigationStack {
@@ -545,14 +551,66 @@ struct AtriaDetectionsListSheet: View {
                             .padding(.top, 40)
                     } else {
                         ForEach(detections) { event in
-                            AtriaDetectionRow(event: event)
+                            // Actionable inbox (design handoff): a sleep
+                            // auto-confirm whose night is UNIQUELY locatable
+                            // gets an Adjust route; anything ambiguous stays a
+                            // plain log row (fail closed — never route to a
+                            // guessed night).
+                            if let night = uniqueNight(for: event) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    AtriaDetectionRow(event: event)
+                                    Button {
+                                        adjustmentNight = night
+                                    } label: {
+                                        Label("Adjust this sleep", systemImage: "slider.horizontal.3")
+                                            .font(.caption.weight(.semibold))
+                                            .frame(maxWidth: .infinity, minHeight: 32)
+                                    }
+                                    .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
+                                }
+                            } else {
+                                AtriaDetectionRow(event: event)
+                            }
                         }
                     }
                 }
                 .padding(16)
             }
             .navigationTitle("Detections")
+            .sheet(item: $adjustmentNight) { night in
+                AtriaManualSleepSheet(initialStart: night.start,
+                                      initialEnd: night.end,
+                                      initialIsNap: night.isNapEvidence,
+                                      preservesSensorStages: true,
+                                      evidenceNight: night,
+                                      evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
+                                                                                                                     baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
+                    let saved = store.adjustSleepNight(originalStart: night.start,
+                                                       originalEnd: night.end,
+                                                       newStart: start,
+                                                       newEnd: end,
+                                                       isNap: isNap,
+                                                       rest: store.baseline.restingInt ?? 60,
+                                                       source: "detections_inbox_adjust") != nil
+                    if saved { adjustmentNight = nil }
+                    return saved
+                }
+            }
         }
+    }
+
+    /// The night this auto-confirm event refers to, or nil unless the match
+    /// is unambiguous: auto-confirms fire shortly after the night ends, so a
+    /// night qualifies when the event lands within [end - 1h, end + 12h] —
+    /// and exactly ONE night may qualify.
+    private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
+        guard event.kind == "sleepAutoConfirmed" else { return nil }
+        let matches = store.sleepHistorySnapshot.nights.filter { night in
+            guard let end = night.end else { return false }
+            let delta = event.date.timeIntervalSince(end)
+            return delta >= -3_600 && delta <= 12 * 3_600
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 }
 
