@@ -147,9 +147,31 @@ struct AtriaHealthScreen: View {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    /// One sleep-performance number for this whole screen (UX audit
+    /// inconsistency fix, 2026-07-07): live snapshot + the rollup path's
+    /// yesterday-strain semantics. The Sleep row detail and the Performance
+    /// tile both read this.
+    private var sleepPerformancePercentUnified: Int? {
+        guard let latest = store.sleepHistorySnapshot.latest else { return nil }
+        return store.sleepHistorySnapshot.sleepPerformancePercent(for: latest,
+                                                                  baseNeedHours: sleepBaseNeedHours,
+                                                                  yesterdayStrain: yesterdayStrainForLatestNight)
+    }
+
+    private var yesterdayStrainForLatestNight: Double? {
+        guard let latest = store.sleepHistorySnapshot.latest else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latest.day)) else { return nil }
+        return store.dailyRollupHistory
+            .first { calendar.isDate($0.day, inSameDayAs: priorDay) }?
+            .strain
+    }
+
     private var sleepPerformanceValue: String {
-        guard let latest = store.sleepHistorySnapshot.latest else { return "--" }
-        return "\(store.sleepHistorySnapshot.sleepPerformancePercent(for: latest, baseNeedHours: sleepBaseNeedHours))%"
+        guard let performance = sleepPerformancePercentUnified else { return "--" }
+        return "\(performance)%"
     }
 
     /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
@@ -517,6 +539,11 @@ struct AtriaHealthScreen: View {
     }
 
     private var sleepDetail: String {
+        // Same unified number as the Performance tile below; the persisted
+        // rollup only backstops when no live night exists.
+        if let performance = sleepPerformancePercentUnified {
+            return "\(performance)% need"
+        }
         if let performance = latestRollup?.sleepPerformance {
             return "\(performance)% need"
         }
