@@ -6655,8 +6655,10 @@ struct AtriaMetricDetailSheet: View {
                 if let latest = sleepHistory.latest {
                     AtriaSleepHypnogramCard(night: latest,
                                             neededHours: sleepHistory.sleepNeedHours(for: latest,
-                                                                                    baseNeedHours: sleepBaseNeedHours),
+                                                                                    baseNeedHours: sleepBaseNeedHours,
+                                                                                    yesterdayStrain: yesterdayStrainForLatestNight),
                                             consistencyPercent: sleepHistory.sleepConsistencyPercent)
+                    sleepNeedLedgerCard(for: latest)
                 }
             } contributors: {
                 AtriaMetricContributorRows(rows: sleepContributorRows, tint: Metrics.electricSleep)
@@ -6959,20 +6961,89 @@ struct AtriaMetricDetailSheet: View {
         return "Light"
     }
 
+    /// Strain of the day before the latest night's credited day -- the same
+    /// yesterdayStrain semantics the daily-rollup path uses, so the need shown
+    /// here matches the rollup-computed need (2026-07-07 design handoff).
+    private var yesterdayStrainForLatestNight: Double? {
+        guard let latest = sleepHistory.latest else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latest.day)) else { return nil }
+        return (preparedHistory.strain[.all] ?? [])
+            .first { calendar.isDate($0.day, inSameDayAs: priorDay) }?
+            .value
+    }
+
+    /// "How much you needed" ledger (design handoff): itemizes the four real
+    /// terms of the sleep-need math. The total is the exact number the
+    /// hypnogram card's need uses -- never a separately computed figure.
+    private func sleepNeedLedgerCard(for night: SleepHistorySnapshot.Night) -> some View {
+        let comps = sleepHistory.sleepNeedComponents(for: night,
+                                                     baseNeedHours: sleepBaseNeedHours,
+                                                     yesterdayStrain: yesterdayStrainForLatestNight)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("How much you needed")
+                .font(.headline.weight(.semibold))
+            sleepLedgerRow(name: "Baseline need", value: AtriaMetricFormat.sleepHours(comps.baseHours))
+            sleepLedgerRow(name: "Sleep debt", value: "+\(sleepLedgerMinutes(comps.debtAdderHours))")
+            sleepLedgerRow(name: "Recent strain", value: "+\(sleepLedgerMinutes(comps.strainAdderHours))")
+            sleepLedgerRow(name: "Nap credit", value: "\u{2212}\(sleepLedgerMinutes(comps.napCreditHours))")
+            Divider()
+            HStack {
+                Text("Total need")
+                    .font(.subheadline.weight(.bold))
+                Spacer(minLength: 8)
+                Text(AtriaMetricFormat.sleepHours(comps.totalHours))
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(Metrics.electricSleep)
+            }
+            if comps.isClamped {
+                Text("Capped to the 6\u{2013}10h range.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func sleepLedgerRow(name: String, value: String) -> some View {
+        HStack {
+            Text(name)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+        }
+    }
+
+    private func sleepLedgerMinutes(_ hours: Double) -> String {
+        "\(Int((hours * 60).rounded()))m"
+    }
+
     private var sleepContributorRows: [AtriaMetricContributorRow] {
         let latest = sleepHistory.latest
         let performance = latest.map {
-            sleepHistory.sleepPerformancePercent(for: $0, baseNeedHours: sleepBaseNeedHours)
+            sleepHistory.sleepPerformancePercent(for: $0,
+                                                 baseNeedHours: sleepBaseNeedHours,
+                                                 yesterdayStrain: yesterdayStrainForLatestNight)
         }
         let needText = latest.map {
-            AtriaMetricFormat.sleepHours(sleepHistory.sleepNeedHours(for: $0, baseNeedHours: sleepBaseNeedHours))
+            AtriaMetricFormat.sleepHours(sleepHistory.sleepNeedHours(for: $0,
+                                                                     baseNeedHours: sleepBaseNeedHours,
+                                                                     yesterdayStrain: yesterdayStrainForLatestNight))
         } ?? AtriaMetricFormat.sleepHours(sleepBaseNeedHours)
         return [
             AtriaMetricContributorRow(systemImage: "moon.fill",
                                       name: "Performance",
                                       value: latest?.durationText ?? "--",
                                       comparison: latest.map {
-                                          sleepHistory.sleepPerformanceSummary(for: $0, baseNeedHours: sleepBaseNeedHours)
+                                          sleepHistory.sleepPerformanceSummary(for: $0,
+                                                                               baseNeedHours: sleepBaseNeedHours,
+                                                                               yesterdayStrain: yesterdayStrainForLatestNight)
                                       } ?? "needed \(needText)",
                                       direction: performance.map { $0 >= 85 ? 1 : ($0 >= 70 ? 0 : -1) } ?? 0),
             AtriaMetricContributorRow(systemImage: "percent",

@@ -1,10 +1,25 @@
 import Foundation
 
 enum AtriaSleepBudget {
-    static func sleepNeed(baseHours: Double,
-                          yesterdayStrain: Double?,
-                          debtHours: Double,
-                          sameDayNapHours: Double) -> Double {
+    /// Itemized sleep-need math (2026-07-07 design-handoff ledger): the same
+    /// four terms sleepNeed() always combined, exposed so UI can show its work.
+    struct NeedComponents: Equatable {
+        let baseHours: Double
+        let strainAdderHours: Double
+        let debtAdderHours: Double
+        let napCreditHours: Double
+        let totalHours: Double
+
+        /// True when the 6-10h clamp changed the raw sum.
+        var isClamped: Bool {
+            abs((baseHours + strainAdderHours + debtAdderHours - napCreditHours) - totalHours) > 0.005
+        }
+    }
+
+    static func sleepNeedComponents(baseHours: Double,
+                                    yesterdayStrain: Double?,
+                                    debtHours: Double,
+                                    sameDayNapHours: Double) -> NeedComponents {
         let safeBase = min(max(baseHours, 6), 10)
         // Recent-strain sleep-need addition, continuous (WHOOP-style) instead of
         // the old binary "+30 min above strain 14" step. Anchored to WHOOP's
@@ -15,7 +30,22 @@ enum AtriaSleepBudget {
         let strainAdder = max(0, min(yesterdayStrain ?? 0, 21) - 8.0) * (0.62 / 7.0)
         let debtAdder = max(0, debtHours) * 0.5
         let napCredit = max(0, sameDayNapHours) * 0.9
-        return min(max(safeBase + strainAdder + debtAdder - napCredit, 6), 10)
+        let total = min(max(safeBase + strainAdder + debtAdder - napCredit, 6), 10)
+        return NeedComponents(baseHours: safeBase,
+                              strainAdderHours: strainAdder,
+                              debtAdderHours: debtAdder,
+                              napCreditHours: napCredit,
+                              totalHours: total)
+    }
+
+    static func sleepNeed(baseHours: Double,
+                          yesterdayStrain: Double?,
+                          debtHours: Double,
+                          sameDayNapHours: Double) -> Double {
+        sleepNeedComponents(baseHours: baseHours,
+                            yesterdayStrain: yesterdayStrain,
+                            debtHours: debtHours,
+                            sameDayNapHours: sameDayNapHours).totalHours
     }
 
     static func sleepDebt(nights: [(needed: Double, slept: Double)]) -> Double {
