@@ -658,7 +658,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 /// didn't surface (e.g. a walk or dance you wore the strap for). Metrics are
 /// derived from the strap samples in that window — if there were none, it can't
 /// be saved, because Atria never invents heart rate or strain.
-private struct AtriaAddWorkoutSheet: View {
+struct AtriaAddWorkoutSheet: View {
     @ObservedObject var store: SessionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -667,11 +667,14 @@ private struct AtriaAddWorkoutSheet: View {
     @State private var endTime: Date
     @State private var failed = false
 
-    init(store: SessionStore) {
+    /// Seedable window (2026-07-07): the detections inbox opens this sheet
+    /// pre-filled with a detected-but-unsaved window. Internal (not private)
+    /// for that same reason.
+    init(store: SessionStore, initialStart: Date? = nil, initialEnd: Date? = nil) {
         self.store = store
         let now = Date()
-        _endTime = State(initialValue: now)
-        _startTime = State(initialValue: now.addingTimeInterval(-45 * 60))
+        _endTime = State(initialValue: initialEnd ?? now)
+        _startTime = State(initialValue: initialStart ?? (initialEnd ?? now).addingTimeInterval(-45 * 60))
     }
 
     var body: some View {
