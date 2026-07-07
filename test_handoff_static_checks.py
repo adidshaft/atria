@@ -9955,7 +9955,9 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, health, needle)
         prepared_start = overview.index("private struct AtriaPreparedMetricHistory")
-        prepared_end = overview.index("private struct AtriaDetailChartPoint", prepared_start)
+        # 2026-07-07: chart point type became internal so the shared
+        # expanded-chart component (AtriaExpandedChart.swift) can consume it.
+        prepared_end = overview.index("struct AtriaDetailChartPoint", prepared_start)
         prepared_source = overview[prepared_start:prepared_end]
         assert_not_contains(self, overview, "dailyMetricHistory: store.dailyMetricHistory")
         assert_not_contains(self, overview, "let dailyMetricHistory: [SavedDailyMetric]")
