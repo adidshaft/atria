@@ -7413,13 +7413,9 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var strainContributorRows: [AtriaMetricContributorRow] {
-        let latest = preparedHistory.latestStrain[range]
+        // "Day strain" row removed (dedup audit 2026-07-07): the hero and
+        // the gauge already show the value; the Target row owns the target.
         return [
-            AtriaMetricContributorRow(systemImage: "flame.fill",
-                                      name: "Day strain",
-                                      value: latest.map { String(format: "%.1f", $0) } ?? "--",
-                                      comparison: guidance.target.map { String(format: "target %.1f", $0) } ?? "target building",
-                                      direction: 0),
             AtriaMetricContributorRow(systemImage: "target",
                                       name: "Target",
                                       value: guidance.target.map { String(format: "%.1f", $0) } ?? "--",
@@ -7598,16 +7594,10 @@ struct AtriaMetricDetailSheet: View {
         // check and the ForEach below.
         let workouts = todayConfirmedWorkouts
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Workouts")
-                    .font(.subheadline.weight(.semibold))
-                Spacer(minLength: 0)
-                Text(guidance.target.map { String(format: "Target %.1f", $0) } ?? "Target building")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(Metrics.electricStrain)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
+            // Header target capsule removed (dedup audit 2026-07-07): the
+            // Target contributor row is the single textual copy.
+            Text("Workouts")
+                .font(.subheadline.weight(.semibold))
 
             if workouts.isEmpty {
                 Label("No confirmed workouts today", systemImage: "figure.run")
