@@ -758,13 +758,17 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                   debtHours: 0,
                                                   sameDayNapHours: 2),
                        6)
+        // 2026-07-07: strain adder is continuous and WHOOP-anchored (~0 at
+        // strain 8, +37 min at the published 15-strain anchor) instead of the
+        // old binary "+30 min at strain >= 14" step.
         XCTAssertEqual(AtriaSleepBudget.sleepNeed(baseHours: 8,
-                                                  yesterdayStrain: 14.0,
+                                                  yesterdayStrain: 15.0,
                                                   debtHours: 0,
                                                   sameDayNapHours: 0),
-                       8.5)
+                       8.62,
+                       accuracy: 0.0001)
         XCTAssertEqual(AtriaSleepBudget.sleepNeed(baseHours: 8,
-                                                  yesterdayStrain: 13.9,
+                                                  yesterdayStrain: 8.0,
                                                   debtHours: 0,
                                                   sameDayNapHours: 0),
                        8.0)
@@ -1121,7 +1125,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                baseNeedHours: 8,
                                                yesterdayStrain: 14,
                                                calendar: calendar),
-                       9.05,
+                       // 8 base + (14-8)*0.62/7 strain adder + 1.0 debt - 0.45 nap credit
+                       9.0814,
                        accuracy: 0.001)
         XCTAssertEqual(snapshot.sleepPerformancePercent(for: main,
                                                         baseNeedHours: 8,
