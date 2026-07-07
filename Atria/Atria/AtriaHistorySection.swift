@@ -541,6 +541,7 @@ struct AtriaDetectionsListSheet: View {
     /// the Adjust routing only exists when a store is present.
     var store: SessionStore? = nil
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
+    @State private var addWorkoutSeed: DetectionEvent?
 
     var body: some View {
         NavigationStack {
@@ -570,6 +571,23 @@ struct AtriaDetectionsListSheet: View {
                                     }
                                     .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
                                 }
+                            } else if isSaveableWorkout(event) {
+                                // Workout rows became actionable once events
+                                // carry their real window (2026-07-07):
+                                // detected-but-unsaved windows offer a
+                                // pre-filled save; anything without a window
+                                // or already saved stays a plain log row.
+                                VStack(alignment: .leading, spacing: 8) {
+                                    AtriaDetectionRow(event: event)
+                                    Button {
+                                        addWorkoutSeed = event
+                                    } label: {
+                                        Label("Save as workout", systemImage: "plus.circle")
+                                            .font(.caption.weight(.semibold))
+                                            .frame(maxWidth: .infinity, minHeight: 32)
+                                    }
+                                    .atriaCardAction(prominent: false, tint: Metrics.electricStrain)
+                                }
                             } else {
                                 AtriaDetectionRow(event: event)
                             }
@@ -579,6 +597,15 @@ struct AtriaDetectionsListSheet: View {
                 .padding(16)
             }
             .navigationTitle("Detections")
+            .sheet(item: $addWorkoutSeed) { event in
+                if let store {
+                    AtriaAddWorkoutSheet(store: store,
+                                         initialStart: event.windowStart,
+                                         initialEnd: event.windowEnd)
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                }
+            }
             .sheet(item: $adjustmentNight) { night in
                 if let store {
                     AtriaManualSleepSheet(initialStart: night.start,
@@ -607,6 +634,19 @@ struct AtriaDetectionsListSheet: View {
     /// is unambiguous: auto-confirms fire shortly after the night ends, so a
     /// night qualifies when the event lands within [end - 1h, end + 12h] —
     /// and exactly ONE night may qualify.
+    /// A workout detection is saveable when it carries its real window, the
+    /// store is present, and no confirmed workout already overlaps that
+    /// window (those were either saved from review or would duplicate).
+    private func isSaveableWorkout(_ event: DetectionEvent) -> Bool {
+        guard event.kind == "workoutDetected",
+              event.reason != "confirmed",
+              let start = event.windowStart,
+              let end = event.windowEnd,
+              end > start,
+              let store else { return false }
+        return !store.confirmedWorkouts.contains { $0.end > start && $0.start < end }
+    }
+
     private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
         guard let store, event.kind == "sleepAutoConfirmed" else { return nil }
         let matches = store.sleepHistorySnapshot.nights.filter { night in

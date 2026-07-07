@@ -26,6 +26,10 @@ struct AtriaTriRingMetric: Equatable {
     /// 1.0. Nil -- and no marker drawn -- whenever there isn't a real target
     /// to honestly show (never fabricated).
     var targetFraction: Double? = nil
+    /// True when the ring center already shows this metric's value — the
+    /// chip then renders title + detail only (dedup audit 2026-07-07: the
+    /// big center numeral repeated verbatim in its own legend chip).
+    var suppressesValue: Bool = false
 }
 
 /// Which ring band (outer/middle/inner) a slot draws on, AND -- since the
@@ -412,6 +416,9 @@ struct AtriaTriRing: View, Equatable {
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    // Value line suppressed when the ring center owns this
+                    // metric's numeral (dedup audit 2026-07-07).
+                    if !metric.suppressesValue {
                     HStack(spacing: 4) {
                         // Tiny zone-tint dot -- an at-a-glance under/optimal/
                         // over cue that doesn't depend on reading the number.
@@ -429,6 +436,7 @@ struct AtriaTriRing: View, Equatable {
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .lineLimit(1)
                             .minimumScaleFactor(0.80)
+                    }
                     }
                     // The name line above already says it -- don't repeat
                     // it when a learning-state detail defaults to the name.

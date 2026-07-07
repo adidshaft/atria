@@ -602,14 +602,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(item.segmentedLabel)",
             ".accessibilityLabel(item.menuLabel)",
             "@State private var rangeCoverage: [AtriaTrendRange: Int] = [:]",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "if periodReadout.hasEnoughSignal",
             "AtriaTrendPeriodBalanceMap(readout: periodReadout)",
             "AtriaTrendGlanceBoard(readout: periodReadout)",
             "AtriaTrendRangeReportCard(readout: periodReadout)",
             "private struct AtriaTrendGlanceBoard: View, Equatable",
-            "glanceLane(title: \"Recovery\"",
-            "glanceLane(title: \"Strain\"",
+            # 2026-07-07 dedup audit: the Recovery/Strain glance lanes were
+            # the third rendering of the reserve/load pair — the balance map
+            # owns it now; the board keeps its per-metric delta gauges.
             "metricGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "metricGauge(label: \"RHR\", delta: readout.restingHR, tint: .pink)",
             "metricGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
@@ -659,7 +662,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var periodComparisonFloor: Double",
             "private static func prepareRangeCoverage(points: [AtriaTrendPoint]",
             "rangeCoverage = Self.prepareRangeCoverage(points: points,",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "private struct AtriaTrendRangeDock: View",
             "@Binding var selectedRange: AtriaTrendRange",
             "ForEach(AtriaTrendRange.allCases) { range in",
@@ -686,7 +691,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let priorAverageText: String?",
             "self.rangeText = metric.rangeText(low: low, high: high)",
             "AtriaTrendRangeSummaryStrip(summary: summary, tint: metric.tint)",
-            "summaryPill(label: \"Range\", value: summary.rangeText)",
+            # 2026-07-07 dedup audit: Range pill removed (position band
+            # states low/high with position context).
+            "summaryPill(label: \"Avg\", value: summary.averageText)",
             "summaryPill(label: \"Prior\", value: priorAverageText)",
             "AtriaTrendRangePositionBand(series: prepared.series,",
             "private struct AtriaTrendRangePositionBand: View, Equatable",
@@ -1096,7 +1103,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct AtriaHeartRateAxisChart: View, Equatable",
             "let yDomain: ClosedRange<Int>",
             "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain",
-            "AreaMark(x: .value(\"Time\", point.t),\n                     yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                     yEnd: .value(\"BPM\", point.bpm))",
+            # 2026-07-07: the raw-line marks moved inside the smoothed/raw
+            # branch (HR smoothing, user feedback) — indentation deepened.
+            "AreaMark(x: .value(\"Time\", point.t),\n                             yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                             yEnd: .value(\"BPM\", point.bpm))",
             ".chartXAxis",
             ".chartYAxis",
             ".chartXSelection(value: $selectedTime)",
@@ -2562,7 +2571,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, "Workout cue. \\(coachCueTitle). \\(coachCueDetail). Current zone")
         assert_contains(self, live_workout, "strainTargetCard")
         assert_contains(self, live_workout, "Text(\"Heart-rate zones\")")
-        assert_contains(self, live_workout, "Text(\"Z\\(zone.rawValue)\")")
+        # 2026-07-07 dedup audit: the coach-cue "Z<n>" chip was the third
+        # zone readout on one screen (hero caption + zone-bar chip remain),
+        # so its pin is retired with it.
         assert_contains(self, live_workout, "Text(\"Z\\(z.rawValue)\")")
         assert_contains(self, live_workout, "private var strainTargetCard: some View")
         assert_contains(self, live_workout, "Label(\"Target strain\", systemImage: \"target\")")
@@ -2574,7 +2585,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-build\")")
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-hold\")")
         assert_contains(self, live_workout, "arguments.contains(\"live-workout-target-ease\")")
-        assert_contains(self, live_workout, "focusPill(title: \"Now\", value: String(format: \"%.1f\", strain))")
+        # 2026-07-07 dedup audit: the "Now" pill duplicated the stats row's
+        # Strain tile on the same HUD; the tile is the single live readout.
         assert_contains(self, live_workout, "focusPill(title: \"Target\", value: strainTargetValueText)")
         assert_contains(self, live_workout, "focusPill(title: \"Cue\", value: strainTargetCue)")
         assert_contains(self, live_workout, "Target strain. Current")
@@ -5740,7 +5752,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityLabel(chartAccessibilityLabel)",
             "private var chartAccessibilityLabel: String",
             "\\(prepared.series.count) days in view.",
-            "Latest \\(summary.latestText), average \\(summary.averageText), range \\(summary.rangeText)",
+            # 2026-07-07 dedup audit: Latest/Range pills removed from the
+            # summary strip (position band owns them).
+            "Average \\(summary.averageText)",
             "private struct AtriaTrendPreparedSeries",
             "@State private var prepared = AtriaTrendPreparedSeries.empty",
             "@State private var periodReadout = AtriaTrendPeriodReadout.empty",
@@ -5752,7 +5766,9 @@ class HandoffStaticChecks(unittest.TestCase):
             # subtracting `range.days`.
             "range.hasPriorPeriod",
             "previousSeries: previousSamples",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "private struct AtriaTrendRangeDock: View",
             "Label(\"Ranges\", systemImage: \"calendar.badge.clock\")",
             "rangeNode(for: range)",
@@ -5788,8 +5804,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "accessibilityLabel(assessment.accessibilityText)",
             "AtriaTrendGlanceBoard(readout: periodReadout)",
             "private struct AtriaTrendGlanceBoard: View, Equatable",
-            "glanceLane(title: \"Recovery\"",
-            "glanceLane(title: \"Strain\"",
+            # 2026-07-07 dedup audit: the Recovery/Strain glance lanes were
+            # the third rendering of the reserve/load pair — the balance map
+            # owns it now; the board keeps its per-metric delta gauges.
             "metricGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "metricGauge(label: \"RHR\", delta: readout.restingHR, tint: .pink)",
             "metricGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
@@ -5809,7 +5826,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "cuePill(title: \"Cue\"",
             "cuePill(title: \"Reserve\"",
             "cuePill(title: \"Load\"",
-            "Reserve \\(Int((readout.recoveryReserve * 100).rounded())) percent. Load \\(Int((readout.loadPressure * 100).rounded())) percent.",
+            # 2026-07-07 dedup audit: the report card's Reserve/Load bars
+            # moved to single ownership by the balance map.
+            "Balance map. Recovery reserve",
             "periodGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "periodGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
             "private struct AtriaTrendPeriodReadout",
@@ -5856,15 +5875,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "reportTile(strongestSignal)",
             "reportTile(pressureSignal)",
             "reportTile(nextStep)",
-            "reportBar(label: \"Res\", value: readout.recoveryReserve, tint: .cyan)",
-            "reportBar(label: \"Load\", value: readout.loadPressure, tint: Metrics.electricStrain)",
+            # 2026-07-07 dedup audit: the report card's Res/Load bars were
+            # the third rendering of the reserve/load pair in one stack —
+            # the balance map is now the single owner.
+            "reportTile(strongestSignal)",
             "Trend range report. Best signal",
             "private struct AtriaTrendPeriodBalanceMap: View, Equatable",
             "Label(\"Balance map\", systemImage: \"circle.grid.cross\")",
             "mapCorner(\"Ready\", alignment: .leading)",
             "mapCorner(\"Protect\", alignment: .trailing)",
-            "balancePill(\"Reserve\", value: readout.recoveryReserve, tint: .cyan)",
-            "balancePill(\"Load\", value: readout.loadPressure, tint: Metrics.electricStrain)",
+            # 2026-07-07 dedup audit: the balance map's pill row repeated
+            # the pair its 2D dot already encodes; the dot + a11y label are
+            # the single owner now.
+            "Balance map. Recovery reserve",
             "func directionScore(positiveDeltaIsGood: Bool) -> Double?",
             "private struct AtriaTrendSignalStack: View, Equatable",
             "Label(\"Signal stack\", systemImage: \"waveform.path\")",
@@ -8681,7 +8704,9 @@ class HandoffStaticChecks(unittest.TestCase):
             (health, 'AtriaHealthMetricRow(title: "Respiration",'),
             (strap, "struct AtriaStrapScreen: View"),
             (strap, 'Text("Strap")'),
-            (strap, 'AtriaStrapStatusRow(title: "Connection",'),
+            # 2026-07-07 dedup audit: the Connection row duplicated the
+            # state hero's value+detail verbatim and was removed.
+            (strap, 'connectionHero'),
             (strap, 'AtriaStrapStatusRow(title: "Battery",'),
             (strap, 'AtriaStrapStatusRow(title: "Mode",'),
             (strap, 'AtriaStrapStatusRow(title: "Session",'),
@@ -9955,7 +9980,9 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, health, needle)
         prepared_start = overview.index("private struct AtriaPreparedMetricHistory")
-        prepared_end = overview.index("private struct AtriaDetailChartPoint", prepared_start)
+        # 2026-07-07: chart point type became internal so the shared
+        # expanded-chart component (AtriaExpandedChart.swift) can consume it.
+        prepared_end = overview.index("struct AtriaDetailChartPoint", prepared_start)
         prepared_source = overview[prepared_start:prepared_end]
         assert_not_contains(self, overview, "dailyMetricHistory: store.dailyMetricHistory")
         assert_not_contains(self, overview, "let dailyMetricHistory: [SavedDailyMetric]")

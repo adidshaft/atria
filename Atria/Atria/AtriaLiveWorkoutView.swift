@@ -508,12 +508,8 @@ struct AtriaLiveWorkoutView: View {
                     Text(coachCueTitle)
                         .font(.headline.weight(.black))
                         .foregroundStyle(.white)
-                    Text("Z\(zone.rawValue)")
-                        .font(.caption.weight(.black).monospacedDigit())
-                        .foregroundStyle(zone.color)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(zone.color.opacity(0.16), in: Capsule())
+                    // Zone chip removed (dedup audit): the zone bar's chip
+                    // and the hero caption already state the current zone.
                 }
 
                 Text(coachCueDetail)
@@ -614,12 +610,8 @@ struct AtriaLiveWorkoutView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
-                Text(strainTargetValueText)
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(Metrics.electricStrain)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Metrics.electricStrain.opacity(0.16), in: Capsule())
+                // Header value capsule removed (dedup audit 2026-07-07): the
+                // labeled Target pill below is the single copy.
             }
 
             GeometryReader { proxy in
@@ -643,7 +635,9 @@ struct AtriaLiveWorkoutView: View {
             .accessibilityHidden(true)
 
             HStack(spacing: 8) {
-                focusPill(title: "Now", value: String(format: "%.1f", strain))
+                // "Now" pill removed (dedup audit): the stats row's Strain
+                // tile is the single live-strain readout; the progress bar
+                // here shows position vs target.
                 focusPill(title: "Target", value: strainTargetValueText)
                 focusPill(title: "Cue", value: strainTargetCue)
             }

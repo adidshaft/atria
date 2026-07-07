@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 /// Activity Monitor — every logged activity (sleep, naps, workouts) in one
 /// place, grouped by day newest-first, each row tappable to review or adjust.
@@ -16,6 +17,10 @@ struct AtriaActivityMonitorTab: View {
 
     @State private var workoutDetail: UserConfirmedWorkout?
     @State private var showAddWorkout = false
+    /// Day shown in the header timeline (user feedback 2026-07-07: "the top
+    /// of activity should have an entire graph with activities listed and
+    /// days can be changed").
+    @State private var timelineDay: Date = Calendar.current.startOfDay(for: Date())
 
     private enum Entry: Identifiable {
         case sleep(SleepHistorySnapshot.Night)
@@ -64,6 +69,8 @@ struct AtriaActivityMonitorTab: View {
 
             addActivityMenu
 
+            dayTimelineCard
+
             let sections = daySections
             if sections.isEmpty {
                 emptyState
@@ -83,6 +90,122 @@ struct AtriaActivityMonitorTab: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+    }
+
+    /// A span of one activity clipped to the selected day, for the header
+    /// timeline lanes.
+    private struct TimelineSpan: Identifiable {
+        let id: String
+        let lane: String
+        let start: Date
+        let end: Date
+        let tint: Color
+        let label: String
+    }
+
+    private var timelineSpans: [TimelineSpan] {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: timelineDay)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
+
+        var spans: [TimelineSpan] = []
+        for night in store.sleepHistorySnapshot.nights {
+            guard let start = night.start, let end = night.end,
+                  end > dayStart, start < dayEnd else { continue }
+            spans.append(TimelineSpan(id: "sleep-\(night.id)",
+                                      lane: night.isNapEvidence ? "Nap" : "Sleep",
+                                      start: max(start, dayStart),
+                                      end: min(end, dayEnd),
+                                      tint: Metrics.electricSleep,
+                                      label: night.isNapEvidence ? "Nap" : "Sleep"))
+        }
+        for workout in store.confirmedWorkouts {
+            guard workout.end > dayStart, workout.start < dayEnd else { continue }
+            spans.append(TimelineSpan(id: "workout-\(workout.id)",
+                                      lane: "Workout",
+                                      start: max(workout.start, dayStart),
+                                      end: min(workout.end, dayEnd),
+                                      tint: Metrics.electricStrain,
+                                      label: workout.activitySubtype ?? workout.activityType ?? "Workout"))
+        }
+        return spans
+    }
+
+    private var canGoToNextDay: Bool {
+        Calendar.current.startOfDay(for: timelineDay) < Calendar.current.startOfDay(for: Date())
+    }
+
+    private var dayTimelineCard: some View {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: timelineDay)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+        let spans = timelineSpans
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button {
+                    if let previous = calendar.date(byAdding: .day, value: -1, to: timelineDay) {
+                        timelineDay = previous
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline.weight(.bold))
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Previous day")
+
+                Spacer(minLength: 0)
+                Text(calendar.isDateInToday(timelineDay)
+                     ? "Today"
+                     : timelineDay.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                    .font(.subheadline.weight(.bold))
+                Spacer(minLength: 0)
+
+                Button {
+                    if let next = calendar.date(byAdding: .day, value: 1, to: timelineDay) {
+                        timelineDay = next
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.bold))
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canGoToNextDay)
+                .opacity(canGoToNextDay ? 1 : 0.3)
+                .accessibilityLabel("Next day")
+            }
+
+            if spans.isEmpty {
+                Text("Nothing recorded this day.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 84)
+            } else {
+                Chart(spans) { span in
+                    BarMark(xStart: .value("Start", span.start),
+                            xEnd: .value("End", span.end),
+                            y: .value("Lane", span.lane))
+                        .foregroundStyle(span.tint.opacity(0.85))
+                        .cornerRadius(4)
+                }
+                .chartXScale(domain: dayStart...dayEnd)
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .hour, count: 6)) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.hour())
+                    }
+                }
+                .frame(height: max(64, CGFloat(Set(spans.map(\.lane)).count) * 34 + 30))
+                .clipped()
+            }
+        }
+        .padding(14)
+        .atriaCard(emphasis: .soft)
+        .animation(.snappy(duration: 0.2), value: timelineDay)
     }
 
     private var addActivityMenu: some View {
@@ -293,6 +416,48 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         _endTime = State(initialValue: workout.end)
     }
 
+    /// The workout window's real recorded HR samples from the saved
+    /// sessions that overlap it. Empty when no session covered the window
+    /// (e.g. a manually added workout) — the card then doesn't render.
+    private var heartRateTracePoints: [AtriaHomeModel.HeartRateChartPoint] {
+        store.sessions
+            .filter { $0.end > workout.start && $0.start < workout.end }
+            .flatMap { session in
+                session.points.compactMap { point -> AtriaHomeModel.HeartRateChartPoint? in
+                    let t = session.start.addingTimeInterval(point.t)
+                    guard t >= workout.start, t <= workout.end, point.bpm > 0 else { return nil }
+                    return AtriaHomeModel.HeartRateChartPoint(t: t, bpm: point.bpm)
+                }
+            }
+            .sorted { $0.t < $1.t }
+    }
+
+    /// Per-workout HR trace (design backlog item 6). Reuses the shared axis
+    /// chart, which auto-smooths dense windows into an average + min-max
+    /// band per the 2026-07-07 feedback.
+    @ViewBuilder
+    private var heartRateTraceCard: some View {
+        let points = heartRateTracePoints
+        if points.count >= 30 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Heart-rate trace")
+                    .font(.subheadline.weight(.semibold))
+                AtriaHeartRateAxisChart(points: points,
+                                        yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                        selectedTime: .constant(nil))
+                    .frame(height: 150)
+                    .clipped()
+                Text("Recorded strap samples during this workout.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .atriaInsetCard(tint: .red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Heart-rate trace, \(points.count) samples during this workout.")
+        }
+    }
+
     private var timesChanged: Bool {
         abs(startTime.timeIntervalSince(workout.start)) >= 60
             || abs(endTime.timeIntervalSince(workout.end)) >= 60
@@ -312,6 +477,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     AtriaPanelSectionHeader(title: "Workout",
                                             subtitle: Self.rangeText(workout))
+
+                    heartRateTraceCard
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("NAME")
@@ -491,7 +658,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 /// didn't surface (e.g. a walk or dance you wore the strap for). Metrics are
 /// derived from the strap samples in that window — if there were none, it can't
 /// be saved, because Atria never invents heart rate or strain.
-private struct AtriaAddWorkoutSheet: View {
+struct AtriaAddWorkoutSheet: View {
     @ObservedObject var store: SessionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -500,11 +667,14 @@ private struct AtriaAddWorkoutSheet: View {
     @State private var endTime: Date
     @State private var failed = false
 
-    init(store: SessionStore) {
+    /// Seedable window (2026-07-07): the detections inbox opens this sheet
+    /// pre-filled with a detected-but-unsaved window. Internal (not private)
+    /// for that same reason.
+    init(store: SessionStore, initialStart: Date? = nil, initialEnd: Date? = nil) {
         self.store = store
         let now = Date()
-        _endTime = State(initialValue: now)
-        _startTime = State(initialValue: now.addingTimeInterval(-45 * 60))
+        _endTime = State(initialValue: initialEnd ?? now)
+        _startTime = State(initialValue: initialStart ?? (initialEnd ?? now).addingTimeInterval(-45 * 60))
     }
 
     var body: some View {

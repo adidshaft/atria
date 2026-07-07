@@ -2041,7 +2041,10 @@ struct AtriaHomeView: View {
                             .id(Self.debugDashboardScrollBottomID)
                     }
                     .frame(maxWidth: contentWidth)
-                    .padding(.horizontal, 16)
+                    // 12pt gutter (user feedback 2026-07-07: "a lot of unused
+                    // space on the sides" — three inset layers stacked to
+                    // 44-46pt/side; this is the shared knob).
+                    .padding(.horizontal, 12)
                     .padding(.top, 12)
                     .padding(.bottom, scrollBottomClearance)
                     .frame(maxWidth: .infinity)
@@ -2748,7 +2751,12 @@ struct AtriaHomeView: View {
                          hrImportStatus: $hrImportStatus,
                          hapticSettings: $hapticSettings,
                          officialAppInstalled: officialAppInstalled,
-                         developerModeEnabled: developerModeEnabled)
+                         developerModeEnabled: developerModeEnabled,
+                         onShowConnectionGuide: {
+                             showStrapScreen = false
+                             connectionGuideSnoozedUntil = nil
+                             showConnectionGuide = true
+                         })
     }
 
     private var researchValidationContent: some View {

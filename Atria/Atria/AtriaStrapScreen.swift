@@ -22,6 +22,9 @@ struct AtriaStrapScreen: View {
     @Binding var hapticSettings: AtriaHapticAlertSettings
     let officialAppInstalled: Bool
     let developerModeEnabled: Bool
+    /// Opens the status-aware connection guide sheet (owned by AtriaHomeView).
+    /// Optional so previews/tests without the home context still compile.
+    var onShowConnectionGuide: (() -> Void)? = nil
     @State private var rawExportURL: URL?
     @State private var rawExportInProgress = false
     @State private var rawExportStatus = "Full-resolution zip"
@@ -31,12 +34,12 @@ struct AtriaStrapScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            connectionHero
+
             VStack(spacing: 8) {
-                AtriaStrapStatusRow(title: "Connection",
-                                    value: connectionValue,
-                                    detail: connectionDetail,
-                                    systemImage: connectionSymbol,
-                                    tint: connectionTint)
+                // Connection row removed (dedup audit 2026-07-07): the
+                // state-differentiated hero above renders the identical
+                // value + detail strings; the row added nothing.
                 AtriaStrapStatusRow(title: "Battery",
                                     value: coreLiveStore.state.batteryText,
                                     detail: coreLiveStore.state.batteryChargeCompactText,
@@ -154,6 +157,98 @@ struct AtriaStrapScreen: View {
     }
     #endif
 
+    /// State-differentiated connection hero (design handoff, user-approved
+    /// over the auto-scan-only deferral 2026-07-07). The scan button triggers
+    /// the same scan the chrome chip tap runs — auto-scan keeps working;
+    /// this only adds a visible affordance.
+    @ViewBuilder
+    private var connectionHero: some View {
+        switch displayStatus {
+        case .connected:
+            HStack(spacing: 12) {
+                // The state-driven symbol the removed Connection row used —
+                // the hero now owns it (dedup audit 2026-07-07).
+                heroStatusIcon(systemImage: connectionSymbol, tint: Metrics.electricGreen)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(primaryState)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(Metrics.electricGreen)
+                    Text(connectionDetail)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                // Battery block removed from the hero (dedup audit): the
+                // Battery status row below owns the value + charging detail.
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricGreen)
+        case .connecting, .scanning:
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.regular)
+                    .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connecting\u{2026}")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.blue)
+                    Text(connectionDetail)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: .blue)
+        case .disconnected, .poweredOff:
+            VStack(spacing: 10) {
+                Image(systemName: "sensor.tag.radiowaves.forward")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, height: 48)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                Text("Not connected")
+                    .font(.headline.weight(.bold))
+                Text(displayStatus == .poweredOff
+                     ? "Turn on Bluetooth to begin \u{2014} Atria reconnects automatically."
+                     : "Bring your strap into range to begin \u{2014} Atria scans automatically.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    ble.startScan(reason: "strap_screen_hero")
+                } label: {
+                    Label("Scan for strap", systemImage: "dot.radiowaves.left.and.right")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                }
+                .buttonStyle(.glassProminent)
+                if let onShowConnectionGuide {
+                    Button("Connection guide") {
+                        onShowConnectionGuide()
+                    }
+                    .font(.caption.weight(.bold))
+                    .frame(minHeight: 40)
+                    .contentShape(Rectangle())
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(16)
+            .atriaInsetCard(tint: .secondary)
+        }
+    }
+
+    private func heroStatusIcon(systemImage: String, tint: Color) -> some View {
+        Image(systemName: systemImage)
+            .font(.title3.weight(.bold))
+            .foregroundStyle(tint)
+            .frame(width: 44, height: 44)
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -169,14 +264,8 @@ struct AtriaStrapScreen: View {
 
                 Spacer(minLength: 8)
 
-                Text(primaryState)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(connectionTint)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
-                    .fixedSize()
-                    .layoutPriority(1)
+                // Header state capsule removed (dedup audit): primaryState
+                // renders as the hero headline one card below.
             }
 
             Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")

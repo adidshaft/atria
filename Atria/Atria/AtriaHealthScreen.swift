@@ -89,6 +89,7 @@ struct AtriaHealthScreen: View {
             AtriaMetricDetailSheet(metric: detail,
                                    rollups: store.dailyRollupHistory,
                                    confirmedWorkouts: store.confirmedWorkouts,
+                                   behaviorImpacts: store.behaviorImpactSummariesCache,
                                    baseline: AtriaBaselineTargetSnapshot(store.baseline),
                                    sleepHistory: store.sleepHistorySnapshot,
                                    guidance: heroStore.state.guidance,
@@ -934,7 +935,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
         }
         }
         .frame(minHeight: 64)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))

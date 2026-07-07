@@ -9,6 +9,9 @@ import Charts
 struct AtriaTrendChartCard: View {
     let points: [AtriaTrendPoint]
     let baselineRestingHR: Int?
+    /// Real saved activity for the expanded chart's marker lane. Optional so
+    /// existing call sites/tests compile unchanged.
+    var events: [AtriaChartEvent] = []
 
     @State private var metric: AtriaTrendMetric = .restingHR
     @State private var range: AtriaTrendRange = .month
@@ -104,10 +107,10 @@ struct AtriaTrendChartCard: View {
             }
 
             if showMoreInsights {
-                AtriaTrendRangeDock(selectedRange: $range,
-                                    coverage: rangeCoverage,
-                                    tint: metric.tint)
-                    .equatable()
+                // AtriaTrendRangeDock unmounted (dedup audit 2026-07-07):
+                // it was a second control mutating the same $range as the
+                // segmented picker, with the day counts shown a third way.
+                // The struct stays for potential reuse of its coverage rail.
 
                 if periodReadout.hasEnoughSignal {
                     AtriaTrendRangeReportCard(readout: periodReadout)
@@ -150,15 +153,35 @@ struct AtriaTrendChartCard: View {
         .onChange(of: baselineRestingHR) { _, _ in refreshPreparedSeries() }
         .onChange(of: metric) { _, _ in refreshPreparedSeries() }
         .onChange(of: range) { _, _ in refreshPreparedSeries() }
-        .sheet(isPresented: $showExpandedChart) {
-            AtriaTrendExpandedSheet(title: "\(metric.shortLabel) trend",
-                                    subtitle: range.headerLabel,
-                                    chart: AnyView(chart),
-                                    explainer: metric.trendExplainer,
-                                    tint: metric.tint)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+        // Landscape expanded chart (user feedback 2026-07-07): replaces the
+        // old portrait sheet with the shared zoom/brush/markers experience.
+        .fullScreenCover(isPresented: $showExpandedChart) {
+            AtriaExpandedChartView(title: "\(metric.shortLabel) trend",
+                                   unit: expandedUnit,
+                                   tint: metric.tint,
+                                   points: expandedChartPoints,
+                                   events: events,
+                                   onDismiss: { showExpandedChart = false })
         }
+    }
+
+    private var expandedUnit: String {
+        switch metric {
+        case .restingHR: return " bpm"
+        case .strain: return ""
+        case .hrv: return " ms"
+        }
+    }
+
+    /// The focused metric's real daily values in the shared chart-point
+    /// shape. Days without a value are simply absent.
+    private var expandedChartPoints: [AtriaDetailChartPoint] {
+        points.compactMap { point in
+            point.value(for: metric).map {
+                AtriaDetailChartPoint(day: point.date, value: $0, tint: metric.tint)
+            }
+        }
+        .sorted { $0.day < $1.day }
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
@@ -551,26 +574,9 @@ private struct AtriaTrendGlanceBoard: View, Equatable {
                     .background(readout.tint.opacity(0.13), in: Capsule(style: .continuous))
             }
 
-            ZStack(alignment: .center) {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(
-                        LinearGradient(colors: [
-                            .cyan.opacity(0.14),
-                            Metrics.electricStrain.opacity(0.10)
-                        ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-
-                HStack(spacing: 0) {
-                    glanceLane(title: "Recovery", value: readout.recoveryReserve, tint: .cyan)
-                    Divider()
-                        .overlay(.secondary.opacity(0.16))
-                    glanceLane(title: "Strain", value: readout.loadPressure, tint: Metrics.electricStrain)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
-            }
-            .frame(height: 70)
-
+            // Reserve/Strain lanes removed (dedup audit 2026-07-07): the
+            // balance map is the single owner of that pair; this board keeps
+            // its unique per-metric delta gauges.
             HStack(spacing: 8) {
                 metricGauge(label: "HRV", delta: readout.hrv, tint: .cyan)
                 metricGauge(label: "RHR", delta: readout.restingHR, tint: .pink)
@@ -882,10 +888,8 @@ private struct AtriaTrendPeriodBalanceMap: View, Equatable {
             }
             .frame(height: 116)
 
-            HStack(spacing: 8) {
-                balancePill("Reserve", value: readout.recoveryReserve, tint: .cyan)
-                balancePill("Load", value: readout.loadPressure, tint: Metrics.electricStrain)
-            }
+            // Reserve/Load pills removed (dedup audit 2026-07-07): the map
+            // dot IS the pair; the numbers live in its accessibility label.
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
@@ -981,15 +985,13 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
                 reportTile(nextStep)
             }
 
-            HStack(spacing: 8) {
-                reportBar(label: "Res", value: readout.recoveryReserve, tint: .cyan)
-                reportBar(label: "Load", value: readout.loadPressure, tint: Metrics.electricStrain)
-            }
+            // Reserve/Load bars removed (dedup audit 2026-07-07): the
+            // balance map below is the single owner of that pair.
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value). Reserve \(Int((readout.recoveryReserve * 100).rounded())) percent. Load \(Int((readout.loadPressure * 100).rounded())) percent.")
+        .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value).")
     }
 
     private func reportTile(_ item: (title: String, value: String, tint: Color, symbol: String)) -> some View {
@@ -1720,21 +1722,9 @@ private struct AtriaTrendRangeLens: View, Equatable {
             }
 
             Spacer(minLength: 6)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(summary?.latestText ?? "--")
-                    .font(.title3.weight(.black).monospacedDigit())
-                    .foregroundStyle(metric.tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.66)
-                    .contentTransition(.numericText())
-                    .animation(.snappy(duration: 0.3), value: summary?.latestText ?? "--")
-                Text(metric.shortLabel)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-            }
+            // Latest-number block removed (dedup audit 2026-07-07): the
+            // chart's end annotation and the position band own "latest";
+            // this lens keeps its coverage role only.
         }
         .padding(12)
         .background(metric.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -2074,13 +2064,11 @@ private struct AtriaTrendRangeSummaryStrip: View {
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
-                            GridItem(.flexible(), spacing: 8),
-                            GridItem(.flexible(), spacing: 8),
                             GridItem(.flexible(), spacing: 8)],
                   spacing: 8) {
-            summaryPill(label: "Latest", value: summary.latestText)
+            // Latest + Range pills removed (dedup audit 2026-07-07): the
+            // position band below states both with position context.
             summaryPill(label: "Avg", value: summary.averageText)
-            summaryPill(label: "Range", value: summary.rangeText)
             if let priorAverageText = summary.priorAverageText {
                 summaryPill(label: "Prior", value: priorAverageText)
             } else {
@@ -2088,7 +2076,7 @@ private struct AtriaTrendRangeSummaryStrip: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText).")
+        .accessibilityLabel("Trend summary. Average \(summary.averageText), \(summary.comparisonAccessibilityText).")
     }
 
     private func summaryPill(label: String, value: String) -> some View {
@@ -2298,7 +2286,27 @@ struct AtriaOverviewTrendChartHost: View {
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
         AtriaTrendChartCard(points: fixturePoints ?? store.overviewTrendPoints,
-                            baselineRestingHR: fixturePoints == nil ? store.baseline.restingInt : 58)
+                            baselineRestingHR: fixturePoints == nil ? store.baseline.restingInt : 58,
+                            events: trendEvents)
+    }
+
+    /// Real saved activity for the expanded chart marker lane.
+    private var trendEvents: [AtriaChartEvent] {
+        var events: [AtriaChartEvent] = store.confirmedWorkouts.map { workout in
+            AtriaChartEvent(id: "workout-\(workout.id)",
+                            day: workout.start,
+                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                            systemImage: "flame.fill",
+                            tint: Metrics.electricStrain)
+        }
+        events.append(contentsOf: store.sleepHistorySnapshot.nights.filter(\.confirmed).map { night in
+            AtriaChartEvent(id: "sleep-\(night.id)",
+                            day: night.day,
+                            label: "Sleep",
+                            systemImage: "bed.double.fill",
+                            tint: Metrics.electricSleep)
+        })
+        return events
     }
 
     #if DEBUG
