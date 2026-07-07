@@ -6929,6 +6929,7 @@ struct AtriaMetricDetailSheet: View {
                                       tint: Metrics.electricStrain) {
                 strainWorkoutSection
                 strainZoneHistogramCard
+                strainActivityMixCard
             } contributors: {
                 AtriaMetricContributorRows(rows: strainContributorRows, tint: Metrics.electricStrain)
             } chart: {
@@ -7524,6 +7525,70 @@ struct AtriaMetricDetailSheet: View {
             .atriaInsetCard(tint: Metrics.electricStrain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Time in zones today. " + histogram.map { "Zone \($0.zone.rawValue), \(Int($0.minutes.rounded())) minutes" }.joined(separator: ". ") + ".")
+        }
+    }
+
+    /// Activity-type classes for the strain mix split. HR alone cannot
+    /// measure muscular load, so this is honestly framed as an
+    /// activity-type split, never a muscle-load claim.
+    private static let strengthLeaningTypes: Set<String> = ["Strength", "HIIT", "Yoga"]
+
+    private var todayStrainMix: (cardio: Double, strength: Double)? {
+        var cardio = 0.0
+        var strength = 0.0
+        for workout in todayConfirmedWorkouts {
+            guard let strain = workout.strain, strain > 0 else { continue }
+            let type = workout.activityType ?? ""
+            if Self.strengthLeaningTypes.contains(type) {
+                strength += strain
+            } else if !type.isEmpty {
+                cardio += strain
+            }
+        }
+        guard cardio > 0 || strength > 0 else { return nil }
+        return (cardio, strength)
+    }
+
+    /// Cardio vs strength-type strain mix (design backlog item 9, honesty
+    /// adapted from the mock's "cardio vs muscular" — split by the workout's
+    /// activity type, which the user chose or confirmed).
+    @ViewBuilder
+    private var strainActivityMixCard: some View {
+        if let mix = todayStrainMix, mix.cardio > 0, mix.strength > 0 {
+            let total = mix.cardio + mix.strength
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Today's strain mix")
+                    .font(.subheadline.weight(.semibold))
+
+                GeometryReader { proxy in
+                    HStack(spacing: 3) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(0.85))
+                            .frame(width: max(10, proxy.size.width * mix.cardio / total))
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.purple.opacity(0.8))
+                    }
+                }
+                .frame(height: 14)
+
+                HStack(spacing: 14) {
+                    Label(String(format: "Cardio %.1f", mix.cardio), systemImage: "figure.walk")
+                        .foregroundStyle(Metrics.electricStrain)
+                    Label(String(format: "Strength-type %.1f", mix.strength), systemImage: "dumbbell.fill")
+                        .foregroundStyle(.purple)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption.weight(.bold).monospacedDigit())
+
+                Text("Split by the activity type of today's workouts \u{2014} heart-rate strain grouped by what you logged, not a muscle-load measurement.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(String(format: "Today's strain mix. Cardio %.1f, strength-type %.1f, split by activity type.", mix.cardio, mix.strength))
         }
     }
 
