@@ -7,7 +7,10 @@ import SwiftUI
 /// not enough data" line and never invents a number.
 @MainActor
 final class AtriaAssistantAnswerTests: XCTestCase {
-    private func makeScreen(recoveryText: String = "--") -> AtriaAssistantScreen {
+    // "Learning" is the sentinel production actually emits (HeroSnapshot
+    // .recoveryValue) when there's no score — not "--". Exercising the real
+    // value is what caught the recovery guard bug (2026-07-08 self-review).
+    private func makeScreen(recoveryText: String = "Learning") -> AtriaAssistantScreen {
         let context = AtriaCoachContext(guidance: Coach.guide(recovery: 0, strain: 0),
                                         strain: 0, recoveryText: recoveryText, hrvText: "--",
                                         stressText: "--", baselineSamples: 0, sessionsCount: 0)

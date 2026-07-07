@@ -16039,7 +16039,10 @@ private struct HistoryActivityRhythmCard: View {
     }
 
     private var sleepContextCount: Int {
-        rollups.reduce(0) { $0 + $1.sleepReady + $1.sleepCandidates }
+        // max, not sum: a ready night is also a candidate. Since sleepReady
+        // became HR-only-eligible (2026-07-08) the two are no longer disjoint,
+        // so summing double-counted every auto-confirmed night.
+        rollups.reduce(0) { $0 + max($1.sleepReady, $1.sleepCandidates) }
     }
 
     var body: some View {
@@ -16279,12 +16282,12 @@ private struct DailyRollupRow: View {
             if rollup.restCandidates > 0 {
                 rollupChip(title: "Rest", value: "\(rollup.restCandidates)", tint: .cyan)
             }
-            if rollup.sleepReady + rollup.sleepCandidates > 0 {
-                rollupChip(title: "Sleep", value: "\(rollup.sleepReady + rollup.sleepCandidates)", tint: .blue)
+            if max(rollup.sleepReady, rollup.sleepCandidates) > 0 {
+                rollupChip(title: "Sleep", value: "\(max(rollup.sleepReady, rollup.sleepCandidates))", tint: .blue)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Saved \(formatMinutes(rollup.duration)), \(rollup.confirmedWorkouts) confirmed workouts, \(rollup.activityCandidates) activity reviews, \(rollup.sleepReady + rollup.sleepCandidates) sleep items.")
+        .accessibilityLabel("Saved \(formatMinutes(rollup.duration)), \(rollup.confirmedWorkouts) confirmed workouts, \(rollup.activityCandidates) activity reviews, \(max(rollup.sleepReady, rollup.sleepCandidates)) sleep items.")
     }
 
     private func rollupChip(title: String, value: String, tint: Color) -> some View {
