@@ -627,15 +627,18 @@ private struct AtriaSleepReviewHost: View {
                                           evidenceNight: adjustment,
                                           evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        _ = store.adjustSleepNight(originalStart: adjustment.start,
-                                                   originalEnd: adjustment.end,
-                                                   newStart: start,
-                                                   newEnd: end,
-                                                   isNap: isNap,
-                                                   rest: store.baseline.restingInt ?? 60,
-                                                   source: "overview_sleep_review_adjust")
-                        dismissedID = adjustment.id
-                        adjustmentNight = nil
+                        let saved = store.adjustSleepNight(originalStart: adjustment.start,
+                                                           originalEnd: adjustment.end,
+                                                           newStart: start,
+                                                           newEnd: end,
+                                                           isNap: isNap,
+                                                           rest: store.baseline.restingInt ?? 60,
+                                                           source: "overview_sleep_review_adjust") != nil
+                        if saved {
+                            dismissedID = adjustment.id
+                            adjustmentNight = nil
+                        }
+                        return saved
                     }
                 }
         }
@@ -724,15 +727,18 @@ private struct AtriaAutoSleepLoggedBanner: View {
                                       initialEnd: banner.end,
                                       initialIsNap: false,
                                       preservesSensorStages: true) { start, end, isNap in
-                    _ = store.adjustSleepNight(originalStart: banner.start,
-                                               originalEnd: banner.end,
-                                               newStart: start,
-                                               newEnd: end,
-                                               isNap: isNap,
-                                               rest: store.baseline.restingInt ?? 60,
-                                               source: "auto_sleep_logged_banner_edit")
-                    store.dismissAutoSleepLoggedBanner(id: banner.id)
-                    adjustment = nil
+                    let saved = store.adjustSleepNight(originalStart: banner.start,
+                                                       originalEnd: banner.end,
+                                                       newStart: start,
+                                                       newEnd: end,
+                                                       isNap: isNap,
+                                                       rest: store.baseline.restingInt ?? 60,
+                                                       source: "auto_sleep_logged_banner_edit") != nil
+                    if saved {
+                        store.dismissAutoSleepLoggedBanner(id: banner.id)
+                        adjustment = nil
+                    }
+                    return saved
                 }
             }
         }
@@ -2110,6 +2116,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             AtriaManualSleepSheet { start, end, isNap in
                 onAddManualSleep(start, end, isNap)
                 showManualSleepSheet = false
+                return true
             }
         }
         .sheet(item: $targetEditorMetric) { metric in
@@ -6685,7 +6692,8 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.recoverySummary[range],
                                 comparison: preparedHistory.recoveryComparison[range],
                                 baselineBand: nil,
-                                accessibilitySummary: "Recovery over \(range.label).")
+                                accessibilitySummary: "Recovery over \(range.label).",
+                                priorPoints: preparedHistory.recoveryPrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -6711,7 +6719,8 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.hrvComparison[range],
                                 baselineBand: hrvBand,
                                 accessibilitySummary: "HRV over \(range.label) with your baseline band.",
-                                emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.")
+                                emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
+                                priorPoints: preparedHistory.hrvPrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -6737,7 +6746,8 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.restingHeartRateComparison[range],
                                 baselineBand: restingBand,
                                 accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.",
-                                emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.")
+                                emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
+                                priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -6763,7 +6773,8 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.respiratoryRateComparison[range],
                                 baselineBand: respiratoryBand,
                                 accessibilitySummary: "Respiratory rate over \(range.label) with your typical range.",
-                                emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.")
+                                emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.",
+                                priorPoints: preparedHistory.respiratoryRatePrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -6791,7 +6802,8 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.sleepSummary[range],
                                 comparison: preparedHistory.sleepComparison[range],
                                 baselineBand: nil,
-                                accessibilitySummary: "Sleep duration over \(range.label).")
+                                accessibilitySummary: "Sleep duration over \(range.label).",
+                                priorPoints: preparedHistory.sleepPrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -6818,7 +6830,8 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.strainSummary[range],
                                 comparison: preparedHistory.strainComparison[range],
                                 baselineBand: nil,
-                                accessibilitySummary: "Strain over \(range.label).")
+                                accessibilitySummary: "Strain over \(range.label).",
+                                priorPoints: preparedHistory.strainPrior[range] ?? [])
                 }
             } about: {
                 aboutDisclosure
@@ -7422,7 +7435,8 @@ struct AtriaMetricDetailSheet: View {
                              comparison: AtriaDetailComparisonSummary?,
                              baselineBand: AtriaDetailBaselineBand?,
                              accessibilitySummary: String,
-                             emptyExplanation: String? = nil) -> some View {
+                             emptyExplanation: String? = nil,
+                             priorPoints: [AtriaDetailChartPoint] = []) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
@@ -7521,9 +7535,22 @@ struct AtriaMetricDetailSheet: View {
                             }
                     }
 
+                    // Dashed prior-period ghost, time-shifted onto this
+                    // window (design handoff). Distinct series so Charts
+                    // never joins it to the current line.
+                    ForEach(priorPoints) { point in
+                        LineMark(x: .value("Day", point.day, unit: .day),
+                                 y: .value(title, point.value),
+                                 series: .value("Series", "prior"))
+                            .interpolationMethod(.monotone)
+                            .foregroundStyle(.secondary.opacity(0.45))
+                            .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                    }
+
                     ForEach(points) { point in
                         LineMark(x: .value("Day", point.day, unit: .day),
-                                 y: .value(title, point.value))
+                                 y: .value(title, point.value),
+                                 series: .value("Series", "current"))
                             .interpolationMethod(.monotone)
                             .foregroundStyle(tint)
                         PointMark(x: .value("Day", point.day, unit: .day),
@@ -7563,7 +7590,7 @@ struct AtriaMetricDetailSheet: View {
                     }
                 }
                 .chartXSelection(value: $scrubbedDay)
-                .chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))
+                .chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison, priorPointsForDomain: priorPoints))
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 4))
                 }
@@ -7586,6 +7613,12 @@ struct AtriaMetricDetailSheet: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+
+                if !priorPoints.isEmpty {
+                    Text("Dashed line: the previous period, overlaid")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(14)
@@ -7594,8 +7627,10 @@ struct AtriaMetricDetailSheet: View {
 
     private func chartDomain(points: [AtriaDetailChartPoint],
                              baselineBand: AtriaDetailBaselineBand?,
-                             comparison: AtriaDetailComparisonSummary? = nil) -> ClosedRange<Double> {
+                             comparison: AtriaDetailComparisonSummary? = nil,
+                             priorPointsForDomain: [AtriaDetailChartPoint] = []) -> ClosedRange<Double> {
         var values = points.map(\.value)
+        values.append(contentsOf: priorPointsForDomain.map(\.value))
         values.append(contentsOf: points.compactMap(\.bandLower))
         values.append(contentsOf: points.compactMap(\.bandUpper))
         if let baselineBand {
@@ -9306,6 +9341,16 @@ private struct AtriaPreparedMetricHistory {
     let respiratoryRate: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let sleep: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let strain: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    // Prior-period series, TIME-SHIFTED onto the current window so the
+    // dashed ghost overlays the same axis (design-handoff ghost line,
+    // 2026-07-07). Same weekly bucketing as the current series, bands
+    // stripped (a ghost is a line, not a band).
+    let recoveryPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let hrvPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let restingHeartRatePrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let respiratoryRatePrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let sleepPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let strainPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let latestStrain: [AtriaTrendRange: Double]
     let recoverySummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
     let hrvSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
@@ -9364,6 +9409,18 @@ private struct AtriaPreparedMetricHistory {
         }
     }
 
+    private static func ghostSeries(_ points: [AtriaDetailChartPoint],
+                                    range: AtriaTrendRange,
+                                    calendar: Calendar) -> [AtriaDetailChartPoint] {
+        let shifted = points.compactMap { point -> AtriaDetailChartPoint? in
+            guard let day = calendar.date(byAdding: .day, value: range.days, to: point.day) else { return nil }
+            return AtriaDetailChartPoint(day: day, value: point.value, tint: point.tint)
+        }
+        return bucketedForDisplay(shifted, range: range, calendar: calendar).map { point in
+            AtriaDetailChartPoint(day: point.day, value: point.value, tint: point.tint)
+        }
+    }
+
     init(rollups: [DailyRollupStoreEntry],
          baseline: AtriaBaselineTargetSnapshot,
          sleepGoalHours: Double,
@@ -9374,6 +9431,12 @@ private struct AtriaPreparedMetricHistory {
         var respiratoryByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var sleepByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var strainByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var recoveryPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var hrvPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var restingPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var respiratoryPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var sleepPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var strainPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var latestStrainByRange: [AtriaTrendRange: Double] = [:]
         var recoverySummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
         var hrvSummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
@@ -9417,6 +9480,7 @@ private struct AtriaPreparedMetricHistory {
                 item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
             }
             recoveryByRange[range] = Self.bucketedForDisplay(recoveryPoints, range: range, calendar: calendar)
+            recoveryPriorByRange[range] = Self.ghostSeries(priorRecoveryPoints, range: range, calendar: calendar)
             recoverySummaryByRange[range] = AtriaDetailPeriodSummary(points: recoveryPoints, unit: "%")
             recoveryComparisonByRange[range] = AtriaDetailComparisonSummary(current: recoveryPoints, prior: priorRecoveryPoints, unit: "%")
 
@@ -9435,6 +9499,7 @@ private struct AtriaPreparedMetricHistory {
                                              tint: Self.hrvTint(value: value, baseline: baseline))
             }
             hrvByRange[range] = Self.bucketedForDisplay(hrvPoints, range: range, calendar: calendar)
+            hrvPriorByRange[range] = Self.ghostSeries(priorHRVPoints, range: range, calendar: calendar)
             hrvSummaryByRange[range] = AtriaDetailPeriodSummary(points: hrvPoints, unit: "ms")
             hrvComparisonByRange[range] = AtriaDetailComparisonSummary(current: hrvPoints, prior: priorHRVPoints, unit: "ms")
 
@@ -9451,6 +9516,7 @@ private struct AtriaPreparedMetricHistory {
                                              tint: Self.restingTint(value: value, baseline: baseline))
             }
             restingByRange[range] = Self.bucketedForDisplay(restingPoints, range: range, calendar: calendar)
+            restingPriorByRange[range] = Self.ghostSeries(priorRestingPoints, range: range, calendar: calendar)
             restingSummaryByRange[range] = AtriaDetailPeriodSummary(points: restingPoints, unit: "bpm")
             restingComparisonByRange[range] = AtriaDetailComparisonSummary(current: restingPoints, prior: priorRestingPoints, unit: "bpm")
 
@@ -9461,6 +9527,7 @@ private struct AtriaPreparedMetricHistory {
                 item.respiratoryRate.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: .teal) }
             }
             respiratoryByRange[range] = Self.bucketedForDisplay(respiratoryPoints, range: range, calendar: calendar)
+            respiratoryPriorByRange[range] = Self.ghostSeries(priorRespiratoryPoints, range: range, calendar: calendar)
             respiratorySummaryByRange[range] = AtriaDetailPeriodSummary(points: respiratoryPoints, unit: "/min")
             respiratoryComparisonByRange[range] = AtriaDetailComparisonSummary(current: respiratoryPoints, prior: priorRespiratoryPoints, unit: "/min")
 
@@ -9482,6 +9549,7 @@ private struct AtriaPreparedMetricHistory {
                 return AtriaDetailChartPoint(day: item.day, value: hours, tint: tint)
             }
             sleepByRange[range] = Self.bucketedForDisplay(sleepPoints, range: range, calendar: calendar)
+            sleepPriorByRange[range] = Self.ghostSeries(priorSleepPoints, range: range, calendar: calendar)
             sleepSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPoints, unit: "h")
             sleepComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPoints, prior: priorSleepPoints, unit: "h")
 
@@ -9492,6 +9560,7 @@ private struct AtriaPreparedMetricHistory {
                 item.strain.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain) }
             }
             strainByRange[range] = Self.bucketedForDisplay(strainPoints, range: range, calendar: calendar)
+            strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
             latestStrainByRange[range] = filtered.last?.strain
@@ -9531,6 +9600,12 @@ private struct AtriaPreparedMetricHistory {
         self.respiratoryRate = respiratoryByRange
         self.sleep = sleepByRange
         self.strain = strainByRange
+        self.recoveryPrior = recoveryPriorByRange
+        self.hrvPrior = hrvPriorByRange
+        self.restingHeartRatePrior = restingPriorByRange
+        self.respiratoryRatePrior = respiratoryPriorByRange
+        self.sleepPrior = sleepPriorByRange
+        self.strainPrior = strainPriorByRange
         self.latestStrain = latestStrainByRange
         self.recoverySummary = recoverySummaryByRange
         self.hrvSummary = hrvSummaryByRange
@@ -9905,14 +9980,15 @@ struct AtriaOverviewMorningJournalHost: View {
                                       evidenceNight: adjustment,
                                       evidencePerformancePercent: sleepHistory.sleepPerformancePercent(for: adjustment,
                                                                                                        baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                    _ = store.adjustSleepNight(originalStart: adjustment.start,
-                                               originalEnd: adjustment.end,
-                                               newStart: start,
-                                               newEnd: end,
-                                               isNap: isNap,
-                                               rest: store.baseline.restingInt ?? 60,
-                                               source: "morning_journal_adjust")
-                    adjustmentNight = nil
+                    let saved = store.adjustSleepNight(originalStart: adjustment.start,
+                                                       originalEnd: adjustment.end,
+                                                       newStart: start,
+                                                       newEnd: end,
+                                                       isNap: isNap,
+                                                       rest: store.baseline.restingInt ?? 60,
+                                                       source: "morning_journal_adjust") != nil
+                    if saved { adjustmentNight = nil }
+                    return saved
                 }
             }
     }

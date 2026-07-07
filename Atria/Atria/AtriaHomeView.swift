@@ -550,14 +550,15 @@ struct AtriaHomeView: View {
                                       store.sleepHistorySnapshot.sleepPerformancePercent(for: $0,
                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())
                                   }) { start, end, isNap in
-                _ = store.adjustSleepNight(originalStart: sleepReviewSheetNight?.start,
-                                           originalEnd: sleepReviewSheetNight?.end,
-                                           newStart: start,
-                                           newEnd: end,
-                                           isNap: isNap,
-                                           rest: store.baseline.restingInt ?? 60,
-                                           source: "notification_sleep_review")
-                showSleepReviewSheet = false
+                let saved = store.adjustSleepNight(originalStart: sleepReviewSheetNight?.start,
+                                                   originalEnd: sleepReviewSheetNight?.end,
+                                                   newStart: start,
+                                                   newEnd: end,
+                                                   isNap: isNap,
+                                                   rest: store.baseline.restingInt ?? 60,
+                                                   source: "notification_sleep_review") != nil
+                if saved { showSleepReviewSheet = false }
+                return saved
             }
         }
         .onDisappear {

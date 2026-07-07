@@ -90,7 +90,13 @@ enum WidgetSnapshotPublisher {
     static func publish(store: SessionStore,
                         ble: AtriaBLEManager,
                         reason: String = "update") -> WidgetSnapshot {
-        let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable
+        // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
+        // volatile live BLE resting reading used to outrank the stable
+        // saved-session resting, so the first widget snapshots computed
+        // strain from a transient value (86 bpm -> 73) and flashed a wrong
+        // number until session load. Stable sources first; the live reading
+        // is only the last resort before the session_load republish.
+        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
         let validatedHRV = store.latestReferenceValidatedHRV
         let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
         let latestSleep = store.sleepHistorySnapshot.latest
@@ -146,6 +152,15 @@ enum WidgetSnapshotPublisher {
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
                                       complicationTargetPresent: widgetDiagnostics.complicationTargetPresent)
+        // Cold-start guard (2026-07-07, device-verified residual): before the
+        // deferred session load completes, day strain computes from zero saved
+        // TRIMP and would overwrite last run's good snapshot with an
+        // under-report (0.0 -> real over ~4s on device). Compute and return,
+        // but don't persist -- the session_load republish writes the real one.
+        if !store.hasLoadedSavedSessions {
+            AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=session_load", reason)
+            return snapshot
+        }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
             let defaults = widgetDiagnostics.appGroupEnabled
                 ? (UserDefaults(suiteName: appGroupID) ?? .standard)

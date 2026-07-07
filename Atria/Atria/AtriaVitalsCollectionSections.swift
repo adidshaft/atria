@@ -3529,6 +3529,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             AtriaManualSleepSheet { start, end, isNap in
                 onAddManualSleep(start, end, isNap)
                 showManualSleepSheet = false
+                return true
             }
         }
         .sheet(item: $adjustmentNight) { night in
@@ -3539,8 +3540,12 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                   evidenceNight: night,
                                   evidencePerformancePercent: snapshot.sleepPerformancePercent(for: night,
                                                                                                baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
+                // The card's callback can't report back; the store-side
+                // fail-closed guard still logs, and this path re-lists the
+                // night if the adjust didn't take.
                 onAdjustSleep(night, start, end, isNap)
                 adjustmentNight = nil
+                return true
             }
         }
     }
