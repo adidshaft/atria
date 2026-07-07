@@ -6548,7 +6548,9 @@ struct AtriaMetricDetailSheet: View {
          hrZoneMinutes: TodayHRZoneMinutes = .empty,
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
-         skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil) {
+         skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
+         initialRange: AtriaTrendRange = .month) {
+        _range = State(initialValue: initialRange)
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.baseline = baseline
@@ -7419,7 +7421,18 @@ struct AtriaMetricDetailSheet: View {
                     // Design handoff chart language (2026-07-07): gradient
                     // area under the series, dashed prior-period average rule,
                     // and an emphasized terminal dot. All additive; scrub and
-                    // baseline band unchanged.
+                    // baseline band unchanged. Long ranges add the weekly
+                    // min-max band around the bucket averages.
+                    ForEach(points) { point in
+                        if let lower = point.bandLower, let upper = point.bandUpper, upper > lower {
+                            AreaMark(x: .value("Day", point.day, unit: .day),
+                                     yStart: .value("Min", lower),
+                                     yEnd: .value("Max", upper))
+                                .interpolationMethod(.monotone)
+                                .foregroundStyle(tint.opacity(0.13))
+                        }
+                    }
+
                     ForEach(points) { point in
                         AreaMark(x: .value("Day", point.day, unit: .day),
                                  y: .value(title, point.value))
@@ -7500,6 +7513,12 @@ struct AtriaMetricDetailSheet: View {
                 // state (matches AtriaTrendChartCard's clip).
                 .clipped()
                 .accessibilityLabel(accessibilitySummary)
+
+                if points.first(where: { $0.bandLower != nil }) != nil {
+                    Text("Weekly averages \u{00b7} shaded band is that week's real min\u{2013}max")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(14)
@@ -7510,6 +7529,8 @@ struct AtriaMetricDetailSheet: View {
                              baselineBand: AtriaDetailBaselineBand?,
                              comparison: AtriaDetailComparisonSummary? = nil) -> ClosedRange<Double> {
         var values = points.map(\.value)
+        values.append(contentsOf: points.compactMap(\.bandLower))
+        values.append(contentsOf: points.compactMap(\.bandUpper))
         if let baselineBand {
             values.append(baselineBand.lower)
             values.append(baselineBand.upper)
@@ -9245,6 +9266,35 @@ private struct AtriaPreparedMetricHistory {
     let fitnessAgeEntryCount: Int
     let paceOfAging: AtriaFitnessAge.PaceOfAging
 
+    /// Long ranges (6M/1Y/All) display weekly buckets instead of every raw
+    /// daily sample: value = average of the week's REAL days, band = that
+    /// week's true min-max, tint = the member point nearest the average (so
+    /// the metric's own zone coloring still applies). Short ranges and sparse
+    /// series pass through untouched. Summaries/comparisons stay computed
+    /// from raw daily points (2026-07-07 design handoff).
+    private static func bucketedForDisplay(_ points: [AtriaDetailChartPoint],
+                                           range: AtriaTrendRange,
+                                           calendar: Calendar) -> [AtriaDetailChartPoint] {
+        guard range.days > 90, points.count > 60 else { return points }
+        var buckets: [Date: [AtriaDetailChartPoint]] = [:]
+        for point in points {
+            let weekStart = calendar.dateInterval(of: .weekOfYear, for: point.day)?.start
+                ?? calendar.startOfDay(for: point.day)
+            buckets[weekStart, default: []].append(point)
+        }
+        return buckets.keys.sorted().map { weekStart in
+            let members = buckets[weekStart] ?? []
+            let values = members.map(\.value)
+            let average = values.reduce(0, +) / Double(max(values.count, 1))
+            let nearest = members.min { abs($0.value - average) < abs($1.value - average) }
+            return AtriaDetailChartPoint(day: weekStart,
+                                         value: average,
+                                         tint: nearest?.tint ?? .secondary,
+                                         bandLower: values.min(),
+                                         bandUpper: values.max())
+        }
+    }
+
     init(rollups: [DailyRollupStoreEntry],
          baseline: AtriaBaselineTargetSnapshot,
          sleepGoalHours: Double,
@@ -9297,7 +9347,7 @@ private struct AtriaPreparedMetricHistory {
             let priorRecoveryPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
             }
-            recoveryByRange[range] = recoveryPoints
+            recoveryByRange[range] = Self.bucketedForDisplay(recoveryPoints, range: range, calendar: calendar)
             recoverySummaryByRange[range] = AtriaDetailPeriodSummary(points: recoveryPoints, unit: "%")
             recoveryComparisonByRange[range] = AtriaDetailComparisonSummary(current: recoveryPoints, prior: priorRecoveryPoints, unit: "%")
 
@@ -9315,7 +9365,7 @@ private struct AtriaPreparedMetricHistory {
                                              value: Double(value),
                                              tint: Self.hrvTint(value: value, baseline: baseline))
             }
-            hrvByRange[range] = hrvPoints
+            hrvByRange[range] = Self.bucketedForDisplay(hrvPoints, range: range, calendar: calendar)
             hrvSummaryByRange[range] = AtriaDetailPeriodSummary(points: hrvPoints, unit: "ms")
             hrvComparisonByRange[range] = AtriaDetailComparisonSummary(current: hrvPoints, prior: priorHRVPoints, unit: "ms")
 
@@ -9331,7 +9381,7 @@ private struct AtriaPreparedMetricHistory {
                                              value: Double(value),
                                              tint: Self.restingTint(value: value, baseline: baseline))
             }
-            restingByRange[range] = restingPoints
+            restingByRange[range] = Self.bucketedForDisplay(restingPoints, range: range, calendar: calendar)
             restingSummaryByRange[range] = AtriaDetailPeriodSummary(points: restingPoints, unit: "bpm")
             restingComparisonByRange[range] = AtriaDetailComparisonSummary(current: restingPoints, prior: priorRestingPoints, unit: "bpm")
 
@@ -9341,7 +9391,7 @@ private struct AtriaPreparedMetricHistory {
             let priorRespiratoryPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 item.respiratoryRate.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: .teal) }
             }
-            respiratoryByRange[range] = respiratoryPoints
+            respiratoryByRange[range] = Self.bucketedForDisplay(respiratoryPoints, range: range, calendar: calendar)
             respiratorySummaryByRange[range] = AtriaDetailPeriodSummary(points: respiratoryPoints, unit: "/min")
             respiratoryComparisonByRange[range] = AtriaDetailComparisonSummary(current: respiratoryPoints, prior: priorRespiratoryPoints, unit: "/min")
 
@@ -9362,7 +9412,7 @@ private struct AtriaPreparedMetricHistory {
                 let tint = Metrics.sleepDurationZone(hours, goalHours: sleepGoalHours)?.tint ?? .cyan
                 return AtriaDetailChartPoint(day: item.day, value: hours, tint: tint)
             }
-            sleepByRange[range] = sleepPoints
+            sleepByRange[range] = Self.bucketedForDisplay(sleepPoints, range: range, calendar: calendar)
             sleepSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPoints, unit: "h")
             sleepComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPoints, prior: priorSleepPoints, unit: "h")
 
@@ -9372,7 +9422,7 @@ private struct AtriaPreparedMetricHistory {
             let priorStrainPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 item.strain.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain) }
             }
-            strainByRange[range] = strainPoints
+            strainByRange[range] = Self.bucketedForDisplay(strainPoints, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
             latestStrainByRange[range] = filtered.last?.strain
@@ -9383,7 +9433,7 @@ private struct AtriaPreparedMetricHistory {
             let priorSleepPerformancePoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }
             }
-            sleepPerformanceByRange[range] = sleepPerformancePoints
+            sleepPerformanceByRange[range] = Self.bucketedForDisplay(sleepPerformancePoints, range: range, calendar: calendar)
             sleepPerformanceSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPerformancePoints, unit: "%")
             sleepPerformanceComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPerformancePoints, prior: priorSleepPerformancePoints, unit: "%")
 
@@ -9401,7 +9451,7 @@ private struct AtriaPreparedMetricHistory {
                                           tint: delta <= 0 ? Metrics.electricGreen : Metrics.electricYellow)
                 }
             }
-            fitnessAgeByRange[range] = fitnessAgePoints
+            fitnessAgeByRange[range] = Self.bucketedForDisplay(fitnessAgePoints, range: range, calendar: calendar)
             fitnessAgeSummaryByRange[range] = AtriaDetailPeriodSummary(points: fitnessAgePoints, unit: "y")
             fitnessAgeComparisonByRange[range] = AtriaDetailComparisonSummary(current: fitnessAgePoints, prior: priorFitnessAgePoints, unit: "y")
         }
@@ -9456,6 +9506,10 @@ private struct AtriaDetailChartPoint: Identifiable {
     let day: Date
     let value: Double
     let tint: Color
+    /// Weekly-bucket min/max band bounds (2026-07-07 design handoff long-range
+    /// bucketing). nil on raw daily points.
+    var bandLower: Double? = nil
+    var bandUpper: Double? = nil
 
     var id: Date { day }
 }
