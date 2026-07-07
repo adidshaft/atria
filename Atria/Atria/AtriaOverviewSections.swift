@@ -2910,7 +2910,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       value: metricDisplayValue(hero.hrvValue),
                                       detail: hrvDetailText,
                                       systemImage: metric.systemImage,
-                                      tint: hrvZone?.tint ?? .pink,
+                                      tint: hrvZone?.tint ?? Metrics.electricHRV,
                                       sparklineValues: dailyMetricSparklines.hrv,
                                       zone: hrvZone,
                                       calibratingDay: hrvCalibratingDay)
@@ -2971,7 +2971,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       value: metricDisplayValue(hero.restingHeartRateText),
                                       detail: "Baseline",
                                       systemImage: metric.systemImage,
-                                      tint: restingHeartRateZone?.tint ?? .pink,
+                                      tint: restingHeartRateZone?.tint ?? Metrics.electricRHR,
                                       sparklineValues: dailyMetricSparklines.restingHeartRate,
                                       zone: restingHeartRateZone,
                                       calibratingDay: restingCalibratingDay)
@@ -2981,7 +2981,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sleepHistory.latest?.respiratoryRateText ?? "--",
                                   detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep signal" : "Early",
                                   systemImage: metric.systemImage,
-                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal),
+                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
                                   zone: respiratoryRateZone,
                                   accessibilityDetail: sleepHistory.latest?.respiratoryRate == nil
                                     ? "Respiratory rate is building from sleep-only evidence."
@@ -3039,7 +3039,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : "--",
                                   detail: sensorSummary.skinTemperatureDeviation.detailText,
                                   systemImage: metric.systemImage,
-                                  tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange),
+                                  tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? Metrics.electricRespiratory : .orange),
                                   zone: skinTemperatureDeviationZone,
                                   accessibilityDetail: sensorSummary.skinTemperatureDeviation.isReady
                                     ? "Body temperature early relative signal \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)."
