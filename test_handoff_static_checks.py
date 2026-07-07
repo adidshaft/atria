@@ -6181,10 +6181,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "impactLane(title: \"Watch\"",
             "impactLane(title: \"Support\"",
             "glanceChip(title: \"Logged\"",
-            "glanceChip(title: \"Links\"",
+            # 2026-07-08: "Links" (raw correlation count) renamed to plain
+            # "Patterns", with "—" instead of "0" in the empty state.
+            "glanceChip(title: \"Patterns\"",
             "glanceChip(title: \"Focus\"",
             "Journal impact glance. \\(taggedDays) logged days.",
-            "behavior links",
+            "behavior patterns",
             "Text(count == 1 ? \"1 link\" : \"\\(count) links\")",
             "private func impactLane(title: String,",
             "private func glanceChip(title: String,",

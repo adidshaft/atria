@@ -11410,6 +11410,10 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         summaries.first
     }
 
+    private var patternCount: Int {
+        summaries.filter { $0.impactDelta != nil }.count
+    }
+
     private var supportValue: Double {
         min(supportSummaries.reduce(0) { $0 + $1.impactMagnitude } / 12, 1)
     }
@@ -11489,8 +11493,8 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
                            value: taggedDays > 0 ? "\(taggedDays)d" : "0d",
                            systemImage: "calendar.badge.checkmark",
                            tint: .cyan)
-                glanceChip(title: "Links",
-                           value: "\(summaries.filter { $0.impactDelta != nil }.count)",
+                glanceChip(title: "Patterns",
+                           value: patternCount > 0 ? "\(patternCount)" : "—",
                            systemImage: "waveform.path.ecg",
                            tint: .mint)
                 glanceChip(title: "Focus",
@@ -11500,7 +11504,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Journal impact glance. \(taggedDays) logged days. \(summaries.filter { $0.impactDelta != nil }.count) behavior links. Focus \(focusSummary?.tag.label ?? "tag more"). Watch \(pressureSummaries.count), support \(supportSummaries.count).")
+        .accessibilityLabel("Journal impact glance. \(taggedDays) logged days. \(patternCount) behavior patterns. Focus \(focusSummary?.tag.label ?? "tag more"). Watch \(pressureSummaries.count), support \(supportSummaries.count).")
     }
 
     private func impactLane(title: String,
