@@ -7680,7 +7680,11 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // Identity stays on the untrimmed window so a dismissed/confirmed
+        // effort never resurfaces under a new id; only the displayed start is
+        // sharpened to the real onset (getting-ready trimmed). Fails closed.
         let id = confirmedWorkoutID(start: start, end: end, source: summary.bestSource)
+        let displayStart = sustainedWorkoutOnsetStart(start: start, end: end, rest: rest, maxHR: maxHR) ?? start
         let alreadyConfirmed = cachedConfirmedWorkouts.contains { workout in
             if workout.id == id { return true }
             // Two efforts can't overlap in time, so a candidate sharing a
@@ -7717,14 +7721,14 @@ final class SessionStore: ObservableObject {
                       summary.moderateStrengthReviewCandidate ? 1 : 0)
         DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
                                                  detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%",
-                                                 windowStart: start,
+                                                 windowStart: displayStart,
                                                  windowEnd: end))
         return WorkoutReviewCandidate(id: id,
-                                      start: start,
+                                      start: displayStart,
                                       end: end,
                                       kind: summary.readySessions > 0 ? .workout : .activityCandidate,
                                       confidence: reviewConfidence,
-                                      duration: end.timeIntervalSince(start),
+                                      duration: end.timeIntervalSince(displayStart),
                                       avgHR: summary.bestAvgHR,
                                       peakHR: summary.bestPeakHR,
                                       streamCoveragePercent: summary.bestStreamCoveragePercent,
@@ -7841,14 +7845,20 @@ final class SessionStore: ObservableObject {
         }
         let confidence = summary.readySessions > 0 ? "auto_ready_user_confirmed" :
             (summary.nearMiss ? "user_confirmed_near_miss" : "user_confirmed_candidate")
-        let enriched = confirmedWorkoutMetrics(start: bestStart,
+        // Sharpen the displayed start to the real effort onset (getting-ready
+        // trimmed off). `id` above stays on the untrimmed bestStart so identity
+        // is stable (no dismissed/confirmed workout resurfaces), and readiness
+        // was already decided from the untrimmed window; only start + strain
+        // tighten. Fails closed to bestStart when there's no honest onset.
+        let displayStart = sustainedWorkoutOnsetStart(start: bestStart, end: bestEnd, rest: rest, maxHR: maxHR) ?? bestStart
+        let enriched = confirmedWorkoutMetrics(start: displayStart,
                                                end: bestEnd,
                                                rest: rest,
                                                maxHR: maxHR,
                                                excludedIntervals: [])
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
-                                             start: bestStart,
+                                             start: displayStart,
                                              end: bestEnd,
                                              label: summary.bestLabel,
                                              source: summary.bestSource,
@@ -8072,6 +8082,34 @@ final class SessionStore: ObservableObject {
                                                  windowStart: confirmed.start,
                                                  windowEnd: confirmed.end))
         return confirmed
+    }
+
+    /// The trimmed workout start (2026-07-07, user-reported early boundary):
+    /// the first sustained-elevated onset within [start, end], from the REAL
+    /// overlapping HR samples — so the getting-ready/walking-out lead-in is
+    /// not swept into the workout. Fails closed to nil (caller keeps the
+    /// untrimmed start) unless the trim removes >= 60s AND still leaves >= 5
+    /// min of workout, so a ready workout stays ready and no real effort is
+    /// dropped. Identity/readiness are computed from the untrimmed window by
+    /// the caller; this only sharpens the displayed start.
+    private func sustainedWorkoutOnsetStart(start: Date, end: Date, rest: Int, maxHR: Int) -> Date? {
+        let overlapping = canonicalSessions().filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return nil }
+        var samples: [(t: Date, bpm: Int)] = []
+        for session in overlapping {
+            for point in session.points where point.bpm > 0 {
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end { samples.append((t, point.bpm)) }
+            }
+        }
+        samples.sort { $0.t < $1.t }
+        guard let onset = AtriaWorkoutOnset.firstSustainedElevatedOnset(samples: samples, rest: rest, maxHR: maxHR),
+              onset > start.addingTimeInterval(60),
+              end.timeIntervalSince(onset) >= 5 * 60
+        else { return nil }
+        return onset
     }
 
     private func confirmedWorkoutMetrics(start: Date,
