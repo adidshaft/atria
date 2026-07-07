@@ -1309,6 +1309,51 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
     }
 
+    // MARK: Respiratory-rate HF band floor + BLE-gap guard (2026-07-08)
+
+    func testRespRateAcceptsRealBreathingBand() {
+        let sampleRate = 4.0
+        let count = Int(90 * sampleRate)
+        let hf = (0..<count).map { sin(2 * Double.pi * (15.0 / 60.0) * Double($0) / sampleRate) }
+        let rate = AtriaAnalytics.RespRateRsa.estimate(resampledRR: hf, sampleRate: sampleRate)
+        XCTAssertNotNil(rate)
+        XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
+    }
+
+    func testRespRateNeverReportsBelowBreathingFloor() {
+        // A 6 bpm (0.10 Hz) oscillation is HRV low-frequency / Mayer-wave
+        // territory, not breathing. The device showed 6.5-8.2 bpm reported as
+        // respiratory rate — a fabrication. The estimator must now never
+        // return a value below the 9 bpm HF-band floor (nil is fine).
+        let sampleRate = 4.0
+        let count = Int(90 * sampleRate)
+        let lf = (0..<count).map { sin(2 * Double.pi * (6.0 / 60.0) * Double($0) / sampleRate) }
+        if let rate = AtriaAnalytics.RespRateRsa.estimate(resampledRR: lf, sampleRate: sampleRate) {
+            XCTAssertGreaterThanOrEqual(rate, 9.0, "must not report LF drift as sub-9 bpm breathing")
+        }
+    }
+
+    func testRespRateFailsClosedAcrossBleDropGap() {
+        // A clean 15 bpm RR series with a 12s beat-timeline hole (BLE drop).
+        // The gap guard must return nil rather than interpolate LF drift
+        // across the hole and mislabel it as slow breathing.
+        let base = Date(timeIntervalSinceReferenceDate: 900_000)
+        var samples: [(t: Date, ms: Double)] = []
+        for index in 0..<220 {
+            let t = Double(index) * 0.9
+            let ms = 900 + 70 * sin(2 * Double.pi * (15.0 / 60.0) * t)
+            samples.append((base.addingTimeInterval(t), ms))
+        }
+        let afterGap = samples.last!.t.addingTimeInterval(12)
+        for index in 0..<120 {
+            let t = Double(index) * 0.9
+            let ms = 900 + 70 * sin(2 * Double.pi * (15.0 / 60.0) * t)
+            samples.append((afterGap.addingTimeInterval(t), ms))
+        }
+        let now = samples.last!.t
+        XCTAssertNil(AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: now, lookback: 600))
+    }
+
     func testSleepRespiratoryRateFallsBackForOvernightHROnlyEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
