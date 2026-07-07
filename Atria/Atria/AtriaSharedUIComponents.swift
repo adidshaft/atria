@@ -545,7 +545,7 @@ struct AtriaMetricTile: View, Equatable {
                         .contentTransition(.numericText())
                         .animation(.snappy(duration: 0.3), value: displayValue)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.62)
+                        .minimumScaleFactor(0.72)
                 }
                 if calibratingDay == nil, let unit {
                     Text(unit)

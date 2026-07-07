@@ -446,7 +446,7 @@ private struct AtriaHeartRateZoneLens: View, Equatable {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 92, alignment: .leading)
+            .frame(minWidth: 92, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 7) {
                 GeometryReader { proxy in

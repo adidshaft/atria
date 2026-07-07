@@ -344,7 +344,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "ellipsis")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Today actions")
@@ -423,7 +423,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Share ring as picture")
@@ -434,7 +434,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Share ring as picture")
@@ -2119,7 +2119,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.65)
+                .minimumScaleFactor(0.75)
             Text(item.title)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)

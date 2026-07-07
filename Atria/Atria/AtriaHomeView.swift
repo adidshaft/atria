@@ -2995,7 +2995,10 @@ private struct AtriaMissedDataBanner: View, Equatable {
             Button(action: onSync) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption.weight(.bold))
-                    .frame(width: 16, height: 16)
+                    // 44pt hit area (UX-quality audit 2026-07-07): the glyph
+                    // stays 16pt, the target doesn't.
+                    .frame(width: 32, height: 32)
+                    .contentShape(.rect)
             }
             .atriaCardAction(prominent: false, tint: .cyan)
             .accessibilityLabel("Sync missed strap data")
@@ -3006,7 +3009,8 @@ private struct AtriaMissedDataBanner: View, Equatable {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
                 .font(.caption.weight(.bold))
-                .frame(width: 16, height: 16)
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -7358,7 +7362,9 @@ private struct AtriaTopStatusChip: View {
                 .imageScale(.small)
             Text(label)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                // 0.85 floor: below that the caption-bold chip text was
+                // unreadable with real device names (UX audit 2026-07-07).
+                .minimumScaleFactor(0.85)
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
@@ -7630,7 +7636,8 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
             Button(action: onHelp) {
                 Image(systemName: "questionmark.circle")
                     .font(.caption.weight(.bold))
-                    .frame(width: 16, height: 16)
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .foregroundStyle(diagnosis.tint)
