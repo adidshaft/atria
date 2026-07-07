@@ -659,12 +659,10 @@ struct AtriaSettingsView: View {
                 }
                 .atriaCardAction(tint: .green)
 
-                Divider()
-
-                targetGroupHeader(title: "Recovery",
-                                  subtitle: target.summaryText,
-                                  systemImage: "gauge.with.dots.needle.67percent",
-                                  tint: .green)
+                // Collapsed-by-default groups (UX audit 2026-07-07): the nine
+                // target groups rendered ~30 steppers as one uninterrupted
+                // wall. Headers stay visible; controls disclose on demand.
+                DisclosureGroup(isExpanded: targetGroupBinding("Recovery")) {
 
                 Stepper(value: $recoveryGreenLower, in: 40...95, step: 1) {
                     LabeledContent("Green starts") {
@@ -687,13 +685,14 @@ struct AtriaSettingsView: View {
                     Label("Reset to recommended", systemImage: "arrow.counterclockwise")
                 }
                 .atriaCardAction(tint: .green)
+                } label: {
+                    targetGroupHeader(title: "Recovery",
+                                  subtitle: target.summaryText,
+                                  systemImage: "gauge.with.dots.needle.67percent",
+                                  tint: .green)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Strain",
-                                  subtitle: "Recovery-scaled target band for day load.",
-                                  systemImage: "figure.run",
-                                  tint: .orange)
+                DisclosureGroup(isExpanded: targetGroupBinding("Strain")) {
 
                 Stepper(value: $strainGreenBand, in: 0.5...5.0, step: 0.5) {
                     LabeledContent("Strain green band") {
@@ -716,13 +715,14 @@ struct AtriaSettingsView: View {
                     Label("Reset strain band", systemImage: "figure.run")
                 }
                 .atriaCardAction(tint: .orange)
-
-                Divider()
-
-                targetGroupHeader(title: "Training load",
-                                  subtitle: "ACWR and monotony bands for readiness guidance.",
-                                  systemImage: "chart.bar.xaxis",
+                } label: {
+                    targetGroupHeader(title: "Strain",
+                                  subtitle: "Recovery-scaled target band for day load.",
+                                  systemImage: "figure.run",
                                   tint: .orange)
+                }
+
+                DisclosureGroup(isExpanded: targetGroupBinding("Training load")) {
 
                 Stepper(value: $loadACWRWatchLow, in: 0.50...1.00, step: 0.05) {
                     LabeledContent("ACWR low watch") {
@@ -782,13 +782,14 @@ struct AtriaSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                } label: {
+                    targetGroupHeader(title: "Training load",
+                                  subtitle: "ACWR and monotony bands for readiness guidance.",
+                                  systemImage: "chart.bar.xaxis",
+                                  tint: .orange)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Activity",
-                                  subtitle: "Daily strap-step and estimated active calories goals.",
-                                  systemImage: "figure.walk.motion",
-                                  tint: .green)
+                DisclosureGroup(isExpanded: targetGroupBinding("Activity")) {
 
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
                     LabeledContent("Strap steps goal") {
@@ -811,13 +812,14 @@ struct AtriaSettingsView: View {
                     Label("Reset activity targets", systemImage: "figure.walk.motion")
                 }
                 .atriaCardAction(tint: .green)
+                } label: {
+                    targetGroupHeader(title: "Activity",
+                                  subtitle: "Daily strap-step and estimated active calories goals.",
+                                  systemImage: "figure.walk.motion",
+                                  tint: .green)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Sleep",
-                                  subtitle: "Duration goal and efficiency bands for sleep history.",
-                                  systemImage: "bed.double.fill",
-                                  tint: .cyan)
+                DisclosureGroup(isExpanded: targetGroupBinding("Sleep")) {
 
                 Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
                     LabeledContent("Sleep goal") {
@@ -856,13 +858,14 @@ struct AtriaSettingsView: View {
                     Label("Reset sleep targets", systemImage: "bed.double.fill")
                 }
                 .atriaCardAction(tint: .cyan)
+                } label: {
+                    targetGroupHeader(title: "Sleep",
+                                  subtitle: "Duration goal and efficiency bands for sleep history.",
+                                  systemImage: "bed.double.fill",
+                                  tint: .cyan)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Personal baselines",
-                                  subtitle: "HRV and resting-HR ranges wait for trusted baseline data.",
-                                  systemImage: "heart.text.square.fill",
-                                  tint: .pink)
+                DisclosureGroup(isExpanded: targetGroupBinding("Personal baselines")) {
 
                 Stepper(value: $hrvGreenRatio, in: 0.70...1.10, step: 0.01) {
                     LabeledContent("HRV green") {
@@ -901,13 +904,14 @@ struct AtriaSettingsView: View {
                     Label("Reset baseline targets", systemImage: "heart.text.square.fill")
                 }
                 .atriaCardAction(tint: .pink)
+                } label: {
+                    targetGroupHeader(title: "Personal baselines",
+                                  subtitle: "HRV and resting-HR ranges wait for trusted baseline data.",
+                                  systemImage: "heart.text.square.fill",
+                                  tint: .pink)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Sleep-only signals",
-                                  subtitle: "Respiratory, relative skin-temp, and oxygen evidence bands.",
-                                  systemImage: "waveform.path.ecg",
-                                  tint: .teal)
+                DisclosureGroup(isExpanded: targetGroupBinding("Sleep-only signals")) {
 
                 Stepper(value: $respiratoryGreenDelta, in: 0.5...4.0, step: 0.5) {
                     LabeledContent("Resp green band") {
@@ -960,13 +964,14 @@ struct AtriaSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                } label: {
+                    targetGroupHeader(title: "Sleep-only signals",
+                                  subtitle: "Respiratory, relative skin-temp, and oxygen evidence bands.",
+                                  systemImage: "waveform.path.ecg",
+                                  tint: .teal)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "Fitness age",
-                                  subtitle: "Younger/older delta bands for the local estimate.",
-                                  systemImage: "figure.stand",
-                                  tint: .purple)
+                DisclosureGroup(isExpanded: targetGroupBinding("Fitness age")) {
 
                 Stepper(value: $biologicalAgeGreenOlderDelta, in: -10...10, step: 1) {
                     LabeledContent("Fitness age green") {
@@ -994,13 +999,14 @@ struct AtriaSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                } label: {
+                    targetGroupHeader(title: "Fitness age",
+                                  subtitle: "Younger/older delta bands for the local estimate.",
+                                  systemImage: "figure.stand",
+                                  tint: .purple)
+                }
 
-                Divider()
-
-                targetGroupHeader(title: "VO2max",
-                                  subtitle: "Trend gain or decline needed for target colors.",
-                                  systemImage: "lungs.fill",
-                                  tint: .blue)
+                DisclosureGroup(isExpanded: targetGroupBinding("VO2max")) {
 
                 Stepper(value: $vo2GreenDelta, in: 0.0...2.0, step: 0.1) {
                     LabeledContent("VO2 green gain") {
@@ -1023,6 +1029,13 @@ struct AtriaSettingsView: View {
                     Label("Reset VO2 trend target", systemImage: "lungs.fill")
                 }
                 .atriaCardAction(tint: .blue)
+                } label: {
+                    targetGroupHeader(title: "VO2max",
+                                  subtitle: "Trend gain or decline needed for target colors.",
+                                  systemImage: "lungs.fill",
+                                  tint: .blue)
+                }
+
 
                 HStack(spacing: 10) {
                     Image(systemName: "heart.text.square.fill")
@@ -1040,6 +1053,19 @@ struct AtriaSettingsView: View {
         } footer: {
             Text("Recovery uses recommended 67/34 zones by default. Guidance is general wellness information, not medical advice.")
         }
+    }
+
+    @State private var expandedTargetGroups: Set<String> = []
+
+    private func targetGroupBinding(_ title: String) -> Binding<Bool> {
+        Binding(get: { expandedTargetGroups.contains(title) },
+                set: { isOn in
+                    if isOn {
+                        expandedTargetGroups.insert(title)
+                    } else {
+                        expandedTargetGroups.remove(title)
+                    }
+                })
     }
 
     private func targetGroupHeader(title: String,

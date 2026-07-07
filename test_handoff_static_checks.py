@@ -10984,9 +10984,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "Guidance is general wellness information, not medical advice.",
         ]:
             assert_contains(self, settings, needle)
+        # 2026-07-07 UX audit: the target groups became collapsed
+        # DisclosureGroups (no more Divider separators); the ordering
+        # guarantee (fitness-age controls before VO2 controls) is what the
+        # regex still asserts.
         self.assertRegex(
             settings,
-            r"Reset fitness-age target[\s\S]*?\.atriaCardAction\(tint: \.purple\)[\s\S]*?Divider\(\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
+            r"Reset fitness-age target[\s\S]*?\.atriaCardAction\(tint: \.purple\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
         )
         assert_not_contains(self, settings, "7-night baseline")
 
