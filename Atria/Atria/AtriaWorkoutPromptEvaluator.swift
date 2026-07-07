@@ -23,22 +23,35 @@ enum AtriaWorkoutPromptEvaluator {
                          now: Date = Date()) -> Result {
         let referenceDate = samples.last?.t ?? now
         let sustainedStart = referenceDate.addingTimeInterval(-TimeInterval(minimumSustainedSamples))
-        let elevatedSamples = samples.filter {
-            $0.t >= sustainedStart && $0.bpm - restingHeartRate >= minimumBPMOverRest
-        }.count
+        let zoneStart = referenceDate.addingTimeInterval(-zoneLookbackSeconds)
+
+        // Perf (2026-07-07, device-reported lag): this runs on the main thread
+        // every ~750ms while connected on the home tab, and `samples` is the
+        // whole live session — ~80k after a 13.8h wear day. Only the trailing
+        // ~8 min ever matter (samples are time-ascending, as `referenceDate =
+        // samples.last?.t` already assumes), so walk the tail and stop at the
+        // earliest cutoff instead of two full-array scans. Counts are
+        // order-independent, so this is byte-identical to the old filters;
+        // if a tail were ever out of order it could only under-count -> a
+        // missed prompt, never a false workout (fail closed).
+        let earliestCutoff = min(sustainedStart, zoneStart)
+        var elevatedSamples = 0
+        var zoneSamples = 0
+        for sample in samples.reversed() {
+            if sample.t < earliestCutoff { break }
+            if sample.t >= sustainedStart, sample.bpm - restingHeartRate >= minimumBPMOverRest {
+                elevatedSamples += 1
+            }
+            if sample.t >= zoneStart,
+               let zone = Metrics.heartRateZone(bpm: sample.bpm,
+                                                rest: restingHeartRate,
+                                                max: maxHeartRate),
+               zone.index >= zoneMinimumIndex {
+                zoneSamples += 1
+            }
+        }
         let currentElevated = currentHeartRate - restingHeartRate >= minimumBPMOverRest
         let sustainedPath = elevatedSamples >= minimumSustainedSamples && currentElevated
-
-        let zoneStart = referenceDate.addingTimeInterval(-zoneLookbackSeconds)
-        let zoneSamples = samples.filter { sample in
-            guard sample.t >= zoneStart,
-                  let zone = Metrics.heartRateZone(bpm: sample.bpm,
-                                                   rest: restingHeartRate,
-                                                   max: maxHeartRate) else {
-                return false
-            }
-            return zone.index >= zoneMinimumIndex
-        }.count
         let zonePath = zoneSamples >= zoneMinimumSamples
 
         return Result(shouldPrompt: sustainedPath || zonePath,

@@ -1515,6 +1515,42 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(result.zonePath)
     }
 
+    // Device-lag fix (2026-07-07): the evaluator now walks only the trailing
+    // window instead of scanning the whole (up to ~80k-sample) session. These
+    // lock that the long lead-in neither counts nor changes the verdict.
+    func testWorkoutPromptEvaluatorScansOnlyTailOfLongSession() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // ~4h of resting samples before the window, then 8 min elevated ending now.
+        let leadIn = syntheticHeartSamples(start: start, count: 14_400, bpm: 62)
+        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 87)
+        let samples = leadIn + tail
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 87,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+        XCTAssertEqual(result.elevatedSamples, 480, "only the trailing 8-min window counts")
+        XCTAssertTrue(result.sustainedPath)
+        XCTAssertTrue(result.shouldPrompt)
+    }
+
+    func testWorkoutPromptEvaluatorIgnoresElevatedDataBeforeWindow() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // Old elevated bout long ago, then the last 8 min at rest.
+        let oldElevated = syntheticHeartSamples(start: start, count: 480, bpm: 120)
+        let recentResting = syntheticHeartSamples(start: start.addingTimeInterval(3_600), count: 480, bpm: 62)
+        let samples = oldElevated + recentResting
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 62,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+        XCTAssertEqual(result.elevatedSamples, 0, "elevated data outside the window must not count")
+        XCTAssertFalse(result.shouldPrompt)
+    }
+
     func testWorkoutPromptCooldownLatchExpiresAfterFortyFiveMinutes() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let dismissedUntil = now.addingTimeInterval(AtriaWorkoutPromptEvaluator.cooldown)
