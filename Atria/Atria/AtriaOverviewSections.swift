@@ -2491,7 +2491,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            value: sleepGlanceValueText,
                            detail: sleepTriRingDetailText,
                            systemImage: sleepGlanceSystemImage,
-                           tint: Metrics.electricSleep,
+                           tint: Metrics.ringAchievementTint(fill: sleepFocusProgress),
                            fill: sleepFocusProgress)
     }
 
@@ -2511,7 +2511,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: hero.strainValue,
                                   detail: targetValueText,
                                   systemImage: AtriaTodayMetric.strain.systemImage,
-                                  tint: Metrics.electricStrain,
+                                  tint: Metrics.ringAchievementTint(fill: metricIsPending(hero.strainValue) ? nil : fill),
                                   fill: metricIsPending(hero.strainValue) ? nil : fill)
     }
 
