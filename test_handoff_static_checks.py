@@ -456,7 +456,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
             # added by the design-handoff chart-language pass.
-            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))",
+            # 2026-07-07 (loop 3): domain also covers the dashed
+            # prior-period ghost series.
+            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison, priorPointsForDomain: priorPoints))",
             # 2026-07-07: signature gained the optional comparison param (same
             # chart-language pass as the .chartYScale pin above).
             "private func chartDomain(points: [AtriaDetailChartPoint],",
