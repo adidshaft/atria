@@ -3030,13 +3030,17 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     var body: some View {
         Chart {
             if let buckets {
-                // Smoothed mode: real min-max ceiling/floor band + average.
+                // Smoothed mode: one calm average line with a soft gradient fill
+                // beneath it. The old per-bucket min-max band jumped bucket to
+                // bucket and read as a noisy scribble (user-reported 2026-07-08);
+                // the average already carries the shape, and detail is one zoom
+                // away. Nothing here is synthesized — average is the real mean.
                 ForEach(buckets) { bucket in
                     AreaMark(x: .value("Time", bucket.t),
-                             yStart: .value("Min", bucket.minBPM),
-                             yEnd: .value("Max", bucket.maxBPM))
+                             yStart: .value("Floor", Double(yDomain.lowerBound)),
+                             yEnd: .value("BPM", bucket.average))
                         .interpolationMethod(.monotone)
-                        .foregroundStyle(.red.opacity(0.16))
+                        .foregroundStyle(.red.opacity(0.12).gradient)
                     LineMark(x: .value("Time", bucket.t),
                              y: .value("BPM", bucket.average))
                         .interpolationMethod(.monotone)
