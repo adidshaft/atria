@@ -6506,10 +6506,16 @@ struct AtriaMetricDetailSheet: View {
     private var detailTemplate: some View {
         switch metric {
         case .recovery:
+            // Recovery's signature visual (the contributor map: what made
+            // today's score) belongs on the first screen like sleep's
+            // hypnogram and strain's gauge — not behind "Show details"
+            // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
                                       heroState: recoveryHeroState,
                                       tint: recoveryEstimate.percent.map(Metrics.recoveryColor) ?? Metrics.electricGreen) {
                 contributorCard
+            } contributors: {
+                EmptyView()
             } chart: {
                 chartSlot {
                     metricChart(title: "Recovery",
