@@ -44,6 +44,14 @@ struct AtriaHealthScreen: View {
                                              isLoading: isLoadingHistoricalHeartRatePoints)
             } else {
                 VStack(spacing: 12) {
+                    // Live pulse card leads Vitals (2026-07-07, design
+                    // handoff): current bpm, session stats, resting zone,
+                    // and the tappable heart-rate timeline.
+                    AtriaVitalsLivePulseSection(liveStore: liveStore,
+                                                pulseStore: pulseStore,
+                                                homeStatsStore: homeStatsStore,
+                                                store: store,
+                                                pulseSparklineStore: pulseSparklineStore)
                     healthMonitorCard
                     sleepDetailCard
                     trendsCard
@@ -87,6 +95,7 @@ struct AtriaHealthScreen: View {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    hrZoneMinutes: heroStore.state.hrZoneMinutes,
+                                   maxHeartRate: store.profile.maxHR,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: store.imuAuditSummary.skinTemperatureDeviation)
                 .presentationDetents([.medium, .large])
@@ -138,9 +147,31 @@ struct AtriaHealthScreen: View {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    /// One sleep-performance number for this whole screen (UX audit
+    /// inconsistency fix, 2026-07-07): live snapshot + the rollup path's
+    /// yesterday-strain semantics. The Sleep row detail and the Performance
+    /// tile both read this.
+    private var sleepPerformancePercentUnified: Int? {
+        guard let latest = store.sleepHistorySnapshot.latest else { return nil }
+        return store.sleepHistorySnapshot.sleepPerformancePercent(for: latest,
+                                                                  baseNeedHours: sleepBaseNeedHours,
+                                                                  yesterdayStrain: yesterdayStrainForLatestNight)
+    }
+
+    private var yesterdayStrainForLatestNight: Double? {
+        guard let latest = store.sleepHistorySnapshot.latest else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latest.day)) else { return nil }
+        return store.dailyRollupHistory
+            .first { calendar.isDate($0.day, inSameDayAs: priorDay) }?
+            .strain
+    }
+
     private var sleepPerformanceValue: String {
-        guard let latest = store.sleepHistorySnapshot.latest else { return "--" }
-        return "\(store.sleepHistorySnapshot.sleepPerformancePercent(for: latest, baseNeedHours: sleepBaseNeedHours))%"
+        guard let performance = sleepPerformancePercentUnified else { return "--" }
+        return "\(performance)%"
     }
 
     /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
@@ -211,6 +242,41 @@ struct AtriaHealthScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            // Disconnected honesty (2026-07-07 design handoff): saved rollup
+            // values are clearly labeled last-known, dimmed, and offered an
+            // inline reconnect instead of sitting under a green "Updated".
+            if isDisconnected, latestRollup != nil {
+                HStack(spacing: 10) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    if let day = latestRollup?.day {
+                        Text("Last known \u{00b7} \(day, format: .relative(presentation: .named))")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Last known")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Reconnect") {
+                        ble.startScan(reason: "health_monitor_reconnect")
+                    }
+                    .font(.caption.weight(.bold))
+                    .buttonStyle(.glass)
+                    .controlSize(.regular)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            // Grouped rows (UX audit 2026-07-07): nine homogeneous rows
+            // read as a wall; two sub-kickers split readiness signals from
+            // sleep/body signals.
+            monitorGroupKicker("Readiness")
+
             VStack(spacing: 8) {
                 AtriaHealthMetricRow(title: "Recovery",
                                      value: recoveryValue,
@@ -242,6 +308,12 @@ struct AtriaHealthScreen: View {
                                      tint: stressTint,
                                      hint: stressHint,
                                      onTap: { educationTopic = .stress })
+            }
+            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
+
+            monitorGroupKicker("Sleep & body")
+
+            VStack(spacing: 8) {
                 AtriaHealthMetricRow(title: "Respiration",
                                      value: respiratoryValue,
                                      detail: "sleep average",
@@ -281,6 +353,9 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      onTap: { metricDetail = .bloodOxygen })
             }
+            // Dimmed while disconnected: these are saved values, not a live
+            // read (paired with the last-known row above).
+            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -338,6 +413,16 @@ struct AtriaHealthScreen: View {
     #else
     private static func debugOpensHeartRateTimeline(arguments: [String]) -> Bool { false }
     #endif
+
+    private func monitorGroupKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
 
     private var header: some View {
         HStack {
@@ -454,6 +539,11 @@ struct AtriaHealthScreen: View {
     }
 
     private var sleepDetail: String {
+        // Same unified number as the Performance tile below; the persisted
+        // rollup only backstops when no live night exists.
+        if let performance = sleepPerformancePercentUnified {
+            return "\(performance)% need"
+        }
         if let performance = latestRollup?.sleepPerformance {
             return "\(performance)% need"
         }
@@ -564,7 +654,13 @@ struct AtriaHealthScreen: View {
 
     private var statusValue: String {
         guard latestRollup != nil else { return "Learning" }
-        return "Updated"
+        // Never a green "Updated" over stale data while disconnected
+        // (2026-07-07 design handoff honesty fix).
+        return isDisconnected ? "Last known" : "Updated"
+    }
+
+    private var isDisconnected: Bool {
+        liveStore.state.status != .connected
     }
 
     private var statusTint: Color {
@@ -790,6 +886,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
     }
 
     private var rowContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.subheadline.weight(.bold))
@@ -803,7 +900,8 @@ private struct AtriaHealthMetricRow: View, Equatable {
                 Text(detail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 // Fixed-height slot rendered on every row (even when this
                 // metric has no trusted range yet) so all six rows share
                 // one height and every reference-range line that does
@@ -818,18 +916,21 @@ private struct AtriaHealthMetricRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(value)
-                    .font(.headline.weight(.bold))
-                    .monospacedDigit()
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+            Text(value)
+                .font(.headline.weight(.bold))
+                .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
 
-                if let hint {
-                    AtriaVitalsHintChip(text: hint, tint: Metrics.electricYellow)
-                }
-            }
+        // Full-width hint line (UX audit 2026-07-07): sentence-length hints
+        // ("↓ 1h 20m debt — earlier bedtime tonight") were squeezed into the
+        // trailing column and shrank unreadably; they now get the whole row.
+        if let hint {
+            AtriaVitalsHintChip(text: hint, tint: Metrics.electricYellow)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
         }
         .frame(minHeight: 64)
         .padding(.horizontal, 12)

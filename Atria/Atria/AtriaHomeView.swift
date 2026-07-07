@@ -544,7 +544,12 @@ struct AtriaHomeView: View {
             AtriaManualSleepSheet(initialStart: sleepReviewSheetNight?.start,
                                   initialEnd: sleepReviewSheetNight?.end,
                                   initialIsNap: sleepReviewSheetNight?.isNapEvidence,
-                                  preservesSensorStages: true) { start, end, isNap in
+                                  preservesSensorStages: true,
+                                  evidenceNight: sleepReviewSheetNight,
+                                  evidencePerformancePercent: sleepReviewSheetNight.map {
+                                      store.sleepHistorySnapshot.sleepPerformancePercent(for: $0,
+                                                                                         baseNeedHours: SessionStore.configuredSleepBaseNeedHours())
+                                  }) { start, end, isNap in
                 _ = store.adjustSleepNight(originalStart: sleepReviewSheetNight?.start,
                                            originalEnd: sleepReviewSheetNight?.end,
                                            newStart: start,
@@ -2328,11 +2333,13 @@ struct AtriaHomeView: View {
 
 
     private var overviewContent: some View {
-        VStack(spacing: 18) {
-            if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
-                overviewSystemBanners
-            }
-
+        // One notifications block (user's strict rule, 2026-07-07): the
+        // workout item, sleep item, and plan card render together inside
+        // AtriaTodayScreen's plan section, under the ring. State and actions
+        // stay here; only the rendering location moved. Max 3 items: the
+        // workout banners are mutually exclusive and the sleep section shows
+        // at most one surface.
+        let todayNotifications = AnyView(Group {
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
                     workoutDetectionPrompt = nil
@@ -2361,6 +2368,14 @@ struct AtriaHomeView: View {
                (debugWorkoutDetectionPrompt ?? workoutDetectionPrompt) == nil,
                (debugSavedWorkoutReviewCandidate ?? savedWorkoutReviewCandidate) == nil {
                 AtriaWorkoutReviewHoldBanner(state: holdState)
+            }
+
+            AtriaTodaySleepReviewSection(store: store)
+        })
+
+        return VStack(spacing: 18) {
+            if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
+                overviewSystemBanners
             }
 
             AtriaTodayScreen(statusStore: model.statusStore,
@@ -2424,7 +2439,8 @@ struct AtriaHomeView: View {
                              },
                              onCustomizeToday: {
                                  showCustomizeSheet = true
-                             })
+                             },
+                             systemNotifications: todayNotifications)
 
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
@@ -2985,7 +3001,10 @@ private struct AtriaMissedDataBanner: View, Equatable {
             Button(action: onSync) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption.weight(.bold))
-                    .frame(width: 16, height: 16)
+                    // 44pt hit area (UX-quality audit 2026-07-07): the glyph
+                    // stays 16pt, the target doesn't.
+                    .frame(width: 32, height: 32)
+                    .contentShape(.rect)
             }
             .atriaCardAction(prominent: false, tint: .cyan)
             .accessibilityLabel("Sync missed strap data")
@@ -2996,7 +3015,8 @@ private struct AtriaMissedDataBanner: View, Equatable {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
                 .font(.caption.weight(.bold))
-                .frame(width: 16, height: 16)
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -3188,7 +3208,7 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.85)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3280,7 +3300,8 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
                     .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.76)
+                    .minimumScaleFactor(0.85)
+                    .layoutPriority(1)
             }
 
             GeometryReader { proxy in
@@ -7348,7 +7369,9 @@ private struct AtriaTopStatusChip: View {
                 .imageScale(.small)
             Text(label)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                // 0.85 floor: below that the caption-bold chip text was
+                // unreadable with real device names (UX audit 2026-07-07).
+                .minimumScaleFactor(0.85)
         }
         .font(.caption.weight(.bold))
         .foregroundStyle(foreground)
@@ -7620,7 +7643,8 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
             Button(action: onHelp) {
                 Image(systemName: "questionmark.circle")
                     .font(.caption.weight(.bold))
-                    .frame(width: 16, height: 16)
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .foregroundStyle(diagnosis.tint)

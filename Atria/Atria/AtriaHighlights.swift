@@ -6,6 +6,9 @@ struct AtriaHighlight: Identifiable, Equatable {
     let valuePhrase: String
     let sentence: String
     let tint: Color
+    /// Detail sheet this insight opens (2026-07-07 design handoff: rows are
+    /// real routes, not fake chevrons). nil renders a plain, chevron-free row.
+    var metric: AtriaMetricDetailKind? = nil
 }
 
 enum AtriaHighlights {
@@ -29,7 +32,8 @@ enum AtriaHighlights {
                               systemImage: "moon.fill",
                               valuePhrase: "\(streak) nights",
                               sentence: "at sleep need",
-                              tint: Metrics.electricSleep)
+                              tint: Metrics.electricSleep,
+                              metric: .sleep)
     }
 
     private static func lowerRestingHeartRate(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
@@ -43,6 +47,7 @@ enum AtriaHighlights {
                               systemImage: "heart.fill",
                               valuePhrase: "↓ RHR",
                               sentence: "lower than usual",
-                              tint: Metrics.electricGreen)
+                              tint: Metrics.electricGreen,
+                              metric: .restingHeartRate)
     }
 }

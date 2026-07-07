@@ -397,7 +397,9 @@ class HandoffStaticChecks(unittest.TestCase):
             'Label("Dismiss", systemImage: "xmark.circle")',
             '.accessibilityHint("Change the time window or save this as sleep or nap.")',
             '.accessibilityHint("Dismisses this review without saving it.")',
-            'private var title: String { isNap ? "Review your nap" : "Review last night" }',
+            # 2026-07-07: review-card title migrated to the design handoff's
+            # detection-provenance copy ("Sleep detected" / "Nap detected").
+            'private var title: String { isNap ? "Nap detected" : "Sleep detected" }',
             "Circle()",
             "sleepReviewActionButtons",
             "private var sleepReviewActionButtons: some View",
@@ -452,8 +454,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "summaryRangeRail",
             "summaryMiniStat(label: \"Avg\", value: summary.averageText)",
             "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
-            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand))",
-            "private func chartDomain(points: [AtriaDetailChartPoint], baselineBand: AtriaDetailBaselineBand?) -> ClosedRange<Double>",
+            # 2026-07-07: domain also covers the dashed prior-average rule
+            # added by the design-handoff chart-language pass.
+            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))",
+            # 2026-07-07: signature gained the optional comparison param (same
+            # chart-language pass as the .chartYScale pin above).
+            "private func chartDomain(points: [AtriaDetailChartPoint],",
             "return AtriaTrendChartScale.domain(values: values)",
         ]:
             assert_contains(self, overview, needle)
@@ -8640,7 +8646,9 @@ class HandoffStaticChecks(unittest.TestCase):
             (today, "return store.dailyRollupHistory"),
             (today, 'arguments[valueIndex] == "north-star-highlights"'),
             (today, "debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail"),
-            (today, "AtriaTodayHighlightsStrip(highlights: highlights)"),
+            # 2026-07-07: strip gained the onOpen route (insight rows are
+            # real buttons now, not fake chevrons).
+            (today, "AtriaTodayHighlightsStrip(highlights: highlights) { metric in"),
             (today, "private struct AtriaTodayHighlightsStrip: View, Equatable"),
             (today, "AtriaTodayLiveStatusStrip(live: liveStore.state,"),
             (today, "AtriaTodayPlanCard(title: planTitle,"),
@@ -8654,7 +8662,9 @@ class HandoffStaticChecks(unittest.TestCase):
             # AtriaTodayMetric via the generic AtriaTodayGlanceItem(title: metric.label,
             # pattern pinned below.
             (today, "AtriaTodayGlanceItem(title: metric.label,"),
-            (today, "AtriaTodayInfoRow(title: \"Journal\","),
+            # 2026-07-07 UX audit: the Journal info row duplicated the
+            # shortcut strip's Journal value on the same screen and was
+            # removed; the shortcut strip (pinned below) carries the value.
             (today, "private struct AtriaTodayLiveStatusStrip: View, Equatable"),
             (today, "private struct AtriaTodayPlanCard: View, Equatable"),
             (today, "private struct AtriaTodayGlanceTile: View, Equatable"),
@@ -8813,11 +8823,13 @@ class HandoffStaticChecks(unittest.TestCase):
             # ordering marker migrates from the (now-hoisted) topTwo call to the
             # section's guard condition, which occupies the same position.
             "if layoutConfig.showHighlights && !highlights.isEmpty",
-            "AtriaTodayHighlightsStrip(highlights: highlights)",
+            # 2026-07-07: same onOpen-route migration as above.
+            "AtriaTodayHighlightsStrip(highlights: highlights) { metric in",
             "AtriaTodayPlanCard(title: planTitle,",
             "LazyVGrid(columns: glanceColumns, spacing: 10)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
-            "AtriaTodayInfoRow(title: \"Journal\",",
+            # 2026-07-07: Journal info row removed (duplicate of shortcut
+            # strip value) — see UX-audit commit.
         ]
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
@@ -10972,9 +10984,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "Guidance is general wellness information, not medical advice.",
         ]:
             assert_contains(self, settings, needle)
+        # 2026-07-07 UX audit: the target groups became collapsed
+        # DisclosureGroups (no more Divider separators); the ordering
+        # guarantee (fitness-age controls before VO2 controls) is what the
+        # regex still asserts.
         self.assertRegex(
             settings,
-            r"Reset fitness-age target[\s\S]*?\.atriaCardAction\(tint: \.purple\)[\s\S]*?Divider\(\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
+            r"Reset fitness-age target[\s\S]*?\.atriaCardAction\(tint: \.purple\)[\s\S]*?Stepper\(value: \$vo2GreenDelta",
         )
         assert_not_contains(self, settings, "7-night baseline")
 

@@ -545,7 +545,7 @@ struct AtriaMetricTile: View, Equatable {
                         .contentTransition(.numericText())
                         .animation(.snappy(duration: 0.3), value: displayValue)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.62)
+                        .minimumScaleFactor(0.72)
                 }
                 if calibratingDay == nil, let unit {
                     Text(unit)
@@ -686,7 +686,7 @@ struct AtriaInlineQuickStat: View, Equatable {
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
             if let detail {
                 Text(detail)

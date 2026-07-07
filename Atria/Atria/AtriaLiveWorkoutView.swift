@@ -137,6 +137,10 @@ struct AtriaLiveWorkoutView: View {
                         header
                         heartBlock(zone)
                             .padding(.top, 2)
+                        // Design handoff stat row (2026-07-07): strain-so-far +
+                        // live calories as first-class tiles under the HR hero
+                        // (duration stays in the header's isolated clock).
+                        statsRow
                         // Decongested 2026-07-06 (10 cards -> 5): zone was drawn
                         // 4x and strain-vs-target 3x. Now one coach cue, one zone
                         // module (zoneBar absorbs the old zoneFocus samples), one
@@ -305,25 +309,33 @@ struct AtriaLiveWorkoutView: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .layoutPriority(1)
                     Spacer(minLength: 8)
                     Text(setSummary(set))
                         .font(.caption.weight(.black).monospacedDigit())
                         .foregroundStyle(.mint)
                 }
+                .frame(minHeight: 30)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             Button(role: .destructive) {
                 deleteLoggedSet(set)
             } label: {
+                // Destructive control next to the edit row: full 44pt hit
+                // area so a miss never deletes (UX audit 2026-07-07).
                 Image(systemName: "trash.circle.fill")
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.red.opacity(0.92))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Delete set")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 2)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -456,13 +468,15 @@ struct AtriaLiveWorkoutView: View {
                                   value: String,
                                   decrement: @escaping () -> Void,
                                   increment: @escaping () -> Void) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(title)
                 .font(.subheadline.weight(.bold))
             Spacer()
             Button(action: decrement) {
                 Image(systemName: "minus.circle.fill")
                     .font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Text(value)
                 .font(.title3.weight(.black).monospacedDigit())
@@ -470,6 +484,8 @@ struct AtriaLiveWorkoutView: View {
             Button(action: increment) {
                 Image(systemName: "plus.circle.fill")
                     .font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
         .padding(10)
@@ -503,8 +519,8 @@ struct AtriaLiveWorkoutView: View {
                 Text(coachCueDetail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.70))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -593,6 +609,8 @@ struct AtriaLiveWorkoutView: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(.white.opacity(0.12), in: Capsule())
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
@@ -918,7 +936,7 @@ struct AtriaLiveWorkoutView: View {
             Text(value)
                 .font(.caption.weight(.black).monospacedDigit())
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -978,9 +996,8 @@ struct AtriaLiveWorkoutView: View {
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
-    // Uncalled in code but pinned by test_handoff_static_checks
-    // (test_handoff_21_uniform_cards...) as required structure — retained as
-    // intentional scaffolding, not deleted.
+    // Rendered under the HR hero since 2026-07-07 (design-handoff stat row);
+    // previously pinned-but-uncalled scaffolding.
     private var statsRow: some View {
         HStack(spacing: 14) {
             statTile(title: "Strain",
@@ -999,7 +1016,7 @@ struct AtriaLiveWorkoutView: View {
                 .monospacedDigit()
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.75)
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.7))

@@ -30,7 +30,16 @@ struct AtriaTodayScreen: View {
     let onOpenShare: () -> Void
     let onStartWorkout: () -> Void
     let onCustomizeToday: () -> Void
+    /// The workout/sleep review items, built by AtriaHomeView (which owns
+    /// their state) and rendered INSIDE the plan section — the user's strict
+    /// rule (2026-07-07): one notifications block, max 3 items (workout,
+    /// sleep, plan).
+    var systemNotifications: AnyView? = nil
     @State private var metricDetail: AtriaMetricDetailKind?
+    @State private var draggingSection: AtriaTodaySection?
+    // User-arranged order of the big sections below the ring (2026-07-07
+    // user feedback: "let people drag drop and arrange entire big sections").
+    @AtriaDefault("atria.today.sectionOrder") private var todaySectionOrderCSV: String = ""
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
     @State private var ringShareImage: UIImage?
@@ -95,67 +104,27 @@ struct AtriaTodayScreen: View {
             }
 
             if layoutConfig.showHighlights && !highlights.isEmpty {
-                AtriaTodayHighlightsStrip(highlights: highlights)
-            }
-
-            if layoutConfig.showPlan {
-                AtriaTodayPlanCard(title: planTitle,
-                                   detail: planDetail,
-                                   target: planTargetText,
-                                   tint: displayHero.guidance.color)
-            }
-
-            AtriaTodayShortcutStrip(journalValue: journalValue,
-                                    onOpenJournal: onOpenJournal,
-                                    onOpenShare: onOpenShare,
-                                    onStartWorkout: onStartWorkout)
-
-            if layoutConfig.showPlan {
-                AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
-                    showWeeklyReport = true
+                AtriaTodayHighlightsStrip(highlights: highlights) { metric in
+                    metricDetail = metric
                 }
             }
 
-            if glanceLayoutBars {
-                // Bars layout: one full-width horizontal bar per metric.
-                VStack(spacing: 10) {
-                    ForEach(glanceItems) { item in
-                        glanceTile(for: item, isBar: true)
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
-                            }
+            // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
+            // big sections (user feedback 2026-07-07): the major blocks below
+            // the ring render in a persisted order and reorder by
+            // long-press-drag. Kickers travel with their sections.
+            ForEach(orderedTodaySections) { section in
+                todaySection(section)
+                    .onDrag {
+                        draggingSection = section
+                        return NSItemProvider(object: section.rawValue as NSString)
                     }
-                }
-            } else {
-                LazyVGrid(columns: glanceColumns, spacing: 10) {
-                    ForEach(glanceItems) { item in
-                        glanceTile(for: item)
-                            .gridCellColumns(glanceColumnSpan(for: item))
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
-                            }
-                    }
-                }
+                    .onDrop(of: [.text],
+                            delegate: AtriaTodaySectionDropDelegate(item: section,
+                                                                    order: todaySectionOrderBinding,
+                                                                    dragging: $draggingSection))
             }
 
-            if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
-                AtriaAICoachCard(context: coachContext,
-                                 preparedPayload: coachPayload,
-                                 settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey,
-                                 onSettingsChange: onAICoachSettingsChange,
-                                 onSaveAPIKey: onSaveAICoachAPIKey,
-                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
-            }
-
-            AtriaTodayInfoRow(title: "Journal",
-                              value: journalValue,
-                              systemImage: "checklist",
-                              tint: .teal)
             }
         }
         .sheet(item: $metricDetail) { detail in
@@ -169,6 +138,7 @@ struct AtriaTodayScreen: View {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    hrZoneMinutes: displayHero.hrZoneMinutes,
+                                   maxHeartRate: store.profile.maxHR,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: store.imuAuditSummary.skinTemperatureDeviation)
                 .presentationDetents([.medium, .large])
@@ -296,6 +266,102 @@ struct AtriaTodayScreen: View {
         }
     }
 
+    private var orderedTodaySections: [AtriaTodaySection] {
+        let stored = todaySectionOrderCSV
+            .split(separator: ",")
+            .compactMap { AtriaTodaySection(rawValue: String($0)) }
+        var order = stored.filter { AtriaTodaySection.defaultOrder.contains($0) }
+        for section in AtriaTodaySection.defaultOrder where !order.contains(section) {
+            order.append(section)
+        }
+        return order
+    }
+
+    private var todaySectionOrderBinding: Binding<[AtriaTodaySection]> {
+        Binding(get: { orderedTodaySections },
+                set: { todaySectionOrderCSV = $0.map(\.rawValue).joined(separator: ",") })
+    }
+
+    @ViewBuilder
+    private func todaySection(_ section: AtriaTodaySection) -> some View {
+        switch section {
+        case .plan:
+            sectionKicker("Today's focus")
+
+            if let systemNotifications {
+                systemNotifications
+            }
+
+            if layoutConfig.showPlan {
+                AtriaTodayPlanCard(title: planTitle,
+                                   detail: planDetail,
+                                   target: planTargetText,
+                                   tint: displayHero.guidance.color)
+            }
+        case .shortcuts:
+            AtriaTodayShortcutStrip(journalValue: journalValue,
+                                    onOpenJournal: onOpenJournal,
+                                    onOpenShare: onOpenShare,
+                                    onStartWorkout: onStartWorkout)
+        case .weeklyPlan:
+            if layoutConfig.showPlan {
+                AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
+                    showWeeklyReport = true
+                }
+            }
+        case .glance:
+            sectionKicker("At a glance")
+
+            if glanceLayoutBars {
+                // Bars layout: one full-width horizontal bar per metric.
+                VStack(spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item, isBar: true)
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                    }
+                }
+            } else {
+                LazyVGrid(columns: glanceColumns, spacing: 10) {
+                    ForEach(glanceItems) { item in
+                        glanceTile(for: item)
+                            .gridCellColumns(glanceColumnSpan(for: item))
+                            .contextMenu {
+                                Button(action: onCustomizeToday) {
+                                    Label("Customize Today", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                    }
+                }
+            }
+        case .coach:
+            if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
+                AtriaAICoachCard(context: coachContext,
+                                 preparedPayload: coachPayload,
+                                 settings: effectiveAICoachSettings,
+                                 hasAPIKey: aiCoachHasAPIKey,
+                                 onSettingsChange: onAICoachSettingsChange,
+                                 onSaveAPIKey: onSaveAICoachAPIKey,
+                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+            }
+        }
+    }
+
+    /// Tiny uppercase group kicker: enough structure to breathe, not a
+    /// full header card (UX audit 2026-07-07).
+    private func sectionKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 10)
+            .accessibilityAddTraits(.isHeader)
+    }
+
     private var topActionMenu: some View {
         HStack(spacing: 4) {
             Spacer(minLength: 0)
@@ -341,7 +407,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "ellipsis")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Today actions")
@@ -374,10 +440,10 @@ struct AtriaTodayScreen: View {
                              accessibilitySummary: accessibilitySummary,
                              actions: ringActions)
             }
-
-            AtriaStrainTargetCard(currentStrain: displayHero.strain,
-                                  target: displayHero.guidance.target,
-                                  tint: Metrics.electricStrain)
+            // Strain Target card removed (user's strict screen-space rule,
+            // 2026-07-07): strain appeared four times on one screen. The
+            // strain legend chip carries value + target ("3.1 of 10.3") and
+            // the plan card carries the guidance + remaining-to-target.
         }
     }
 
@@ -420,7 +486,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Share ring as picture")
@@ -431,7 +497,7 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Share ring as picture")
@@ -1127,7 +1193,12 @@ struct AtriaTodayScreen: View {
     }
 
     private var planTargetText: String {
-        displayHero.guidance.target.map { String(format: "Target %.1f", $0) } ?? "Target building"
+        guard let target = displayHero.guidance.target else { return "Target building" }
+        let remaining = target - displayHero.strain
+        if remaining > 0.05 {
+            return String(format: "Target %.1f \u{00b7} %.1f to go", target, remaining)
+        }
+        return String(format: "Target %.1f \u{00b7} met", target)
     }
 
     private var journalValue: String {
@@ -1713,13 +1784,31 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                systemImage: "waveform.path.ecg",
                                tint: pulse.heartRateZone?.tint ?? .secondary)
             AtriaTodayLivePill(title: "Battery",
-                               value: live.batteryText,
+                               value: batteryPillText,
                                systemImage: live.batterySymbol,
-                               tint: live.batteryLevel >= 0 ? .blue : .secondary)
+                               tint: batteryPillTint)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building"). Battery \(live.batteryText).")
+        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building"). \(live.batteryAccessibilityText)")
+    }
+
+    /// Charging is visible on the home strip (user feedback 2026-07-07) and
+    /// composes with Live -- the strap can be Live and Charging at once.
+    /// States are mutually honest: Charging only with real charging evidence
+    /// (batteryShowsPowered), Low only when NOT charging, plain % otherwise.
+    private var batteryPillText: String {
+        guard live.batteryLevel >= 0 else { return "Pending" }
+        if live.batteryShowsPowered { return "\(live.batteryText) \u{00b7} Charging" }
+        if live.batteryLevel <= 20 { return "\(live.batteryText) \u{00b7} Low" }
+        return live.batteryText
+    }
+
+    private var batteryPillTint: Color {
+        guard live.batteryLevel >= 0 else { return .secondary }
+        if live.batteryShowsPowered { return .green }
+        if live.batteryLevel <= 20 { return .orange }
+        return .blue
     }
 
     private var liveStatusText: String {
@@ -1816,8 +1905,8 @@ private struct AtriaTodayPlanCard: View, Equatable {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: 104, alignment: .trailing)
+                .minimumScaleFactor(0.85)
+                .layoutPriority(1)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .background(tint.opacity(0.12),
@@ -2116,7 +2205,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.65)
+                .minimumScaleFactor(0.75)
             Text(item.title)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)
@@ -2215,46 +2304,72 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
 }
 
 private struct AtriaTodayHighlightsStrip: View, Equatable {
+    static func == (lhs: AtriaTodayHighlightsStrip, rhs: AtriaTodayHighlightsStrip) -> Bool {
+        lhs.highlights == rhs.highlights
+    }
+
     let highlights: [AtriaHighlight]
+    let onOpen: (AtriaMetricDetailKind) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
             ForEach(highlights) { highlight in
-                HStack(spacing: 10) {
-                    Image(systemName: highlight.systemImage)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(highlight.tint)
-                        .frame(width: 24, height: 24)
-
-                    Text(highlight.valuePhrase)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(highlight.tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .layoutPriority(1)
-
-                    Text(highlight.sentence)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .layoutPriority(2)
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                // Rows with a metric route are real buttons; unrouted rows
+                // stay plain and chevron-free (no fake affordances -- route
+                // audit rule, 2026-07-07 design handoff).
+                if let metric = highlight.metric {
+                    Button {
+                        onOpen(metric)
+                    } label: {
+                        highlightRow(highlight, showsChevron: true)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
+                    .accessibilityHint("Opens the \(metric.title) detail.")
+                } else {
+                    highlightRow(highlight, showsChevron: false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
                 }
-                .frame(minHeight: 44)
-                .padding(.horizontal, 12)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(highlight.valuePhrase) \(highlight.sentence)")
             }
         }
         .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+    }
+
+    private func highlightRow(_ highlight: AtriaHighlight, showsChevron: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: highlight.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(highlight.tint)
+                .frame(width: 24, height: 24)
+
+            Text(highlight.valuePhrase)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(highlight.tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .layoutPriority(1)
+
+            Text(highlight.sentence)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .layoutPriority(2)
+
+            Spacer(minLength: 8)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
     }
 }
 
@@ -2298,5 +2413,48 @@ private struct AtriaTodayActionRow: View, Equatable {
                         in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+/// The user-arrangeable big sections of the Today screen (everything below
+/// the ring/live/highlights cluster). Raw values persist in
+/// `atria.today.sectionOrder`; unknown values are dropped and missing ones
+/// appended so the set can evolve.
+enum AtriaTodaySection: String, CaseIterable, Identifiable {
+    case plan, shortcuts, weeklyPlan, glance, coach
+
+    var id: String { rawValue }
+
+    static let defaultOrder: [AtriaTodaySection] = [.plan, .shortcuts, .weeklyPlan, .glance, .coach]
+}
+
+/// Classic SwiftUI reorder delegate: sections swap as the drag passes over
+/// them; the persisted CSV updates on every move so the arrangement survives
+/// even an interrupted drag.
+private struct AtriaTodaySectionDropDelegate: DropDelegate {
+    let item: AtriaTodaySection
+    @Binding var order: [AtriaTodaySection]
+    @Binding var dragging: AtriaTodaySection?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging,
+              dragging != item,
+              let from = order.firstIndex(of: dragging),
+              let to = order.firstIndex(of: item) else { return }
+        var next = order
+        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        withAnimation(.snappy(duration: 0.25)) {
+            order = next
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }

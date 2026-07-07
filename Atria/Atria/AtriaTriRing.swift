@@ -203,7 +203,10 @@ struct AtriaTriRing: View, Equatable {
     private static let outerDiameter: CGFloat = 226
     private static let lineWidth: CGFloat = 19
     private static let gap: CGFloat = 3
-    private static let centerContentWidth: CGFloat = 104
+    // 136 ~= the inner ring's clear diameter; the old 104 clamp forced
+    // "7h 42m"-style center values below the readability floor
+    // (UX-quality audit, 2026-07-07).
+    private static let centerContentWidth: CGFloat = 136
 
     private static func diameter(at index: Int) -> CGFloat {
         outerDiameter - CGFloat(index) * (lineWidth + gap) * 2
@@ -279,7 +282,7 @@ struct AtriaTriRing: View, Equatable {
             Text(centerValue)
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .minimumScaleFactor(0.55)
+                .minimumScaleFactor(0.7)
                 .lineLimit(1)
                 .contentTransition(reduceMotion ? .identity : .numericText())
             Text(centerState)
@@ -402,6 +405,13 @@ struct AtriaTriRing: View, Equatable {
                     .frame(width: 14)
 
                 VStack(alignment: .leading, spacing: 1) {
+                    // Metric NAME leads the chip (user feedback 2026-07-07:
+                    // "it's not mentioned what they are — Sleep, Recovery,
+                    // Strain") — value and context alone weren't legible.
+                    Text(metric.title)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     HStack(spacing: 4) {
                         // Tiny zone-tint dot -- an at-a-glance under/optimal/
                         // over cue that doesn't depend on reading the number.
@@ -420,11 +430,15 @@ struct AtriaTriRing: View, Equatable {
                             .lineLimit(1)
                             .minimumScaleFactor(0.80)
                     }
-                    Text(metric.detail)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.80)
+                    // The name line above already says it -- don't repeat
+                    // it when a learning-state detail defaults to the name.
+                    if metric.detail != metric.title {
+                        Text(metric.detail)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.80)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

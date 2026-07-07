@@ -16,6 +16,16 @@ struct WeeklyReport: Codable, Equatable {
     let bestDay: DaySummary?
     let hardestDay: DaySummary?
     let strainRecoveryNote: String?
+    // 2026-07-07 design handoff headline averages + human date range.
+    // Optional so previously saved reports keep decoding (nil = regenerate).
+    let strainAvg: Double?
+    let sleepAvgSeconds: TimeInterval?
+    let weekStart: Date?
+    let weekEnd: Date?
+    /// Current week's per-day summaries (ascending by day) for the report's
+    /// recovery sparkline. Only days that exist in the rollups appear -- a
+    /// missing day is simply absent, never interpolated.
+    let recoverySeries: [DaySummary]?
 
     static let strainRecoveryNoteText = "You trained hardest on your lowest-recovery day"
 
@@ -48,6 +58,15 @@ struct WeeklyReport: Codable, Equatable {
             .max { ($0.strain ?? -.infinity) < ($1.strain ?? -.infinity) }
             .map { DaySummary(day: $0.day, recovery: $0.recovery, strain: $0.strain) }
         strainRecoveryNote = Self.strainRecoveryNote(for: currentWeek)
+        let strains = currentWeek.compactMap(\.strain)
+        strainAvg = strains.isEmpty ? nil : strains.reduce(0, +) / Double(strains.count)
+        let sleeps = currentWeek.compactMap(\.sleepSeconds)
+        sleepAvgSeconds = sleeps.isEmpty ? nil : sleeps.reduce(0, +) / Double(sleeps.count)
+        weekStart = currentWeek.map(\.day).min()
+        weekEnd = currentWeek.map(\.day).max()
+        recoverySeries = currentWeek
+            .sorted { $0.day < $1.day }
+            .map { DaySummary(day: $0.day, recovery: $0.recovery, strain: $0.strain) }
     }
 
     private static func roundedAverage(_ values: [Int]) -> Int? {

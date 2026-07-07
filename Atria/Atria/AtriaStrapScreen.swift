@@ -163,8 +163,8 @@ struct AtriaStrapScreen: View {
                     Text(identitySubtitle)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Spacer(minLength: 8)
@@ -175,6 +175,8 @@ struct AtriaStrapScreen: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
+                    .fixedSize()
+                    .layoutPriority(1)
             }
 
             Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")
@@ -195,7 +197,12 @@ struct AtriaStrapScreen: View {
         let looksLikeWhoop = rawName.uppercased().contains("WHOOP") || ble.strapModel != .unknown
         // When the strap isn't identified yet and has no saved name, describe the
         // device instead of echoing the "Strap" title verbatim ("Strap / Strap").
-        guard looksLikeWhoop else { return hasName ? identity : "Bluetooth heart-rate strap" }
+        // Also guard when the SAVED display name is itself the literal title
+        // "Strap" (seen in the wild 2026-07-07): a subtitle repeating the
+        // title says nothing — describe the device instead.
+        guard looksLikeWhoop else {
+            return hasName && identity != "Strap" ? identity : "Bluetooth heart-rate strap"
+        }
 
         switch ble.strapModel {
         case .strapMG: return "WHOOP MG · \(identity)"
@@ -328,18 +335,23 @@ private struct AtriaStrapStatusRow: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.bold))
+                // Dynamic connection detail wraps instead of mid-word
+                // ellipsis (UX audit 2026-07-07).
                 Text(detail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 8)
 
             Text(value)
                 .font(.headline.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .layoutPriority(1)
         }
         .frame(minHeight: 54)
         .padding(.horizontal, 12)

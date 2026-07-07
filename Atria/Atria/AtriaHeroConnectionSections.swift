@@ -446,7 +446,7 @@ private struct AtriaHeartRateZoneLens: View, Equatable {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 92, alignment: .leading)
+            .frame(minWidth: 92, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 7) {
                 GeometryReader { proxy in
@@ -722,13 +722,13 @@ private struct AtriaHeroMetricTile: View, Equatable {
             Text(value)
                 .font((compact ? Font.subheadline : Font.headline).weight(.semibold).monospacedDigit())
                 .lineLimit(compact ? 1 : 2)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.85)
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail)
                 .font(compact ? .caption2.weight(.medium) : .caption2)
                 .foregroundStyle(tint)
-                .lineLimit(compact ? 1 : 2)
-                .minimumScaleFactor(0.72)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1061,7 +1061,8 @@ private struct AtriaConnectionGuideSheet: View {
                     Button(action: retry) {
                         Image(systemName: "arrow.clockwise")
                             .font(.caption.weight(.bold))
-                            .frame(width: 32, height: 32)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
