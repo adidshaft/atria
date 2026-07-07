@@ -777,7 +777,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .orange)
                 } label: {
                     targetGroupHeader(title: "Strain",
-                                  subtitle: "Recovery-scaled target band for day load.",
+                                  subtitle: "Today's strain goal, scaled to how recovered you are.",
                                   systemImage: "figure.run",
                                   tint: .orange)
                 }
@@ -844,7 +844,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Training load",
-                                  subtitle: "ACWR and monotony bands for readiness guidance.",
+                                  subtitle: "Warns when training ramps up too fast or gets too repetitive.",
                                   systemImage: "chart.bar.xaxis",
                                   tint: .orange)
                 }
@@ -874,7 +874,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .green)
                 } label: {
                     targetGroupHeader(title: "Activity",
-                                  subtitle: "Daily strap-step and estimated active calories goals.",
+                                  subtitle: "Your daily step and active-calorie goals.",
                                   systemImage: "figure.walk.motion",
                                   tint: .green)
                 }
@@ -920,7 +920,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .cyan)
                 } label: {
                     targetGroupHeader(title: "Sleep",
-                                  subtitle: "Duration goal and efficiency bands for sleep history.",
+                                  subtitle: "Your nightly sleep goal and how restful your nights were.",
                                   systemImage: "bed.double.fill",
                                   tint: .cyan)
                 }
@@ -966,7 +966,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .pink)
                 } label: {
                     targetGroupHeader(title: "Personal baselines",
-                                  subtitle: "HRV and resting-HR ranges wait for trusted baseline data.",
+                                  subtitle: "Your HRV and resting-heart-rate ranges, set once Atria learns your normal.",
                                   systemImage: "heart.text.square.fill",
                                   tint: .pink)
                 }
@@ -1026,7 +1026,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Sleep-only signals",
-                                  subtitle: "Respiratory, relative skin-temp, and oxygen evidence bands.",
+                                  subtitle: "Breathing rate, skin temperature, and blood-oxygen ranges.",
                                   systemImage: "waveform.path.ecg",
                                   tint: .teal)
                 }
@@ -1061,7 +1061,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Fitness age",
-                                  subtitle: "Younger/older delta bands for the local estimate.",
+                                  subtitle: "How much younger or older your fitness looks than your age.",
                                   systemImage: "figure.stand",
                                   tint: .purple)
                 }
@@ -1091,7 +1091,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .blue)
                 } label: {
                     targetGroupHeader(title: "VO2max",
-                                  subtitle: "Trend gain or decline needed for target colors.",
+                                  subtitle: "How much your VO2max must change to shift color.",
                                   systemImage: "lungs.fill",
                                   tint: .blue)
                 }
