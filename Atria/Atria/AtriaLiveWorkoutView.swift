@@ -137,6 +137,10 @@ struct AtriaLiveWorkoutView: View {
                         header
                         heartBlock(zone)
                             .padding(.top, 2)
+                        // Design handoff stat row (2026-07-07): strain-so-far +
+                        // live calories as first-class tiles under the HR hero
+                        // (duration stays in the header's isolated clock).
+                        statsRow
                         // Decongested 2026-07-06 (10 cards -> 5): zone was drawn
                         // 4x and strain-vs-target 3x. Now one coach cue, one zone
                         // module (zoneBar absorbs the old zoneFocus samples), one
@@ -978,9 +982,8 @@ struct AtriaLiveWorkoutView: View {
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
-    // Uncalled in code but pinned by test_handoff_static_checks
-    // (test_handoff_21_uniform_cards...) as required structure — retained as
-    // intentional scaffolding, not deleted.
+    // Rendered under the HR hero since 2026-07-07 (design-handoff stat row);
+    // previously pinned-but-uncalled scaffolding.
     private var statsRow: some View {
         HStack(spacing: 14) {
             statTile(title: "Strain",
