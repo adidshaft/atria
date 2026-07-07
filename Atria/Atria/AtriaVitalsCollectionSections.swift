@@ -3264,6 +3264,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Void
     let onConfirmSleep: () -> Void
     @State private var showManualSleepSheet = false
+    @State private var showNightDetails = false
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
@@ -3368,7 +3369,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                 } label: {
                     Image(systemName: "plus")
                         .font(.caption.weight(.bold))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
                 }
                 .atriaCardAction(prominent: false, tint: .cyan)
                 .accessibilityLabel("Add sleep manually")
@@ -3494,21 +3496,30 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     .atriaInsetCard(tint: .cyan)
                 }
 
-                if heatStripNights.count > 7 {
-                    AtriaSleepYearHeatStrip(nights: heatStripNights,
+                // Collapsed by default (UX audit 2026-07-07): the card
+                // stacked ~15 card-like units; the heat strip, stage summary,
+                // and per-night rows disclose on demand while the lens, stat
+                // tiles, and chart stay glanceable.
+                DisclosureGroup(isExpanded: $showNightDetails) {
+                    if heatStripNights.count > 7 {
+                        AtriaSleepYearHeatStrip(nights: heatStripNights,
                                             goalHours: sleepGoalHours)
-                }
-
-                if let latest = snapshot.latest {
-                    if !latest.displayStageSegments.isEmpty {
-                        AtriaSleepStageSummary(night: latest)
-                    } else {
-                        AtriaSleepStageBuildingSummary(night: latest)
                     }
-                }
 
-                ForEach(snapshot.nights.prefix(3)) { night in
-                    AtriaSleepNightRow(night: night)
+                    if let latest = snapshot.latest {
+                        if !latest.displayStageSegments.isEmpty {
+                            AtriaSleepStageSummary(night: latest)
+                        } else {
+                            AtriaSleepStageBuildingSummary(night: latest)
+                        }
+                    }
+
+                    ForEach(snapshot.nights.prefix(3)) { night in
+                        AtriaSleepNightRow(night: night)
+                    }
+                } label: {
+                    Text("Recent nights & stages")
+                        .font(.subheadline.weight(.semibold))
                 }
             }
         }
