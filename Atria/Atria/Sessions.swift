@@ -3025,11 +3025,19 @@ extension SavedSession {
                                                 ? "validated_hrv_window"
                                                 : "local_hrv_window")
         }
-        if duration < 20 * 60 {
+        // Duration floor lowered 20min -> 5min (2026-07-08, device-reported
+        // "1/14 RHR" after 3 days). All-day wear, fragmented by frequent BLE
+        // drops into sub-20-min segments, was silently discarding genuinely
+        // restful data. This reject still sits BEFORE the avg<=rest+15 /
+        // peak<=rest+35 guards below, so a 5-20 min segment must still prove
+        // it is truly at rest to be accepted; sub-5-min stays rejected. The
+        // 14-distinct-DAY trust gate and bounded EMA are untouched, so
+        // learning states still fail closed until real multi-day history.
+        if duration < 5 * 60 {
             return BaselineLearningEvidence(value: restingEvidence.value,
                                             source: restingEvidence.source,
                                             accepted: false,
-                                            reason: "duration_below_20m")
+                                            reason: "duration_below_5m")
         }
         if avg > rest + 15 {
             return BaselineLearningEvidence(value: restingEvidence.value,
