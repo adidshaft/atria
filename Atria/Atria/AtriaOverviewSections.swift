@@ -6603,6 +6603,9 @@ struct AtriaMetricDetailSheet: View {
     let maxHeartRate: Int?
     private let rollups: [DailyRollupStoreEntry]
     @State private var openedHistoryDay: AtriaHistoryDay?
+    @State private var showChartOptions = false
+    @State private var bucketOverride: AtriaChartBucketOverride
+    @State private var showMinMaxBand: Bool
     let vo2MaxEstimate: VO2MaxEstimateSummary?
     let skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary?
     private let preparedHistory: AtriaPreparedMetricHistory
@@ -6626,9 +6629,13 @@ struct AtriaMetricDetailSheet: View {
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
          initialRange: AtriaTrendRange = .month,
-         initialScrubbedDay: Date? = nil) {
+         initialScrubbedDay: Date? = nil,
+         initialBucketOverride: AtriaChartBucketOverride = .auto,
+         initialShowMinMaxBand: Bool = true) {
         _range = State(initialValue: initialRange)
         _scrubbedDay = State(initialValue: initialScrubbedDay)
+        _bucketOverride = State(initialValue: initialBucketOverride)
+        _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.baseline = baseline
@@ -6651,6 +6658,20 @@ struct AtriaMetricDetailSheet: View {
                 HStack(alignment: .top, spacing: 12) {
                     AtriaPanelSectionHeader(title: metric.title, subtitle: "Trend and context")
                     Spacer(minLength: 0)
+                    if chartSupportsOptions {
+                        Button {
+                            showChartOptions = true
+                        } label: {
+                            // chart.bar.xaxis (not the slider glyph — that
+                            // bare literal is banned by the removed-customize
+                            // guard in this file).
+                            Image(systemName: "chart.bar.xaxis")
+                                .font(.headline.weight(.semibold))
+                                .padding(10)
+                                .background(.quaternary.opacity(0.22), in: Circle())
+                        }
+                        .accessibilityLabel("Chart options: bucketing and min-max band")
+                    }
                     Button {
                         showingMeaningSheet = true
                     } label: {
@@ -6671,6 +6692,12 @@ struct AtriaMetricDetailSheet: View {
                                     guidance: guidance,
                                     recoveryEstimate: recoveryEstimate,
                                     sleepGoalHours: sleepGoalHours)
+        }
+        .sheet(isPresented: $showChartOptions) {
+            AtriaChartOptionsSheet(bucketOverride: $bucketOverride,
+                                   showMinMaxBand: $showMinMaxBand)
+                .presentationDetents([.height(300)])
+                .presentationDragIndicator(.visible)
         }
         .sheet(item: $openedHistoryDay) { day in
             AtriaHistoryDayDetailSheet(day: day,
@@ -6701,7 +6728,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Recovery",
                                 unit: "%",
                                 tint: Metrics.electricGreen,
-                                points: preparedHistory.recovery[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.recovery[range] ?? [], raw: preparedHistory.recoveryRaw[range] ?? []),
                                 summary: preparedHistory.recoverySummary[range],
                                 comparison: preparedHistory.recoveryComparison[range],
                                 baselineBand: nil,
@@ -6730,7 +6757,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "HRV",
                                 unit: "ms",
                                 tint: metric.tint,
-                                points: preparedHistory.hrv[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.hrv[range] ?? [], raw: preparedHistory.hrvRaw[range] ?? []),
                                 summary: preparedHistory.hrvSummary[range],
                                 comparison: preparedHistory.hrvComparison[range],
                                 baselineBand: hrvBand,
@@ -6760,7 +6787,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Resting HR",
                                 unit: "bpm",
                                 tint: metric.tint,
-                                points: preparedHistory.restingHeartRate[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.restingHeartRate[range] ?? [], raw: preparedHistory.restingHeartRateRaw[range] ?? []),
                                 summary: preparedHistory.restingHeartRateSummary[range],
                                 comparison: preparedHistory.restingHeartRateComparison[range],
                                 baselineBand: restingBand,
@@ -6790,7 +6817,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Respiratory rate",
                                 unit: "/min",
                                 tint: metric.tint,
-                                points: preparedHistory.respiratoryRate[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.respiratoryRate[range] ?? [], raw: preparedHistory.respiratoryRateRaw[range] ?? []),
                                 summary: preparedHistory.respiratoryRateSummary[range],
                                 comparison: preparedHistory.respiratoryRateComparison[range],
                                 baselineBand: respiratoryBand,
@@ -6820,7 +6847,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Sleep duration",
                                 unit: "h",
                                 tint: Metrics.electricSleep,
-                                points: preparedHistory.sleep[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.sleep[range] ?? [], raw: preparedHistory.sleepRaw[range] ?? []),
                                 summary: preparedHistory.sleepSummary[range],
                                 comparison: preparedHistory.sleepComparison[range],
                                 baselineBand: nil,
@@ -6851,7 +6878,7 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Strain",
                                 unit: "",
                                 tint: Metrics.electricStrain,
-                                points: preparedHistory.strain[range] ?? [],
+                                points: displayedPoints(auto: preparedHistory.strain[range] ?? [], raw: preparedHistory.strainRaw[range] ?? []),
                                 summary: preparedHistory.strainSummary[range],
                                 comparison: preparedHistory.strainComparison[range],
                                 baselineBand: nil,
@@ -7717,6 +7744,30 @@ struct AtriaMetricDetailSheet: View {
             values.append(comparison.priorAverage)
         }
         return AtriaTrendChartScale.domain(values: values)
+    }
+
+    private var chartSupportsOptions: Bool {
+        switch metric {
+        case .recovery, .hrv, .restingHeartRate, .respiratoryRate, .sleep, .strain: return true
+        default: return false
+        }
+    }
+
+    /// Applies the manual bucket override from the chart-options sheet.
+    /// .auto returns the precomputed series (weekly above 90 days); .daily
+    /// returns raw points; .weeklyAverage forces weekly buckets. The min-max
+    /// band toggle strips bands at display time.
+    private func displayedPoints(auto: [AtriaDetailChartPoint],
+                                 raw: [AtriaDetailChartPoint]) -> [AtriaDetailChartPoint] {
+        let base: [AtriaDetailChartPoint]
+        switch bucketOverride {
+        case .auto: base = auto
+        case .daily: base = raw
+        case .weeklyAverage:
+            base = AtriaPreparedMetricHistory.bucketedForDisplay(raw, range: range, calendar: .current, forceWeekly: true)
+        }
+        guard !showMinMaxBand else { return base }
+        return base.map { AtriaDetailChartPoint(day: $0.day, value: $0.value, tint: $0.tint) }
     }
 
     /// Double-tap route: resolve the scrubbed date to its history-day model
@@ -9437,6 +9488,14 @@ private struct AtriaPreparedMetricHistory {
     let respiratoryRatePrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let sleepPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let strainPrior: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    // RAW (unbucketed) series for the manual bucket override in the chart
+    // options sheet (design handoff "Range & interval", 2026-07-07).
+    let recoveryRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let hrvRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let restingHeartRateRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let respiratoryRateRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let sleepRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
+    let strainRaw: [AtriaTrendRange: [AtriaDetailChartPoint]]
     let latestStrain: [AtriaTrendRange: Double]
     let recoverySummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
     let hrvSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]
@@ -9472,10 +9531,11 @@ private struct AtriaPreparedMetricHistory {
     /// the metric's own zone coloring still applies). Short ranges and sparse
     /// series pass through untouched. Summaries/comparisons stay computed
     /// from raw daily points (2026-07-07 design handoff).
-    private static func bucketedForDisplay(_ points: [AtriaDetailChartPoint],
-                                           range: AtriaTrendRange,
-                                           calendar: Calendar) -> [AtriaDetailChartPoint] {
-        guard range.days > 90, points.count > 60 else { return points }
+    static func bucketedForDisplay(_ points: [AtriaDetailChartPoint],
+                                   range: AtriaTrendRange,
+                                   calendar: Calendar,
+                                   forceWeekly: Bool = false) -> [AtriaDetailChartPoint] {
+        guard forceWeekly || (range.days > 90 && points.count > 60) else { return points }
         var buckets: [Date: [AtriaDetailChartPoint]] = [:]
         for point in points {
             let weekStart = calendar.dateInterval(of: .weekOfYear, for: point.day)?.start
@@ -9523,6 +9583,12 @@ private struct AtriaPreparedMetricHistory {
         var respiratoryPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var sleepPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var strainPriorByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var recoveryRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var hrvRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var restingRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var respiratoryRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var sleepRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
+        var strainRawByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var latestStrainByRange: [AtriaTrendRange: Double] = [:]
         var recoverySummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
         var hrvSummaryByRange: [AtriaTrendRange: AtriaDetailPeriodSummary] = [:]
@@ -9566,6 +9632,7 @@ private struct AtriaPreparedMetricHistory {
                 item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
             }
             recoveryByRange[range] = Self.bucketedForDisplay(recoveryPoints, range: range, calendar: calendar)
+            recoveryRawByRange[range] = recoveryPoints
             recoveryPriorByRange[range] = Self.ghostSeries(priorRecoveryPoints, range: range, calendar: calendar)
             recoverySummaryByRange[range] = AtriaDetailPeriodSummary(points: recoveryPoints, unit: "%")
             recoveryComparisonByRange[range] = AtriaDetailComparisonSummary(current: recoveryPoints, prior: priorRecoveryPoints, unit: "%")
@@ -9585,6 +9652,7 @@ private struct AtriaPreparedMetricHistory {
                                              tint: Self.hrvTint(value: value, baseline: baseline))
             }
             hrvByRange[range] = Self.bucketedForDisplay(hrvPoints, range: range, calendar: calendar)
+            hrvRawByRange[range] = hrvPoints
             hrvPriorByRange[range] = Self.ghostSeries(priorHRVPoints, range: range, calendar: calendar)
             hrvSummaryByRange[range] = AtriaDetailPeriodSummary(points: hrvPoints, unit: "ms")
             hrvComparisonByRange[range] = AtriaDetailComparisonSummary(current: hrvPoints, prior: priorHRVPoints, unit: "ms")
@@ -9602,6 +9670,7 @@ private struct AtriaPreparedMetricHistory {
                                              tint: Self.restingTint(value: value, baseline: baseline))
             }
             restingByRange[range] = Self.bucketedForDisplay(restingPoints, range: range, calendar: calendar)
+            restingRawByRange[range] = restingPoints
             restingPriorByRange[range] = Self.ghostSeries(priorRestingPoints, range: range, calendar: calendar)
             restingSummaryByRange[range] = AtriaDetailPeriodSummary(points: restingPoints, unit: "bpm")
             restingComparisonByRange[range] = AtriaDetailComparisonSummary(current: restingPoints, prior: priorRestingPoints, unit: "bpm")
@@ -9613,6 +9682,7 @@ private struct AtriaPreparedMetricHistory {
                 item.respiratoryRate.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: .teal) }
             }
             respiratoryByRange[range] = Self.bucketedForDisplay(respiratoryPoints, range: range, calendar: calendar)
+            respiratoryRawByRange[range] = respiratoryPoints
             respiratoryPriorByRange[range] = Self.ghostSeries(priorRespiratoryPoints, range: range, calendar: calendar)
             respiratorySummaryByRange[range] = AtriaDetailPeriodSummary(points: respiratoryPoints, unit: "/min")
             respiratoryComparisonByRange[range] = AtriaDetailComparisonSummary(current: respiratoryPoints, prior: priorRespiratoryPoints, unit: "/min")
@@ -9635,6 +9705,7 @@ private struct AtriaPreparedMetricHistory {
                 return AtriaDetailChartPoint(day: item.day, value: hours, tint: tint)
             }
             sleepByRange[range] = Self.bucketedForDisplay(sleepPoints, range: range, calendar: calendar)
+            sleepRawByRange[range] = sleepPoints
             sleepPriorByRange[range] = Self.ghostSeries(priorSleepPoints, range: range, calendar: calendar)
             sleepSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPoints, unit: "h")
             sleepComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPoints, prior: priorSleepPoints, unit: "h")
@@ -9646,6 +9717,7 @@ private struct AtriaPreparedMetricHistory {
                 item.strain.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain) }
             }
             strainByRange[range] = Self.bucketedForDisplay(strainPoints, range: range, calendar: calendar)
+            strainRawByRange[range] = strainPoints
             strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
@@ -9692,6 +9764,12 @@ private struct AtriaPreparedMetricHistory {
         self.respiratoryRatePrior = respiratoryPriorByRange
         self.sleepPrior = sleepPriorByRange
         self.strainPrior = strainPriorByRange
+        self.recoveryRaw = recoveryRawByRange
+        self.hrvRaw = hrvRawByRange
+        self.restingHeartRateRaw = restingRawByRange
+        self.respiratoryRateRaw = respiratoryRawByRange
+        self.sleepRaw = sleepRawByRange
+        self.strainRaw = strainRawByRange
         self.latestStrain = latestStrainByRange
         self.recoverySummary = recoverySummaryByRange
         self.hrvSummary = hrvSummaryByRange
@@ -11954,5 +12032,76 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
                         value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
                         state: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? .validated : .learning,
                         tint: .pink)
+    }
+}
+
+
+/// Manual bucketing override for the detail charts (design handoff "Range &
+/// interval"). .auto keeps the shipped behavior: raw daily points on short
+/// ranges, weekly buckets past 90 days.
+enum AtriaChartBucketOverride: String, CaseIterable, Identifiable {
+    case auto, daily, weeklyAverage
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto"
+        case .daily: return "Daily"
+        case .weeklyAverage: return "Week avg"
+        }
+    }
+}
+
+/// Bottom sheet controlling how detail-chart points are bucketed and whether
+/// the weekly min-max band shows. The range picker on the sheet itself is
+/// the window control -- this deliberately controls bucketing only.
+struct AtriaChartOptionsSheet: View {
+    @Binding var bucketOverride: AtriaChartBucketOverride
+    @Binding var showMinMaxBand: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("BUCKET EACH POINT BY")
+                        .font(.caption2.weight(.black))
+                        .foregroundStyle(.tertiary)
+                        .kerning(0.8)
+                    Picker("Bucket", selection: $bucketOverride) {
+                        ForEach(AtriaChartBucketOverride.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Auto shows daily points on short ranges and weekly averages past 3 months.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Toggle(isOn: $showMinMaxBand) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show min\u{2013}max band")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Shades each week's real range around its average.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+            .navigationTitle("Range & interval")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
+                }
+            }
+        }
     }
 }
