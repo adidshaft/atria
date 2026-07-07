@@ -7287,7 +7287,6 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
-    @ViewBuilder
     /// Honest learning-state pill: carries the real 14-night baseline
     /// progress ("Learning \u{00b7} night 3 of 14") once a night is recorded,
     /// so a bare "Learning" never hides how far along calibration is
@@ -7369,6 +7368,31 @@ struct AtriaMetricDetailSheet: View {
                             .foregroundStyle(baselineBand.tint.opacity(0.12))
                     }
 
+                    // Design handoff chart language (2026-07-07): gradient
+                    // area under the series, dashed prior-period average rule,
+                    // and an emphasized terminal dot. All additive; scrub and
+                    // baseline band unchanged.
+                    ForEach(points) { point in
+                        AreaMark(x: .value("Day", point.day, unit: .day),
+                                 y: .value(title, point.value))
+                            .interpolationMethod(.monotone)
+                            .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
+                                                            startPoint: .top,
+                                                            endPoint: .bottom))
+                    }
+
+                    if let comparison {
+                        RuleMark(y: .value("Prior average", comparison.priorAverage))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .annotation(position: .topTrailing, spacing: 2,
+                                        overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                                Text("prior avg \(comparison.priorText)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
+
                     ForEach(points) { point in
                         LineMark(x: .value("Day", point.day, unit: .day),
                                  y: .value(title, point.value))
@@ -7377,6 +7401,13 @@ struct AtriaMetricDetailSheet: View {
                         PointMark(x: .value("Day", point.day, unit: .day),
                                   y: .value(title, point.value))
                             .foregroundStyle(point.tint)
+                    }
+
+                    if let last = points.last, selectedPoint == nil {
+                        PointMark(x: .value("Day", last.day, unit: .day),
+                                  y: .value(title, last.value))
+                            .foregroundStyle(tint)
+                            .symbolSize(110)
                     }
 
                     if let selectedPoint {
@@ -7404,7 +7435,7 @@ struct AtriaMetricDetailSheet: View {
                     }
                 }
                 .chartXSelection(value: $scrubbedDay)
-                .chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand))
+                .chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 4))
                 }
@@ -7427,11 +7458,16 @@ struct AtriaMetricDetailSheet: View {
         .atriaInsetCard(tint: tint)
     }
 
-    private func chartDomain(points: [AtriaDetailChartPoint], baselineBand: AtriaDetailBaselineBand?) -> ClosedRange<Double> {
+    private func chartDomain(points: [AtriaDetailChartPoint],
+                             baselineBand: AtriaDetailBaselineBand?,
+                             comparison: AtriaDetailComparisonSummary? = nil) -> ClosedRange<Double> {
         var values = points.map(\.value)
         if let baselineBand {
             values.append(baselineBand.lower)
             values.append(baselineBand.upper)
+        }
+        if let comparison {
+            values.append(comparison.priorAverage)
         }
         return AtriaTrendChartScale.domain(values: values)
     }
@@ -9040,6 +9076,9 @@ private struct AtriaDetailComparisonSummary: Equatable {
     let currentShare: Double
     let priorShare: Double
     let changeDirection: AtriaDetailPeriodChangeDirection
+    /// Numeric prior-period average, kept for the detail chart's dashed
+    /// prior-average rule (2026-07-07 design handoff).
+    let priorAverage: Double
 
     init?(current: [AtriaDetailChartPoint], prior: [AtriaDetailChartPoint], unit: String) {
         guard !current.isEmpty, !prior.isEmpty else { return nil }
@@ -9054,6 +9093,7 @@ private struct AtriaDetailComparisonSummary: Equatable {
         self.currentShare = min(max(abs(currentAverage) / largest, 0.06), 1)
         self.priorShare = min(max(abs(priorAverage) / largest, 0.06), 1)
         self.changeDirection = AtriaDetailPeriodChangeDirection(change: delta)
+        self.priorAverage = priorAverage
     }
 
     private static func average(_ values: [Double]) -> Double {
