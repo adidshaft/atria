@@ -250,6 +250,11 @@ struct AtriaHealthScreen: View {
                 .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
+            // Grouped rows (UX audit 2026-07-07): nine homogeneous rows
+            // read as a wall; two sub-kickers split readiness signals from
+            // sleep/body signals.
+            monitorGroupKicker("Readiness")
+
             VStack(spacing: 8) {
                 AtriaHealthMetricRow(title: "Recovery",
                                      value: recoveryValue,
@@ -281,6 +286,12 @@ struct AtriaHealthScreen: View {
                                      tint: stressTint,
                                      hint: stressHint,
                                      onTap: { educationTopic = .stress })
+            }
+            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
+
+            monitorGroupKicker("Sleep & body")
+
+            VStack(spacing: 8) {
                 AtriaHealthMetricRow(title: "Respiration",
                                      value: respiratoryValue,
                                      detail: "sleep average",
@@ -380,6 +391,16 @@ struct AtriaHealthScreen: View {
     #else
     private static func debugOpensHeartRateTimeline(arguments: [String]) -> Bool { false }
     #endif
+
+    private func monitorGroupKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
 
     private var header: some View {
         HStack {
