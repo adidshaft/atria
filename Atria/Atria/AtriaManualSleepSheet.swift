@@ -3,6 +3,13 @@ import SwiftUI
 struct AtriaManualSleepSheet: View {
     let onSave: (Date, Date, Bool) -> Void
     private let reviewDetectedTypeText: String?
+    /// Detected night backing this review, when one exists (2026-07-07 design
+    /// handoff): drives the sensor-evidence card (stage strip, efficiency).
+    /// nil for plain manual entry -- the card renders nothing.
+    private let evidenceNight: SleepHistorySnapshot.Night?
+    /// Sleep performance for the detected night, computed by the caller with
+    /// its own need context. nil hides the tile (never a fabricated percent).
+    private let evidencePerformancePercent: Int?
     /// True when saving re-derives sensor stage bars over the chosen window
     /// (the "adjust an auto-detected sleep" flow) rather than saving a blank
     /// manual entry. Drives honest Stages copy — see `stageEvidenceCard`.
@@ -17,9 +24,13 @@ struct AtriaManualSleepSheet: View {
          initialEnd: Date? = nil,
          initialIsNap: Bool? = nil,
          preservesSensorStages: Bool = false,
+         evidenceNight: SleepHistorySnapshot.Night? = nil,
+         evidencePerformancePercent: Int? = nil,
          onSave: @escaping (Date, Date, Bool) -> Void) {
         self.onSave = onSave
         self.preservesSensorStages = preservesSensorStages
+        self.evidenceNight = evidenceNight
+        self.evidencePerformancePercent = evidencePerformancePercent
         self.reviewDetectedTypeText = initialIsNap.map { $0 ? "Nap" : "Sleep" }
         let resolvedEnd = initialEnd ?? Date()
         let resolvedStart = initialStart ?? resolvedEnd.addingTimeInterval(-8 * 60 * 60)
@@ -98,6 +109,7 @@ struct AtriaManualSleepSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    detectedEvidenceCard
                     typeCard
                     timeCard
                     durationCard
@@ -122,6 +134,104 @@ struct AtriaManualSleepSheet: View {
                 }
             }
         }
+    }
+
+    /// Sensor-evidence header for a detected night (design handoff): stage
+    /// strip with per-stage shares plus performance/efficiency tiles. Every
+    /// element is gated on real data -- no stages means an honest line, no
+    /// performance means no tile.
+    @ViewBuilder
+    private var detectedEvidenceCard: some View {
+        if let night = evidenceNight {
+            VStack(alignment: .leading, spacing: 12) {
+                AtriaManualSleepCardHeader(title: "From sensor data",
+                                           detail: "What Atria detected for this window.",
+                                           systemImage: "waveform.path.ecg",
+                                           tint: Metrics.electricSleep)
+
+                if night.displayStageSegments.isEmpty {
+                    Text("Stages are still building for this night \u{2014} heart-rate estimate only.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    GeometryReader { proxy in
+                        let total = max(night.duration, 1)
+                        HStack(spacing: 2) {
+                            ForEach(night.displayStageSegments) { segment in
+                                Rectangle()
+                                    .fill(evidenceStageTint(segment.stage))
+                                    .frame(width: max(5, proxy.size.width * CGFloat(segment.duration / total)))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    HStack(spacing: 12) {
+                        ForEach(evidenceStageShares, id: \.stage) { share in
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(evidenceStageTint(share.stage))
+                                    .frame(width: 7, height: 7)
+                                Text("\(share.stage.label) \(share.percent)%")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                if evidencePerformancePercent != nil || night.sleepEfficiency != nil {
+                    HStack(spacing: 10) {
+                        if let performance = evidencePerformancePercent {
+                            evidenceStatTile(title: "Performance", value: "\(performance)%")
+                        }
+                        if night.sleepEfficiency != nil {
+                            evidenceStatTile(title: "Efficiency", value: night.sleepEfficiencyText)
+                        }
+                    }
+                }
+            }
+            .manualSleepCard(tint: Metrics.electricSleep)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// Stage shares in display order, folded (SWS into Deep), zero stages
+    /// dropped -- percentages of the night's total window.
+    private var evidenceStageShares: [(stage: SleepStageKind, percent: Int)] {
+        guard let night = evidenceNight, night.duration > 0 else { return [] }
+        var durations: [SleepStageKind: TimeInterval] = [:]
+        for segment in night.displayStageSegments {
+            durations[segment.stage.displayStage, default: 0] += segment.duration
+        }
+        return SleepStageKind.displayOrder.compactMap { stage in
+            guard let duration = durations[stage], duration > 0 else { return nil }
+            return (stage, Int((duration / night.duration * 100).rounded()))
+        }
+    }
+
+    private func evidenceStageTint(_ stage: SleepStageKind) -> Color {
+        switch stage {
+        case .awake: return .orange
+        case .light: return .cyan.opacity(0.65)
+        case .rem: return .blue
+        case .sws, .deep: return .indigo
+        }
+    }
+
+    private func evidenceStatTile(title: String, value: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.headline.weight(.bold).monospacedDigit())
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(Metrics.electricSleep.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var typeCard: some View {

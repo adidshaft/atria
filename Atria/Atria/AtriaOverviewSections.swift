@@ -623,7 +623,10 @@ private struct AtriaSleepReviewHost: View {
                     AtriaManualSleepSheet(initialStart: adjustment.start,
                                           initialEnd: adjustment.end,
                                           initialIsNap: adjustment.isNapEvidence,
-                                          preservesSensorStages: true) { start, end, isNap in
+                                          preservesSensorStages: true,
+                                          evidenceNight: adjustment,
+                                          evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
+                                                                                                                         baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
                         _ = store.adjustSleepNight(originalStart: adjustment.start,
                                                    originalEnd: adjustment.end,
                                                    newStart: start,
@@ -9687,7 +9690,10 @@ struct AtriaOverviewMorningJournalHost: View {
                 AtriaManualSleepSheet(initialStart: adjustment.start,
                                       initialEnd: adjustment.end,
                                       initialIsNap: adjustment.isNapEvidence,
-                                      preservesSensorStages: true) { start, end, isNap in
+                                      preservesSensorStages: true,
+                                      evidenceNight: adjustment,
+                                      evidencePerformancePercent: sleepHistory.sleepPerformancePercent(for: adjustment,
+                                                                                                       baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
                     _ = store.adjustSleepNight(originalStart: adjustment.start,
                                                originalEnd: adjustment.end,
                                                newStart: start,

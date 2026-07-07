@@ -3524,7 +3524,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             AtriaManualSleepSheet(initialStart: night.start,
                                   initialEnd: night.end,
                                   initialIsNap: night.isNapEvidence,
-                                  preservesSensorStages: true) { start, end, isNap in
+                                  preservesSensorStages: true,
+                                  evidenceNight: night,
+                                  evidencePerformancePercent: snapshot.sleepPerformancePercent(for: night,
+                                                                                               baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
                 onAdjustSleep(night, start, end, isNap)
                 adjustmentNight = nil
             }
