@@ -269,7 +269,9 @@ struct AtriaHistorySection: View, Equatable {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Detections", subtitle: "What the app detected and why")
             VStack(spacing: 8) {
-                ForEach(model.detections.prefix(5)) { event in
+                // 3-row preview (UX audit density): the full log lives one
+                // tap away behind "See all".
+                ForEach(model.detections.prefix(3)) { event in
                     AtriaDetectionRow(event: event)
                 }
             }
@@ -300,7 +302,9 @@ struct AtriaHistorySection: View, Equatable {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             LazyVStack(spacing: 8) {
-                ForEach(model.days.prefix(14)) { day in
+                // 7 rows before "See all history" (UX audit density): 14
+                // tappable inset rows made the card a second scroll.
+                ForEach(model.days.prefix(7)) { day in
                     Button {
                         selectedDay = day
                     } label: {
