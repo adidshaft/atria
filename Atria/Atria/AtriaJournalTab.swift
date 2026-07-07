@@ -206,15 +206,38 @@ private struct AtriaJournalTypedInsightsSection: View {
                                     subtitle: "From your typed answers")
 
             if insights.isEmpty {
-                Text("Keep answering the detail questions (times, amounts, mood). Patterns like \u{201C}caffeine after 2:30 PM\u{201D} appear once enough days exist on both sides — usually 2\u{2013}3 weeks.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // Locked treatment (2026-07-07 design handoff): dashed card,
+                // lock tile, explicit title -- same honest copy as before.
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Text("Patterns are locked")
+                        .font(.subheadline.weight(.bold))
+                    Text("Keep answering the detail questions (times, amounts, mood). Patterns like \u{201C}caffeine after 2:30 PM\u{201D} unlock once enough days exist on both sides — usually 2\u{2013}3 weeks.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .padding(.horizontal, 10)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                }
             } else {
+                // Direction-coded rows (design handoff): green up-arrow for a
+                // helpful pattern, orange down-arrow for a harmful one --
+                // derived from the insight's real signed effect.
                 ForEach(insights) { insight in
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "sparkles")
-                            .font(.caption)
-                            .foregroundStyle(.cyan)
+                        Image(systemName: insight.signedEffect < 0 ? "arrow.down" : "arrow.up")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(insight.signedEffect < 0 ? .orange : Metrics.electricGreen)
                         Text(insight.valueText)
                             .font(.caption)
                             .fixedSize(horizontal: false, vertical: true)
