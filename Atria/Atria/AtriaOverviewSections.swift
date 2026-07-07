@@ -3722,8 +3722,8 @@ struct AtriaWeeklyPlanCard: View, Equatable {
             HStack(alignment: .firstTextBaseline) {
                 AtriaPanelSectionHeader(title: "This week", subtitle: "")
                 Spacer(minLength: 8)
-                Text("W\(plan.isoWeek)")
-                    .font(.caption.weight(.bold).monospacedDigit())
+                Text(plan.dateRangeText)
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
