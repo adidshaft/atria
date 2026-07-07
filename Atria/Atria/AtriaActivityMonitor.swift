@@ -287,9 +287,20 @@ struct AtriaActivityMonitorTab: View {
                     title: workout.label,
                     subtitle: Self.timeRange(start: workout.start, end: workout.end),
                     value: Self.durationText(workout.duration),
-                    badge: workout.strain.map { "Strain \(String(format: "%.1f", $0))" }
-                        ?? "\(workout.avgHR) bpm avg")
+                    badge: Self.strainBadge(for: workout))
             .accessibilityLabel("\(workout.label), \(Self.durationText(workout.duration)), average \(workout.avgHR) bpm. Tap for details.")
+    }
+
+    /// Honesty (2026-07-08): strain is only as complete as the HR that covered
+    /// the window. A sparse-coverage window (e.g. a manually-added workout the
+    /// strap barely recorded) must NOT show a full-workout strain with no
+    /// signal — it reads as "83 min = 1.1 strain". Qualify or refuse the number.
+    static func strainBadge(for workout: UserConfirmedWorkout) -> String {
+        guard let strain = workout.strain else { return "\(workout.avgHR) bpm avg" }
+        if strain < 0.1 { return "No HR data" }
+        return workout.streamCoveragePercent < 75
+            ? "Strain \(String(format: "%.1f", strain)) \u{00b7} partial HR"
+            : "Strain \(String(format: "%.1f", strain))"
     }
 
     private func activityRow(icon: String,
@@ -560,10 +571,22 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
 
-                    Text("Times and stats come straight from the recorded session — nothing here is estimated or filled in.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Honesty (2026-07-08): when HR covered only part of the
+                    // window, say so — the strain reflects the covered minutes,
+                    // not the full entered duration. Otherwise the old caption
+                    // (now accurate) stands.
+                    if workout.streamCoveragePercent < 75 {
+                        Text("Strain reflects the \(Int((workout.observedDuration / 60).rounded())) min of strap heart-rate in this \(durationText(workout.duration)) window (\(workout.streamCoveragePercent)% covered) — the rest had no strap data, so it under-reads your full effort.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Times and stats come straight from the recorded session — nothing here is estimated or filled in.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     Button(role: .destructive) {
                         showDeleteConfirm = true
