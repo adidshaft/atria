@@ -1770,13 +1770,31 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                systemImage: "waveform.path.ecg",
                                tint: pulse.heartRateZone?.tint ?? .secondary)
             AtriaTodayLivePill(title: "Battery",
-                               value: live.batteryText,
+                               value: batteryPillText,
                                systemImage: live.batterySymbol,
-                               tint: live.batteryLevel >= 0 ? .blue : .secondary)
+                               tint: batteryPillTint)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building"). Battery \(live.batteryText).")
+        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building"). \(live.batteryAccessibilityText)")
+    }
+
+    /// Charging is visible on the home strip (user feedback 2026-07-07) and
+    /// composes with Live -- the strap can be Live and Charging at once.
+    /// States are mutually honest: Charging only with real charging evidence
+    /// (batteryShowsPowered), Low only when NOT charging, plain % otherwise.
+    private var batteryPillText: String {
+        guard live.batteryLevel >= 0 else { return "Pending" }
+        if live.batteryShowsPowered { return "\(live.batteryText) \u{00b7} Charging" }
+        if live.batteryLevel <= 20 { return "\(live.batteryText) \u{00b7} Low" }
+        return live.batteryText
+    }
+
+    private var batteryPillTint: Color {
+        guard live.batteryLevel >= 0 else { return .secondary }
+        if live.batteryShowsPowered { return .green }
+        if live.batteryLevel <= 20 { return .orange }
+        return .blue
     }
 
     private var liveStatusText: String {
