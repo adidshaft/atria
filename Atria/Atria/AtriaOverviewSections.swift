@@ -3877,9 +3877,10 @@ struct AtriaWeeklyReportSheet: View {
                             .font(.headline.weight(.bold))
                             .foregroundStyle(.secondary)
                         Text(heroText)
-                            .font(.system(size: 42, weight: .bold, design: .rounded).monospacedDigit())
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.72)
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.8)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(weekRangeText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -3976,10 +3977,33 @@ struct AtriaWeeklyReportSheet: View {
             .accessibilityAddTraits(.isHeader)
     }
 
+    /// Narrative hero (dedup audit + design HIGHLIGHTS card, 2026-07-07):
+    /// the hero used to repeat the Recovery-average stat row verbatim. It is
+    /// now a one-line story built ONLY from real report fields — every
+    /// clause is gated on data, phrasing stays associative ("while"/"with"),
+    /// never causal. Numbers live in the stat rows below.
     private var heroText: String {
-        guard let recovery = report.recoveryAvg else { return "Recovery building" }
-        guard let delta = report.recoveryDeltaVsPriorWeek else { return "\(recovery)%" }
-        return delta >= 0 ? "\(recovery)% +\(delta)" : "\(recovery)% \(delta)"
+        guard let _ = report.recoveryAvg else { return "Still building this week's picture" }
+
+        var clauses: [String] = []
+        if let delta = report.recoveryDeltaVsPriorWeek {
+            if delta >= 3 { clauses.append("Recovery climbed") }
+            else if delta <= -3 { clauses.append("Recovery dipped") }
+            else { clauses.append("Recovery held steady") }
+        } else {
+            clauses.append("Recovery on the board")
+        }
+        if let strain = report.strainAvg, strain > 0 {
+            if strain >= 12 { clauses.append("under a heavy training load") }
+            else if strain >= 8 { clauses.append("with a solid training load") }
+            else { clauses.append("with a light training load") }
+        }
+        if let sleep = report.sleepAvgSeconds, sleep > 0 {
+            if sleep >= 7.5 * 3600 { clauses.append("while sleep stayed long") }
+            else if sleep >= 6.5 * 3600 { clauses.append("while sleep hovered near need") }
+            else { clauses.append("while sleep ran short") }
+        }
+        return clauses.joined(separator: " ")
     }
 
     private var recoveryAverageText: String {
@@ -4159,9 +4183,10 @@ struct AtriaMonthlyReportSheet: View {
                             .font(.headline.weight(.bold))
                             .foregroundStyle(.secondary)
                         Text(heroText)
-                            .font(.system(size: 42, weight: .bold, design: .rounded).monospacedDigit())
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.72)
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.8)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(monthTitleText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -4234,10 +4259,26 @@ struct AtriaMonthlyReportSheet: View {
             .accessibilityAddTraits(.isHeader)
     }
 
+    /// Narrative hero — same honesty-gated treatment as the weekly report
+    /// (dedup audit 2026-07-07): clauses only from real fields, associative
+    /// phrasing, numbers owned by the stat rows.
     private var heroText: String {
-        guard let recovery = report.recoveryAvg else { return "Recovery building" }
-        guard let delta = report.recoveryDeltaVsPriorMonth else { return "\(recovery)%" }
-        return delta >= 0 ? "\(recovery)% +\(delta)" : "\(recovery)% \(delta)"
+        guard let _ = report.recoveryAvg else { return "Still building this month's picture" }
+
+        var clauses: [String] = []
+        if let delta = report.recoveryDeltaVsPriorMonth {
+            if delta >= 3 { clauses.append("Recovery climbed") }
+            else if delta <= -3 { clauses.append("Recovery dipped") }
+            else { clauses.append("Recovery held steady") }
+        } else {
+            clauses.append("Recovery on the board")
+        }
+        if let sleepDelta = report.sleepPerformanceDeltaVsPriorMonth {
+            if sleepDelta >= 3 { clauses.append("while sleep improved") }
+            else if sleepDelta <= -3 { clauses.append("while sleep slipped") }
+            else { clauses.append("with steady sleep") }
+        }
+        return clauses.joined(separator: " ")
     }
 
     private var monthTitleText: String {
