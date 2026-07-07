@@ -670,6 +670,7 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showSettings) {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
+                              myWeeklyRecovery: WeeklyReport(rollups: store.dailyRollupHistory).recoveryAvg,
                               strapName: ble.resolvedDeviceName,
                               strapModel: ble.strapModelLabel,
                               strapGenerationDetail: ble.strapGenerationDetail,
