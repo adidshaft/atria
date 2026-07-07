@@ -9,6 +9,9 @@ import Charts
 struct AtriaTrendChartCard: View {
     let points: [AtriaTrendPoint]
     let baselineRestingHR: Int?
+    /// Real saved activity for the expanded chart's marker lane. Optional so
+    /// existing call sites/tests compile unchanged.
+    var events: [AtriaChartEvent] = []
 
     @State private var metric: AtriaTrendMetric = .restingHR
     @State private var range: AtriaTrendRange = .month
@@ -150,15 +153,35 @@ struct AtriaTrendChartCard: View {
         .onChange(of: baselineRestingHR) { _, _ in refreshPreparedSeries() }
         .onChange(of: metric) { _, _ in refreshPreparedSeries() }
         .onChange(of: range) { _, _ in refreshPreparedSeries() }
-        .sheet(isPresented: $showExpandedChart) {
-            AtriaTrendExpandedSheet(title: "\(metric.shortLabel) trend",
-                                    subtitle: range.headerLabel,
-                                    chart: AnyView(chart),
-                                    explainer: metric.trendExplainer,
-                                    tint: metric.tint)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+        // Landscape expanded chart (user feedback 2026-07-07): replaces the
+        // old portrait sheet with the shared zoom/brush/markers experience.
+        .fullScreenCover(isPresented: $showExpandedChart) {
+            AtriaExpandedChartView(title: "\(metric.shortLabel) trend",
+                                   unit: expandedUnit,
+                                   tint: metric.tint,
+                                   points: expandedChartPoints,
+                                   events: events,
+                                   onDismiss: { showExpandedChart = false })
         }
+    }
+
+    private var expandedUnit: String {
+        switch metric {
+        case .restingHR: return " bpm"
+        case .strain: return ""
+        case .hrv: return " ms"
+        }
+    }
+
+    /// The focused metric's real daily values in the shared chart-point
+    /// shape. Days without a value are simply absent.
+    private var expandedChartPoints: [AtriaDetailChartPoint] {
+        points.compactMap { point in
+            point.value(for: metric).map {
+                AtriaDetailChartPoint(day: point.date, value: $0, tint: metric.tint)
+            }
+        }
+        .sorted { $0.day < $1.day }
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
@@ -2298,7 +2321,27 @@ struct AtriaOverviewTrendChartHost: View {
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
         AtriaTrendChartCard(points: fixturePoints ?? store.overviewTrendPoints,
-                            baselineRestingHR: fixturePoints == nil ? store.baseline.restingInt : 58)
+                            baselineRestingHR: fixturePoints == nil ? store.baseline.restingInt : 58,
+                            events: trendEvents)
+    }
+
+    /// Real saved activity for the expanded chart marker lane.
+    private var trendEvents: [AtriaChartEvent] {
+        var events: [AtriaChartEvent] = store.confirmedWorkouts.map { workout in
+            AtriaChartEvent(id: "workout-\(workout.id)",
+                            day: workout.start,
+                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                            systemImage: "flame.fill",
+                            tint: Metrics.electricStrain)
+        }
+        events.append(contentsOf: store.sleepHistorySnapshot.nights.filter(\.confirmed).map { night in
+            AtriaChartEvent(id: "sleep-\(night.id)",
+                            day: night.day,
+                            label: "Sleep",
+                            systemImage: "bed.double.fill",
+                            tint: Metrics.electricSleep)
+        })
+        return events
     }
 
     #if DEBUG
