@@ -7286,7 +7286,13 @@ struct AtriaMetricDetailSheet: View {
         return [
             AtriaMetricContributorRow(systemImage: "moon.fill",
                                       name: "Performance",
-                                      value: latest?.durationText ?? "--",
+                                      // Dedup audit 2026-07-07: this row's
+                                      // value was the duration (shown 3 more
+                                      // times on this sheet); it now shows
+                                      // the performance % its name promises.
+                                      value: latest.map {
+                                          "\(sleepHistory.sleepPerformancePercent(for: $0, baseNeedHours: sleepBaseNeedHours, yesterdayStrain: yesterdayStrainForLatestNight))%"
+                                      } ?? "--",
                                       comparison: latest.map {
                                           sleepHistory.sleepPerformanceSummary(for: $0,
                                                                                baseNeedHours: sleepBaseNeedHours,
@@ -9969,18 +9975,11 @@ private struct AtriaSleepHypnogramCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Sleep estimate")
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Spacer()
-                Text(night.durationText)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.cyan)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .layoutPriority(1)
-            }
+            // Header duration removed (dedup audit 2026-07-07): the sheet
+            // hero owns the duration readout.
+            Text("Sleep estimate")
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
 
             if night.displayStageSegments.isEmpty {
                 Text("Stages are still building. Atria labels this as a heart-rate and motion estimate, not EEG.")
@@ -10005,14 +10004,11 @@ private struct AtriaSleepHypnogramCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 10) {
-                metricPill(title: "Performance",
-                           value: sleepPerformanceText)
-                metricPill(title: "Consistency",
-                           value: sleepConsistencyText)
-            }
-
-            Text("Slept \(night.durationText) of \(AtriaMetricFormat.sleepHours(neededHours)) needed · \(sleepPerformanceText)")
+            // Performance/Consistency pills removed (dedup audit): the
+            // contributor rows below the chart own both values. The footer
+            // keeps only the need context — duration and performance live
+            // on the hero.
+            Text("Needed \(AtriaMetricFormat.sleepHours(neededHours)) last night")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
 
