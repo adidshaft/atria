@@ -435,6 +435,46 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         }
     }
 
+    /// "How Atria computes it" methodology (2026-07-07 design handoff).
+    /// Every figure here is the code's real behavior -- constants match
+    /// Insights.swift / AtriaStressMonitor / the sleep aggregation, never the
+    /// mock's illustrative numbers.
+    var howComputed: String {
+        switch self {
+        case .recovery:
+            return "Overnight HRV, resting heart rate, sleep, and respiration are each compared with your own rolling baseline, then blended into one percent. Recovery starts appearing after about 4 nights of calibration and gets steadier as the baseline matures."
+        case .restingHeartRate:
+            return "Read from the strap's heart-rate stream at full rest, preferring overnight windows. Your baseline is a step-bounded rolling average of up to 90 nights, trusted after 14 -- one odd night can't yank it."
+        case .hrv:
+            return "Calculated from the tiny timing gaps between heartbeats in the strap's stream, with implausible beats dropped before the math. Once 7 or more overnight readings exist the baseline uses sleep windows only; it's trusted after 14 nights and holds up to 90."
+        case .respiration:
+            return "Estimated from the breathing rhythm visible in your overnight beat-to-beat timing -- no extra sensor. Nights without a clean overnight window simply don't produce a value."
+        case .stress:
+            return "A short rolling window of heart rate and beat-to-beat variability is compared with your own resting patterns. It needs continuous, well-seated strap contact: loose fit, movement noise, or the strap being off pauses the read as \u{201c}No signal\u{201d} rather than guessing."
+        case .sleep:
+            return "Detected from continuous overnight heart-rate evidence (plus movement evidence when available). Brief sensor dropouts of up to 20 minutes between clearly-asleep stretches count toward duration; longer gaps are honestly excluded."
+        }
+    }
+
+    /// Distinct honesty note (design handoff): personal-baseline framing plus
+    /// the metric's fail-closed behavior, stated explicitly.
+    var honestyNote: String {
+        switch self {
+        case .recovery:
+            return "Scored against your own baseline, never a population norm. While calibrating it says Learning -- Atria won't invent a percent before the data has earned it."
+        case .restingHeartRate:
+            return "Compared only with your own normal, not age tables. Until 14 trusted nights exist it shows Learning instead of a guessed range."
+        case .hrv:
+            return "There is no universally \u{201c}good\u{201d} HRV -- yours is compared only with your own baseline, never a population norm. It reads Learning until 14 trusted nights exist."
+        case .respiration:
+            return "Compared with your own typical nights only. A missing night stays missing -- no interpolated breaths."
+        case .stress:
+            return "Not a medical stress diagnosis -- a same-day, relative signal from your own resting patterns. When contact is poor it says No signal instead of estimating."
+        case .sleep:
+            return "A duration and consistency estimate from heart-rate evidence, not a clinical sleep study. Stage labels are estimates, and unworn time is never counted as sleep."
+        }
+    }
+
     /// Used only when no numeric baseline range exists yet for this metric --
     /// either because the metric isn't range-based (recovery, stress, sleep)
     /// or because the trusted baseline hasn't formed yet.
@@ -466,9 +506,11 @@ struct AtriaVitalsEducationSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
                     detailBlock(title: "What it is", body: topic.whatItIs)
+                    detailBlock(title: "How Atria computes it", body: topic.howComputed)
                     detailBlock(title: "Your typical range",
                                 body: numericRangeText ?? topic.rangeFallback(sleepGoalHours: sleepGoalHours))
                     improveBlock
+                    honestyBlock
 
                     Text("General guidance, not medical advice.")
                         .font(.caption2.weight(.semibold))
@@ -508,6 +550,27 @@ struct AtriaVitalsEducationSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .atriaInsetCard(tint: topic.tint)
+    }
+
+    /// Visually distinct honesty card (design handoff): shield header in the
+    /// metric hue, body stating the personal-baseline + fail-closed promise.
+    private var honestyBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Honesty note", systemImage: "checkmark.shield.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(topic.tint)
+            Text(topic.honestyNote)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .atriaInsetCard(tint: topic.tint)
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(topic.tint.opacity(0.35), lineWidth: 1)
+        }
     }
 
     private func detailBlock(title: String, body: String) -> some View {
