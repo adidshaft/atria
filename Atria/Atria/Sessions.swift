@@ -8121,7 +8121,10 @@ final class SessionStore: ObservableObject {
     /// dropped. Identity/readiness are computed from the untrimmed window by
     /// the caller; this only sharpens the displayed start.
     private func sustainedWorkoutOnsetStart(start: Date, end: Date, rest: Int, maxHR: Int) -> Date? {
-        let overlapping = canonicalSessions().filter { session in
+        // includeActiveJournal: true to match the save gate (2026-07-08 audit):
+        // confirmWorkoutWindow admits a workout on active-journal (live) HR, so
+        // the onset/stats/strain must see the SAME samples, not exclude them.
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
             session.end > start && session.start < end && !session.points.isEmpty
         }
         guard !overlapping.isEmpty else { return nil }
@@ -8148,7 +8151,8 @@ final class SessionStore: ObservableObject {
     private func workoutWindowHRStats(start: Date, end: Date)
         -> (avgHR: Int, peakHR: Int, p95HR: Int, p99HR: Int,
             observedDuration: TimeInterval, streamCoveragePercent: Int, samples: Int)? {
-        let overlapping = canonicalSessions().filter { session in
+        // includeActiveJournal: true — same sample set as the save gate (audit #9).
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
             session.end > start && session.start < end && !session.points.isEmpty
         }
         guard !overlapping.isEmpty else { return nil }
@@ -8174,7 +8178,8 @@ final class SessionStore: ObservableObject {
                                                         activeEnergyKilocalories: Double?,
                                                         activeEnergyConfidence: String?,
                                                         zoneSeconds: [String: TimeInterval]?) {
-        let overlapping = canonicalSessions().filter { session in
+        // includeActiveJournal: true — same sample set as the save gate (audit #9).
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
             session.end > start && session.start < end && !session.points.isEmpty
         }
         guard !overlapping.isEmpty else { return (nil, nil, nil, nil) }
