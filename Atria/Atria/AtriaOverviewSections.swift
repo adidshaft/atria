@@ -6623,8 +6623,10 @@ struct AtriaMetricDetailSheet: View {
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
-         initialRange: AtriaTrendRange = .month) {
+         initialRange: AtriaTrendRange = .month,
+         initialScrubbedDay: Date? = nil) {
         _range = State(initialValue: initialRange)
+        _scrubbedDay = State(initialValue: initialScrubbedDay)
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.baseline = baseline
@@ -6693,7 +6695,9 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.recoveryComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Recovery over \(range.label).",
-                                priorPoints: preparedHistory.recoveryPrior[range] ?? [])
+                                priorPoints: preparedHistory.recoveryPrior[range] ?? [],
+                                companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
                 }
             } about: {
                 aboutDisclosure
@@ -6720,7 +6724,9 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: hrvBand,
                                 accessibilitySummary: "HRV over \(range.label) with your baseline band.",
                                 emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
-                                priorPoints: preparedHistory.hrvPrior[range] ?? [])
+                                priorPoints: preparedHistory.hrvPrior[range] ?? [],
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
                 }
             } about: {
                 aboutDisclosure
@@ -6747,7 +6753,9 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: restingBand,
                                 accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.",
                                 emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
-                                priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [])
+                                priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
+                                companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
+                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])])
                 }
             } about: {
                 aboutDisclosure
@@ -6803,7 +6811,9 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.sleepComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep duration over \(range.label).",
-                                priorPoints: preparedHistory.sleepPrior[range] ?? [])
+                                priorPoints: preparedHistory.sleepPrior[range] ?? [],
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                             ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])])
                 }
             } about: {
                 aboutDisclosure
@@ -6831,7 +6841,9 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.strainComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Strain over \(range.label).",
-                                priorPoints: preparedHistory.strainPrior[range] ?? [])
+                                priorPoints: preparedHistory.strainPrior[range] ?? [],
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])])
                 }
             } about: {
                 aboutDisclosure
@@ -7436,7 +7448,8 @@ struct AtriaMetricDetailSheet: View {
                              baselineBand: AtriaDetailBaselineBand?,
                              accessibilitySummary: String,
                              emptyExplanation: String? = nil,
-                             priorPoints: [AtriaDetailChartPoint] = []) -> some View {
+                             priorPoints: [AtriaDetailChartPoint] = [],
+                             companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = []) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
@@ -7577,6 +7590,15 @@ struct AtriaMetricDetailSheet: View {
                                     Text(selectedPoint.day, format: .dateTime.month(.abbreviated).day())
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
+                                    // vs-typical delta, only when a REAL
+                                    // trusted baseline band exists (design
+                                    // handoff scrub callout).
+                                    if let baselineBand {
+                                        let delta = selectedPoint.value - (baselineBand.lower + baselineBand.upper) / 2
+                                        Text(String(format: "%+.0f vs typical", delta))
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
@@ -7618,6 +7640,30 @@ struct AtriaMetricDetailSheet: View {
                     Text("Dashed line: the previous period, overlaid")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+
+                // Scrub-linked companion tiles (design handoff): while a day
+                // is selected, sibling metrics for THAT day appear beneath the
+                // chart. A companion with no real value that day shows nothing
+                // for it (fail closed, never interpolated).
+                if let target = scrubbedDay, !companions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(Array(companions.enumerated()), id: \.offset) { _, companion in
+                            let match = companion.points.first { Calendar.current.isDate($0.day, inSameDayAs: target) }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(companion.title.uppercased())
+                                    .font(.caption2.weight(.black))
+                                    .foregroundStyle(.tertiary)
+                                Text(match.map { latestText(value: $0.value, unit: companion.unit) } ?? "\u{2014}")
+                                    .font(.subheadline.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(match == nil ? .secondary : companion.tint)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(companion.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                    .transition(.opacity)
                 }
             }
         }
