@@ -3839,8 +3839,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaGlassSelectable(selected: isSelected, tint: .cyan)",
             ".accessibilityValue(isSelected ? \"Selected\" : \"Not selected\")",
             ".onAppear(perform: applyInferredTypeIfNeeded)",
-            ".onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }",
-            ".onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }",
+            # 2026-07-07: the onChange handlers also clear the new inline
+            # save-failure state, so the literal is now multi-line.
+            ".onChange(of: start) { _, _ in",
+            "applyInferredTypeIfNeeded()",
+            ".onChange(of: end) { _, _ in",
             "private func applyInferredTypeIfNeeded()",
             "guard !typeWasManuallyEdited else { return }",
             "DatePicker(\"Start\"",

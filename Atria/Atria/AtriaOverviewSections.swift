@@ -627,15 +627,18 @@ private struct AtriaSleepReviewHost: View {
                                           evidenceNight: adjustment,
                                           evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        _ = store.adjustSleepNight(originalStart: adjustment.start,
-                                                   originalEnd: adjustment.end,
-                                                   newStart: start,
-                                                   newEnd: end,
-                                                   isNap: isNap,
-                                                   rest: store.baseline.restingInt ?? 60,
-                                                   source: "overview_sleep_review_adjust")
-                        dismissedID = adjustment.id
-                        adjustmentNight = nil
+                        let saved = store.adjustSleepNight(originalStart: adjustment.start,
+                                                           originalEnd: adjustment.end,
+                                                           newStart: start,
+                                                           newEnd: end,
+                                                           isNap: isNap,
+                                                           rest: store.baseline.restingInt ?? 60,
+                                                           source: "overview_sleep_review_adjust") != nil
+                        if saved {
+                            dismissedID = adjustment.id
+                            adjustmentNight = nil
+                        }
+                        return saved
                     }
                 }
         }
@@ -724,15 +727,18 @@ private struct AtriaAutoSleepLoggedBanner: View {
                                       initialEnd: banner.end,
                                       initialIsNap: false,
                                       preservesSensorStages: true) { start, end, isNap in
-                    _ = store.adjustSleepNight(originalStart: banner.start,
-                                               originalEnd: banner.end,
-                                               newStart: start,
-                                               newEnd: end,
-                                               isNap: isNap,
-                                               rest: store.baseline.restingInt ?? 60,
-                                               source: "auto_sleep_logged_banner_edit")
-                    store.dismissAutoSleepLoggedBanner(id: banner.id)
-                    adjustment = nil
+                    let saved = store.adjustSleepNight(originalStart: banner.start,
+                                                       originalEnd: banner.end,
+                                                       newStart: start,
+                                                       newEnd: end,
+                                                       isNap: isNap,
+                                                       rest: store.baseline.restingInt ?? 60,
+                                                       source: "auto_sleep_logged_banner_edit") != nil
+                    if saved {
+                        store.dismissAutoSleepLoggedBanner(id: banner.id)
+                        adjustment = nil
+                    }
+                    return saved
                 }
             }
         }
@@ -2110,6 +2116,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             AtriaManualSleepSheet { start, end, isNap in
                 onAddManualSleep(start, end, isNap)
                 showManualSleepSheet = false
+                return true
             }
         }
         .sheet(item: $targetEditorMetric) { metric in
@@ -9905,14 +9912,15 @@ struct AtriaOverviewMorningJournalHost: View {
                                       evidenceNight: adjustment,
                                       evidencePerformancePercent: sleepHistory.sleepPerformancePercent(for: adjustment,
                                                                                                        baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                    _ = store.adjustSleepNight(originalStart: adjustment.start,
-                                               originalEnd: adjustment.end,
-                                               newStart: start,
-                                               newEnd: end,
-                                               isNap: isNap,
-                                               rest: store.baseline.restingInt ?? 60,
-                                               source: "morning_journal_adjust")
-                    adjustmentNight = nil
+                    let saved = store.adjustSleepNight(originalStart: adjustment.start,
+                                                       originalEnd: adjustment.end,
+                                                       newStart: start,
+                                                       newEnd: end,
+                                                       isNap: isNap,
+                                                       rest: store.baseline.restingInt ?? 60,
+                                                       source: "morning_journal_adjust") != nil
+                    if saved { adjustmentNight = nil }
+                    return saved
                 }
             }
     }
