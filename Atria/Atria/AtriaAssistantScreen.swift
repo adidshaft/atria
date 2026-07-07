@@ -158,7 +158,11 @@ struct AtriaAssistantScreen: View {
 
     private func recoveryAnswer(_ prompt: Prompt) -> Exchange {
         let headline = context.guidance.headline.isEmpty ? context.guidance.detail : context.guidance.headline
-        let answer = context.recoveryText == "--"
+        // Production emits "Learning" (not "--") from HeroSnapshot.recoveryValue
+        // when there's no score yet; guard on both so the still-learning line
+        // isn't dead code and we never build a "Recovery is Learning." sentence.
+        let recoveryReady = context.recoveryText != "Learning" && context.recoveryText != "--"
+        let answer = !recoveryReady
             ? "Your recovery is still learning \u{2014} it needs overnight baselines before it can score a morning."
             : "Recovery is \(context.recoveryText). \(headline). Day strain so far is \(String(format: "%.1f", context.strain)) and HRV reads \(context.hrvText)."
         return Exchange(question: prompt.question, answer: answer,
