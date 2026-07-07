@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 struct AtriaSettingsView: View {
     let profile: AthleteProfile
     let restingBaseline: Int?
+    /// Real weekly recovery average for the leaderboard "You" row (nil while
+    /// still learning). Demo social feature (2026-07-08).
+    var myWeeklyRecovery: Int? = nil
     let strapName: String
     let strapModel: String
     let strapGenerationDetail: String
@@ -35,6 +38,7 @@ struct AtriaSettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
+    @State private var showLeaderboard = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -101,6 +105,7 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
+         myWeeklyRecovery: Int? = nil,
          strapName: String = "",
          strapModel: String = "",
          strapGenerationDetail: String = "",
@@ -128,6 +133,7 @@ struct AtriaSettingsView: View {
          researchValidationContent: AnyView? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
+        self.myWeeklyRecovery = myWeeklyRecovery
         self.strapName = strapName
         self.strapModel = strapModel
         self.strapGenerationDetail = strapGenerationDetail
@@ -324,15 +330,42 @@ struct AtriaSettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $expandedSharing) {
                 AtriaResearchSharingSection(buildBundle: buildResearchBundle)
+                leaderboardRow
                 aboutSection
             } label: {
                 settingsGroupLabel("Privacy & Sharing",
-                                   subtitle: "Research sharing, support, app info",
+                                   subtitle: "Research sharing, leaderboard, support",
                                    systemImage: "hand.raised.fill",
                                    tint: .green)
             }
         } footer: {
             Text("Research bundle sharing, app version, and support contact.")
+        }
+    }
+
+    /// Entry to the leaderboard demo (2026-07-08). Self-contained button +
+    /// sheet so it needs no Form-level plumbing.
+    private var leaderboardRow: some View {
+        Button {
+            showLeaderboard = true
+        } label: {
+            HStack {
+                Label("Leaderboard", systemImage: "trophy.fill")
+                Spacer(minLength: 8)
+                Text("Preview")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(.orange.opacity(0.16), in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.primary)
+        .sheet(isPresented: $showLeaderboard) {
+            AtriaLeaderboardScreen(myWeeklyRecovery: myWeeklyRecovery)
         }
     }
 
