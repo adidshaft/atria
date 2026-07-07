@@ -544,7 +544,12 @@ struct AtriaHomeView: View {
             AtriaManualSleepSheet(initialStart: sleepReviewSheetNight?.start,
                                   initialEnd: sleepReviewSheetNight?.end,
                                   initialIsNap: sleepReviewSheetNight?.isNapEvidence,
-                                  preservesSensorStages: true) { start, end, isNap in
+                                  preservesSensorStages: true,
+                                  evidenceNight: sleepReviewSheetNight,
+                                  evidencePerformancePercent: sleepReviewSheetNight.map {
+                                      store.sleepHistorySnapshot.sleepPerformancePercent(for: $0,
+                                                                                         baseNeedHours: SessionStore.configuredSleepBaseNeedHours())
+                                  }) { start, end, isNap in
                 _ = store.adjustSleepNight(originalStart: sleepReviewSheetNight?.start,
                                            originalEnd: sleepReviewSheetNight?.end,
                                            newStart: start,

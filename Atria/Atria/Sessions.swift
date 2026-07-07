@@ -4375,7 +4375,9 @@ final class SessionStore: ObservableObject {
         return AtriaSleepBudget.performancePercent(slept: sleepDuration / 3_600, needed: need)
     }
 
-    private nonisolated static func configuredSleepBaseNeedHours(userDefaults: UserDefaults = .standard) -> Double {
+    // Internal since 2026-07-07: sleep-review evidence cards need the same
+    // configured base need the rollup path uses.
+    nonisolated static func configuredSleepBaseNeedHours(userDefaults: UserDefaults = .standard) -> Double {
         let stored = userDefaults.object(forKey: "atria.sleep.baseNeedHours") as? Double
         return min(max(stored ?? 8.0, 6.0), 10.0)
     }
@@ -14853,7 +14855,10 @@ struct HistoryView: View {
             AtriaManualSleepSheet(initialStart: adjustment.start,
                                   initialEnd: adjustment.end,
                                   initialIsNap: adjustment.isNapEvidence,
-                                  preservesSensorStages: true) { start, end, isNap in
+                                  preservesSensorStages: true,
+                                  evidenceNight: adjustment,
+                                  evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
+                                                                                                                 baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
                 _ = store.adjustSleepNight(originalStart: adjustment.start,
                                            originalEnd: adjustment.end,
                                            newStart: start,
