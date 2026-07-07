@@ -1052,7 +1052,7 @@ private struct AtriaSleepReviewCard: View {
                 .font(.caption2.weight(.black).monospacedDigit())
                 .foregroundStyle(active ? .primary : .secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.62)
+                .minimumScaleFactor(0.78)
         }
         .frame(maxWidth: .infinity)
     }

@@ -207,6 +207,7 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(tint)
                     .lineLimit(1)
             }
+            .fixedSize()
 
             Image(systemName: "chevron.right")
                 .font(.caption2.weight(.bold))
