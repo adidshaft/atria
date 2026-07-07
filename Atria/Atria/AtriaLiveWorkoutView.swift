@@ -468,13 +468,15 @@ struct AtriaLiveWorkoutView: View {
                                   value: String,
                                   decrement: @escaping () -> Void,
                                   increment: @escaping () -> Void) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(title)
                 .font(.subheadline.weight(.bold))
             Spacer()
             Button(action: decrement) {
                 Image(systemName: "minus.circle.fill")
                     .font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Text(value)
                 .font(.title3.weight(.black).monospacedDigit())
@@ -482,6 +484,8 @@ struct AtriaLiveWorkoutView: View {
             Button(action: increment) {
                 Image(systemName: "plus.circle.fill")
                     .font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
         .padding(10)
@@ -515,8 +519,8 @@ struct AtriaLiveWorkoutView: View {
                 Text(coachCueDetail)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.70))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -605,6 +609,8 @@ struct AtriaLiveWorkoutView: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(.white.opacity(0.12), in: Capsule())
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Set workout target. Currently \(targetSourceLabel).")
@@ -930,7 +936,7 @@ struct AtriaLiveWorkoutView: View {
             Text(value)
                 .font(.caption.weight(.black).monospacedDigit())
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1010,7 +1016,7 @@ struct AtriaLiveWorkoutView: View {
                 .monospacedDigit()
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.75)
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.7))

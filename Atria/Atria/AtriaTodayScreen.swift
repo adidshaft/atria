@@ -1835,8 +1835,8 @@ private struct AtriaTodayPlanCard: View, Equatable {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: 104, alignment: .trailing)
+                .minimumScaleFactor(0.85)
+                .layoutPriority(1)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .background(tint.opacity(0.12),
