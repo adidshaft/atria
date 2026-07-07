@@ -3437,6 +3437,10 @@ final class SessionStore: ObservableObject {
     private var cachedTodayTRIMP: (rest: Int, maxHR: Int, value: Double)?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var hasCompletedDeferredSessionLoad = false
+    /// Readonly view of the deferred-load state for publishers that must not
+    /// overwrite good persisted data with pre-load partials (widget snapshot
+    /// cold-start guard, 2026-07-07).
+    var hasLoadedSavedSessions: Bool { hasCompletedDeferredSessionLoad }
     private var pendingDeferredSessionBackupArguments: [String]?
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
