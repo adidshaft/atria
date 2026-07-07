@@ -11222,7 +11222,7 @@ struct AtriaOverviewBehaviorJournalSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Impacts", subtitle: "Local behavior patterns")
+                AtriaPanelSectionHeader(title: "Impacts", subtitle: "What's affecting you")
 
                 Spacer(minLength: 0)
 
@@ -11296,7 +11296,7 @@ private struct AtriaJournalImpactStrip: View, Equatable {
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.primary)
                 Spacer(minLength: 0)
-                Text(taggedDays > 0 ? "\(taggedDays)d local" : "learning")
+                Text(taggedDays > 0 ? "\(taggedDays)d logged" : "learning")
                     .font(.caption2.weight(.bold).monospacedDigit())
                     .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
@@ -11875,7 +11875,7 @@ private struct AtriaJournalImpactFocus: View, Equatable {
                     .font(.headline.weight(.bold).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                Text("\(summary.days)d local")
+                Text("\(summary.days)d logged")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
