@@ -3835,7 +3835,7 @@ struct AtriaWeeklyReportSheet: View {
                             .font(.system(size: 42, weight: .bold, design: .rounded).monospacedDigit())
                             .lineLimit(2)
                             .minimumScaleFactor(0.72)
-                        Text("Week \(report.isoWeek), \(report.isoYear)")
+                        Text(weekRangeText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -3849,6 +3849,16 @@ struct AtriaWeeklyReportSheet: View {
                                                  detail: recoveryDeltaText,
                                                  systemImage: "heart.fill",
                                                  tint: .green)
+                        AtriaWeeklyReportStatRow(title: "Strain average",
+                                                 value: strainAverageText,
+                                                 detail: "Daily strain across the week",
+                                                 systemImage: "flame.fill",
+                                                 tint: Metrics.electricStrain)
+                        AtriaWeeklyReportStatRow(title: "Sleep average",
+                                                 value: sleepAverageText,
+                                                 detail: "Nightly duration across the week",
+                                                 systemImage: "bed.double.fill",
+                                                 tint: Metrics.electricSleep)
                         AtriaWeeklyReportStatRow(title: "Sleep consistency",
                                                  value: consistencyText,
                                                  detail: "Bedtime routine from daily rollups",
@@ -3909,6 +3919,33 @@ struct AtriaWeeklyReportSheet: View {
 
     private var recoveryAverageText: String {
         report.recoveryAvg.map { "\($0)%" } ?? "--"
+    }
+
+    /// Human date range ("Jun 29 – Jul 5") from the report's rollup days;
+    /// falls back to the ISO week label for reports saved before these
+    /// fields existed (2026-07-07 design handoff).
+    private var weekRangeText: String {
+        guard let start = report.weekStart, let end = report.weekEnd else {
+            return "Week \(report.isoWeek), \(report.isoYear)"
+        }
+        let formatter = Self.rangeDayFormatter
+        return "\(formatter.string(from: start)) – \(formatter.string(from: end)) · Week \(report.isoWeek)"
+    }
+
+    private static let rangeDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter
+    }()
+
+    private var strainAverageText: String {
+        report.strainAvg.map { String(format: "%.1f", $0) } ?? "--"
+    }
+
+    private var sleepAverageText: String {
+        guard let seconds = report.sleepAvgSeconds else { return "--" }
+        let totalMinutes = Int((seconds / 60).rounded())
+        return "\(totalMinutes / 60)h \(totalMinutes % 60)m"
     }
 
     private var recoveryDeltaText: String {
