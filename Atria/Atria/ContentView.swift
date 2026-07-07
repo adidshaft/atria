@@ -237,10 +237,10 @@ struct AtriaOnboardingRingPickerStep: View {
                     .ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
-                        Image(systemName: "chart.pie.fill")
-                            .font(.system(size: 42, weight: .semibold))
-                            .foregroundStyle(.blue)
-                            .symbolRenderingMode(.hierarchical)
+                        // Live preview of the actual ring choices (2026-07-07
+                        // design handoff) -- fills are illustrative, same
+                        // precedent as AtriaOnboardingFlow.onboardingRingCard.
+                        ringPreviewCard
                         Text("Choose your rings")
                             .font(.system(size: 34, weight: .bold, design: .rounded))
                         Text("Pick what the three rings track, and which one sits in the center. You can always change this later from Customize Today.")
@@ -250,7 +250,11 @@ struct AtriaOnboardingRingPickerStep: View {
 
                         VStack(alignment: .leading, spacing: 16) {
                             ForEach(Array(ringSlots.enumerated()), id: \.offset) { index, slot in
-                                HStack {
+                                HStack(spacing: 10) {
+                                    Circle()
+                                        .fill(Self.slotTint(slot))
+                                        .frame(width: 10, height: 10)
+                                        .accessibilityHidden(true)
                                     Text(Self.positionLabels[index])
                                         .font(.subheadline.weight(.semibold))
                                     Spacer()
@@ -302,6 +306,68 @@ struct AtriaOnboardingRingPickerStep: View {
                 .padding(.top, 12)
                 .padding(.bottom, 16)
             }
+        }
+    }
+
+    private var ringPreviewCard: some View {
+        AtriaTriRing(slots: ringSlots.enumerated().map { index, slot in
+            AtriaTriRingSlotContent(slot: slot,
+                                    metric: AtriaTriRingMetric(title: slot.label,
+                                                               value: Self.sampleValue(slot),
+                                                               detail: "Example",
+                                                               systemImage: Self.slotIcon(slot),
+                                                               tint: Self.slotTint(slot),
+                                                               fill: [0.82, 0.62, 0.46][index]))
+        },
+        centerValue: Self.sampleValue(centerSlot),
+        centerState: "Example \u{00b7} \(centerMetricLabel(centerMetric))",
+        accessibilitySummary: "Preview of your ring choices with example fills, not real data.",
+        actions: [:])
+        .frame(maxWidth: 240)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .atriaCard(emphasis: .soft)
+    }
+
+    /// The slot whose example value shows in the preview's center.
+    private var centerSlot: AtriaTriRingSlot {
+        switch centerMetric {
+        case .recovery: return .recovery
+        case .sleep: return .sleep
+        case .strain: return .strain
+        }
+    }
+
+    /// One identity hue per metric -- the same Metrics.electric* hues the
+    /// live ring and glance tiles use, so the picker dots and preview match
+    /// what the Today screen will actually paint.
+    private static func slotTint(_ slot: AtriaTriRingSlot) -> Color {
+        switch slot {
+        case .sleep: return Metrics.electricSleep
+        case .recovery: return Metrics.electricGreen
+        case .strain: return Metrics.electricStrain
+        case .hrv: return Metrics.electricHRV
+        case .rhr: return Metrics.electricRHR
+        }
+    }
+
+    private static func slotIcon(_ slot: AtriaTriRingSlot) -> String {
+        switch slot {
+        case .sleep: return "bed.double.fill"
+        case .recovery: return "heart.fill"
+        case .strain: return "flame.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .rhr: return "heart.circle.fill"
+        }
+    }
+
+    private static func sampleValue(_ slot: AtriaTriRingSlot) -> String {
+        switch slot {
+        case .sleep: return "7h 24m"
+        case .recovery: return "78%"
+        case .strain: return "12.4"
+        case .hrv: return "62 ms"
+        case .rhr: return "55 bpm"
         }
     }
 
