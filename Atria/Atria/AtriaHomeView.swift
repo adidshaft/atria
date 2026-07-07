@@ -6286,17 +6286,18 @@ final class AtriaHomeModel {
     }
 
     private func publishPulseSparkline() {
-        let next = Self.makePulseSparklineState(ble: ble)
-        guard next != pulseSparklineStore.state else { return }
-        // The chart buckets per second, but RR/HR arrive several times a second —
-        // publishing each beat re-merged and re-laid-out the Swift Charts
-        // timeline per heartbeat. 1 Hz is the chart's native resolution; the
-        // hero BPM digit stays on the un-gated pulseLiveStore so perceived
-        // liveness is unchanged. Staleness is bounded: the next beat after the
-        // window publishes.
+        // Throttle FIRST (2026-07-08 perf audit): the chart buckets per second,
+        // but RR/HR arrive several times a second, and makePulseSparklineState
+        // (suffix + filter + stride) plus the ~120-element Equatable compare
+        // were running on EVERY beat before this gate. 1 Hz is the chart's
+        // native resolution; the hero BPM digit stays on the un-gated
+        // pulseLiveStore so perceived liveness is unchanged. Staleness is
+        // bounded: the next beat after the window publishes.
         let now = Date()
         guard now.timeIntervalSince(lastPulseSparklinePublishAt) >= 1.0 else { return }
         lastPulseSparklinePublishAt = now
+        let next = Self.makePulseSparklineState(ble: ble)
+        guard next != pulseSparklineStore.state else { return }
         pulseSparklineStore.state = next
     }
 
