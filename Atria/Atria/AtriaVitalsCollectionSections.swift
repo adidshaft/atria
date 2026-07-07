@@ -1366,9 +1366,49 @@ struct AtriaVitalsLivePulseSection: View {
 }
 
 enum AtriaVitalsHeartRateTimeline {
+    /// Discrete zoom windows for the HR timeline (user request 2026-07-07:
+    /// default to the last 12h, zoom in to the last minute, out to 24h).
+    enum Window: Int, CaseIterable, Identifiable {
+        case min1, min5, min15, min30, hour1, hour3, hour6, hour12, hour24
+        var id: Int { rawValue }
+
+        var seconds: TimeInterval {
+            switch self {
+            case .min1: return 60
+            case .min5: return 5 * 60
+            case .min15: return 15 * 60
+            case .min30: return 30 * 60
+            case .hour1: return 3_600
+            case .hour3: return 3 * 3_600
+            case .hour6: return 6 * 3_600
+            case .hour12: return 12 * 3_600
+            case .hour24: return 24 * 3_600
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .min1: return "1 min"
+            case .min5: return "5 min"
+            case .min15: return "15 min"
+            case .min30: return "30 min"
+            case .hour1: return "1 hr"
+            case .hour3: return "3 hr"
+            case .hour6: return "6 hr"
+            case .hour12: return "12 hr"
+            case .hour24: return "24 hr"
+            }
+        }
+
+        static let defaultWindow = Window.hour12
+    }
+
+    /// Merged live + historical HR at full resolution (capped for safety) so
+    /// the timeline can window + downsample PER zoom level — pre-downsampling
+    /// here would destroy the seconds-resolution the 1-minute zoom needs.
     static func mergedHeartRatePoints(live: [AtriaHomeModel.HeartRateChartPoint],
                                       historical: [AtriaHomeModel.HeartRateChartPoint],
-                                      targetCount: Int = 180) -> [AtriaHomeModel.HeartRateChartPoint] {
+                                      cap: Int = 6_000) -> [AtriaHomeModel.HeartRateChartPoint] {
         guard !historical.isEmpty else { return live }
         var bySecond: [Int: AtriaHomeModel.HeartRateChartPoint] = [:]
         bySecond.reserveCapacity(historical.count + live.count)
@@ -1379,10 +1419,24 @@ enum AtriaVitalsHeartRateTimeline {
             bySecond[Int(point.t.timeIntervalSince1970.rounded())] = point
         }
         let merged = bySecond.values.sorted { $0.t < $1.t }
-        guard merged.count > targetCount else { return merged }
-        let stride = Double(merged.count - 1) / Double(targetCount - 1)
-        return (0..<targetCount).map { index in
-            merged[Int((Double(index) * stride).rounded())]
+        // Keep the newest `cap` if a very long history ever exceeds it.
+        return merged.count > cap ? Array(merged.suffix(cap)) : merged
+    }
+
+    /// Points within `window` of the latest sample, downsampled to
+    /// `displayBudget` for a smooth chart. Anchored to the latest sample (not
+    /// wall-clock) so "last 12h" always shows the most recent 12h of real
+    /// data rather than blank time when the strap has been off.
+    static func windowed(_ points: [AtriaHomeModel.HeartRateChartPoint],
+                         window: Window,
+                         displayBudget: Int = 200) -> [AtriaHomeModel.HeartRateChartPoint] {
+        guard let latest = points.last?.t else { return [] }
+        let cutoff = latest.addingTimeInterval(-window.seconds)
+        let visible = points.filter { $0.t >= cutoff }
+        guard visible.count > displayBudget else { return visible }
+        let stride = Double(visible.count - 1) / Double(displayBudget - 1)
+        return (0..<displayBudget).map { index in
+            visible[Int((Double(index) * stride).rounded())]
         }
     }
 }
@@ -2631,7 +2685,7 @@ private struct AtriaPulseCard: View, Equatable {
                 pulseStatTiles
             }
 
-            AtriaHeartRateTimelineCard(points: chartPoints,
+            AtriaHeartRateTimelineCard(points: AtriaVitalsHeartRateTimeline.windowed(chartPoints, window: .hour12),
                                        onOpen: { showHeartRateExplorer = true })
         }
         .padding(18)
@@ -2786,11 +2840,18 @@ struct AtriaHeartRateExplorer: View {
     let debugLoadsMetricArchive: Bool
     let onDismiss: () -> Void
     @State private var selectedTime: Date?
-    @State private var zoom: Double = 1
+    /// Slider position over AtriaVitalsHeartRateTimeline.Window (0 = 1 min …
+    /// 8 = 24 hr), defaulting to 12 hr. Time-window zoom (user request
+    /// 2026-07-07) instead of the old point-count zoom.
+    @State private var windowIndex: Double = Double(AtriaVitalsHeartRateTimeline.Window.defaultWindow.rawValue)
     @State private var series: AtriaHeartRateChartSeries
     @State private var didDebugLoadMetricArchive = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var currentWindow: AtriaVitalsHeartRateTimeline.Window {
+        AtriaVitalsHeartRateTimeline.Window(rawValue: Int(windowIndex.rounded())) ?? .defaultWindow
+    }
 
     init(points: [AtriaHomeModel.HeartRateChartPoint],
          currentBPM: Int,
@@ -2800,7 +2861,9 @@ struct AtriaHeartRateExplorer: View {
         self.currentBPM = currentBPM
         self.debugLoadsMetricArchive = debugLoadsMetricArchive
         self.onDismiss = onDismiss
-        _series = State(initialValue: AtriaHeartRateChartSeries.make(points: points, zoom: 1))
+        _series = State(initialValue: AtriaHeartRateChartSeries.make(
+            points: AtriaVitalsHeartRateTimeline.windowed(points, window: .defaultWindow, displayBudget: 400),
+            zoom: 1))
     }
 
     private var selectedPoint: AtriaHomeModel.HeartRateChartPoint? {
@@ -2836,10 +2899,22 @@ struct AtriaHeartRateExplorer: View {
                     .frame(maxHeight: .infinity)
                     .frame(minHeight: 320)
 
-                HStack(spacing: 12) {
-                    Image(systemName: "minus.magnifyingglass")
-                    Slider(value: $zoom, in: 1...6, step: 1)
-                    Image(systemName: "plus.magnifyingglass")
+                VStack(spacing: 6) {
+                    HStack {
+                        Text("Showing last \(currentWindow.label)")
+                            .font(.subheadline.weight(.bold))
+                        Spacer(minLength: 0)
+                        Text("drag to zoom \u{00b7} tap to inspect")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    HStack(spacing: 10) {
+                        Text("1 min").font(.caption2).foregroundStyle(.tertiary)
+                        Slider(value: $windowIndex,
+                               in: 0...Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1),
+                               step: 1)
+                        Text("24 hr").font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -2858,11 +2933,15 @@ struct AtriaHeartRateExplorer: View {
                     .accessibilityLabel("Done")
                 }
             }
-            .onChange(of: zoom) { _, newValue in
-                series = AtriaHeartRateChartSeries.make(points: points, zoom: newValue)
+            .onChange(of: windowIndex) { _, _ in
+                series = AtriaHeartRateChartSeries.make(
+                    points: AtriaVitalsHeartRateTimeline.windowed(points, window: currentWindow, displayBudget: 400),
+                    zoom: 1)
             }
             .onChange(of: points) { _, newValue in
-                series = AtriaHeartRateChartSeries.make(points: newValue, zoom: zoom)
+                series = AtriaHeartRateChartSeries.make(
+                    points: AtriaVitalsHeartRateTimeline.windowed(newValue, window: currentWindow, displayBudget: 400),
+                    zoom: 1)
             }
             .onAppear {
                 Task { await loadMetricArchiveForDebugProofIfNeeded() }
@@ -2883,7 +2962,9 @@ struct AtriaHeartRateExplorer: View {
         }.value
         AtriaDebugLog("ATRIADBG hist1_timeline_explorer_archive status=loaded points=%d", loaded.count)
         guard !loaded.isEmpty else { return }
-        series = AtriaHeartRateChartSeries.make(points: loaded, zoom: zoom)
+        series = AtriaHeartRateChartSeries.make(
+            points: AtriaVitalsHeartRateTimeline.windowed(loaded, window: currentWindow, displayBudget: 400),
+            zoom: 1)
     }
 }
 

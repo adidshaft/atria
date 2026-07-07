@@ -1098,11 +1098,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func yDomain(for points: [AtriaHomeModel.HeartRateChartPoint]) -> ClosedRange<Int>",
             "func nearestPoint(to selectedTime: Date?) -> AtriaHomeModel.HeartRateChartPoint?",
             "@State private var series: AtriaHeartRateChartSeries",
-            "_series = State(initialValue: AtriaHeartRateChartSeries.make(points: points, zoom: 1))",
+            # 2026-07-07: HR-timeline explorer switched from point-count zoom
+            # to time-window zoom (12h default, 1min-24h), so series is built
+            # from a windowed slice.
+            "AtriaHeartRateChartSeries.make(",
             "AtriaHeartRateAxisChart(points: series.visiblePoints,",
             "yDomain: series.yDomain,",
-            "series = AtriaHeartRateChartSeries.make(points: points, zoom: newValue)",
-            "series = AtriaHeartRateChartSeries.make(points: newValue, zoom: zoom)",
+            "AtriaVitalsHeartRateTimeline.windowed(points, window: currentWindow, displayBudget: 400)",
             "struct AtriaHeartRateAxisChart: View, Equatable",
             "let yDomain: ClosedRange<Int>",
             "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain",
@@ -1119,7 +1121,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))",
             ".mask(RoundedRectangle(cornerRadius: 12, style: .continuous))",
             ".clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))",
-            "Slider(value: $zoom, in: 1...6, step: 1)",
+            # 2026-07-07: time-window zoom slider (1 min .. 24 hr) replaces
+            # the old 1...6 point-count zoom.
+            "Slider(value: $windowIndex,",
             "Label(\"Done\", systemImage: \"xmark\")",
             ".atriaCardAction(prominent: false, tint: .secondary)",
             ".fullScreenCover(isPresented: $showHeartRateExplorer)",

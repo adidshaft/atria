@@ -2361,9 +2361,10 @@ final class AtriaAnalyticsTests: XCTestCase {
             AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(180), bpm: 92),
         ]
 
+        // Merge de-dups by second (live overrides historical at t=120) and
+        // sorts ascending; it no longer pre-downsamples (2026-07-07 rework).
         let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: live,
-                                                                        historical: historical,
-                                                                        targetCount: 10)
+                                                                        historical: historical)
 
         XCTAssertEqual(merged.map { Int($0.t.timeIntervalSince(start)) }, [0, 60, 120, 180])
         XCTAssertEqual(merged.map(\.bpm), [61, 62, 91, 92])
