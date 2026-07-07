@@ -11777,16 +11777,23 @@ final class SessionStore: ObservableObject {
         let respiratoryRates = recent.compactMap {
             $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
         }
-        let latestSleep = sleepHistorySnapshot.latest
-        let recoveries = recent.compactMap {
+        // Per-day sleep (2026-07-08 consistency audit): each session's recovery
+        // must use ITS OWN night's sleep, not the single latest night applied to
+        // every session in the window — which diverged from the per-day history
+        // recovery (makeHistoryTrendSummaries resolves per-day the same way).
+        let nightsByDay = Dictionary(sleepHistorySnapshot.nights.map {
+            (Calendar.current.startOfDay(for: $0.day), $0)
+        }, uniquingKeysWith: { first, _ in first })
+        let recoveries = recent.compactMap { session -> Int? in
+            let night = nightsByDay[Calendar.current.startOfDay(for: session.start)]
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                              fallbackRMSSD: $0.localRMSSD,
-                                              restingNow: $0.restingStable,
+                                              fallbackRMSSD: session.localRMSSD,
+                                              restingNow: session.restingStable,
                                               baseline: baseline,
-                                              hrvReferenceValidated: $0.hrvReferenceValidated == true,
-                                              sleepEfficiency: latestSleep?.sleepEfficiency,
-                                              sleepDurationHours: latestSleep?.durationHours,
-                                              respiratoryRate: $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
+                                              hrvReferenceValidated: session.hrvReferenceValidated == true,
+                                              sleepEfficiency: night?.sleepEfficiency,
+                                              sleepDurationHours: night?.durationHours,
+                                              respiratoryRate: session.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
                                               respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
             return recovery.percent
         }
