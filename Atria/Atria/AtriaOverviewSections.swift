@@ -10235,6 +10235,27 @@ private struct AtriaSleepHypnogramCard: View {
                 }
                 .frame(height: 42)
 
+                // Legend so the colored bar is self-explanatory (2026-07-08 UX
+                // audit: it was an unlabeled two-tone bar).
+                let presentStages = SleepStageKind.displayOrder.filter { stage in
+                    night.displayStageSegments.contains { $0.stage == stage }
+                }
+                if !presentStages.isEmpty {
+                    HStack(spacing: 12) {
+                        ForEach(presentStages) { stage in
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(stageTint(stage))
+                                    .frame(width: 8, height: 8)
+                                Text(stage.label)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+
                 Text("Heart-rate and motion estimate — useful for trend context, not an EEG sleep study.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
