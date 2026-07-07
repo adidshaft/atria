@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct AtriaManualSleepSheet: View {
-    let onSave: (Date, Date, Bool) -> Void
+    /// Returns whether the save actually persisted. false keeps the sheet
+    /// open and shows an inline error instead of silently dismissing
+    /// (2026-07-07: failed adjustments used to vanish without a trace).
+    let onSave: (Date, Date, Bool) -> Bool
     private let reviewDetectedTypeText: String?
     /// Detected night backing this review, when one exists (2026-07-07 design
     /// handoff): drives the sensor-evidence card (stage strip, efficiency).
@@ -19,6 +22,7 @@ struct AtriaManualSleepSheet: View {
     @State private var typeWasManuallyEdited = false
     @State private var start = Date().addingTimeInterval(-8 * 60 * 60)
     @State private var end = Date()
+    @State private var saveFailed = false
 
     init(initialStart: Date? = nil,
          initialEnd: Date? = nil,
@@ -26,7 +30,7 @@ struct AtriaManualSleepSheet: View {
          preservesSensorStages: Bool = false,
          evidenceNight: SleepHistorySnapshot.Night? = nil,
          evidencePerformancePercent: Int? = nil,
-         onSave: @escaping (Date, Date, Bool) -> Void) {
+         onSave: @escaping (Date, Date, Bool) -> Bool) {
         self.onSave = onSave
         self.preservesSensorStages = preservesSensorStages
         self.evidenceNight = evidenceNight
@@ -122,6 +126,18 @@ struct AtriaManualSleepSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if saveFailed {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("Couldn't save \u{2014} the strap has less than 20 minutes of data inside that window. Widen the times to cover when it was worn, then try again.")
+                                .font(.caption.weight(.semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(12)
+                        .atriaInsetCard(tint: .orange)
+                    }
+
                     detectedEvidenceCard
                     typeCard
                     timeCard
@@ -132,15 +148,21 @@ struct AtriaManualSleepSheet: View {
             }
             .navigationTitle("\(reviewDetectedTypeText == nil ? "Add" : "Review") \(isNap ? "Nap" : "Sleep")")
             .onAppear(perform: applyInferredTypeIfNeeded)
-            .onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }
-            .onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }
+            .onChange(of: start) { _, _ in
+                saveFailed = false
+                applyInferredTypeIfNeeded()
+            }
+            .onChange(of: end) { _, _ in
+                saveFailed = false
+                applyInferredTypeIfNeeded()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        onSave(start, end, isNap)
+                        saveFailed = !onSave(start, end, isNap)
                     }
                     .disabled(!canSave)
                 }
