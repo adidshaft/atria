@@ -537,7 +537,9 @@ struct AtriaDetectionRow: View, Equatable {
 /// "Detected" chip or the detections card's "See all" row.
 struct AtriaDetectionsListSheet: View {
     let detections: [DetectionEvent]
-    let store: SessionStore
+    /// Optional so render tests can exercise the plain log without a store;
+    /// the Adjust routing only exists when a store is present.
+    var store: SessionStore? = nil
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
 
     var body: some View {
@@ -578,22 +580,24 @@ struct AtriaDetectionsListSheet: View {
             }
             .navigationTitle("Detections")
             .sheet(item: $adjustmentNight) { night in
-                AtriaManualSleepSheet(initialStart: night.start,
-                                      initialEnd: night.end,
-                                      initialIsNap: night.isNapEvidence,
-                                      preservesSensorStages: true,
-                                      evidenceNight: night,
-                                      evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
-                                                                                                                     baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                    let saved = store.adjustSleepNight(originalStart: night.start,
-                                                       originalEnd: night.end,
-                                                       newStart: start,
-                                                       newEnd: end,
-                                                       isNap: isNap,
-                                                       rest: store.baseline.restingInt ?? 60,
-                                                       source: "detections_inbox_adjust") != nil
-                    if saved { adjustmentNight = nil }
-                    return saved
+                if let store {
+                    AtriaManualSleepSheet(initialStart: night.start,
+                                          initialEnd: night.end,
+                                          initialIsNap: night.isNapEvidence,
+                                          preservesSensorStages: true,
+                                          evidenceNight: night,
+                                          evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
+                                                                                                                         baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
+                        let saved = store.adjustSleepNight(originalStart: night.start,
+                                                           originalEnd: night.end,
+                                                           newStart: start,
+                                                           newEnd: end,
+                                                           isNap: isNap,
+                                                           rest: store.baseline.restingInt ?? 60,
+                                                           source: "detections_inbox_adjust") != nil
+                        if saved { adjustmentNight = nil }
+                        return saved
+                    }
                 }
             }
         }
@@ -604,7 +608,7 @@ struct AtriaDetectionsListSheet: View {
     /// night qualifies when the event lands within [end - 1h, end + 12h] —
     /// and exactly ONE night may qualify.
     private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
-        guard event.kind == "sleepAutoConfirmed" else { return nil }
+        guard let store, event.kind == "sleepAutoConfirmed" else { return nil }
         let matches = store.sleepHistorySnapshot.nights.filter { night in
             guard let end = night.end else { return false }
             let delta = event.date.timeIntervalSince(end)
