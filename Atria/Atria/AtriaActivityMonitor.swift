@@ -416,6 +416,48 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         _endTime = State(initialValue: workout.end)
     }
 
+    /// The workout window's real recorded HR samples from the saved
+    /// sessions that overlap it. Empty when no session covered the window
+    /// (e.g. a manually added workout) — the card then doesn't render.
+    private var heartRateTracePoints: [AtriaHomeModel.HeartRateChartPoint] {
+        store.sessions
+            .filter { $0.end > workout.start && $0.start < workout.end }
+            .flatMap { session in
+                session.points.compactMap { point -> AtriaHomeModel.HeartRateChartPoint? in
+                    let t = session.start.addingTimeInterval(point.t)
+                    guard t >= workout.start, t <= workout.end, point.bpm > 0 else { return nil }
+                    return AtriaHomeModel.HeartRateChartPoint(t: t, bpm: point.bpm)
+                }
+            }
+            .sorted { $0.t < $1.t }
+    }
+
+    /// Per-workout HR trace (design backlog item 6). Reuses the shared axis
+    /// chart, which auto-smooths dense windows into an average + min-max
+    /// band per the 2026-07-07 feedback.
+    @ViewBuilder
+    private var heartRateTraceCard: some View {
+        let points = heartRateTracePoints
+        if points.count >= 30 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Heart-rate trace")
+                    .font(.subheadline.weight(.semibold))
+                AtriaHeartRateAxisChart(points: points,
+                                        yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                        selectedTime: .constant(nil))
+                    .frame(height: 150)
+                    .clipped()
+                Text("Recorded strap samples during this workout.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .atriaInsetCard(tint: .red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Heart-rate trace, \(points.count) samples during this workout.")
+        }
+    }
+
     private var timesChanged: Bool {
         abs(startTime.timeIntervalSince(workout.start)) >= 60
             || abs(endTime.timeIntervalSince(workout.end)) >= 60
@@ -435,6 +477,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     AtriaPanelSectionHeader(title: "Workout",
                                             subtitle: Self.rangeText(workout))
+
+                    heartRateTraceCard
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("NAME")
