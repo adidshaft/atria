@@ -107,10 +107,10 @@ struct AtriaTrendChartCard: View {
             }
 
             if showMoreInsights {
-                AtriaTrendRangeDock(selectedRange: $range,
-                                    coverage: rangeCoverage,
-                                    tint: metric.tint)
-                    .equatable()
+                // AtriaTrendRangeDock unmounted (dedup audit 2026-07-07):
+                // it was a second control mutating the same $range as the
+                // segmented picker, with the day counts shown a third way.
+                // The struct stays for potential reuse of its coverage rail.
 
                 if periodReadout.hasEnoughSignal {
                     AtriaTrendRangeReportCard(readout: periodReadout)
@@ -574,26 +574,9 @@ private struct AtriaTrendGlanceBoard: View, Equatable {
                     .background(readout.tint.opacity(0.13), in: Capsule(style: .continuous))
             }
 
-            ZStack(alignment: .center) {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(
-                        LinearGradient(colors: [
-                            .cyan.opacity(0.14),
-                            Metrics.electricStrain.opacity(0.10)
-                        ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-
-                HStack(spacing: 0) {
-                    glanceLane(title: "Recovery", value: readout.recoveryReserve, tint: .cyan)
-                    Divider()
-                        .overlay(.secondary.opacity(0.16))
-                    glanceLane(title: "Strain", value: readout.loadPressure, tint: Metrics.electricStrain)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
-            }
-            .frame(height: 70)
-
+            // Reserve/Strain lanes removed (dedup audit 2026-07-07): the
+            // balance map is the single owner of that pair; this board keeps
+            // its unique per-metric delta gauges.
             HStack(spacing: 8) {
                 metricGauge(label: "HRV", delta: readout.hrv, tint: .cyan)
                 metricGauge(label: "RHR", delta: readout.restingHR, tint: .pink)

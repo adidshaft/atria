@@ -602,14 +602,17 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(item.segmentedLabel)",
             ".accessibilityLabel(item.menuLabel)",
             "@State private var rangeCoverage: [AtriaTrendRange: Int] = [:]",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "if periodReadout.hasEnoughSignal",
             "AtriaTrendPeriodBalanceMap(readout: periodReadout)",
             "AtriaTrendGlanceBoard(readout: periodReadout)",
             "AtriaTrendRangeReportCard(readout: periodReadout)",
             "private struct AtriaTrendGlanceBoard: View, Equatable",
-            "glanceLane(title: \"Recovery\"",
-            "glanceLane(title: \"Strain\"",
+            # 2026-07-07 dedup audit: the Recovery/Strain glance lanes were
+            # the third rendering of the reserve/load pair — the balance map
+            # owns it now; the board keeps its per-metric delta gauges.
             "metricGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "metricGauge(label: \"RHR\", delta: readout.restingHR, tint: .pink)",
             "metricGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
@@ -659,7 +662,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var periodComparisonFloor: Double",
             "private static func prepareRangeCoverage(points: [AtriaTrendPoint]",
             "rangeCoverage = Self.prepareRangeCoverage(points: points,",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "private struct AtriaTrendRangeDock: View",
             "@Binding var selectedRange: AtriaTrendRange",
             "ForEach(AtriaTrendRange.allCases) { range in",
@@ -5761,7 +5766,9 @@ class HandoffStaticChecks(unittest.TestCase):
             # subtracting `range.days`.
             "range.hasPriorPeriod",
             "previousSeries: previousSamples",
-            "AtriaTrendRangeDock(selectedRange: $range,",
+            # 2026-07-07 dedup audit: the dock (a second control bound to
+            # the same $range as the segmented picker) is unmounted; its
+            # struct remains.
             "private struct AtriaTrendRangeDock: View",
             "Label(\"Ranges\", systemImage: \"calendar.badge.clock\")",
             "rangeNode(for: range)",
@@ -5797,8 +5804,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "accessibilityLabel(assessment.accessibilityText)",
             "AtriaTrendGlanceBoard(readout: periodReadout)",
             "private struct AtriaTrendGlanceBoard: View, Equatable",
-            "glanceLane(title: \"Recovery\"",
-            "glanceLane(title: \"Strain\"",
+            # 2026-07-07 dedup audit: the Recovery/Strain glance lanes were
+            # the third rendering of the reserve/load pair — the balance map
+            # owns it now; the board keeps its per-metric delta gauges.
             "metricGauge(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "metricGauge(label: \"RHR\", delta: readout.restingHR, tint: .pink)",
             "metricGauge(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
