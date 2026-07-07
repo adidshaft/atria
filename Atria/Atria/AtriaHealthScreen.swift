@@ -220,6 +220,36 @@ struct AtriaHealthScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            // Disconnected honesty (2026-07-07 design handoff): saved rollup
+            // values are clearly labeled last-known, dimmed, and offered an
+            // inline reconnect instead of sitting under a green "Updated".
+            if isDisconnected, latestRollup != nil {
+                HStack(spacing: 10) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    if let day = latestRollup?.day {
+                        Text("Last known \u{00b7} \(day, format: .relative(presentation: .named))")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Last known")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Reconnect") {
+                        ble.startScan(reason: "health_monitor_reconnect")
+                    }
+                    .font(.caption.weight(.bold))
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
             VStack(spacing: 8) {
                 AtriaHealthMetricRow(title: "Recovery",
                                      value: recoveryValue,
@@ -290,6 +320,9 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      onTap: { metricDetail = .bloodOxygen })
             }
+            // Dimmed while disconnected: these are saved values, not a live
+            // read (paired with the last-known row above).
+            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -573,7 +606,13 @@ struct AtriaHealthScreen: View {
 
     private var statusValue: String {
         guard latestRollup != nil else { return "Learning" }
-        return "Updated"
+        // Never a green "Updated" over stale data while disconnected
+        // (2026-07-07 design handoff honesty fix).
+        return isDisconnected ? "Last known" : "Updated"
+    }
+
+    private var isDisconnected: Bool {
+        liveStore.state.status != .connected
     }
 
     private var statusTint: Color {
