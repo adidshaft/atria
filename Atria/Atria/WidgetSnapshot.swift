@@ -90,7 +90,13 @@ enum WidgetSnapshotPublisher {
     static func publish(store: SessionStore,
                         ble: AtriaBLEManager,
                         reason: String = "update") -> WidgetSnapshot {
-        let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable
+        // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
+        // volatile live BLE resting reading used to outrank the stable
+        // saved-session resting, so the first widget snapshots computed
+        // strain from a transient value (86 bpm -> 73) and flashed a wrong
+        // number until session load. Stable sources first; the live reading
+        // is only the last resort before the session_load republish.
+        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
         let validatedHRV = store.latestReferenceValidatedHRV
         let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
         let latestSleep = store.sleepHistorySnapshot.latest
