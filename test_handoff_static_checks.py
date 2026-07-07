@@ -3944,7 +3944,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Stage breakdown needs checked sleep-stage evidence; duration, RHR, HRV, and respiratory estimates stay visible while Atria learns.",
             "AtriaSleepStageBuildingSummary(night: latest)",
             "Awake, Light, REM, SWS, and Deep are not ready yet.",
-            "private struct AtriaSleepStageHypnogram: View, Equatable",
+            # 2026-07-08: de-privatized so the broader-lane sizing (user request)
+            # is render-testable.
+            "struct AtriaSleepStageHypnogram: View, Equatable",
             "Canvas { context, size in",
             "drawGuides(in: &context, size: size)",
             "drawSegments(in: &context, size: size)",

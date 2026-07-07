@@ -3879,7 +3879,7 @@ struct AtriaSleepStageSummary: View, Equatable {
 
             AtriaSleepStageHypnogram(segments: night.displayStageSegments,
                                      duration: night.duration)
-                .frame(height: 36)
+                .frame(height: 120)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
@@ -3995,7 +3995,8 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
     }
 }
 
-private struct AtriaSleepStageHypnogram: View, Equatable {
+// Internal (was private) so the broader-lane sizing is render-testable.
+struct AtriaSleepStageHypnogram: View, Equatable {
     let segments: [SleepStageSegment]
     let duration: TimeInterval
 
@@ -4025,7 +4026,9 @@ private struct AtriaSleepStageHypnogram: View, Equatable {
 
     private func drawSegments(in context: inout GraphicsContext, size: CGSize) {
         guard duration > 0, !segments.isEmpty else { return }
-        let laneHeight = max(5, min(8, size.height / 5))
+        // Broader lanes (2026-07-08, user request: ~3-4x): scale with the frame
+        // and cap so lanes stay distinct at the taller 120pt hypnogram.
+        let laneHeight = max(12, min(22, size.height / 5.5))
         var elapsed: TimeInterval = 0
         for segment in segments {
             let width = max(1, size.width * segment.duration / duration)
