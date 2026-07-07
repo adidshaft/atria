@@ -826,11 +826,13 @@ enum LocalNotificationScheduler {
 
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
         let savedTRIMP = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
-        let liveTRIMP = ble.session.first.map { first in
-            Metrics.trimp(ble.session.map { (t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
-                          rest: rest,
-                          max: store.profile.maxHR)
-        } ?? 0
+        // Perf (2026-07-08 audit): reuse the incremental accumulator (integrates
+        // only NEW samples) instead of re-mapping + re-integrating the whole
+        // live session (up to ~80k samples) on every notification evaluation.
+        // Same TRIMP math (consecutive dt is identical); both are @MainActor.
+        let liveTRIMP = WidgetSnapshotPublisher.incrementalLiveTRIMP(samples: ble.session,
+                                                                     rest: rest,
+                                                                     max: store.profile.maxHR)
         let strain = Metrics.strain(fromTRIMP: savedTRIMP + liveTRIMP)
         let guide = Coach.guide(recovery: recovery.percent, strain: strain)
         let strainDecision: NotificationDecision
