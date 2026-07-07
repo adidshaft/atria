@@ -15,6 +15,7 @@ struct AtriaActivityMonitorTab: View {
     let onAddSleep: () -> Void
 
     @State private var workoutDetail: UserConfirmedWorkout?
+    @State private var showAddWorkout = false
 
     private enum Entry: Identifiable {
         case sleep(SleepHistorySnapshot.Night)
@@ -61,7 +62,7 @@ struct AtriaActivityMonitorTab: View {
             AtriaPanelSectionHeader(title: "Activity",
                                     subtitle: "Every logged sleep, nap and workout — tap to review or adjust.")
 
-            addSleepButton
+            addActivityMenu
 
             let sections = daySections
             if sections.isEmpty {
@@ -77,20 +78,30 @@ struct AtriaActivityMonitorTab: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showAddWorkout) {
+            AtriaAddWorkoutSheet(store: store)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
-    private var addSleepButton: some View {
-        Button {
-            onAddSleep()
+    private var addActivityMenu: some View {
+        Menu {
+            Button { showAddWorkout = true } label: {
+                Label("Add workout", systemImage: "figure.run")
+            }
+            Button { onAddSleep() } label: {
+                Label("Add sleep or nap", systemImage: "bed.double.fill")
+            }
         } label: {
-            Label("Add sleep or nap", systemImage: "plus.circle.fill")
+            Label("Add activity", systemImage: "plus.circle.fill")
                 .font(.subheadline.weight(.bold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
         }
         .buttonStyle(.glassProminent)
-        .tint(Metrics.electricSleep)
-        .accessibilityHint("Opens the manual sleep editor to log a night or nap the strap missed.")
+        .tint(Metrics.electricStrain)
+        .accessibilityHint("Log a workout, or a sleep/nap the strap missed.")
     }
 
     private var emptyState: some View {
@@ -467,5 +478,116 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     private static func rangeText(_ workout: UserConfirmedWorkout) -> String {
         rangeFormatter.string(from: workout.start)
+    }
+}
+
+/// Manually log a workout for a past window the strap recorded but the detector
+/// didn't surface (e.g. a walk or dance you wore the strap for). Metrics are
+/// derived from the strap samples in that window — if there were none, it can't
+/// be saved, because Atria never invents heart rate or strain.
+private struct AtriaAddWorkoutSheet: View {
+    @ObservedObject var store: SessionStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var activityType = "Walk"
+    @State private var startTime: Date
+    @State private var endTime: Date
+    @State private var failed = false
+
+    init(store: SessionStore) {
+        self.store = store
+        let now = Date()
+        _endTime = State(initialValue: now)
+        _startTime = State(initialValue: now.addingTimeInterval(-45 * 60))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    AtriaPanelSectionHeader(title: "Add workout",
+                                            subtitle: "Log a window the strap recorded but didn't auto-detect.")
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ACTIVITY TYPE")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Menu {
+                            ForEach(AtriaActivityWorkoutDetailSheet.activityTypes, id: \.self) { type in
+                                Button(type) { activityType = type }
+                            }
+                        } label: {
+                            HStack {
+                                Text(activityType).font(.subheadline.weight(.bold))
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                            }
+                            .padding(12)
+                            .atriaInsetCard(tint: .mint)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TIME")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        VStack(spacing: 6) {
+                            DatePicker("Start", selection: $startTime, displayedComponents: [.date, .hourAndMinute])
+                            DatePicker("End", selection: $endTime, in: startTime..., displayedComponents: [.date, .hourAndMinute])
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .padding(12)
+                        .atriaInsetCard(tint: .cyan)
+                    }
+
+                    if failed {
+                        Text("No strap heart-rate data in that window, so there's nothing to build a workout from. Pick a time you were wearing the strap.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Text("Atria builds the workout from the strap samples in this window — it never invents heart rate or strain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button(action: add) {
+                        Text("Add workout")
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Metrics.electricStrain)
+                    .disabled(endTime <= startTime)
+                }
+                .padding(16)
+            }
+            .navigationTitle("Add workout")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func add() {
+        guard endTime > startTime else { return }
+        let rest = store.baseline.restingInt ?? 60
+        let result = store.confirmWorkoutWindowForUI(start: startTime,
+                                                     end: endTime,
+                                                     rest: rest,
+                                                     maxHR: store.profile.maxHR,
+                                                     source: "manual_activity_add",
+                                                     activityType: activityType)
+        if result != nil {
+            dismiss()
+        } else {
+            failed = true
+        }
     }
 }
