@@ -1280,6 +1280,27 @@ private struct AtriaVitalsPulseCardHost: View {
 
 }
 
+/// Live Vitals host for the pulse card (2026-07-07, design handoff): exposes
+/// the private AtriaVitalsPulseCardHost/AtriaPulseCard chain to
+/// AtriaHealthScreen without mounting the dead AtriaVitalsTabContent tree.
+/// The host is self-contained (loads its own historical points, Equatable
+/// card) so live-pulse ticks stay cheap.
+struct AtriaVitalsLivePulseSection: View {
+    let liveStore: AtriaHomeModel.CoreLiveStore
+    let pulseStore: AtriaHomeModel.PulseLiveStore
+    let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let store: SessionStore
+    let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
+
+    var body: some View {
+        AtriaVitalsPulseCardHost(liveStore: liveStore,
+                                 pulseStore: pulseStore,
+                                 homeStatsStore: homeStatsStore,
+                                 store: store,
+                                 pulseSparklineStore: pulseSparklineStore)
+    }
+}
+
 enum AtriaVitalsHeartRateTimeline {
     static func mergedHeartRatePoints(live: [AtriaHomeModel.HeartRateChartPoint],
                                       historical: [AtriaHomeModel.HeartRateChartPoint],
