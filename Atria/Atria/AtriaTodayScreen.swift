@@ -30,6 +30,11 @@ struct AtriaTodayScreen: View {
     let onOpenShare: () -> Void
     let onStartWorkout: () -> Void
     let onCustomizeToday: () -> Void
+    /// The workout/sleep review items, built by AtriaHomeView (which owns
+    /// their state) and rendered INSIDE the plan section — the user's strict
+    /// rule (2026-07-07): one notifications block, max 3 items (workout,
+    /// sleep, plan).
+    var systemNotifications: AnyView? = nil
     @State private var metricDetail: AtriaMetricDetailKind?
     @State private var draggingSection: AtriaTodaySection?
     // User-arranged order of the big sections below the ring (2026-07-07
@@ -281,7 +286,11 @@ struct AtriaTodayScreen: View {
     private func todaySection(_ section: AtriaTodaySection) -> some View {
         switch section {
         case .plan:
-            sectionKicker("Plan & tools")
+            sectionKicker("Today's focus")
+
+            if let systemNotifications {
+                systemNotifications
+            }
 
             if layoutConfig.showPlan {
                 AtriaTodayPlanCard(title: planTitle,
