@@ -6642,6 +6642,7 @@ struct AtriaMetricDetailSheet: View {
     // AtriaOverviewReadinessSection screens) keep compiling unchanged.
     let hrZoneMinutes: TodayHRZoneMinutes
     let maxHeartRate: Int?
+    let behaviorImpacts: [BehaviorImpactSummary]
     private let rollups: [DailyRollupStoreEntry]
     @State private var openedHistoryDay: AtriaHistoryDay?
     @State private var showChartOptions = false
@@ -6660,6 +6661,7 @@ struct AtriaMetricDetailSheet: View {
     init(metric: AtriaMetricDetailKind,
          rollups: [DailyRollupStoreEntry],
          confirmedWorkouts: [UserConfirmedWorkout] = [],
+         behaviorImpacts: [BehaviorImpactSummary] = [],
          baseline: AtriaBaselineTargetSnapshot,
          sleepHistory: SleepHistorySnapshot,
          guidance: Coach.Guidance,
@@ -6691,6 +6693,7 @@ struct AtriaMetricDetailSheet: View {
         self.vo2MaxEstimate = vo2MaxEstimate
         self.skinTemperatureDeviation = skinTemperatureDeviation
         self.rollups = rollups
+        self.behaviorImpacts = behaviorImpacts
         self.preparedHistory = AtriaPreparedMetricHistory(rollups: rollups, baseline: baseline, sleepGoalHours: sleepGoalHours)
     }
 
@@ -6775,6 +6778,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: recoveryHeroState,
                                       tint: recoveryEstimate.percent.map(Metrics.recoveryColor) ?? Metrics.electricGreen) {
                 contributorCard
+                behaviorsMoveYouCard
             } contributors: {
                 EmptyView()
             } chart: {
@@ -7991,6 +7995,27 @@ struct AtriaMetricDetailSheet: View {
                     preparedHistory.strainPrior[range] ?? [], nil)
         default:
             return nil
+        }
+    }
+
+    /// "Behaviors that move you" (design backlog item 7): the Journal's
+    /// statistically-gated behavior impacts (Welch p < 0.10, ≥5 logged and
+    /// comparison days, ≥3% effect) surfaced where the recovery number
+    /// lives. Reuses the exact rows the Journal renders — one engine.
+    @ViewBuilder
+    private var behaviorsMoveYouCard: some View {
+        if !behaviorImpacts.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Behaviors that move you")
+                    .font(.subheadline.weight(.semibold))
+                AtriaJournalBehaviorImpactRows(impacts: Array(behaviorImpacts.prefix(3)))
+                Text("From your journal tags vs next-day recovery over 90 days. Association, not proof of cause.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricGreen)
         }
     }
 
@@ -11171,7 +11196,7 @@ private struct AtriaJournalImpactStrip: View, Equatable {
     }
 }
 
-private struct AtriaJournalBehaviorImpactRows: View, Equatable {
+struct AtriaJournalBehaviorImpactRows: View, Equatable {
     let impacts: [BehaviorImpactSummary]
 
     var body: some View {

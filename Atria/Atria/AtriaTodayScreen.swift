@@ -131,6 +131,7 @@ struct AtriaTodayScreen: View {
             AtriaMetricDetailSheet(metric: detail,
                                    rollups: highlightRollups,
                                    confirmedWorkouts: debugMetricDetailWorkouts ?? store.confirmedWorkouts,
+                                   behaviorImpacts: store.behaviorImpactSummariesCache,
                                    baseline: AtriaBaselineTargetSnapshot(store.baseline),
                                    sleepHistory: store.sleepHistorySnapshot,
                                    guidance: displayHero.guidance,
