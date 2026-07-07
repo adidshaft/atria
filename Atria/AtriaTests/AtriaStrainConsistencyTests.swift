@@ -35,4 +35,18 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                  rest: 60, maxHR: 190)
         XCTAssertEqual(strains.count, 2)
     }
+    // Recovery honesty (2026-07-08 audit): unknown in-bed span must NOT read as
+    // 100% efficiency — return nil so recovery skips the sleep signal.
+    func testSleepEfficiencyNilWhenSpanUnknown() {
+        XCTAssertNil(SessionStore.sleepEfficiency(duration: 7 * 3600, span: nil))
+        XCTAssertNil(SessionStore.sleepEfficiency(duration: nil, span: 8 * 3600))
+    }
+
+    func testSleepEfficiencyComputesWhenSpanKnown() {
+        let e = SessionStore.sleepEfficiency(duration: 7 * 3600, span: 8 * 3600)
+        XCTAssertEqual(e ?? 0, 0.875, accuracy: 0.001)
+        // span shorter than duration clamps to <= 1 (never > 100%).
+        XCTAssertEqual(SessionStore.sleepEfficiency(duration: 8 * 3600, span: 7 * 3600) ?? 0, 1.0, accuracy: 0.001)
+    }
 }
+
