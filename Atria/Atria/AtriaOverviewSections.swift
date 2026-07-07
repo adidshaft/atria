@@ -6532,7 +6532,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .hrv:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
-                                      heroState: hrvBand == nil ? "Learning" : "Typical",
+                                      heroState: hrvBand == nil ? learningNightsState(baseline.hrvSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
@@ -6550,14 +6550,15 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.hrvSummary[range],
                                 comparison: preparedHistory.hrvComparison[range],
                                 baselineBand: hrvBand,
-                                accessibilitySummary: "HRV over \(range.label) with your baseline band.")
+                                accessibilitySummary: "HRV over \(range.label) with your baseline band.",
+                                emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.")
                 }
             } about: {
                 aboutDisclosure
             }
         case .restingHeartRate:
             AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
-                                      heroState: restingBand == nil ? "Learning" : "Typical",
+                                      heroState: restingBand == nil ? learningNightsState(baseline.restingSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
@@ -6575,7 +6576,8 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.restingHeartRateSummary[range],
                                 comparison: preparedHistory.restingHeartRateComparison[range],
                                 baselineBand: restingBand,
-                                accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.")
+                                accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.",
+                                emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.")
                 }
             } about: {
                 aboutDisclosure
@@ -6600,7 +6602,8 @@ struct AtriaMetricDetailSheet: View {
                                 summary: preparedHistory.respiratoryRateSummary[range],
                                 comparison: preparedHistory.respiratoryRateComparison[range],
                                 baselineBand: respiratoryBand,
-                                accessibilitySummary: "Respiratory rate over \(range.label) with your typical range.")
+                                accessibilitySummary: "Respiratory rate over \(range.label) with your typical range.",
+                                emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.")
                 }
             } about: {
                 aboutDisclosure
@@ -7123,6 +7126,16 @@ struct AtriaMetricDetailSheet: View {
     }
 
     @ViewBuilder
+    /// Honest learning-state pill: carries the real 14-night baseline
+    /// progress ("Learning \u{00b7} night 3 of 14") once a night is recorded,
+    /// so a bare "Learning" never hides how far along calibration is
+    /// (2026-07-07, design handoff).
+    private func learningNightsState(_ samples: Int) -> String {
+        guard samples > 0 else { return "Learning" }
+        let cap = PersonalBaseline.trustedMinimumSamples
+        return "Learning \u{00b7} night \(min(samples, cap)) of \(cap)"
+    }
+
     private func metricChart(title: String,
                              unit: String,
                              tint: Color,
@@ -7130,7 +7143,8 @@ struct AtriaMetricDetailSheet: View {
                              summary: AtriaDetailPeriodSummary?,
                              comparison: AtriaDetailComparisonSummary?,
                              baselineBand: AtriaDetailBaselineBand?,
-                             accessibilitySummary: String) -> some View {
+                             accessibilitySummary: String,
+                             emptyExplanation: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
@@ -7164,11 +7178,20 @@ struct AtriaMetricDetailSheet: View {
             }
 
             if points.count < 2 {
-                Text("Building trend")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 150)
-                    .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(spacing: 6) {
+                    Text("Building trend")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if let emptyExplanation {
+                        Text(emptyExplanation)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 18)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 let selectedPoint = scrubbedDay.flatMap { target in
                     points.min(by: {
