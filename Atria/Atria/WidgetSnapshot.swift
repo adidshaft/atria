@@ -152,6 +152,15 @@ enum WidgetSnapshotPublisher {
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
                                       complicationTargetPresent: widgetDiagnostics.complicationTargetPresent)
+        // Cold-start guard (2026-07-07, device-verified residual): before the
+        // deferred session load completes, day strain computes from zero saved
+        // TRIMP and would overwrite last run's good snapshot with an
+        // under-report (0.0 -> real over ~4s on device). Compute and return,
+        // but don't persist -- the session_load republish writes the real one.
+        if !store.hasLoadedSavedSessions {
+            AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=session_load", reason)
+            return snapshot
+        }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
             let defaults = widgetDiagnostics.appGroupEnabled
                 ? (UserDefaults(suiteName: appGroupID) ?? .standard)
