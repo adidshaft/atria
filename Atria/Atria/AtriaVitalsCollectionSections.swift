@@ -81,6 +81,7 @@ struct AtriaVitalsTabContent: View {
             AtriaMetricDetailSheet(metric: detail,
                                    rollups: store.dailyRollupHistory,
                                    confirmedWorkouts: store.confirmedWorkouts,
+                                   behaviorImpacts: store.behaviorImpactSummariesCache,
                                    baseline: AtriaBaselineTargetSnapshot(store.baseline),
                                    sleepHistory: store.sleepHistorySnapshot,
                                    guidance: healthMonitorGuidance,
