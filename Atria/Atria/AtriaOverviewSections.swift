@@ -3857,6 +3857,9 @@ struct AtriaWeeklyReportSheet: View {
                     .padding(16)
                     .atriaInsetCard(cornerRadius: 18, tint: .cyan)
 
+                    // Grouped stat rows (UX audit density tail): six identical
+                    // boxes read as a wall; two kickers give the eye a rest.
+                    reportKicker("Week averages")
                     VStack(spacing: 10) {
                         AtriaWeeklyReportStatRow(title: "Recovery average",
                                                  value: recoveryAverageText,
@@ -3873,6 +3876,10 @@ struct AtriaWeeklyReportSheet: View {
                                                  detail: "Nightly duration across the week",
                                                  systemImage: "bed.double.fill",
                                                  tint: Metrics.electricSleep)
+                    }
+
+                    reportKicker("Highlights")
+                    VStack(spacing: 10) {
                         AtriaWeeklyReportStatRow(title: "Sleep consistency",
                                                  value: consistencyText,
                                                  detail: "Bedtime routine from daily rollups",
@@ -3927,6 +3934,15 @@ struct AtriaWeeklyReportSheet: View {
                     .presentationDragIndicator(.visible)
             }
         }
+    }
+
+    private func reportKicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private var heroText: String {
