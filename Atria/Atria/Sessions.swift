@@ -16909,7 +16909,9 @@ struct SessionDetail: View {
     init(session: SavedSession) {
         self.session = session
         self.displayedPoints = Self.downsampledPoints(session.points)
-        self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)
+        self.summary = SessionDetailSummary(session: session,
+                                            rest: PersonalBaseline.load().restingInt ?? 60,
+                                            maxHR: AthleteProfile.load().maxHR)
     }
 
     var body: some View {
@@ -16980,14 +16982,18 @@ private struct SessionDetailSummary {
     let zoneRows: [TimeInZoneRow]
     let zoneTotal: Double
 
-    init(session: SavedSession, maxHR: Int) {
+    init(session: SavedSession, rest: Int, maxHR: Int) {
         resting = session.resting
         average = session.avg
         peak = session.peak
-        let resolvedMaxHR = max(maxHR, session.restingStable + 1)
+        // Strain uses the SAME baseline rest + profile maxHR as the day/trend
+        // rollups (2026-07-08 consistency audit) so a workout's strain
+        // reconciles everywhere. It previously used session.restingStable +
+        // a re-clamped max, which diverged from every rollup for the same
+        // workout. Zones keep a clamped max (they need max > rest).
         strainText = String(format: "%.1f",
-                            Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable,
-                                                                     max: resolvedMaxHR)))
+                            Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)))
+        let resolvedMaxHR = max(maxHR, rest + 1)
         let zoneMap = session.timeInZone(maxHR: resolvedMaxHR)
         zoneRows = HRZone.allCases.compactMap { zone in
             guard let seconds = zoneMap[zone], seconds > 0 else { return nil }
