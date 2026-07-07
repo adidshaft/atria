@@ -6924,6 +6924,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: strainHeroState,
                                       tint: Metrics.electricStrain) {
                 strainWorkoutSection
+                strainZoneHistogramCard
             } contributors: {
                 AtriaMetricContributorRows(rows: strainContributorRows, tint: Metrics.electricStrain)
             } chart: {
@@ -7467,6 +7468,59 @@ struct AtriaMetricDetailSheet: View {
     private var todayHighZoneMinutesText: String {
         let minutes = Int((todayHighZoneSeconds / 60).rounded())
         return minutes > 0 ? "\(minutes)m" : "--"
+    }
+
+    /// Today's time-in-zones across confirmed workouts, keyed by HRZone.
+    /// Only real recorded zone seconds — no zone data, no bar.
+    private var todayZoneHistogram: [(zone: HRZone, minutes: Double)] {
+        let totals = todayConfirmedWorkouts.reduce(into: [String: TimeInterval]()) { partial, workout in
+            for (key, seconds) in workout.zoneSeconds ?? [:] {
+                partial[key, default: 0] += seconds
+            }
+        }
+        let keyByZone: [HRZone: String] = [.rest: "rest", .warmup: "warmup", .fatBurn: "fatBurn",
+                                           .aerobic: "aerobic", .anaerobic: "anaerobic", .max: "max"]
+        return HRZone.allCases.compactMap { zone in
+            guard let seconds = keyByZone[zone].flatMap({ totals[$0] }), seconds >= 30 else { return nil }
+            return (zone: zone, minutes: seconds / 60)
+        }
+    }
+
+    /// Strain time-in-zones histogram (design backlog item 5): minutes per
+    /// percent-of-max zone across today's confirmed workouts.
+    @ViewBuilder
+    private var strainZoneHistogramCard: some View {
+        let histogram = todayZoneHistogram
+        if !histogram.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Today in zones")
+                    .font(.subheadline.weight(.semibold))
+
+                Chart(histogram, id: \.zone) { entry in
+                    BarMark(x: .value("Zone", "Z\(entry.zone.rawValue)"),
+                            y: .value("Minutes", entry.minutes))
+                        .foregroundStyle(entry.zone.color.opacity(0.85))
+                        .cornerRadius(4)
+                        .annotation(position: .top, spacing: 2) {
+                            Text("\(Int(entry.minutes.rounded()))m")
+                                .font(.caption2.weight(.bold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                }
+                .chartYAxis(.hidden)
+                .frame(height: 110)
+                .clipped()
+
+                Text("Minutes per heart-rate zone across today's workouts. Zones use your percent-of-max bands.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Time in zones today. " + histogram.map { "Zone \($0.zone.rawValue), \(Int($0.minutes.rounded())) minutes" }.joined(separator: ". ") + ".")
+        }
     }
 
     private var strainWorkoutSection: some View {
