@@ -1819,6 +1819,14 @@ struct AggregateSleepCandidate {
     static let strictMinimumDuration: TimeInterval = 3 * 60 * 60
     static let fragmentedMinimumDuration: TimeInterval = 2.5 * 60 * 60
     static let fragmentedMinimumSpan: TimeInterval = 3 * 60 * 60
+    /// A brief strap dropout between two clearly-asleep low-HR sessions almost
+    /// certainly happened while still asleep, so gaps up to this length are
+    /// credited toward sleep duration rather than lost -- otherwise a night with
+    /// a few momentary sensor blips reads as minutes instead of hours (the
+    /// "slept 3-4h, showed 54m" case). Longer gaps stay excluded: there is no
+    /// evidence of sleep across an hours-long unmeasured stretch (e.g. the strap
+    /// battery died), so Atria never fabricates it.
+    static let briefSleepGapCreditMax: TimeInterval = 20 * 60
 
     let kind: String
     let day: Date
@@ -11033,11 +11041,19 @@ final class SessionStore: ObservableObject {
                                               rest: rest,
                                               calendar: calendar)
             return clusters.compactMap { cluster -> AggregateSleepCandidate? in
-                let totalDuration = cluster.reduce(0) { $0 + $1.duration }
+                let capturedDuration = cluster.reduce(0) { $0 + $1.duration }
                 let gaps = zip(cluster, cluster.dropFirst()).map { previous, next in
                     max(0, next.start.timeIntervalSince(previous.end))
                 }
                 let maxGap = gaps.max() ?? 0
+                // Credit brief between-session dropouts (<= 20 min) toward sleep:
+                // these sit between two clearly-asleep low-HR sessions in the
+                // overnight window, so they were almost certainly still-asleep
+                // time lost to a momentary strap blip. Long gaps stay excluded.
+                let briefGapCredit = gaps
+                    .filter { $0 <= AggregateSleepCandidate.briefSleepGapCreditMax }
+                    .reduce(0, +)
+                let totalDuration = capturedDuration + briefGapCredit
 
                 let allHR = cluster.flatMap(\.bpms)
                 guard !allHR.isEmpty, let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
