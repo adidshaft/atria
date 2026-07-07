@@ -361,6 +361,55 @@ enum AtriaResearchUploadQueue {
         return nowMin >= startMin || nowMin < endMin
     }
 
+    /// The sharing rule as one pure, testable decision (2026-07-08, user
+    /// request): transmit ONLY while the wearer is asleep OR not actively
+    /// using the phone — and only when opted in, with data to send, and
+    /// without spending a low battery unless charging. `withinSleepWindow`
+    /// comes from `isWithinSleepWindow`; `phoneIdle` from the app's
+    /// foreground / last-interaction state (supplied by the caller). This
+    /// decides only WHEN a transmit attempt runs; an unconfigured endpoint
+    /// still just queues locally, so nothing is fabricated or force-sent.
+    enum TransmitDecision: Equatable {
+        /// reason ∈ { "sleep_window", "phone_idle" }
+        case eligible(reason: String)
+        /// reason ∈ { "sharing_off", "nothing_pending", "low_battery", "phone_in_use" }
+        case hold(reason: String)
+
+        var isEligible: Bool {
+            if case .eligible = self { return true }
+            return false
+        }
+
+        var reason: String {
+            switch self {
+            case .eligible(let reason), .hold(let reason): return reason
+            }
+        }
+    }
+
+    /// Below this phone-battery fraction, hold background sharing unless the
+    /// phone is charging (P4 battery care).
+    static let lowBatteryHoldFraction = 0.20
+
+    static func transmissionEligibility(optedIn: Bool,
+                                        hasPending: Bool,
+                                        withinSleepWindow: Bool,
+                                        phoneIdle: Bool,
+                                        batteryFraction: Double,
+                                        isCharging: Bool) -> TransmitDecision {
+        guard optedIn else { return .hold(reason: "sharing_off") }
+        guard hasPending else { return .hold(reason: "nothing_pending") }
+        // Negative battery = unknown (monitoring off): the battery guard fails
+        // OPEN so an unknown reading never blocks — the sleep/idle guard below
+        // still governs. A known low battery while unplugged holds.
+        if batteryFraction >= 0, batteryFraction < lowBatteryHoldFraction, !isCharging {
+            return .hold(reason: "low_battery")
+        }
+        if withinSleepWindow { return .eligible(reason: "sleep_window") }
+        if phoneIdle { return .eligible(reason: "phone_idle") }
+        return .hold(reason: "phone_in_use")
+    }
+
     private static func dayKey(for date: Date, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
         return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
