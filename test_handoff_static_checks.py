@@ -817,7 +817,10 @@ class HandoffStaticChecks(unittest.TestCase):
             'Button(action: onShowStrap) {',
             'Button(action: onShowAssistant) {',
             'AtriaToolbarIcon(symbol: "applewatch.radiowaves.left.and.right")',
-            '"Coming Soon!"',
+            # 2026-07-08 user-directed: the Assistant is implemented
+            # (AtriaAssistantScreen — deterministic Q&A + opt-in coach card);
+            # the Coming Soon placeholder is gone.
+            'AtriaAssistantScreen(store: store,',
             ".tabBarMinimizeBehavior(.onScrollDown)",
             ".tabViewBottomAccessory",
             ".padding(.bottom, scrollBottomClearance)",

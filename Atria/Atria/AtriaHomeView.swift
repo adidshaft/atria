@@ -815,12 +815,25 @@ struct AtriaHomeView: View {
                 }
             }
         }
-        // Assistant moved out of the bottom bar (it's still "Coming Soon"); it
-        // now opens from a top-right icon, mirroring how Strap is presented.
+        // Assistant implemented (2026-07-07, user-directed): deterministic
+        // Q&A from the app's own engines + the opt-in provider coach card.
         .fullScreenCover(isPresented: $showAssistant) {
             NavigationStack {
                 ScrollView {
-                    chatComingSoonContent
+                    AtriaAssistantScreen(store: store,
+                                         context: assistantCoachContext,
+                                         coachPayload: assistantCoachPayload,
+                                         aiCoachSettings: aiCoachSettings,
+                                         aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                         onAICoachSettingsChange: { aiCoachSettings = $0 },
+                                         onSaveAICoachAPIKey: { key in
+                                             AtriaCoachKeychain.saveAPIKey(key, provider: aiCoachSettings.cloudProvider)
+                                             aiCoachHasAPIKey = true
+                                         },
+                                         onDeleteAICoachAPIKey: {
+                                             AtriaCoachKeychain.deleteAPIKey(provider: aiCoachSettings.cloudProvider)
+                                             aiCoachHasAPIKey = false
+                                         })
                 }
                 .scrollContentBackground(.hidden)
                 .background {
@@ -2120,28 +2133,32 @@ struct AtriaHomeView: View {
 #endif
     }
 
-    private var chatComingSoonContent: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 44, weight: .semibold))
-                .foregroundStyle(.tint)
-                .padding(.top, 48)
-            Text("ATRIA Intelligent Assistant")
-                .font(.title2.weight(.bold))
-            Text("Coming Soon!")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Ask your recovery, sleep and strain anything — answered from your own data, on this phone.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
-        .atriaCard()
-        .padding(.horizontal, 16)
+    /// Context for the Assistant's deterministic answers — the same hero
+    /// state the Today screen feeds its coach card.
+    private var assistantCoachContext: AtriaCoachContext {
+        let hero = model.heroStore.state
+        return AtriaCoachContext(guidance: hero.guidance,
+                                 strain: hero.strain,
+                                 recoveryText: hero.recoveryValue,
+                                 hrvText: hero.hrvValue,
+                                 stressText: hero.stressValue,
+                                 baselineSamples: hero.baselineSamples,
+                                 sessionsCount: hero.sessionsCount)
     }
+
+    /// Built on demand — the assistant cover opens rarely, so a fresh
+    /// last-7 payload is fine (same builder + baselines as the Today card).
+    private var assistantCoachPayload: AtriaCoachPayload? {
+        AtriaCoachPayload.fromRollups(rollups: Array(store.dailyRollupHistory.prefix(7)),
+                                      fallback: assistantCoachContext,
+                                      baselines: [
+                                          "recovery": .init(low: 0, high: 100),
+                                          "strain": .init(low: 0, high: model.heroStore.state.guidance.target ?? 20),
+                                          "hrv": .init(low: nil, high: nil),
+                                          "rhr": .init(low: nil, high: nil)
+                                      ])
+    }
+
 
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
