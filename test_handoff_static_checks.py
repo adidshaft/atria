@@ -6218,7 +6218,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".background(.cyan.opacity(0.10), in: Capsule())",
             ".font(.headline.weight(.bold).monospacedDigit())",
             "private struct AtriaJournalImpactBar: View, Equatable",
-            'Label("Impact", systemImage: "waveform.path.ecg")',
+            # 2026-07-08: the inner 'Impact' header was removed (it duplicated
+            # the outer 'Impacts' card header — card-in-card de-dup).
             "GeometryReader { proxy in",
             "let center = width / 2",
             "summary.impactProgress",

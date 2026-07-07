@@ -11311,20 +11311,10 @@ private struct AtriaJournalImpactStrip: View, Equatable {
     }
 
     var body: some View {
+        // The inner "Impact" + day-count header was removed (2026-07-08 UX
+        // audit: it duplicated the outer "Impacts" card's title and day chip,
+        // reading as a card-in-card). Contents promote straight up.
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                Label("Impact", systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                Text(taggedDays > 0 ? "\(taggedDays)d logged" : "learning")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.055), in: Capsule())
-            }
-
             if behaviorImpacts.isEmpty && summaries.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "tag.circle")
