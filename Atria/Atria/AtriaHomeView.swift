@@ -2333,11 +2333,13 @@ struct AtriaHomeView: View {
 
 
     private var overviewContent: some View {
-        VStack(spacing: 18) {
-            if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
-                overviewSystemBanners
-            }
-
+        // One notifications block (user's strict rule, 2026-07-07): the
+        // workout item, sleep item, and plan card render together inside
+        // AtriaTodayScreen's plan section, under the ring. State and actions
+        // stay here; only the rendering location moved. Max 3 items: the
+        // workout banners are mutually exclusive and the sleep section shows
+        // at most one surface.
+        let todayNotifications = AnyView(Group {
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
                     workoutDetectionPrompt = nil
@@ -2368,10 +2370,13 @@ struct AtriaHomeView: View {
                 AtriaWorkoutReviewHoldBanner(state: holdState)
             }
 
-            // Morning sleep decision surfaces (detected-sleep review card +
-            // auto-logged banner) lead the Today scroll so the first screen
-            // behaves like a decision point (2026-07-07, design handoff).
             AtriaTodaySleepReviewSection(store: store)
+        })
+
+        return VStack(spacing: 18) {
+            if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
+                overviewSystemBanners
+            }
 
             AtriaTodayScreen(statusStore: model.statusStore,
                              liveStore: model.coreLiveStore,
@@ -2434,7 +2439,8 @@ struct AtriaHomeView: View {
                              },
                              onCustomizeToday: {
                                  showCustomizeSheet = true
-                             })
+                             },
+                             systemNotifications: todayNotifications)
 
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners

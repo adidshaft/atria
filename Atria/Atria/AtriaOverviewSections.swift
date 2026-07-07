@@ -1099,6 +1099,17 @@ struct AtriaTodaySleepReviewSection: View {
     }
 
     private var hasPendingReview: Bool {
+        #if DEBUG
+        // The host's own screenshot fixture injects a pending night that the
+        // real store doesn't know about -- honor it here too, or the fixture
+        // renders nothing (caught by the screenshot loop, 2026-07-07).
+        let arguments = ProcessInfo.processInfo.arguments
+        if let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture"),
+           arguments.indices.contains(arguments.index(after: fixtureIndex)),
+           ["pending-sleep-review", "pending-sleep-provisional-recovery"].contains(arguments[arguments.index(after: fixtureIndex)]) {
+            return true
+        }
+        #endif
         if let latest = store.sleepHistorySnapshot.latest, !latest.confirmed { return true }
         return store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
                                                  source: "today_sleep_section_gate") != nil
