@@ -1096,7 +1096,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct AtriaHeartRateAxisChart: View, Equatable",
             "let yDomain: ClosedRange<Int>",
             "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain",
-            "AreaMark(x: .value(\"Time\", point.t),\n                     yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                     yEnd: .value(\"BPM\", point.bpm))",
+            # 2026-07-07: the raw-line marks moved inside the smoothed/raw
+            # branch (HR smoothing, user feedback) — indentation deepened.
+            "AreaMark(x: .value(\"Time\", point.t),\n                             yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                             yEnd: .value(\"BPM\", point.bpm))",
             ".chartXAxis",
             ".chartYAxis",
             ".chartXSelection(value: $selectedTime)",

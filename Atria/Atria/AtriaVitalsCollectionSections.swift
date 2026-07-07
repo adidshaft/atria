@@ -2886,25 +2886,93 @@ struct AtriaHeartRateExplorer: View {
     }
 }
 
+/// One smoothed time bucket of the raw ~1 Hz heart-rate stream: the real
+/// min/max ceiling-and-floor plus the average — the user's requested
+/// treatment for dense HR windows ("such a dense graph is just a scribble").
+struct AtriaHeartRateBucket: Equatable, Identifiable {
+    let id: Date
+    let t: Date
+    let average: Double
+    let minBPM: Int
+    let maxBPM: Int
+}
+
 struct AtriaHeartRateAxisChart: View, Equatable {
     let points: [AtriaHomeModel.HeartRateChartPoint]
     let yDomain: ClosedRange<Int>
     @Binding var selectedTime: Date?
+    /// Precomputed at init (never in body): non-nil when the window is dense
+    /// enough that the raw line reads as noise.
+    private let buckets: [AtriaHeartRateBucket]?
+
+    init(points: [AtriaHomeModel.HeartRateChartPoint],
+         yDomain: ClosedRange<Int>,
+         selectedTime: Binding<Date?>) {
+        self.points = points
+        self.yDomain = yDomain
+        self._selectedTime = selectedTime
+        self.buckets = Self.smoothedBuckets(points: points)
+    }
+
+    /// ~72 buckets across the window once the raw stream exceeds 150 samples;
+    /// below that the raw line is already legible. Each bucket keeps the REAL
+    /// min/max and average of its samples — nothing synthesized.
+    static func smoothedBuckets(points: [AtriaHomeModel.HeartRateChartPoint],
+                                targetBuckets: Int = 72) -> [AtriaHeartRateBucket]? {
+        guard points.count > 150,
+              let first = points.first?.t,
+              let last = points.last?.t,
+              last > first else { return nil }
+        let span = last.timeIntervalSince(first)
+        let width = span / Double(targetBuckets)
+        var grouped: [Int: [Int]] = [:]
+        for point in points {
+            let index = min(targetBuckets - 1, Int(point.t.timeIntervalSince(first) / width))
+            grouped[index, default: []].append(point.bpm)
+        }
+        return grouped.keys.sorted().compactMap { index in
+            guard let bpms = grouped[index], !bpms.isEmpty else { return nil }
+            let center = first.addingTimeInterval((Double(index) + 0.5) * width)
+            return AtriaHeartRateBucket(id: center,
+                                        t: center,
+                                        average: Double(bpms.reduce(0, +)) / Double(bpms.count),
+                                        minBPM: bpms.min() ?? 0,
+                                        maxBPM: bpms.max() ?? 0)
+        }
+    }
 
     static func == (lhs: AtriaHeartRateAxisChart, rhs: AtriaHeartRateAxisChart) -> Bool {
         lhs.points == rhs.points && lhs.yDomain == rhs.yDomain
     }
 
     var body: some View {
-        Chart(points) { point in
-            AreaMark(x: .value("Time", point.t),
-                     yStart: .value("Visible floor", yDomain.lowerBound),
-                     yEnd: .value("BPM", point.bpm))
-                .interpolationMethod(.catmullRom)
-                .foregroundStyle(.red.opacity(0.12).gradient)
-            LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
-                .interpolationMethod(.catmullRom)
-                .foregroundStyle(.red.gradient)
+        Chart {
+            if let buckets {
+                // Smoothed mode: real min-max ceiling/floor band + average.
+                ForEach(buckets) { bucket in
+                    AreaMark(x: .value("Time", bucket.t),
+                             yStart: .value("Min", bucket.minBPM),
+                             yEnd: .value("Max", bucket.maxBPM))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(.red.opacity(0.16))
+                    LineMark(x: .value("Time", bucket.t),
+                             y: .value("BPM", bucket.average))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(.red.gradient)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
+                }
+            } else {
+                ForEach(points) { point in
+                    AreaMark(x: .value("Time", point.t),
+                             yStart: .value("Visible floor", yDomain.lowerBound),
+                             yEnd: .value("BPM", point.bpm))
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(.red.opacity(0.12).gradient)
+                    LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(.red.gradient)
+                }
+            }
             if let selectedTime {
                 RuleMark(x: .value("Selected", selectedTime))
                     .foregroundStyle(.secondary.opacity(0.55))
