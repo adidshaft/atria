@@ -456,7 +456,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
             # added by the design-handoff chart-language pass.
-            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison))",
+            # 2026-07-07 (loop 3): domain also covers the dashed
+            # prior-period ghost series.
+            ".chartYScale(domain: chartDomain(points: points, baselineBand: baselineBand, comparison: comparison, priorPointsForDomain: priorPoints))",
             # 2026-07-07: signature gained the optional comparison param (same
             # chart-language pass as the .chartYScale pin above).
             "private func chartDomain(points: [AtriaDetailChartPoint],",
@@ -3839,8 +3841,11 @@ class HandoffStaticChecks(unittest.TestCase):
             ".atriaGlassSelectable(selected: isSelected, tint: .cyan)",
             ".accessibilityValue(isSelected ? \"Selected\" : \"Not selected\")",
             ".onAppear(perform: applyInferredTypeIfNeeded)",
-            ".onChange(of: start) { _, _ in applyInferredTypeIfNeeded() }",
-            ".onChange(of: end) { _, _ in applyInferredTypeIfNeeded() }",
+            # 2026-07-07: the onChange handlers also clear the new inline
+            # save-failure state, so the literal is now multi-line.
+            ".onChange(of: start) { _, _ in",
+            "applyInferredTypeIfNeeded()",
+            ".onChange(of: end) { _, _ in",
             "private func applyInferredTypeIfNeeded()",
             "guard !typeWasManuallyEdited else { return }",
             "DatePicker(\"Start\"",

@@ -3437,6 +3437,10 @@ final class SessionStore: ObservableObject {
     private var cachedTodayTRIMP: (rest: Int, maxHR: Int, value: Double)?
     private var cachedCurrentCollectionStatus: (evaluatedAt: Date, status: CurrentCollectionStatus)?
     private var hasCompletedDeferredSessionLoad = false
+    /// Readonly view of the deferred-load state for publishers that must not
+    /// overwrite good persisted data with pre-load partials (widget snapshot
+    /// cold-start guard, 2026-07-07).
+    var hasLoadedSavedSessions: Bool { hasCompletedDeferredSessionLoad }
     private var pendingDeferredSessionBackupArguments: [String]?
     private var historySnapshotRevision = 0
     private var overviewTrendPointsRevision = 0
@@ -9070,6 +9074,15 @@ final class SessionStore: ObservableObject {
                 return total + Swift.max(0, overlapEnd.timeIntervalSince(overlapStart))
             }
         let duration = Swift.min(span, sensorCovered)
+        // Fail closed instead of silently saving a zero-length sleep: a
+        // user-adjusted window with less than the nap-minimum of sensor
+        // coverage used to persist duration=0 with no error (2026-07-07).
+        guard duration >= AggregateSleepCandidate.napMinimumDuration else {
+            AtriaDebugLog("ATRIADBG sleep_adjust status=rejected reason=insufficient_sensor_coverage covered_s=%.0f span_s=%.0f",
+                          sensorCovered,
+                          span)
+            return nil
+        }
         // Keep the re-derived sensor stages: a non-manual source plus an
         // hr_only / motion-validated confidence marks the timeline as
         // sensor-research rather than a manual estimate (see
@@ -14859,14 +14872,15 @@ struct HistoryView: View {
                                   evidenceNight: adjustment,
                                   evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                  baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                _ = store.adjustSleepNight(originalStart: adjustment.start,
-                                           originalEnd: adjustment.end,
-                                           newStart: start,
-                                           newEnd: end,
-                                           isNap: isNap,
-                                           rest: store.baseline.restingInt ?? 60,
-                                           source: "history_sleep_review_adjust")
-                adjustmentNight = nil
+                let saved = store.adjustSleepNight(originalStart: adjustment.start,
+                                                   originalEnd: adjustment.end,
+                                                   newStart: start,
+                                                   newEnd: end,
+                                                   isNap: isNap,
+                                                   rest: store.baseline.restingInt ?? 60,
+                                                   source: "history_sleep_review_adjust") != nil
+                if saved { adjustmentNight = nil }
+                return saved
             }
         }
     }

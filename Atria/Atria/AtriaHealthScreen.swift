@@ -64,7 +64,8 @@ struct AtriaHealthScreen: View {
                                         workouts: store.confirmedWorkouts,
                                         sleeps: store.confirmedSleeps,
                                         workoutsRevision: store.confirmedWorkoutsRevision,
-                                        detectionsRevision: detectionsRevision)
+                                        detectionsRevision: detectionsRevision,
+                                        store: store)
                         .equatable()
                 }
             }
