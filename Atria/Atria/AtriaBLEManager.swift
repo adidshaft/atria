@@ -674,7 +674,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let lowBatteryReconnectRearmedAt = "atria.strapStream.lowBatteryReconnectRearmedAt"
         static let accessibilityLabel = "atria.strapStream.accessibilityLabel"
     }
-    private static let lowBatteryBroadcastShutoffThreshold = 15
+    // Straps keep broadcasting valid HR well below 15%, and forfeiting capture
+    // that high loses hours of overnight sleep data. Only enter the shutoff /
+    // reconnect-suppression path near true depletion so a strap still emitting
+    // HR at 6-14% keeps getting reconnected. Reduced-detail UI messaging still
+    // starts at lowBatteryWarningThreshold (25%).
+    private static let lowBatteryBroadcastShutoffThreshold = 5
     private static let lowBatteryWarningThreshold = 25
     private static let staleHeartRatePacketThreshold: TimeInterval = 120
     enum HRContinuityDefaults {
@@ -1286,7 +1291,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let activeJournalFreshnessFlushCeiling: TimeInterval = 75
     private let activeJournalMaxAge: TimeInterval = 18 * 60 * 60
     private let activeJournalMaxSamples = 90_000
-    private let activeJournalSegmentGapLimit: TimeInterval = 30
+    // At reduced-detail low-battery cadence, accepted-HR gaps can legitimately
+    // exceed 30s without a real dropout. Rolling a fresh liveSessionID that
+    // eagerly fragments one night into many short segments, which then fail
+    // sleep aggregation. Keep brief low-battery blips inside one segment; this
+    // only affects segmentation and invents no samples.
+    private let activeJournalSegmentGapLimit: TimeInterval = 90
     private var activeJournalDirtySamples = 0
     private var activeJournalSaveInFlight = false
     private var activeJournalPendingSave = false
