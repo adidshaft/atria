@@ -8683,7 +8683,9 @@ class HandoffStaticChecks(unittest.TestCase):
             (health, 'AtriaHealthMetricRow(title: "Respiration",'),
             (strap, "struct AtriaStrapScreen: View"),
             (strap, 'Text("Strap")'),
-            (strap, 'AtriaStrapStatusRow(title: "Connection",'),
+            # 2026-07-07 dedup audit: the Connection row duplicated the
+            # state hero's value+detail verbatim and was removed.
+            (strap, 'connectionHero'),
             (strap, 'AtriaStrapStatusRow(title: "Battery",'),
             (strap, 'AtriaStrapStatusRow(title: "Mode",'),
             (strap, 'AtriaStrapStatusRow(title: "Session",'),

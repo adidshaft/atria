@@ -37,11 +37,9 @@ struct AtriaStrapScreen: View {
             connectionHero
 
             VStack(spacing: 8) {
-                AtriaStrapStatusRow(title: "Connection",
-                                    value: connectionValue,
-                                    detail: connectionDetail,
-                                    systemImage: connectionSymbol,
-                                    tint: connectionTint)
+                // Connection row removed (dedup audit 2026-07-07): the
+                // state-differentiated hero above renders the identical
+                // value + detail strings; the row added nothing.
                 AtriaStrapStatusRow(title: "Battery",
                                     value: coreLiveStore.state.batteryText,
                                     detail: coreLiveStore.state.batteryChargeCompactText,
@@ -168,11 +166,9 @@ struct AtriaStrapScreen: View {
         switch displayStatus {
         case .connected:
             HStack(spacing: 12) {
-                Image(systemName: "sensor.tag.radiowaves.forward.fill")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Metrics.electricGreen)
-                    .frame(width: 44, height: 44)
-                    .background(Metrics.electricGreen.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                // The state-driven symbol the removed Connection row used —
+                // the hero now owns it (dedup audit 2026-07-07).
+                heroStatusIcon(systemImage: connectionSymbol, tint: Metrics.electricGreen)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(primaryState)
                         .font(.headline.weight(.bold))
@@ -183,15 +179,8 @@ struct AtriaStrapScreen: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                if coreLiveStore.state.batteryLevel >= 0 {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(coreLiveStore.state.batteryText)
-                            .font(.headline.weight(.bold).monospacedDigit())
-                        Text("Battery")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                // Battery block removed from the hero (dedup audit): the
+                // Battery status row below owns the value + charging detail.
             }
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricGreen)
@@ -252,6 +241,14 @@ struct AtriaStrapScreen: View {
         }
     }
 
+    private func heroStatusIcon(systemImage: String, tint: Color) -> some View {
+        Image(systemName: systemImage)
+            .font(.title3.weight(.bold))
+            .foregroundStyle(tint)
+            .frame(width: 44, height: 44)
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -267,14 +264,8 @@ struct AtriaStrapScreen: View {
 
                 Spacer(minLength: 8)
 
-                Text(primaryState)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(connectionTint)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(connectionTint.opacity(0.12), in: Capsule(style: .continuous))
-                    .fixedSize()
-                    .layoutPriority(1)
+                // Header state capsule removed (dedup audit): primaryState
+                // renders as the hero headline one card below.
             }
 
             Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")
