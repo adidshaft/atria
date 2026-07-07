@@ -2928,6 +2928,9 @@ struct AtriaHeartRateExplorer: View {
                             }
                             .onEnded { _ in pinchAnchorIndex = nil }
                     )
+                    // Tactile detent each time zoom crosses a window level, from
+                    // either pinch or slider (2026-07-08, native feel).
+                    .sensoryFeedback(.selection, trigger: currentWindow)
 
                 VStack(spacing: 6) {
                     HStack {
