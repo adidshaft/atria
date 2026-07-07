@@ -44,6 +44,14 @@ struct AtriaHealthScreen: View {
                                              isLoading: isLoadingHistoricalHeartRatePoints)
             } else {
                 VStack(spacing: 12) {
+                    // Live pulse card leads Vitals (2026-07-07, design
+                    // handoff): current bpm, session stats, resting zone,
+                    // and the tappable heart-rate timeline.
+                    AtriaVitalsLivePulseSection(liveStore: liveStore,
+                                                pulseStore: pulseStore,
+                                                homeStatsStore: homeStatsStore,
+                                                store: store,
+                                                pulseSparklineStore: pulseSparklineStore)
                     healthMonitorCard
                     sleepDetailCard
                     trendsCard
