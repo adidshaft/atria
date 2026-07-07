@@ -3913,8 +3913,8 @@ private struct AtriaSleepNightRow: View, Equatable {
                     Text("\(night.stageEvidence.label) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · REM \(night.stageText(.rem)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.cyan)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 

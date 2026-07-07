@@ -964,27 +964,38 @@ private struct AtriaSleepReviewCard: View {
     }
 
     private var sleepReviewActionButtons: some View {
-        HStack(spacing: 8) {
+        // UX audit 2026-07-07: three icon+text labels at ~98pt each cropped
+        // ("Confirm sle..."). Adjust/Dismiss drop to title-only (pinned Label
+        // lines kept); Confirm keeps its icon with a readable scale guard;
+        // spacing widened for tap separation.
+        HStack(spacing: 10) {
             Button(action: onConfirm) {
-                Label(isNap ? "Confirm nap" : "Confirm sleep", systemImage: "checkmark.circle")
+                // "Confirm" alone — the card title already names what is
+                // being confirmed, and the full phrase cropped at a third of
+                // the card width (UX audit follow-up).
+                Label("Confirm", systemImage: "checkmark.circle")
                     .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(tint: Metrics.electricSleep)
+            .accessibilityLabel(isNap ? "Confirm nap" : "Confirm sleep")
             .accessibilityHint("Saves this detected \(isNap ? "nap" : "sleep") to your local history.")
 
             Button(action: onAdjust) {
                 Label("Adjust", systemImage: "slider.horizontal.3")
+                    .labelStyle(.titleOnly)
                     .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
             .accessibilityHint("Change the time window or save this as sleep or nap.")
 
             Button(action: onDismiss) {
                 Label("Dismiss", systemImage: "xmark.circle")
+                    .labelStyle(.titleOnly)
                     .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(prominent: false, tint: .secondary)
             .accessibilityHint("Dismisses this review without saving it.")
@@ -7598,10 +7609,12 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                     .background(AtriaIconTileBackground(cornerRadius: 10, tint: Metrics.electricStrain))
 
                 VStack(alignment: .leading, spacing: 2) {
+                    // HealthKit-style names ("High Intensity Interval
+                    // Training") wrap instead of cropping (UX audit).
                     Text(title)
                         .font(.subheadline.weight(.bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(timeText)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
