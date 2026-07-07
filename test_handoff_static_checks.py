@@ -3182,7 +3182,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "cleanedActivityType",
             "cleanedExercises.isEmpty ? nil : cleanedExercises",
             "label: cleanedActivityType ?? \"Live workout\"",
-            "let enriched = confirmedWorkoutMetrics(start: bestStart,",
+            # 2026-07-07: enriched metrics now computed over the onset-trimmed
+            # displayStart (getting-ready lead-in removed); id/readiness stay
+            # on the untrimmed bestStart.
+            "let enriched = confirmedWorkoutMetrics(start: displayStart,",
             "strain: enriched.strain",
             "activeEnergyKilocalories: enriched.activeEnergyKilocalories",
             "activeEnergyConfidence: enriched.activeEnergyConfidence",
