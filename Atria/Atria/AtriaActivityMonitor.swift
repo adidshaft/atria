@@ -183,14 +183,19 @@ struct AtriaActivityMonitorTab: View {
                 .background(tint.opacity(0.14), in: Circle())
 
             VStack(alignment: .leading, spacing: 2) {
+                // User-editable workout names get a scale guard + priority so
+                // the fixed trailing column yields (UX audit 2026-07-07).
                 Text(title)
                     .font(.subheadline.weight(.bold))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            .layoutPriority(1)
 
             Spacer(minLength: 8)
 

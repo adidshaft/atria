@@ -1390,12 +1390,13 @@ struct AtriaSettingsView: View {
 
                     Spacer(minLength: 0)
 
-                    HStack(spacing: 6) {
+                    HStack(spacing: 12) {
                         Button {
                             todayOrderCSV = AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)
                         } label: {
                             Image(systemName: "chevron.up")
-                                .frame(width: 28, height: 28)
+                                .frame(width: 40, height: 40)
+                                .contentShape(Rectangle())
                         }
                         .atriaCardAction(prominent: false, tint: .secondary)
                         .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
@@ -1405,7 +1406,8 @@ struct AtriaSettingsView: View {
                             todayOrderCSV = AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)
                         } label: {
                             Image(systemName: "chevron.down")
-                                .frame(width: 28, height: 28)
+                                .frame(width: 40, height: 40)
+                                .contentShape(Rectangle())
                         }
                         .atriaCardAction(prominent: false, tint: .secondary)
                         .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)

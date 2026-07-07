@@ -309,25 +309,33 @@ struct AtriaLiveWorkoutView: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .layoutPriority(1)
                     Spacer(minLength: 8)
                     Text(setSummary(set))
                         .font(.caption.weight(.black).monospacedDigit())
                         .foregroundStyle(.mint)
                 }
+                .frame(minHeight: 30)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             Button(role: .destructive) {
                 deleteLoggedSet(set)
             } label: {
+                // Destructive control next to the edit row: full 44pt hit
+                // area so a miss never deletes (UX audit 2026-07-07).
                 Image(systemName: "trash.circle.fill")
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.red.opacity(0.92))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Delete set")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 2)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
