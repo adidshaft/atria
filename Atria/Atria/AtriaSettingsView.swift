@@ -39,6 +39,7 @@ struct AtriaSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
     @State private var showLeaderboard = false
+    @State private var showSparring = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -331,6 +332,7 @@ struct AtriaSettingsView: View {
             DisclosureGroup(isExpanded: $expandedSharing) {
                 AtriaResearchSharingSection(buildBundle: buildResearchBundle)
                 leaderboardRow
+                sparringRow
                 aboutSection
             } label: {
                 settingsGroupLabel("Privacy & Sharing",
@@ -366,6 +368,31 @@ struct AtriaSettingsView: View {
         .foregroundStyle(.primary)
         .sheet(isPresented: $showLeaderboard) {
             AtriaLeaderboardScreen(myWeeklyRecovery: myWeeklyRecovery)
+        }
+    }
+
+    /// Entry to the sparring demo (2026-07-08), sibling of the leaderboard.
+    private var sparringRow: some View {
+        Button {
+            showSparring = true
+        } label: {
+            HStack {
+                Label("Sparring", systemImage: "figure.fencing")
+                Spacer(minLength: 8)
+                Text("Preview")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(.purple.opacity(0.16), in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.primary)
+        .sheet(isPresented: $showSparring) {
+            AtriaSparringScreen(myWeeklyRecovery: myWeeklyRecovery)
         }
     }
 
