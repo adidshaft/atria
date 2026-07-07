@@ -686,7 +686,7 @@ struct AtriaInlineQuickStat: View, Equatable {
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
             if let detail {
                 Text(detail)

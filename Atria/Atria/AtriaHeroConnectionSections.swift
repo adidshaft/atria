@@ -1061,7 +1061,8 @@ private struct AtriaConnectionGuideSheet: View {
                     Button(action: retry) {
                         Image(systemName: "arrow.clockwise")
                             .font(.caption.weight(.bold))
-                            .frame(width: 32, height: 32)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)

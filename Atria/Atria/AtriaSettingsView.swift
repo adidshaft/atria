@@ -533,8 +533,8 @@ struct AtriaSettingsView: View {
                         .imageScale(.small)
                     Text(appearanceMode == "system" ? "Using system appearance" : "Using \(appearanceMode) appearance")
                         .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(.secondary)
