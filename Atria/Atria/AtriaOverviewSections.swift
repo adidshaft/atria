@@ -6816,7 +6816,7 @@ struct AtriaMetricDetailSheet: View {
             // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
                                       heroState: recoveryHeroState,
-                                      tint: recoveryEstimate.percent.map(Metrics.recoveryColor) ?? Metrics.electricGreen) {
+                                      tint: recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen) {
                 contributorCard
                 behaviorsMoveYouCard
             } contributors: {
@@ -7200,7 +7200,7 @@ struct AtriaMetricDetailSheet: View {
     private func chartSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Range", selection: $range) {
-                ForEach(AtriaTrendRange.allCases) { option in
+                ForEach(AtriaTrendRange.primarySegments) { option in
                     Text(option.menuLabel).tag(option)
                 }
             }
@@ -7231,14 +7231,32 @@ struct AtriaMetricDetailSheet: View {
         .atriaInsetCard(tint: metric.tint)
     }
 
+    /// The recovery number behind the hero, per selected period, read from the
+    /// SAME frozen daily-rollup series the chart below plots — never the live
+    /// `recoveryEstimate` recompute. Day = that settled daily score (today's
+    /// saved recovery, else the newest saved day carried forward, exactly like
+    /// the overview tile / health row / widget), so the headline can no longer
+    /// drift onto the live value or contradict them for the same day. Week/Month
+    /// = the window average, so the number finally tracks the Day/Week/Month
+    /// selector (2026-07-08: fixes recovery showing a fixed live % that both
+    /// ignored the period and disagreed with the day value shown everywhere else).
+    private var recoveryHeroRawPercent: Double? {
+        if range == .day {
+            return preparedHistory.recoverySummary[range]?.latestRaw
+                ?? preparedHistory.recoveryRaw[.all]?.last?.value
+        }
+        return preparedHistory.recoverySummary[range]?.averageRaw
+    }
+
     private var recoveryHeroValue: String {
-        recoveryEstimate.percent.map { "\($0)%" } ?? "Day 1"
+        guard let percent = recoveryHeroRawPercent else { return "Learning" }
+        return AtriaDetailPeriodSummary.valueText(percent, unit: "%")
     }
 
     private var recoveryHeroState: String {
         // Canonical not-ready word is "Learning" (never "Building") — must match
         // the recovery ring center + legend chip for the same Day-1 state.
-        guard let percent = recoveryEstimate.percent else { return "Learning" }
+        guard let percent = recoveryHeroRawPercent.map({ Int($0.rounded()) }) else { return "Learning" }
         switch percent {
         case 67...: return "Good"
         case 34..<67: return "Typical"

@@ -51,4 +51,21 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         let laterInDay = metric(sleepEnd: at(6), recoveryPercent: 55, strain: 12)
         XCTAssertFalse(SessionStore.dailyRecoveryInputsChanged(frozen: frozen, fresh: laterInDay))
     }
+
+    // MARK: - Period selector reduced to D/W/M (2026-07-08)
+
+    /// The interactive range bars now offer only Day/Week/Month.
+    func testPrimarySegmentsAreDayWeekMonth() {
+        XCTAssertEqual(AtriaTrendRange.primarySegments, [.day, .week, .month])
+    }
+
+    /// Dropping the deeper ranges from the UI must NOT drop them from the enum:
+    /// the per-range chart/summary data-prep loops and the internal `.all` read
+    /// (yesterday-strain) still key off the full CaseIterable set.
+    func testDeeperRangesStayInAllCasesForDataPrep() {
+        for deeper in [AtriaTrendRange.quarter, .sixMonths, .year, .all] {
+            XCTAssertTrue(AtriaTrendRange.allCases.contains(deeper),
+                          "\(deeper) must remain in allCases for range math + data prep")
+        }
+    }
 }
