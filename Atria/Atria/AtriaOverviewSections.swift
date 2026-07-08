@@ -2947,7 +2947,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
                                   value: sleepHistory.latest?.sleepEfficiencyText ?? "Learning",
-                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Learning" : "Duration-based",
+                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan),
                                   zone: sleepEfficiencyZone,
@@ -3125,7 +3125,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var trendCard: some View {
         AtriaGlanceMetricCard(title: "Resting trend",
                               value: trendValues.count > 1 ? "\(trendValues.last ?? 0)" : "--",
-                              detail: trendValues.count > 1 ? "14 sessions" : "Learning",
+                              // Empty-state honesty (2026-07-08): a trend line needs two
+                              // nights to plot, so say exactly how far off it is ("0 of 2
+                              // nights") instead of a bare "Learning" — matches the "N of M"
+                              // progress the RHR/HRV cards already show.
+                              detail: trendValues.count > 1 ? "14 sessions" : "\(trendValues.count) of 2 nights",
                               systemImage: AtriaTodayMetric.trend.systemImage,
                               tint: .red,
                               sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
@@ -6812,7 +6816,7 @@ struct AtriaMetricDetailSheet: View {
             // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
                                       heroState: recoveryHeroState,
-                                      tint: recoveryEstimate.percent.map(Metrics.recoveryColor) ?? Metrics.electricGreen) {
+                                      tint: recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen) {
                 contributorCard
                 behaviorsMoveYouCard
             } contributors: {
@@ -6837,7 +6841,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .hrv:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.hrvSummary[range], points: preparedHistory.hrv[range] ?? [], unit: "ms"),
                                       heroState: hrvBand == nil ? learningNightsState(baseline.hrvSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6868,7 +6872,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .restingHeartRate:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.restingHeartRateSummary[range], points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
                                       heroState: restingBand == nil ? learningNightsState(baseline.restingSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6899,7 +6903,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .respiratoryRate:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
                                       heroState: respiratoryBand == nil ? "Learning" : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6926,7 +6930,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .sleep:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.sleep[range] ?? [], unit: "h"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepSummary[range], points: preparedHistory.sleep[range] ?? [], unit: "h"),
                                       heroState: sleepHeroState,
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latest {
@@ -6961,7 +6965,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .strain:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.strain[range] ?? [], unit: ""),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.strainSummary[range], points: preparedHistory.strain[range] ?? [], unit: ""),
                                       heroState: strainHeroState,
                                       tint: Metrics.electricStrain) {
                 strainWorkoutSection
@@ -6995,7 +6999,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .sleepPerformance:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepPerformanceSummary[range], points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
                                       heroState: sleepPerformanceHeroState,
                                       tint: Metrics.electricSleep) {
                 EmptyView()
@@ -7196,7 +7200,7 @@ struct AtriaMetricDetailSheet: View {
     private func chartSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Range", selection: $range) {
-                ForEach(AtriaTrendRange.allCases) { option in
+                ForEach(AtriaTrendRange.primarySegments) { option in
                     Text(option.menuLabel).tag(option)
                 }
             }
@@ -7227,14 +7231,32 @@ struct AtriaMetricDetailSheet: View {
         .atriaInsetCard(tint: metric.tint)
     }
 
+    /// The recovery number behind the hero, per selected period, read from the
+    /// SAME frozen daily-rollup series the chart below plots — never the live
+    /// `recoveryEstimate` recompute. Day = that settled daily score (today's
+    /// saved recovery, else the newest saved day carried forward, exactly like
+    /// the overview tile / health row / widget), so the headline can no longer
+    /// drift onto the live value or contradict them for the same day. Week/Month
+    /// = the window average, so the number finally tracks the Day/Week/Month
+    /// selector (2026-07-08: fixes recovery showing a fixed live % that both
+    /// ignored the period and disagreed with the day value shown everywhere else).
+    private var recoveryHeroRawPercent: Double? {
+        if range == .day {
+            return preparedHistory.recoverySummary[range]?.latestRaw
+                ?? preparedHistory.recoveryRaw[.all]?.last?.value
+        }
+        return preparedHistory.recoverySummary[range]?.averageRaw
+    }
+
     private var recoveryHeroValue: String {
-        recoveryEstimate.percent.map { "\($0)%" } ?? "Day 1"
+        guard let percent = recoveryHeroRawPercent else { return "Learning" }
+        return AtriaDetailPeriodSummary.valueText(percent, unit: "%")
     }
 
     private var recoveryHeroState: String {
         // Canonical not-ready word is "Learning" (never "Building") — must match
         // the recovery ring center + legend chip for the same Day-1 state.
-        guard let percent = recoveryEstimate.percent else { return "Learning" }
+        guard let percent = recoveryHeroRawPercent.map({ Int($0.rounded()) }) else { return "Learning" }
         switch percent {
         case 67...: return "Good"
         case 34..<67: return "Typical"
@@ -7656,6 +7678,22 @@ struct AtriaMetricDetailSheet: View {
     private func latestMetricText(points: [AtriaDetailChartPoint], unit: String) -> String {
         guard let latest = points.last else { return "--" }
         return latestText(value: latest.value, unit: unit)
+    }
+
+    /// The detail-hero headline for the selected period. Day = the latest reading
+    /// (unchanged); Week/Month/… = the window AVERAGE, read from the SAME per-range
+    /// summary the chart's Avg strip uses, so the headline tracks the selector and
+    /// agrees with the chart. Falls back to the latest reading when no summary yet.
+    /// (2026-07-08: the headline was the latest point for every range, identical
+    /// across Day/Week/Month, so the number looked frozen to the selector — the same
+    /// class of bug the user reported for recovery.)
+    private func periodHeroText(summary: AtriaDetailPeriodSummary?,
+                                points: [AtriaDetailChartPoint],
+                                unit: String) -> String {
+        if range != .day, let summary {
+            return summary.averageText
+        }
+        return latestMetricText(points: points, unit: unit)
     }
 
     private var contributorCard: some View {

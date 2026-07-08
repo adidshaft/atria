@@ -45,7 +45,7 @@ struct AtriaTrendChartCard: View {
 
             VStack(spacing: 8) {
                 Picker("Range", selection: $range) {
-                    ForEach(AtriaTrendRange.allCases) { item in
+                    ForEach(AtriaTrendRange.primarySegments) { item in
                         Text(item.segmentedLabel)
                             .tag(item)
                             .accessibilityLabel(item.menuLabel)
@@ -2347,6 +2347,15 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable {
     case all
 
     var id: String { rawValue }
+
+    /// Interactive selectors expose only Day/Week/Month — the daily/weekly/monthly
+    /// model the app is built around. The deeper cases (quarter/sixMonths/year/all)
+    /// stay in the enum and `allCases`: both per-range data-prep loops
+    /// (AtriaTrendChart.swift + AtriaOverviewSections.swift) and the internal `.all`
+    /// read still key off the full set — they are just not offered in the range bar
+    /// (2026-07-08: declutter the range bar to D/W/M per user request; the range
+    /// selector stays a segmented control, never a Menu, per the readability guard).
+    static let primarySegments: [AtriaTrendRange] = [.day, .week, .month]
 
     var days: Int {
         switch self {
