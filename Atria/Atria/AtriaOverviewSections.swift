@@ -2913,7 +2913,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       tint: hrvZone?.tint ?? Metrics.electricHRV,
                                       sparklineValues: dailyMetricSparklines.hrv,
                                       zone: hrvZone,
-                                      calibratingDay: hrvCalibratingDay)
+                                      calibratingDay: hrvCalibratingDay,
+                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
+                                      calibratingUnit: "Night")
             }
         case .stress:
             Button {
@@ -2974,7 +2976,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       tint: restingHeartRateZone?.tint ?? Metrics.electricRHR,
                                       sparklineValues: dailyMetricSparklines.restingHeartRate,
                                       zone: restingHeartRateZone,
-                                      calibratingDay: restingCalibratingDay)
+                                      calibratingDay: restingCalibratingDay,
+                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
+                                      calibratingUnit: "Night")
             }
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
@@ -3257,12 +3261,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         hero.recoveryEstimate.percent == nil ? calibratingDay(sampleCount: max(hrvBaselineSamples, restingBaselineSamples)) : nil
     }
 
+    // HRV/RHR baselines need trustedMinimumSamples (14) nights — so they carry
+    // the RAW recorded-night count (not the capped "day"), and their cards pass
+    // total: 14, unit: "Night" for honest "Night X of 14" progress (2026-07-08).
     private var hrvCalibratingDay: Int? {
-        metricIsPending(hero.hrvValue) ? calibratingDay(sampleCount: hrvBaselineSamples) : nil
+        metricIsPending(hero.hrvValue) ? hrvBaselineSamples : nil
     }
 
     private var restingCalibratingDay: Int? {
-        metricIsPending(hero.restingHeartRateText) ? calibratingDay(sampleCount: restingBaselineSamples) : nil
+        metricIsPending(hero.restingHeartRateText) ? restingBaselineSamples : nil
     }
 
     private var sleepCalibratingDay: Int? {
@@ -4572,6 +4579,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     var zone: AtriaMetricZone? = nil
     var accessibilityDetail: String? = nil
     var calibratingDay: Int? = nil
+    var calibratingTotal: Int = 4
+    var calibratingUnit: String = "Day"
     @State private var showingZoneInfo = false
 
     static func == (lhs: AtriaGlanceMetricCard, rhs: AtriaGlanceMetricCard) -> Bool {
@@ -4585,6 +4594,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             && lhs.zone == rhs.zone
             && lhs.accessibilityDetail == rhs.accessibilityDetail
             && lhs.calibratingDay == rhs.calibratingDay
+            && lhs.calibratingTotal == rhs.calibratingTotal
+            && lhs.calibratingUnit == rhs.calibratingUnit
     }
 
     static var placeholder: some View {
@@ -4608,7 +4619,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     private var accessibilityText: String {
-        var parts = [calibratingDay.map { "\(title) calibrating day \(min(max($0, 1), 4)) of 4" } ?? "\(title) \(displayValue)", detail]
+        var parts = [calibratingDay.map { "\(title) calibrating \(calibratingUnit.lowercased()) \(min(max($0, 0), calibratingTotal)) of \(calibratingTotal)" } ?? "\(title) \(displayValue)", detail]
         if let accessibilityDetail,
            !accessibilityDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append(accessibilityDetail)
@@ -4675,7 +4686,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if let calibratingDay {
-                    AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                    AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
                 } else {
                     Text(displayValue)
                         .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -4724,7 +4735,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let calibratingDay {
-                AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
                     .layoutPriority(1)
             } else {
                 Text(displayValue)

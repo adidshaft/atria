@@ -10712,7 +10712,10 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, vitals, needle)
         for needle in [
             "private var accessibilityText: String",
-            "var parts = [calibratingDay.map { \"\\(title) calibrating day \\(min(max($0, 1), 4)) of 4\" } ?? \"\\(title) \\(displayValue)\", detail]",
+            # 2026-07-08: calibration is honest per-metric — baselines (HRV/RHR) pass
+            # calibratingTotal:14 + calibratingUnit:"Night" for "Night X of 14"; recovery/
+            # sleep keep the default 4/"Day". Accessibility mirrors the visible unit+total.
+            "var parts = [calibratingDay.map { \"\\(title) calibrating \\(calibratingUnit.lowercased()) \\(min(max($0, 0), calibratingTotal)) of \\(calibratingTotal)\" } ?? \"\\(title) \\(displayValue)\", detail]",
             "parts.append(zone.level.label)",
             "parts.append(zone.targetSummary)",
             "parts.append(\"Tap info for guidance.\")",
