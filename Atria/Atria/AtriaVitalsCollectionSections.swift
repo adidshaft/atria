@@ -1307,6 +1307,9 @@ private struct AtriaVitalsPulseCardHost: View {
     @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var mergeCache = AtriaHeartRateMergeCache()
+    // Debounce the ~1 Hz archive-update firehose so we don't re-parse the tail
+    // on every append (2026-07-08: that was a hang, and it starved the wider load).
+    @State private var lastHistoricalRefresh: Date = .distantPast
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     private var chartPoints: [AtriaHomeModel.HeartRateChartPoint] {
@@ -1342,17 +1345,30 @@ private struct AtriaVitalsPulseCardHost: View {
                 await refreshHistoricalHeartRatePoints()
             }
             .onReceive(NotificationCenter.default.publisher(for: HistoricalArchive.didUpdateNotification)) { _ in
-                Task { await refreshHistoricalHeartRatePoints() }
+                Task { await refreshHistoricalHeartRatePoints(minInterval: 20) }
             }
     }
 
     @MainActor
-    private func refreshHistoricalHeartRatePoints() async {
-        let since = Calendar.current.date(byAdding: .day, value: -2, to: Date())
+    private func refreshHistoricalHeartRatePoints(minInterval: TimeInterval = 0) async {
+        // The archive appends at ~1 Hz; re-parsing the whole tail on every one
+        // was a hang. First load (.task) passes 0 so it never waits; live
+        // updates coalesce to `minInterval` (the live edge is covered by the
+        // sparkline merge, so a slightly stale historical tail is invisible).
+        let now = Date()
+        if minInterval > 0, now.timeIntervalSince(lastHistoricalRefresh) < minInterval { return }
+        lastHistoricalRefresh = now
+        // Load a full 24h span (was capped at ~100 min of raw ~1 Hz samples, so
+        // the "last 12h/24h" windows could never fill — user 2026-07-08), then
+        // downsample off-main to a bounded count. The chart re-thins to ~400 for
+        // display, so ~2500 span-preserving points keep the merge + Equatable
+        // cheap while covering the full window.
+        let since = Calendar.current.date(byAdding: .hour, value: -24, to: now)
         let points = await Task.detached(priority: .utility) {
-            HistoricalArchive.metricHeartRatePoints(since: since).map {
+            let raw = HistoricalArchive.metricHeartRatePoints(since: since, limit: 50_000).map {
                 AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
             }
+            return AtriaVitalsHeartRateTimeline.downsampledSpan(raw, maxPoints: 2_500)
         }.value
         guard points != historicalHeartRatePoints else { return }
         historicalHeartRatePoints = points
@@ -1465,6 +1481,17 @@ enum AtriaVitalsHeartRateTimeline {
         return (0..<displayBudget).map { index in
             visible[Int((Double(index) * stride).rounded())]
         }
+    }
+
+    /// Uniformly thins a full-resolution series to at most `maxPoints`, always
+    /// keeping the first + last sample so the time SPAN is preserved. Only used
+    /// to bound the merge/compare/display cost — `windowed` re-thins to the
+    /// display budget on top of this (2026-07-08).
+    static func downsampledSpan(_ points: [AtriaHomeModel.HeartRateChartPoint],
+                                maxPoints: Int) -> [AtriaHomeModel.HeartRateChartPoint] {
+        guard maxPoints > 1, points.count > maxPoints else { return points }
+        let stride = Double(points.count - 1) / Double(maxPoints - 1)
+        return (0..<maxPoints).map { points[Int((Double($0) * stride).rounded())] }
     }
 
     /// Maps a pinch to a new window-slider index (2026-07-08, native zoom feel).
