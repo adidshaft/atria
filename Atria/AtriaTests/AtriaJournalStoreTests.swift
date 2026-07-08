@@ -40,7 +40,7 @@ final class AtriaJournalStoreTests: XCTestCase {
 
     func testSubjectiveScaleQuestionsAreWellFormed() throws {
         // Energy + focus (2026-07-08) join the daily journal as scale questions.
-        for q in [AtriaJournalTypedQuestion.energyScale, .focusScale] {
+        for q in [AtriaJournalTypedQuestion.energyScale, .focusScale, .windDownScale] {
             XCTAssertTrue(AtriaJournalTypedQuestion.allCases.contains(q))
             XCTAssertFalse(q.title.isEmpty)
             XCTAssertFalse(q.symbolName.isEmpty)
