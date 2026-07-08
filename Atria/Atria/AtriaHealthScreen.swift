@@ -488,7 +488,9 @@ struct AtriaHealthScreen: View {
     /// Per-view memo for `latestRollup` (handoff #3): recomputes only when the
     /// store's rollup revision changes. Reference type so one instance survives
     /// body re-evals via @State; the mutation is a pure cache, never observed.
-    private final class LatestRollupCache {
+    // `internal` (not private) so AtriaPerfFixesTests can assert the memo computes
+    // once per revision. Still nested + only constructed by this view.
+    final class LatestRollupCache {
         private var revision: Int?
         private var cached: DailyRollupStoreEntry?
 
@@ -620,8 +622,10 @@ struct AtriaHealthScreen: View {
     /// the store comments promise. Runs in `.onChange`, never in body; the reduced
     /// array feeds an Equatable chart subview so unrelated re-renders (the 5s stress
     /// tick, live-pulse publishes) don't re-lay-out the chart.
-    private static func reduceStressStrip(_ history: [AtriaStressMonitorStore.StressHistoryPoint],
-                                          targetTotal: Int = 110) -> [StressStripPoint] {
+    // `internal` (not private) so AtriaPerfFixesTests can exercise the honesty
+    // contract + downsample bound directly against `@testable import Atria`.
+    static func reduceStressStrip(_ history: [AtriaStressMonitorStore.StressHistoryPoint],
+                                  targetTotal: Int = 110) -> [StressStripPoint] {
         guard history.count > 1 else { return [] }
 
         // Contiguous runs, split on a >5min gap.
@@ -821,7 +825,8 @@ struct AtriaHealthScreen: View {
 /// longer than 5 minutes bumps `segment`, which Swift Charts treats as a new
 /// series so the strip leaves a real blank instead of interpolating across a
 /// stretch the strap wasn't read (the honesty contract).
-private struct StressStripPoint: Identifiable, Equatable {
+// `internal` (not private) so AtriaPerfFixesTests can assert on the reduced strip.
+struct StressStripPoint: Identifiable, Equatable {
     let id: Int
     let t: Date
     let value: Double

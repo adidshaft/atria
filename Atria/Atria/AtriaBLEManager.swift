@@ -9591,12 +9591,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// the day's contiguous segments re-cluster into one aggregate sleep/wear
     /// candidate (`sleepClusters` bridges gaps <=2h). Returns without rolling
     /// unless long-wear mode is active with enough samples and the span cap is met.
+    /// Pure trigger for the retention roll, extracted so the 3h-cap logic is
+    /// unit-testable without standing up a live AtriaBLEManager (AtriaPerfFixesTests):
+    /// roll once the live segment has enough samples AND spans the retention cap.
+    static func shouldRollLiveSession(spanSeconds: TimeInterval,
+                                      sampleCount: Int,
+                                      minSamples: Int,
+                                      retentionSpan: TimeInterval) -> Bool {
+        sampleCount >= minSamples && spanSeconds >= retentionSpan
+    }
+
     @discardableResult
     private func rollLongWearLiveSessionIfOversized(now: Date, reason: String) -> Bool {
         guard longWearModeEnabled, standardHROnlyMode else { return false }
-        guard session.count >= autoSaveMinSamples, let first = session.first else { return false }
+        guard let first = session.first else { return false }
         let span = now.timeIntervalSince(first.t)
-        guard span >= longWearLiveSessionRetentionSpan else { return false }
+        guard Self.shouldRollLiveSession(spanSeconds: span,
+                                         sampleCount: session.count,
+                                         minSamples: autoSaveMinSamples,
+                                         retentionSpan: longWearLiveSessionRetentionSpan) else { return false }
 
         let label = captureLabel.isEmpty ? "All-day wear" : captureLabel
         guard let saved = snapshotSession(label: label) else { return false }
