@@ -1278,6 +1278,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var forceFreshScanOnRestore = false
     private var forceFreshScanAfterDisconnect = false
     private let minimumFinishedLongWearDuration: TimeInterval = 5 * 60
+    /// Perf/crash (2026-07-08 handoff #1): during continuous all-day streaming the
+    /// four parallel live arrays (`session`/`rrArchive`/`sessionPointsCache`/
+    /// `rrPointsCache`) grow unbounded — they reset ONLY on explicit stop or a
+    /// >=90s gap, neither of which happens while the strap streams (the OOM/jetsam
+    /// cause). When the live segment's SPAN reaches this cap we finalize it to disk
+    /// (`persistFinishedSession` -> `store.add` upserts by id, so the full record is
+    /// preserved) and segment-roll to a fresh segment. The day's contiguous segments
+    /// re-cluster into one aggregate sleep/wear candidate (`sleepClusters` bridges
+    /// gaps <=2h), and the next sample resumes ~1s later. 3h keeps a comfortable
+    /// >=2h live tail while bounding each array to ~3h @1Hz and shrinking the
+    /// per-checkpoint `snapshotSession` rescan (which also relieves the freeze).
+    private let longWearLiveSessionRetentionSpan: TimeInterval = 3 * 60 * 60
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
@@ -4482,6 +4494,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     }
                     autoSaveIndex += 1
                     lastAutoSaveAt = now
+                }
+
+                // Crash fix (handoff #1): bound the live session so its four
+                // parallel arrays can't grow unbounded across an all-day stream.
+                // Independent of workout readiness (the autosave above only fires
+                // for a detected workout, never during pure resting/overnight wear
+                // — the reported crash window). Skipped under thermal suspend, which
+                // already parks non-essential work; the roll resumes next tick.
+                if !powerThermalGovernor.shouldSuspendNonEssentialWork {
+                    rollLongWearLiveSessionIfOversized(now: now,
+                                                       reason: "long_wear_retention_roll")
                 }
 
                 // Anchor the no-data gap to ANY GATT activity (battery included),
@@ -9555,6 +9578,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               saved.points.count,
               saved.duration,
               persisted ? "start_new_segment" : "retain_existing_segment")
+    }
+
+    /// Bound the live session during continuous all-day wear: once the current
+    /// segment spans `longWearLiveSessionRetentionSpan`, finalize it to disk and
+    /// segment-roll to a fresh one so the four live arrays can't grow unbounded
+    /// (the OOM/jetsam cause — handoff #1). Uses the same persist-then-reset
+    /// primitive as the >=90s-gap roll: `persistFinishedSession` calls
+    /// `onSessionEnd` (`store.add`, which upserts by id), so the full record is
+    /// preserved on disk before `resetLiveSessionState` clears the live arrays and
+    /// mints a new `liveSessionID`. The next received sample resumes ~1s later, so
+    /// the day's contiguous segments re-cluster into one aggregate sleep/wear
+    /// candidate (`sleepClusters` bridges gaps <=2h). Returns without rolling
+    /// unless long-wear mode is active with enough samples and the span cap is met.
+    @discardableResult
+    private func rollLongWearLiveSessionIfOversized(now: Date, reason: String) -> Bool {
+        guard longWearModeEnabled, standardHROnlyMode else { return false }
+        guard session.count >= autoSaveMinSamples, let first = session.first else { return false }
+        let span = now.timeIntervalSince(first.t)
+        guard span >= longWearLiveSessionRetentionSpan else { return false }
+
+        let label = captureLabel.isEmpty ? "All-day wear" : captureLabel
+        guard let saved = snapshotSession(label: label) else { return false }
+        let persisted = persistFinishedSession(saved, reason: reason)
+        if persisted {
+            // Full segment is on disk; start the next sample in a clean segment so
+            // the live arrays reset. Mirrors the gap-roll at the reset below.
+            resetLiveSessionState(start: now)
+        }
+        AtriaDebugLog("ATRIADBG live_session_retention_roll status=%@ reason=%@ span_s=%.0f cap_s=%.0f samples=%d rr_samples=%d duration_s=%.0f action=%@",
+              persisted ? "rolled" : "store_failed",
+              reason,
+              span,
+              longWearLiveSessionRetentionSpan,
+              saved.points.count,
+              saved.rrSampleCount,
+              saved.duration,
+              persisted ? "reset_live_segment" : "retain_live_segment")
+        return persisted
     }
 
     private func resetLiveSessionState(start: Date) {
