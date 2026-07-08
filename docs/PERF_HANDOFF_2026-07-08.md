@@ -72,16 +72,19 @@ until `dailyRollupHistory` grows toward 90–400 rows (one row/day; ~3 today).
   incremental because it depends on the final resting-HR + retroactive excluded-intervals). User agreed to
   skip. A full, careful #4 recipe (exact-int sum-of-squares + an energy-pair accumulator with a profile-
   signature fallback) is preserved at the session workflow output if ever wanted.
-- **#6, #7 — DEFERRED (low priority now).** With #1/#2/#3/#5 shipped, these are the smallest contributors.
-  - #6 (`AtriaMetricDetailSheet` builds all-ranges `AtriaPreparedMetricHistory` in `init`, re-run every ~700ms
-    while the sheet is open): the fix must move the heavy build OUT of `init` (a `@State`+`.task` with an
-    `.empty` seed + `if let` body guards, OR an internal memo — the latter hits a Swift-6 `static var`
-    concurrency wall AND the pin at `test_handoff_static_checks.py:9987` that asserts the exact `init` line,
-    so it needs a dated pin migration). Secondary path (the detail sheet, not the main scroll).
-  - #7 (memoize `trendEvents` / `WeeklyReport` / `sleepPerformancePercent`): cheap per-eval recomputes;
-    `trendEvents` is computed eagerly but only consumed by the (usually-closed) expanded chart, so the win
-    is lazy-computing it; the sleep-percent computeds are cheap and carry a data-coherence contract not worth
-    risking. Needs stable workout+sleep revision keys.
+- **#6 — SHIPPED** (commit `e00319a3`): memoized `AtriaPreparedMetricHistory` on its exact inputs via a
+  `private static` cache INSIDE the struct's init (Swift-5 mode makes the static clean; the `self = cached.value`
+  delegation keeps the pinned init call site + every `preparedHistory.X` access verbatim, so NO pin migration).
+  An unchanged re-present is now a struct copy, not ~42 filter+sort+bucket passes. Correct by construction.
+- **#7 — SHIPPED** (commit `db3311df`): memoized `AtriaOverviewTrendChartHost.trendEvents` (built eagerly every
+  publish, consumed only by the usually-closed expanded chart) behind a workout-revision + night-count/confirmed
+  signal, reference-cache in `@State`. Intentionally scoped: `WeeklyReport` is already lazy (sheet-only) and the
+  sleep-percent computeds are cheap single-night math with a data-coherence contract — left as-is.
+- **#6/#7 on-device/sim check:** app builds + launches + renders cleanly on the iOS-26 simulator (fixture data),
+  stable across repeated screenshots (no crash from the `self = cached.value` init), and the sim log shows NO
+  "Modifying state during update" (the #7 reference-cache is clean) and no fatal/exception. The metric-detail
+  sheet's pixel rendering couldn't be force-opened headlessly (the fixture routes to overview segment content;
+  no tap/scroll via simctl), but the change is validated end-to-end by the clean run + gates.
 
 **Live #1 on-device verification attempted, BLOCKED (environmental):** with the strap on, two Debug runs
 (`--atria-retention-roll-seconds 120` then `30`) could not accumulate the roll's ≥10-sample floor — the
