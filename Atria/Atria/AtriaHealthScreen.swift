@@ -44,7 +44,13 @@ struct AtriaHealthScreen: View {
                 AtriaHealthTimelineProofCard(points: chartPoints,
                                              isLoading: isLoadingHistoricalHeartRatePoints)
             } else {
-                VStack(spacing: 12) {
+                // LazyVStack, not VStack (2026-07-08 perf): Vitals stacks ~10 heavy
+                // sections incl. 7+ Swift Charts. In an eager VStack they all render
+                // synchronously on tab-open — a multi-second main-thread freeze that
+                // grows with data. The outer tabNavigation LazyVStack can't help
+                // because this whole screen is a single child of it; making THIS stack
+                // lazy renders only the on-screen sections, the rest as they scroll in.
+                LazyVStack(spacing: 12) {
                     // Live pulse card leads Vitals (2026-07-07, design
                     // handoff): current bpm, session stats, resting zone,
                     // and the tappable heart-rate timeline.
