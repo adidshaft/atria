@@ -1015,6 +1015,29 @@ struct AtriaTodayScreen: View {
         return (live, detail)
     }
 
+    /// Resting-HR TREND for the "Resting trend" glance card (2026-07-08). This card
+    /// used to render a training-LOAD signal (ACWR/monotony) under a resting-HR
+    /// title — a mismatch. It now shows the DIRECTION of resting HR over the last
+    /// up-to-14 nights (recent-half average vs earlier-half average); a lower
+    /// resting HR is the better direction. Distinct from the "Resting HR" card,
+    /// which shows the current value + sparkline. `store.restingTrend14` is the
+    /// ascending daily resting-HR series. Needs 6 nights (3 vs 3) before a
+    /// direction is honest; before that it reads "Learning · N of 6 nights".
+    private var displayRestingTrend: (value: String, detail: String) {
+        let trend = store.restingTrend14
+        guard trend.count >= 6 else {
+            return ("Learning", "\(trend.count) of 6 nights")
+        }
+        let mid = trend.count / 2
+        let earlierAvg = Double(trend.prefix(mid).reduce(0, +)) / Double(mid)
+        let recentAvg = Double(trend.suffix(trend.count - mid).reduce(0, +)) / Double(trend.count - mid)
+        let delta = Int((recentAvg - earlierAvg).rounded())
+        let nights = trend.count
+        if delta <= -1 { return ("\u{2193} \(-delta) bpm", "lower over \(nights) nights") }
+        if delta >= 1 { return ("\u{2191} \(delta) bpm", "higher over \(nights) nights") }
+        return ("Steady", "flat over \(nights) nights")
+    }
+
     /// Which day of the ~4-night recovery calibration the user is on. Shared by the
     /// ring center (`centerValue`) and the recovery legend chip (`displayRecovery`)
     /// so the two never disagree — the center used to hardcode "Day 1" while the
@@ -1528,8 +1551,8 @@ struct AtriaTodayScreen: View {
         case .trend:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: displayHero.loadSignalSummaryText,
-                                        detail: legendDetail("Trend"),
+                                        value: displayRestingTrend.value,
+                                        detail: legendDetail(displayRestingTrend.detail),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric))
