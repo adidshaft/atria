@@ -195,8 +195,10 @@ enum LocalNotificationScheduler {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=evening_checkin")
             return
         }
+        // 14-day (not 7-day) re-engage window — see scheduleMorningJournalCheckIn:
+        // the reminder must outlast a typical lapse to rebuild the journal habit.
         guard let lastJournalActivity,
-              now.timeIntervalSince(lastJournalActivity) <= 7 * 24 * 60 * 60 else {
+              now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
             AtriaDebugLog("ATRIADBG notification_skip kind=evening_checkin reason=journal_inactive")
             return
         }
@@ -281,8 +283,11 @@ enum LocalNotificationScheduler {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_checkin")
             return
         }
+        // 14-day (not 7-day) re-engage window: a journal reminder must survive a
+        // typical lapse to help rebuild the habit — a 7-day gate drops it exactly
+        // when the user has stopped and most needs the nudge (user 2026-07-08 #1/#7).
         guard let lastJournalActivity,
-              now.timeIntervalSince(lastJournalActivity) <= 7 * 24 * 60 * 60 else {
+              now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
             AtriaDebugLog("ATRIADBG notification_skip kind=morning_checkin reason=journal_inactive")
             return
         }
