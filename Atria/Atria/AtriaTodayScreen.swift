@@ -862,6 +862,23 @@ struct AtriaTodayScreen: View {
         store.sleepHistorySnapshot.latest
     }
 
+    /// Yesterday's strain (the latest sleep night's prior calendar day) -- the
+    /// extra recovery sleep a hard day demands. Mirrors the Vitals Health
+    /// screen's `yesterdayStrainForLatestNight` and the persisted rollup path
+    /// (`dailyRollupSleepPerformance`) so Today's sleep need / performance can't
+    /// disagree with those surfaces for the same night (consistency fix
+    /// 2026-07-09: Today was the sole scoring site omitting this term).
+    private var yesterdayStrainForLatestNight: Double? {
+        guard let latestSleep else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latestSleep.day)) else { return nil }
+        return store.dailyRollupHistory
+            .first { calendar.isDate($0.day, inSameDayAs: priorDay) }?
+            .strain
+    }
+
     /// Real nightly need in hours, computed the same way the sleep-history
     /// screen's "Slept X of Y needed" line is (`sleepNeedHours`, which
     /// factors in yesterday's strain and any running sleep debt) -- only
@@ -869,7 +886,9 @@ struct AtriaTodayScreen: View {
     /// callers fall back to the plainer stored `sleepPerformance` percent.
     private var sleepNeedHoursValue: Double? {
         guard let latestSleep else { return nil }
-        return store.sleepHistorySnapshot.sleepNeedHours(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+        return store.sleepHistorySnapshot.sleepNeedHours(for: latestSleep,
+                                                         baseNeedHours: sleepBaseNeedHours,
+                                                         yesterdayStrain: yesterdayStrainForLatestNight)
     }
 
     /// Legend-chip-style "of 8h 58m need" detail. Sleep is always shown
@@ -903,7 +922,9 @@ struct AtriaTodayScreen: View {
     /// rollup value only when there's no `Night` on record at all yet.
     private var sleepPerformancePercent: Int? {
         if let latestSleep {
-            return store.sleepHistorySnapshot.sleepPerformancePercent(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+            return store.sleepHistorySnapshot.sleepPerformancePercent(for: latestSleep,
+                                                                      baseNeedHours: sleepBaseNeedHours,
+                                                                      yesterdayStrain: yesterdayStrainForLatestNight)
         }
         return latestRollup?.sleepPerformance
     }
