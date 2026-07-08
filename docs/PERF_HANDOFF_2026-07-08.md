@@ -1,0 +1,128 @@
+# Atria Performance + Architecture Handoff — 2026-07-08
+
+**Read this first, then execute the "Stop the bleeding" fixes in order.** Self-contained
+so a fresh session can continue without re-diagnosing. Root cause is confirmed in source
+(high confidence).
+
+## Where we are
+- Branch: **`ui-ux-polish`** (all pushed; `main` is behind by the perf commits — merge when green).
+- User's problem: the app is **laggy while scrolling** and **crashes soon after** with the
+  WHOOP strap streaming all day. Prior UI/consistency work is done + merged (PRs #14–18; see
+  `docs/UI_UX_CONSISTENCY_2026-07-08.md`).
+- Already shipped this session: `d269527a` — LazyVStack on `AtriaHealthScreen:47` +
+  `AtriaTodayScreen` body (fixed the multi-second **tab-open** freeze). ⚠️ It also introduced a
+  **scroll-in regression** (see fix #5 below).
+
+## Confirmed root cause (device console capture + full-source audit)
+
+### The CRASH = out-of-memory **jetsam** (high confidence)
+During continuous all-day wear, **four parallel live arrays grow UNBOUNDED** in
+`AtriaBLEManager`, because they are cleared ONLY by `resetLiveSessionState` (`:9560`), which
+fires solely on explicit stop (`:9494`) or a ≥90s stream gap (`:9529`) — **neither happens
+during continuous streaming**:
+- `session: [HRSample]` (`:498`, appended `:7217`)
+- `rrArchive: [RRInterval]` (`:572`, appended `:9271`)
+- `sessionPointsCache: [SavedSession.Point]` (`:501`, appended `:9394`) — dup of `session`
+- `rrPointsCache: [SavedSession.RRPoint]` (`:502`, appended `:9336/9400`) — dup of `rrArchive`
+
+At ~1 Hz these reach 10⁵⁺ entries each. The long-wear autosave `runLongWearSupervisorAutoSave`
+(`:4646`) **persists to disk but returns WITHOUT resetting** (`mode=snapshot_keep_live`,
+`:4684-4702`) — so saving never relieves RAM. `SessionStore.sessions` (`Sessions.swift:3311`)
++ `cachedCanonicalSessions` (`:4927`) retain today's full-resolution copy again (peak 2× during
+the ~15s checkpoint replace). → memory pressure → app killed to home screen.
+The presentation layer is already bounded/cached (chart points windowed to 200–400, hosts
+`.equatable()`, observers `[weak self]`), ruling out a per-scroll leak.
+
+### The 3-7s FREEZES = `snapshotSession` full-rescan on `@MainActor` every ~15s
+`snapshotSession` (`AtriaBLEManager.swift:9958`, `@MainActor`) rescans the whole growing array
+every autosave (default 15s): `session.map(\.bpm).reduce` (`:9990`),
+`standardDeviation(session.map{…})` (`:9991`), `samplesExcludingIntervals(session)` (`:10004`),
+`activeCalories` (`:10006`). O(N) fresh allocations, N growing all day = the freeze that
+worsens with time. **This is the user's exact "decodes and calculates every single time"
+hypothesis, confirmed.**
+
+### The SCROLL jank worst offender = the session **stress chart**
+`stressStripPoints` (`AtriaHealthScreen.swift:589`) maps the full ~1440-pt 12h stress history
+1:1; the `Chart` (`:611`) draws an `AreaMark` + `LineMark` per point (~2880 monotone-spline
+marks), **not downsampled** (every HR chart buckets to ≤72). Re-laid-out synchronously per
+body-eval — every 5s stress-timer tick (`:33/:89`), every `SessionStore` publish, and every
+scroll-in (no `.equatable()` isolation).
+
+### My LazyVStack fix's regression (fix #5)
+Screen-level `.task/.onReceive/.onAppear` are on the outer Group (fine), but three **sections**
+now reset their `@State` caches and re-run side effects on each scroll-in:
+`AtriaHistorySection` `.onAppear{rebuild()}` (`:191/207`, re-does `DetectionEventLog.load()`
+JSON decode + ~400 day rows), the pulse card `.task{refreshHistoricalHeartRatePoints()}`
+(`AtriaVitalsCollectionSections.swift:1344`, re-reads 24h archive + flushes merge cache),
+and the trend card `.onChange(of: points, initial:true)` (`AtriaTrendChart.swift:152`).
+
+## THE PLAN — do in this order
+
+### 🩹 Stop the bleeding (do first, this fixes crash + most lag; low blast radius)
+1. **Bound the live session — STOPS THE CRASH.** In `runLongWearSupervisorAutoSave`
+   (`AtriaBLEManager.swift:4646`), when `persistFinishedSession` succeeds (`:4684`), call
+   `resetLiveSessionState(start: now)` before returning — the same clean segment-roll the
+   ≥90s-gap path already does at `:9548`. Full record stays on disk. *(Alt: rolling cap via
+   `removeFirst` down to ~2h @1Hz at the four append sites — but segment-roll is safer because
+   it atomically resets every derived counter.)* **Risk:** must keep enough tail for the live
+   HR chart + HRV/RR window (~2h); don't cap smaller.
+2. **Downsample + Equatable-isolate the stress chart** (`AtriaHealthScreen.swift:589/611`):
+   bucket per-segment to ~100–120 display pts (reuse the HR chart's bucketing; **preserve the
+   >5min segment gaps** so real blanks aren't interpolated — honesty contract), compute once
+   into `@State` via `.onChange(of: stressMonitorStore.history)`, extract the `Chart` into an
+   `Equatable` subview keyed on the reduced array.
+3. **Resolve `latestRollup` once per eval** (`AtriaHealthScreen.swift:458`): it's an `O(n)
+   .max(by:)` read ~13× per `healthMonitorCard` eval (its own comment says so). Compute
+   `let latest = latestRollup` once, thread it through. Behavior-identical, near-zero risk.
+
+### 🔧 Next pass (belt-and-suspenders + the scroll-in regression)
+4. **Make `snapshotSession` incremental** (`:9958`): maintain running sum-of-squares +
+   incremental active-cal/active-sample accumulators (seed in `resetLiveSessionState`, update
+   at the HR append gate); compute avg/stddev/calories from O(1) state. **Verify identical
+   values vs the current rescan on a captured session before shipping.**
+5. **Stop LazyVStack sections re-decoding on scroll-in:** guard `AtriaHistorySection.rebuild()`
+   with a `builtRevision` (reuse the `rollup/workout/detection` revisions its `onChange` already
+   uses, `:192-194`); guard the pulse `.task` with a `hasLoadedOnce` flag or hoist
+   `historicalHeartRatePoints` to a shared object; skip trend `prepareSeries` when a points
+   fingerprint is unchanged.
+6. **Metric-detail prepared history** (`AtriaOverviewSections.swift:6736`): the sheet init loops
+   ALL 6 `AtriaTrendRange` × ~7 metrics (filter+sort+bucket, ~42 passes, `:10052`) on-main, and
+   re-runs every ~700ms while presented. Build the selected range only (memoize per-range), or
+   precompute off-main into an `@Published preparedMetricHistory` on `SessionStore` keyed to
+   `dailyRollupHistoryRevision` (same pattern as `overviewTrendPoints`).
+7. **Memoize the rest** behind existing revisions: `trendEvents` (`AtriaTrendChart.swift:2294`,
+   only used by the hidden expanded chart), `WeeklyReport(rollups:)` (`AtriaTodayScreen.swift:1178`),
+   `sleepPerformancePercent/sleepNeedHoursValue` (`AtriaTodayScreen.swift:870/904`).
+
+### 🏛 Architecture (later, deliberate — NOT before the above ships)
+The 10 principles correctly diagnose the disease: a **17,198-line `@MainActor SessionStore`**
+(`Sessions.swift:3178`; 353 funcs / 25 `@Published` / 189 computed) fuses ingestion-coordination
++ metric engine + raw store + view model into one god object on the main actor.
+- **Adopt now (these ARE the fixes above):** #10 Performance-as-a-feature, #7 central engine /
+  UI renders prepared state, #5 event-driven not sample-driven tick.
+- **Adopt later:** #1 layer split (high effort), #3 unified `MetricValue<source,confidence,
+  freshness,validation>`, #8 active-explanation layer.
+- **Already sufficient:** #2 store-raw-first (`rawPayloadHex` + `appendUndecodable`), #4 offline
+  sync ledger (real backfill), #6 fail-closed (no fabrication — core law).
+- **Skip:** #9 capability-based device support (Atria is single-device WHOOP today; premature).
+
+## How to build / install / verify (this environment)
+- Device (Aman's iPhone): `ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B bash live_device_debug.sh --release --seconds 10 --leave-running` (builds Release + installs + launch-verifies).
+- Debug telemetry: add any `--log-*` flag (e.g. `--log-daily-rollups`) to enable `ATRIADBG` +
+  `body_eval` logs. `body_eval view=X count=N` climbing = re-render storm. **Multi-second gaps
+  in the ATRIADBG timestamp stream = main-thread freezes.**
+- Gates before commit: `python3 test_handoff_static_checks.py` (migrate pins with dated notes)
+  + full unit suite (`AtriaTests` scheme, grep `"** TEST SUCCEEDED **"`).
+- **Gotchas:** the iOS **simulator is chronically unstable** (shuts down mid-run; `clean test`
+  re-clones it and breaks the destination — use a standalone `clean build` then plain `test`).
+  Crash-report pull via `sysdiagnose`/`devicectl` is **blocked** (needs on-device consent); use
+  console captures. The app binary is `Atria.app/Atria.debug.dylib` (grep that, not `/Atria`).
+- Full raw workflow findings (if needed): journal at
+  `.../subagents/workflows/wf_b9c8f9e6-0ea/journal.jsonl` (this session only).
+
+## Start here (new thread)
+> Continue Atria perf work on branch `ui-ux-polish`. Read `docs/PERF_HANDOFF_2026-07-08.md`.
+> Execute "Stop the bleeding" fixes #1–#3 (bound the live session via segment-roll, downsample+
+> isolate the stress chart, resolve latestRollup once), gate + install to device 3803F5B6 + verify
+> the freeze/crash is gone, commit each. Then the "Next pass" fixes. Honesty is LAW; keep the
+> stress-chart segment gaps.
