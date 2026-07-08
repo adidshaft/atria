@@ -4310,6 +4310,22 @@ final class SessionStore: ObservableObject {
             }
     }
 
+    /// Whether the scored night's recovery inputs differ between the preserved
+    /// frozen daily row and a fresh recompute — i.e. a sleep confirm / EXTEND /
+    /// adjust re-derived today's overnight readiness, so the preserved recovery
+    /// would go stale (2026-07-08). Compares ONLY the frozen overnight inputs to
+    /// recovery (the sleep window + HRV/RHR/respiratory), never live/drifting
+    /// values, so intra-day drift can't trigger a re-mint.
+    nonisolated static func dailyRecoveryInputsChanged(frozen: SavedDailyMetric,
+                                                       fresh: SavedDailyMetric) -> Bool {
+        frozen.sleepEnd != fresh.sleepEnd
+            || frozen.sleepDuration != fresh.sleepDuration
+            || frozen.sleepSpan != fresh.sleepSpan
+            || frozen.hrv != fresh.hrv
+            || frozen.restingHR != fresh.restingHR
+            || frozen.respiratoryRate != fresh.respiratoryRate
+    }
+
     nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
                                                             computed: [SavedDailyMetric],
                                                             sessions: [SavedSession],
@@ -4327,26 +4343,48 @@ final class SessionStore: ObservableObject {
 
         if let frozenToday = existing.first(where: { calendar.isDate($0.day, inSameDayAs: today) }) {
             // Once today's morning reading settles, preserve that frozen readiness
-            // snapshot (HRV/RHR/sleep) for the rest of the day instead of recomputing
-            // on refresh. Strain is a cumulative, all-day total (not an overnight
-            // readiness reading) and must keep accruing as later sessions land, or the
-            // displayed number silently stops climbing after the first refresh of the
-            // day — recompute it fresh each time from the same-day computed rollup.
-            let freshStrainToday = computed.first { calendar.isDate($0.day, inSameDayAs: today) }?.strain
-            merged[today] = SavedDailyMetric(day: frozenToday.day,
-                                             recoveryPercent: frozenToday.recoveryPercent,
-                                             recoveryConfidence: frozenToday.recoveryConfidence,
-                                             hrv: frozenToday.hrv,
-                                             restingHR: frozenToday.restingHR,
-                                             respiratoryRate: frozenToday.respiratoryRate,
-                                             sleepDuration: frozenToday.sleepDuration,
-                                             sleepSpan: frozenToday.sleepSpan,
-                                             sleepStart: frozenToday.sleepStart,
-                                             sleepEnd: frozenToday.sleepEnd,
-                                             sleepSource: frozenToday.sleepSource,
-                                             sleepStageSegments: frozenToday.sleepStageSegments,
-                                             sleepConsistencyPercent: frozenToday.sleepConsistencyPercent,
-                                             strain: freshStrainToday ?? frozenToday.strain)
+            // snapshot (HRV/RHR/sleep → recovery) for the rest of the day instead of
+            // recomputing on refresh. Strain is a cumulative, all-day total (not an
+            // overnight readiness reading) and must keep accruing as later sessions
+            // land, or the displayed number silently stops climbing after the first
+            // refresh of the day — recompute it fresh each time from the same-day
+            // computed rollup.
+            let freshToday = computed.first { calendar.isDate($0.day, inSameDayAs: today) }
+            // BUT if the scored NIGHT itself changed (a sleep confirm / EXTEND / adjust
+            // re-derives today's overnight inputs — e.g. the 2026-07-08 sleep-expand
+            // path moving the night's end), the preserved recovery would go STALE.
+            // Re-mint the frozen readiness from the CURRENT night via the same stable
+            // minter so the persisted recovery + trend point never outlive the night
+            // they describe.
+            let base: SavedDailyMetric
+            if let freshToday,
+               dailyRecoveryInputsChanged(frozen: frozenToday, fresh: freshToday),
+               let reminted = makeMorningFrozenDailyMetric(for: today,
+                                                           computed: computed,
+                                                           sessions: sessions,
+                                                           sleep: sleep,
+                                                           baseline: baseline,
+                                                           maxHR: maxHR,
+                                                           now: now,
+                                                           calendar: calendar) {
+                base = reminted
+            } else {
+                base = frozenToday
+            }
+            merged[today] = SavedDailyMetric(day: base.day,
+                                             recoveryPercent: base.recoveryPercent,
+                                             recoveryConfidence: base.recoveryConfidence,
+                                             hrv: base.hrv,
+                                             restingHR: base.restingHR,
+                                             respiratoryRate: base.respiratoryRate,
+                                             sleepDuration: base.sleepDuration,
+                                             sleepSpan: base.sleepSpan,
+                                             sleepStart: base.sleepStart,
+                                             sleepEnd: base.sleepEnd,
+                                             sleepSource: base.sleepSource,
+                                             sleepStageSegments: base.sleepStageSegments,
+                                             sleepConsistencyPercent: base.sleepConsistencyPercent,
+                                             strain: freshToday?.strain ?? base.strain)
         } else if let settledMorning = makeMorningFrozenDailyMetric(for: today,
                                                                     computed: computed,
                                                                     sessions: sessions,
