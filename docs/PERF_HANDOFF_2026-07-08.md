@@ -4,6 +4,43 @@
 so a fresh session can continue without re-diagnosing. Root cause is confirmed in source
 (high confidence).
 
+## ✅ Progress — 2026-07-08 (session 2): "Stop the bleeding" #1–#3 SHIPPED
+
+All three "Stop the bleeding" fixes are implemented, gated, and committed on `ui-ux-polish`
+(one commit each): `f7233005` (#1), `b3b3ac35` (#2), `cfa62aca` (#3). **Do NOT re-do these.**
+
+- **#1 — live-session bound (crash).** Implemented as a **retention-window segment-roll in
+  the long-wear supervisor** (new `rollLongWearLiveSessionIfOversized`, `AtriaBLEManager.swift`;
+  3h span cap → `persistFinishedSession` then `resetLiveSessionState`), **not** as the reset on
+  the workout-autosave path the plan named. Two reasons the literal plan was wrong: (a) the
+  autosave-persist branch only fires for a *detected workout* (`workoutReadiness.ready`), so it
+  would never bound arrays during pure resting/overnight wear — the actual crash window; and
+  (b) `test_long_wear_auto_save_keeps_live_session_open` deliberately pins that path as
+  `snapshot_keep_live`. Decoupling into its own supervisor step bounds all wear states and keeps
+  the tested autosave behavior intact. No data loss (`store.add` upserts by id; full segment
+  persisted before reset) and no UI fragmentation (the day's contiguous segments re-cluster into
+  one aggregate sleep/wear candidate — `sleepClusters` bridges gaps ≤2h, verified in source).
+- **#2 — stress strip.** `AtriaHealthScreen.swift`: segment-aware downsample to ~110 pts
+  (`reduceStressStrip`/`bucketStressSegment`, averages real activation, preserves >5min gap
+  blanks), computed in `.onChange(of: history)`, Chart isolated in an `Equatable`
+  `AtriaStressStripChart`. ~2880 marks → ~220.
+- **#3 — latestRollup.** `AtriaHealthScreen.swift`: revision-keyed `@State` memo
+  (`LatestRollupCache`) instead of threading a param through 13 properties — O(1) amortized,
+  behavior-identical, no pin migration, and it also dedupes across the re-render storm.
+
+**Gates (all green):** `test_handoff_static_checks.py` 128 OK · `AtriaTests` `** TEST SUCCEEDED **`
+· Release build + install + launch-verify on device `3803F5B6` clean (`on_appear elapsed_ms=160`,
+no launch freeze/crash; long-wear supervisor schedules and runs).
+
+**⚠️ Residual verification gap:** the all-day-wear crash/freeze *elimination* still needs a real
+multi-hour strap session on-device (with the Vitals tab open to exercise the stress chart) —
+a headless run can't reproduce continuous streaming or drive the UI. Watch a live capture for
+`ATRIADBG live_session_retention_roll status=rolled` (should appear ~every 3h of continuous wear)
+and confirm no jetsam + no multi-second gaps in the ATRIADBG timestamp stream on Vitals.
+
+**Next:** the "Next pass" fixes #4–#7 below (not started). #4 (incremental `snapshotSession`)
+must verify identical values vs the rescan on a captured session before shipping.
+
 ## Where we are
 - Branch: **`ui-ux-polish`** (all pushed; `main` is behind by the perf commits — merge when green).
 - User's problem: the app is **laggy while scrolling** and **crashes soon after** with the
