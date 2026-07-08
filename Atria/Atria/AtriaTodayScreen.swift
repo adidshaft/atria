@@ -1377,7 +1377,10 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: latestSleep?.sleepEfficiencyText ?? "--",
-                                        detail: legendDetail("Sleep"),
+                                        // Empty-state honesty (2026-07-08): efficiency = time asleep /
+                                        // time in bed, so until a night has a known in-bed span it reads
+                                        // "Needs time in bed" rather than a bare category label.
+                                        detail: legendDetail(latestSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Sleep"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))
@@ -1396,11 +1399,13 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.restingHeartRateText,
-                                        // RHR is measured nightly and is shown from night 1, so unlike
-                                        // HRV it has no multi-night "calibrating" value state — its text
-                                        // is always numeric. Keep the plain unit; a nights-progress
-                                        // caption here would mislabel a ready reading as pending.
-                                        detail: legendDetail("bpm"),
+                                        // RHR shares HRV's 14-night personal baseline: when no resting
+                                        // reading exists yet, restingHeartRateText is "Learning", so mirror
+                                        // the HRV tile and show honest "N of 14 nights" progress while
+                                        // pending; once a real reading arrives, show the plain "bpm" unit.
+                                        detail: legendDetail(isPendingHeroValue(displayHero.restingHeartRateText)
+                                                             ? baselineNightsProgress(store.baseline.freshRestingSampleCount())
+                                                             : "bpm"),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
@@ -1408,7 +1413,7 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: latestRollup?.respiratoryRate.map { String(format: "%.1f", $0) } ?? "--",
-                                        detail: legendDetail("/min"),
+                                        detail: legendDetail(latestRollup?.respiratoryRate == nil ? "After a sleep" : "/min"),
                                         systemImage: metric.systemImage,
                                         tint: .teal,
                                         layoutSize: layoutSize(for: metric))
