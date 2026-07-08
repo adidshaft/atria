@@ -11815,7 +11815,28 @@ final class SessionStore: ObservableObject {
                                       restingTrend: restingTrend14)
     }
 
+    private var cachedBiologicalAge: (summary: BiologicalAgeSummary, computedAt: Date)?
+
+    /// Fitness age moves slowly (WHOOP recomputes "WHOOP Age"/VO2max on a WEEKLY
+    /// timer), so recompute it at most weekly instead of on every profile-metrics
+    /// publish + daily-rollup refresh. The expensive canonicalSessions + per-
+    /// session timeInZone scan (which only runs once baselines are trusted) was on
+    /// the main-thread hot path — user 2026-07-08: "biological age could be weekly/
+    /// biweekly … lesser load on the app all the time." Only the READY value is
+    /// cached; while calibrating it returns .building cheaply on every call.
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
+        if let cached = cachedBiologicalAge,
+           Date().timeIntervalSince(cached.computedAt) < 7 * 24 * 60 * 60 {
+            return cached.summary
+        }
+        let summary = computeBiologicalAgeSummary(vo2MaxEstimate: vo2MaxEstimate)
+        if summary.isReady {
+            cachedBiologicalAge = (summary, Date())
+        }
+        return summary
+    }
+
+    private func computeBiologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
         let chronologicalAge = profile.age
         var blockers: [String] = []
         if vo2MaxEstimate.value == nil { blockers.append("vo2max_learning") }
