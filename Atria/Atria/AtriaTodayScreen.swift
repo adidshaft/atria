@@ -976,6 +976,45 @@ struct AtriaTodayScreen: View {
         return ("Learning", "Day \(recoveryCalibratingDay) of 4", nil)
     }
 
+    /// HRV glance carry (mirrors `displayRecovery`): the tile shows the SAME frozen
+    /// daily HRV the detail sheet reads — `Int(exp(lnRMSSD).rounded())` over the
+    /// newest stored rollup — never the live BLE/fallback reading, which can differ
+    /// from that settled number. Labeled "this morning"/"yesterday" so a carried
+    /// value is never read as a fresh one. Only when no rollup carries an HRV yet
+    /// does it fall back to the live hero value + its detail, preserving the
+    /// "N of 14 nights" calibration progress while the value is still pending
+    /// (2026-07-08: settle the morning-once tiles so they agree with their detail).
+    private var displaySettledHRV: (value: String, detail: String) {
+        if let entry = dayDescendingRollups.first(where: { $0.lnRMSSD != nil }),
+           let lnRMSSD = entry.lnRMSSD {
+            let ms = Int(exp(lnRMSSD).rounded())
+            let label = Calendar.current.isDateInToday(entry.day) ? "this morning" : "yesterday"
+            return ("\(ms)", label)
+        }
+        let live = displayHero.hrvValue
+        let detail = isPendingHeroValue(live)
+            ? baselineNightsProgress(store.baseline.freshHRVSampleCount())
+            : displayHero.hrvDetail
+        return (live, detail)
+    }
+
+    /// RHR glance carry (mirrors `displaySettledHRV`): pins the tile to the frozen
+    /// daily resting HR (`rhr`) the detail sheet reads, not the live value, labeled
+    /// "this morning"/"yesterday". Falls back to the live value + "N of 14 nights"
+    /// progress only when no rollup carries an RHR yet.
+    private var displaySettledRHR: (value: String, detail: String) {
+        if let entry = dayDescendingRollups.first(where: { $0.rhr != nil }),
+           let rhr = entry.rhr {
+            let label = Calendar.current.isDateInToday(entry.day) ? "this morning" : "yesterday"
+            return ("\(rhr)", label)
+        }
+        let live = displayHero.restingHeartRateText
+        let detail = isPendingHeroValue(live)
+            ? baselineNightsProgress(store.baseline.freshRestingSampleCount())
+            : "bpm"
+        return (live, detail)
+    }
+
     /// Which day of the ~4-night recovery calibration the user is on. Shared by the
     /// ring center (`centerValue`) and the recovery legend chip (`displayRecovery`)
     /// so the two never disagree — the center used to hardcode "Day 1" while the
@@ -1350,10 +1389,8 @@ struct AtriaTodayScreen: View {
         case .hrv:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: displayHero.hrvValue,
-                                        detail: legendDetail(isPendingHeroValue(displayHero.hrvValue)
-                                                             ? baselineNightsProgress(store.baseline.freshHRVSampleCount())
-                                                             : displayHero.hrvDetail),
+                                        value: displaySettledHRV.value,
+                                        detail: legendDetail(displaySettledHRV.detail),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
@@ -1398,14 +1435,8 @@ struct AtriaTodayScreen: View {
         case .rhr:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: displayHero.restingHeartRateText,
-                                        // RHR shares HRV's 14-night personal baseline: when no resting
-                                        // reading exists yet, restingHeartRateText is "Learning", so mirror
-                                        // the HRV tile and show honest "N of 14 nights" progress while
-                                        // pending; once a real reading arrives, show the plain "bpm" unit.
-                                        detail: legendDetail(isPendingHeroValue(displayHero.restingHeartRateText)
-                                                             ? baselineNightsProgress(store.baseline.freshRestingSampleCount())
-                                                             : "bpm"),
+                                        value: displaySettledRHR.value,
+                                        detail: legendDetail(displaySettledRHR.detail),
                                         systemImage: metric.systemImage,
                                         tint: .pink,
                                         layoutSize: layoutSize(for: metric))
