@@ -331,7 +331,7 @@ private struct AtriaJournalCheckInDeck: View {
 
     private var tags: [BehaviorJournalEntry.Tag] { BehaviorJournalEntry.Tag.allCases }
     /// Standalone typed cards appended after the boolean tags.
-    private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale] }
+    private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale, .energyScale, .focusScale] }
     private var cardCount: Int { tags.count + scaleQuestions.count }
     private var answeredCount: Int { answeredTagCount + answeredScaleCount }
     private var answeredScaleCount: Int {
@@ -719,7 +719,7 @@ private struct AtriaJournalCheckInDeck: View {
                     pendingDrinks = existing
                 }
             }
-        case .moodScale, .stressScale:
+        case .moodScale, .stressScale, .energyScale, .focusScale:
             EmptyView()
         }
     }
