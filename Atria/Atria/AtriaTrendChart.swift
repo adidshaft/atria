@@ -22,6 +22,16 @@ struct AtriaTrendChartCard: View {
     @State private var showExpandedChart = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
     @State private var rangeCoverage: [AtriaTrendRange: Int] = [:]
+    // Perf (handoff #5): `.onChange(of: points, initial: true)` re-fires on every
+    // LazyVStack scroll-in; skip the prepare when the inputs are unchanged.
+    @State private var preparedKey: PreparedKey?
+
+    private struct PreparedKey: Equatable {
+        let points: [AtriaTrendPoint]
+        let metric: AtriaTrendMetric
+        let range: AtriaTrendRange
+        let baselineRestingHR: Int?
+    }
     // Real progressive disclosure: the compact card shows just the chart; the
     // stacked context sub-cards (range dock, report, balance map, glance board,
     // range lens, position band, dot strip) collapse behind this toggle so the
@@ -185,6 +195,9 @@ struct AtriaTrendChartCard: View {
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
+        let key = PreparedKey(points: points, metric: metric, range: range, baselineRestingHR: baselineRestingHR)
+        guard preparedKey != key else { return }
+        preparedKey = key
         prepared = Self.prepareSeries(points: points,
                                       metric: metric,
                                       range: range,
