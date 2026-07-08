@@ -1998,11 +1998,15 @@ struct AtriaHomeView: View {
         // newest confirmed sleep is already recent.
         store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground")
         Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
-        LocalNotificationScheduler.scheduleEveningJournalCheckIn(
-            lastJournalActivity: [store.behaviorJournalEntries.map(\.day).max(),
-                                  store.journalAnswers.latestActivityDay()]
-                .compactMap { $0 }
-                .max())
+        let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
+                                   store.journalAnswers.latestActivityDay()]
+            .compactMap { $0 }
+            .max()
+        LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
+        // Pre-schedule the morning journal nudge too, so a waking user gets a
+        // check-in prompt even when last night's sleep wasn't confirmed and the
+        // rich morning summary is skipped (user 2026-07-08).
+        LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
     }
 
     private func refreshAICoachKeyState() {
