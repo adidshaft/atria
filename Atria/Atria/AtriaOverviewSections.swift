@@ -3125,7 +3125,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var trendCard: some View {
         AtriaGlanceMetricCard(title: "Resting trend",
                               value: trendValues.count > 1 ? "\(trendValues.last ?? 0)" : "--",
-                              detail: trendValues.count > 1 ? "14 sessions" : "Learning",
+                              // Empty-state honesty (2026-07-08): a trend line needs two
+                              // nights to plot, so say exactly how far off it is ("0 of 2
+                              // nights") instead of a bare "Learning" — matches the "N of M"
+                              // progress the RHR/HRV cards already show.
+                              detail: trendValues.count > 1 ? "14 sessions" : "\(trendValues.count) of 2 nights",
                               systemImage: AtriaTodayMetric.trend.systemImage,
                               tint: .red,
                               sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
