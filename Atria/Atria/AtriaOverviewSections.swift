@@ -2491,7 +2491,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            value: sleepGlanceValueText,
                            detail: sleepTriRingDetailText,
                            systemImage: sleepGlanceSystemImage,
-                           tint: Metrics.electricSleep,
+                           tint: Metrics.ringAchievementTint(fill: sleepFocusProgress),
                            fill: sleepFocusProgress)
     }
 
@@ -2511,7 +2511,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: hero.strainValue,
                                   detail: targetValueText,
                                   systemImage: AtriaTodayMetric.strain.systemImage,
-                                  tint: Metrics.electricStrain,
+                                  tint: Metrics.ringAchievementTint(fill: metricIsPending(hero.strainValue) ? nil : fill),
                                   fill: metricIsPending(hero.strainValue) ? nil : fill)
     }
 
@@ -2907,13 +2907,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .hrv:
             detailButton(.hrv) {
                 AtriaGlanceMetricCard(title: "HRV",
-                                      value: metricDisplayValue(hero.hrvValue),
-                                      detail: hrvDetailText,
+                                      value: hrvCalibratingValue ?? metricDisplayValue(hero.hrvValue),
+                                      detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText,
                                       systemImage: metric.systemImage,
-                                      tint: hrvZone?.tint ?? .pink,
+                                      tint: (hrvCalibratingValue != nil ? nil : hrvZone)?.tint ?? Metrics.electricHRV,
                                       sparklineValues: dailyMetricSparklines.hrv,
-                                      zone: hrvZone,
-                                      calibratingDay: hrvCalibratingDay)
+                                      zone: hrvCalibratingValue != nil ? nil : hrvZone,
+                                      calibratingDay: hrvCalibratingValue != nil ? nil : hrvCalibratingDay,
+                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
+                                      calibratingUnit: "Night")
             }
         case .stress:
             Button {
@@ -2968,20 +2970,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .rhr:
             detailButton(.restingHeartRate) {
                 AtriaGlanceMetricCard(title: "RHR",
-                                      value: metricDisplayValue(hero.restingHeartRateText),
-                                      detail: "Baseline",
+                                      value: restingCalibratingValue ?? metricDisplayValue(hero.restingHeartRateText),
+                                      detail: restingCalibratingValue != nil ? calibratingProgressDetail(samples: restingBaselineSamples) : "Baseline",
                                       systemImage: metric.systemImage,
-                                      tint: restingHeartRateZone?.tint ?? .pink,
+                                      tint: (restingCalibratingValue != nil ? nil : restingHeartRateZone)?.tint ?? Metrics.electricRHR,
                                       sparklineValues: dailyMetricSparklines.restingHeartRate,
-                                      zone: restingHeartRateZone,
-                                      calibratingDay: restingCalibratingDay)
+                                      zone: restingCalibratingValue != nil ? nil : restingHeartRateZone,
+                                      calibratingDay: restingCalibratingValue != nil ? nil : restingCalibratingDay,
+                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
+                                      calibratingUnit: "Night")
             }
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
                                   value: sleepHistory.latest?.respiratoryRateText ?? "--",
                                   detail: sleepHistory.latest?.respiratoryRate == nil ? "Sleep signal" : "Early",
                                   systemImage: metric.systemImage,
-                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : .teal),
+                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latest?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
                                   zone: respiratoryRateZone,
                                   accessibilityDetail: sleepHistory.latest?.respiratoryRate == nil
                                     ? "Respiratory rate is building from sleep-only evidence."
@@ -3039,7 +3043,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: sensorSummary.skinTemperatureDeviation.isReady ? sensorSummary.skinTemperatureDeviation.valueText : "--",
                                   detail: sensorSummary.skinTemperatureDeviation.detailText,
                                   systemImage: metric.systemImage,
-                                  tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? .teal : .orange),
+                                  tint: skinTemperatureDeviationZone?.tint ?? (sensorSummary.skinTemperatureDeviation.isReady ? Metrics.electricRespiratory : .orange),
                                   zone: skinTemperatureDeviationZone,
                                   accessibilityDetail: sensorSummary.skinTemperatureDeviation.isReady
                                     ? "Body temperature early relative signal \(sensorSummary.skinTemperatureDeviation.valueText) delta C from baseline, \(sensorSummary.skinTemperatureDeviation.footnoteText)."
@@ -3257,12 +3261,35 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         hero.recoveryEstimate.percent == nil ? calibratingDay(sampleCount: max(hrvBaselineSamples, restingBaselineSamples)) : nil
     }
 
+    // HRV/RHR baselines need trustedMinimumSamples (14) nights — so they carry
+    // the RAW recorded-night count (not the capped "day"), and their cards pass
+    // total: 14, unit: "Night" for honest "Night X of 14" progress (2026-07-08).
     private var hrvCalibratingDay: Int? {
-        metricIsPending(hero.hrvValue) ? calibratingDay(sampleCount: hrvBaselineSamples) : nil
+        metricIsPending(hero.hrvValue) ? hrvBaselineSamples : nil
     }
 
     private var restingCalibratingDay: Int? {
-        metricIsPending(hero.restingHeartRateText) ? calibratingDay(sampleCount: restingBaselineSamples) : nil
+        metricIsPending(hero.restingHeartRateText) ? restingBaselineSamples : nil
+    }
+
+    // Partial data during calibration (user 2026-07-08 "start showing something
+    // when we can"): once a baseline value exists, show the real HRV/RHR built so
+    // far — a measured number — instead of hiding it behind the countdown ring.
+    // The detail says it's still calibrating and the zone judgment is suppressed
+    // (there is no trusted baseline to grade the number against yet), so nothing
+    // is fabricated or over-claimed.
+    private var hrvCalibratingValue: String? {
+        guard hrvCalibratingDay != nil, let hrv = baselineTarget.hrvBaseline else { return nil }
+        return "\(hrv)"
+    }
+
+    private var restingCalibratingValue: String? {
+        guard restingCalibratingDay != nil, let rhr = baselineTarget.restingBaseline else { return nil }
+        return "\(rhr)"
+    }
+
+    private func calibratingProgressDetail(samples: Int) -> String {
+        "Calibrating · night \(min(max(samples, 0), PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples)"
     }
 
     private var sleepCalibratingDay: Int? {
@@ -3722,8 +3749,8 @@ struct AtriaWeeklyPlanCard: View, Equatable {
             HStack(alignment: .firstTextBaseline) {
                 AtriaPanelSectionHeader(title: "This week", subtitle: "")
                 Spacer(minLength: 8)
-                Text("W\(plan.isoWeek)")
-                    .font(.caption.weight(.bold).monospacedDigit())
+                Text(plan.dateRangeText)
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -4572,6 +4599,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     var zone: AtriaMetricZone? = nil
     var accessibilityDetail: String? = nil
     var calibratingDay: Int? = nil
+    var calibratingTotal: Int = 4
+    var calibratingUnit: String = "Day"
     @State private var showingZoneInfo = false
 
     static func == (lhs: AtriaGlanceMetricCard, rhs: AtriaGlanceMetricCard) -> Bool {
@@ -4585,6 +4614,8 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             && lhs.zone == rhs.zone
             && lhs.accessibilityDetail == rhs.accessibilityDetail
             && lhs.calibratingDay == rhs.calibratingDay
+            && lhs.calibratingTotal == rhs.calibratingTotal
+            && lhs.calibratingUnit == rhs.calibratingUnit
     }
 
     static var placeholder: some View {
@@ -4608,7 +4639,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
     }
 
     private var accessibilityText: String {
-        var parts = [calibratingDay.map { "\(title) calibrating day \(min(max($0, 1), 4)) of 4" } ?? "\(title) \(displayValue)", detail]
+        var parts = [calibratingDay.map { "\(title) calibrating \(calibratingUnit.lowercased()) \(min(max($0, 0), calibratingTotal)) of \(calibratingTotal)" } ?? "\(title) \(displayValue)", detail]
         if let accessibilityDetail,
            !accessibilityDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append(accessibilityDetail)
@@ -4675,7 +4706,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if let calibratingDay {
-                    AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                    AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
                 } else {
                     Text(displayValue)
                         .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -4724,7 +4755,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let calibratingDay {
-                AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
                     .layoutPriority(1)
             } else {
                 Text(displayValue)
@@ -6364,7 +6395,11 @@ private struct AtriaSleepPlanStrip: View, Equatable {
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @State private var alarmStatusText: String?
+    /// Efficiencies of the user's real confirmed nights, for the planner's
+    /// time-in-bed assumption. Passed in so this card stays store-free.
+    var nightEfficiencies: [Double] = []
 
     static func == (lhs: AtriaSleepPlanStrip, rhs: AtriaSleepPlanStrip) -> Bool {
         lhs.statusText == rhs.statusText
@@ -6747,6 +6782,7 @@ struct AtriaMetricDetailSheet: View {
                                        priorPoints: config.prior,
                                        baselineBand: config.band,
                                        events: expandedChartEvents,
+                                       overlays: expandedChartOverlays,
                                        onDismiss: { showExpandedChart = false })
             }
         }
@@ -6898,7 +6934,8 @@ struct AtriaMetricDetailSheet: View {
                                             neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                     baseNeedHours: sleepBaseNeedHours,
                                                                                     yesterdayStrain: yesterdayStrainForLatestNight),
-                                            consistencyPercent: sleepHistory.sleepConsistencyPercent)
+                                            consistencyPercent: sleepHistory.sleepConsistencyPercent,
+                                            nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
                     sleepDebtTrendCard
                 }
@@ -8071,6 +8108,34 @@ struct AtriaMetricDetailSheet: View {
             }
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricGreen)
+        }
+    }
+
+    /// Shaped outside the render block per the perf rule (no compactMap in
+    /// view-builder bodies): real confirmed nights' efficiencies for the
+    /// sleep planner's time-in-bed assumption.
+    private var confirmedNightEfficiencies: [Double] {
+        sleepHistory.nights.filter(\.confirmed).compactMap(\.sleepEfficiency)
+    }
+
+    /// Overlay candidates for "Edit this chart": the two sibling metrics the
+    /// inline chart already pairs as scrub companions, in raw daily form.
+    private var expandedChartOverlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] {
+        switch metric {
+        case .recovery, .strain:
+            return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
+                    ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
+        case .hrv, .restingHeartRate:
+            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
+                    ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
+        case .sleep:
+            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
+                    ("Strain", "", Metrics.electricStrain, preparedHistory.strainRaw[range] ?? [])]
+        case .respiratoryRate:
+            return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
+                    ("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? [])]
+        default:
+            return []
         }
     }
 
@@ -10163,7 +10228,11 @@ private struct AtriaSleepHypnogramCard: View {
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @State private var alarmStatusText: String?
+    /// Efficiencies of the user's real confirmed nights, for the planner's
+    /// time-in-bed assumption. Passed in so this card stays store-free.
+    var nightEfficiencies: [Double] = []
 
     private var wakeAlarmPlan: AtriaWakeAlarmPlan {
         AtriaWakeAlarmPlan(mode: AtriaWakeAlarmPlan.Mode(rawValue: wakeAlarmMode) ?? .smartWindow,
@@ -10197,6 +10266,27 @@ private struct AtriaSleepHypnogramCard: View {
                 }
                 .frame(height: 42)
 
+                // Legend so the colored bar is self-explanatory (2026-07-08 UX
+                // audit: it was an unlabeled two-tone bar).
+                let presentStages = SleepStageKind.displayOrder.filter { stage in
+                    night.displayStageSegments.contains { $0.stage == stage }
+                }
+                if !presentStages.isEmpty {
+                    HStack(spacing: 12) {
+                        ForEach(presentStages) { stage in
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(stageTint(stage))
+                                    .frame(width: 8, height: 8)
+                                Text(stage.label)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+
                 Text("Heart-rate and motion estimate — useful for trend context, not an EEG sleep study.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -10212,6 +10302,8 @@ private struct AtriaSleepHypnogramCard: View {
 
             wakeAlarmCard
 
+            sleepPlannerCard
+
             if let consistencyPercent {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: Double(consistencyPercent), total: 100)
@@ -10224,6 +10316,49 @@ private struct AtriaSleepHypnogramCard: View {
         }
         .padding(14)
         .atriaInsetCard(tint: .cyan)
+    }
+
+    /// Sleep Planner (2026-07-07, WHOOP-research adaptation): pick a goal,
+    /// get an in-bed-by time worked back from the wake alarm using tonight's
+    /// need and the user's own typical efficiency.
+    private var sleepPlannerCard: some View {
+        let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
+        let plan = AtriaSleepPlanner.plan(needHours: neededHours,
+                                          goal: goal,
+                                          wakeByMinutes: wakeByMinutes,
+                                          nightEfficiencies: nightEfficiencies)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "bed.double.circle.fill")
+                    .foregroundStyle(Metrics.electricSleep)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Tonight's plan")
+                        .font(.caption.weight(.bold))
+                    Text("In bed by \(plan.inBedByText) \u{00b7} \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) asleep")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Picker("Sleep goal", selection: Binding(
+                get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
+                set: { plannerGoalRaw = $0.rawValue })) {
+                ForEach(AtriaSleepPlannerGoal.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text("\(goal.detail) tonight, assuming your \(plan.efficiencyIsDefault ? "typical-population" : "own typical") efficiency (\(Int((plan.assumedEfficiency * 100).rounded()))%)\(plan.efficiencyIsDefault ? " \u{2014} learning yours" : ""). Anchored to your wake-by time above.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Tonight's plan. \(goal.title): in bed by \(plan.inBedByText) for \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) of sleep.")
     }
 
     private var wakeAlarmCard: some View {
@@ -11139,7 +11274,7 @@ struct AtriaOverviewBehaviorJournalSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Impacts", subtitle: "Local behavior patterns")
+                AtriaPanelSectionHeader(title: "Impacts", subtitle: "What's affecting you")
 
                 Spacer(minLength: 0)
 
@@ -11207,20 +11342,10 @@ private struct AtriaJournalImpactStrip: View, Equatable {
     }
 
     var body: some View {
+        // The inner "Impact" + day-count header was removed (2026-07-08 UX
+        // audit: it duplicated the outer "Impacts" card's title and day chip,
+        // reading as a card-in-card). Contents promote straight up.
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                Label("Impact", systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                Text(taggedDays > 0 ? "\(taggedDays)d local" : "learning")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.055), in: Capsule())
-            }
-
             if behaviorImpacts.isEmpty && summaries.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "tag.circle")
@@ -11306,6 +11431,10 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         summaries.first
     }
 
+    private var patternCount: Int {
+        summaries.filter { $0.impactDelta != nil }.count
+    }
+
     private var supportValue: Double {
         min(supportSummaries.reduce(0) { $0 + $1.impactMagnitude } / 12, 1)
     }
@@ -11385,8 +11514,8 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
                            value: taggedDays > 0 ? "\(taggedDays)d" : "0d",
                            systemImage: "calendar.badge.checkmark",
                            tint: .cyan)
-                glanceChip(title: "Links",
-                           value: "\(summaries.filter { $0.impactDelta != nil }.count)",
+                glanceChip(title: "Patterns",
+                           value: patternCount > 0 ? "\(patternCount)" : "—",
                            systemImage: "waveform.path.ecg",
                            tint: .mint)
                 glanceChip(title: "Focus",
@@ -11396,7 +11525,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Journal impact glance. \(taggedDays) logged days. \(summaries.filter { $0.impactDelta != nil }.count) behavior links. Focus \(focusSummary?.tag.label ?? "tag more"). Watch \(pressureSummaries.count), support \(supportSummaries.count).")
+        .accessibilityLabel("Journal impact glance. \(taggedDays) logged days. \(patternCount) behavior patterns. Focus \(focusSummary?.tag.label ?? "tag more"). Watch \(pressureSummaries.count), support \(supportSummaries.count).")
     }
 
     private func impactLane(title: String,
@@ -11792,7 +11921,7 @@ private struct AtriaJournalImpactFocus: View, Equatable {
                     .font(.headline.weight(.bold).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                Text("\(summary.days)d local")
+                Text("\(summary.days)d logged")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

@@ -1309,6 +1309,51 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
     }
 
+    // MARK: Respiratory-rate HF band floor + BLE-gap guard (2026-07-08)
+
+    func testRespRateAcceptsRealBreathingBand() {
+        let sampleRate = 4.0
+        let count = Int(90 * sampleRate)
+        let hf = (0..<count).map { sin(2 * Double.pi * (15.0 / 60.0) * Double($0) / sampleRate) }
+        let rate = AtriaAnalytics.RespRateRsa.estimate(resampledRR: hf, sampleRate: sampleRate)
+        XCTAssertNotNil(rate)
+        XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
+    }
+
+    func testRespRateNeverReportsBelowBreathingFloor() {
+        // A 6 bpm (0.10 Hz) oscillation is HRV low-frequency / Mayer-wave
+        // territory, not breathing. The device showed 6.5-8.2 bpm reported as
+        // respiratory rate — a fabrication. The estimator must now never
+        // return a value below the 9 bpm HF-band floor (nil is fine).
+        let sampleRate = 4.0
+        let count = Int(90 * sampleRate)
+        let lf = (0..<count).map { sin(2 * Double.pi * (6.0 / 60.0) * Double($0) / sampleRate) }
+        if let rate = AtriaAnalytics.RespRateRsa.estimate(resampledRR: lf, sampleRate: sampleRate) {
+            XCTAssertGreaterThanOrEqual(rate, 9.0, "must not report LF drift as sub-9 bpm breathing")
+        }
+    }
+
+    func testRespRateFailsClosedAcrossBleDropGap() {
+        // A clean 15 bpm RR series with a 12s beat-timeline hole (BLE drop).
+        // The gap guard must return nil rather than interpolate LF drift
+        // across the hole and mislabel it as slow breathing.
+        let base = Date(timeIntervalSinceReferenceDate: 900_000)
+        var samples: [(t: Date, ms: Double)] = []
+        for index in 0..<220 {
+            let t = Double(index) * 0.9
+            let ms = 900 + 70 * sin(2 * Double.pi * (15.0 / 60.0) * t)
+            samples.append((base.addingTimeInterval(t), ms))
+        }
+        let afterGap = samples.last!.t.addingTimeInterval(12)
+        for index in 0..<120 {
+            let t = Double(index) * 0.9
+            let ms = 900 + 70 * sin(2 * Double.pi * (15.0 / 60.0) * t)
+            samples.append((afterGap.addingTimeInterval(t), ms))
+        }
+        let now = samples.last!.t
+        XCTAssertNil(AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: now, lookback: 600))
+    }
+
     func testSleepRespiratoryRateFallsBackForOvernightHROnlyEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1468,6 +1513,42 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         XCTAssertTrue(result.shouldPrompt)
         XCTAssertTrue(result.zonePath)
+    }
+
+    // Device-lag fix (2026-07-07): the evaluator now walks only the trailing
+    // window instead of scanning the whole (up to ~80k-sample) session. These
+    // lock that the long lead-in neither counts nor changes the verdict.
+    func testWorkoutPromptEvaluatorScansOnlyTailOfLongSession() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // ~4h of resting samples before the window, then 8 min elevated ending now.
+        let leadIn = syntheticHeartSamples(start: start, count: 14_400, bpm: 62)
+        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 87)
+        let samples = leadIn + tail
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 87,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+        XCTAssertEqual(result.elevatedSamples, 480, "only the trailing 8-min window counts")
+        XCTAssertTrue(result.sustainedPath)
+        XCTAssertTrue(result.shouldPrompt)
+    }
+
+    func testWorkoutPromptEvaluatorIgnoresElevatedDataBeforeWindow() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // Old elevated bout long ago, then the last 8 min at rest.
+        let oldElevated = syntheticHeartSamples(start: start, count: 480, bpm: 120)
+        let recentResting = syntheticHeartSamples(start: start.addingTimeInterval(3_600), count: 480, bpm: 62)
+        let samples = oldElevated + recentResting
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 62,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+        XCTAssertEqual(result.elevatedSamples, 0, "elevated data outside the window must not count")
+        XCTAssertFalse(result.shouldPrompt)
     }
 
     func testWorkoutPromptCooldownLatchExpiresAfterFortyFiveMinutes() {
@@ -2280,9 +2361,10 @@ final class AtriaAnalyticsTests: XCTestCase {
             AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(180), bpm: 92),
         ]
 
+        // Merge de-dups by second (live overrides historical at t=120) and
+        // sorts ascending; it no longer pre-downsamples (2026-07-07 rework).
         let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: live,
-                                                                        historical: historical,
-                                                                        targetCount: 10)
+                                                                        historical: historical)
 
         XCTAssertEqual(merged.map { Int($0.t.timeIntervalSince(start)) }, [0, 60, 120, 180])
         XCTAssertEqual(merged.map(\.bpm), [61, 62, 91, 92])

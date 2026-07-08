@@ -287,9 +287,20 @@ struct AtriaActivityMonitorTab: View {
                     title: workout.label,
                     subtitle: Self.timeRange(start: workout.start, end: workout.end),
                     value: Self.durationText(workout.duration),
-                    badge: workout.strain.map { "Strain \(String(format: "%.1f", $0))" }
-                        ?? "\(workout.avgHR) bpm avg")
+                    badge: Self.strainBadge(for: workout))
             .accessibilityLabel("\(workout.label), \(Self.durationText(workout.duration)), average \(workout.avgHR) bpm. Tap for details.")
+    }
+
+    /// Honesty (2026-07-08): strain is only as complete as the HR that covered
+    /// the window. A sparse-coverage window (e.g. a manually-added workout the
+    /// strap barely recorded) must NOT show a full-workout strain with no
+    /// signal — it reads as "83 min = 1.1 strain". Qualify or refuse the number.
+    static func strainBadge(for workout: UserConfirmedWorkout) -> String {
+        guard let strain = workout.strain else { return "\(workout.avgHR) bpm avg" }
+        if strain < 0.1 { return "No HR data" }
+        return workout.streamCoveragePercent < 75
+            ? "Strain \(String(format: "%.1f", strain)) \u{00b7} partial HR"
+            : "Strain \(String(format: "%.1f", strain))"
     }
 
     private func activityRow(icon: String,
@@ -416,10 +427,15 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         _endTime = State(initialValue: workout.end)
     }
 
-    /// The workout window's real recorded HR samples from the saved
-    /// sessions that overlap it. Empty when no session covered the window
-    /// (e.g. a manually added workout) — the card then doesn't render.
-    private var heartRateTracePoints: [AtriaHomeModel.HeartRateChartPoint] {
+    /// The workout window's real recorded HR samples from the saved sessions
+    /// that overlap it. Empty when no session covered the window (e.g. a manually
+    /// added workout) — the card then doesn't render. Cached in `tracePoints`
+    /// because this scan is O(sessions × points): recomputing it on every ~1 Hz
+    /// store publish while the sheet is open was a hang, and a completed workout's
+    /// overlapping samples never change (2026-07-08).
+    @State private var tracePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+
+    private func computeHeartRateTracePoints() -> [AtriaHomeModel.HeartRateChartPoint] {
         store.sessions
             .filter { $0.end > workout.start && $0.start < workout.end }
             .flatMap { session in
@@ -437,7 +453,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// band per the 2026-07-07 feedback.
     @ViewBuilder
     private var heartRateTraceCard: some View {
-        let points = heartRateTracePoints
+        let points = tracePoints
         if points.count >= 30 {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Heart-rate trace")
@@ -560,10 +576,22 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
 
-                    Text("Times and stats come straight from the recorded session — nothing here is estimated or filled in.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Honesty (2026-07-08): when HR covered only part of the
+                    // window, say so — the strain reflects the covered minutes,
+                    // not the full entered duration. Otherwise the old caption
+                    // (now accurate) stands.
+                    if workout.streamCoveragePercent < 75 {
+                        Text("Strain reflects the \(Int((workout.observedDuration / 60).rounded())) min of strap heart-rate in this \(durationText(workout.duration)) window (\(workout.streamCoveragePercent)% covered) — the rest had no strap data, so it under-reads your full effort.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Times and stats come straight from the recorded session — nothing here is estimated or filled in.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     Button(role: .destructive) {
                         showDeleteConfirm = true
@@ -595,6 +623,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes it from your history and strain. The recorded sensor data is kept; only this confirmed workout is deleted.")
+            }
+            // Compute the HR trace once per workout (samples are immutable for a
+            // completed workout) instead of rescanning all sessions each publish.
+            .task(id: workout.id) {
+                tracePoints = computeHeartRateTracePoints()
             }
         }
     }

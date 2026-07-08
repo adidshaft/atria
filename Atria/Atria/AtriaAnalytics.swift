@@ -17,6 +17,13 @@ enum AtriaAnalytics {
 
             let start = first.timeIntervalSinceReferenceDate
             let relative = recent.map { ($0.t.timeIntervalSinceReferenceDate - start, $0.ms) }
+            // Fail closed on BLE-drop holes (device logs showed inter-beat gaps
+            // up to ~69s from 118 link disconnects). A large gap means missing
+            // beats; resampling across it manufactures slow low-frequency drift
+            // the periodogram would mislabel as breathing. 2026-07-08.
+            for index in 1..<relative.count where relative[index].0 - relative[index - 1].0 > 5.0 {
+                return nil
+            }
             let sampleRate = 4.0
             let step = 1.0 / sampleRate
             let count = Int(duration / step) + 1
@@ -51,7 +58,14 @@ enum AtriaAnalytics {
             var bestRate = 0.0
             var bestPower = 0.0
             var bandPower = 0.0
-            for breathsPerMinute in stride(from: 6.0, through: 30.0, by: 0.5) {
+            // Scan the respiratory HF band only (0.15-0.50 Hz = 9-30 bpm).
+            // The old 6 bpm floor (0.10 Hz) sat inside the HRV LF / Mayer-wave
+            // band, so at rest the LF/drift peak routinely won the argmax and
+            // the app reported ~6-8 bpm "breathing" — a fabricated number
+            // below any real resting rate. Raising the floor makes the SNR
+            // gate below evaluate prominence over the true breathing band and
+            // fail closed to "--" when only LF power is present. 2026-07-08.
+            for breathsPerMinute in stride(from: 9.0, through: 30.0, by: 0.5) {
                 let frequency = breathsPerMinute / 60.0
                 var real = 0.0
                 var imaginary = 0.0

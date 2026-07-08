@@ -3025,11 +3025,19 @@ extension SavedSession {
                                                 ? "validated_hrv_window"
                                                 : "local_hrv_window")
         }
-        if duration < 20 * 60 {
+        // Duration floor lowered 20min -> 5min (2026-07-08, device-reported
+        // "1/14 RHR" after 3 days). All-day wear, fragmented by frequent BLE
+        // drops into sub-20-min segments, was silently discarding genuinely
+        // restful data. This reject still sits BEFORE the avg<=rest+15 /
+        // peak<=rest+35 guards below, so a 5-20 min segment must still prove
+        // it is truly at rest to be accepted; sub-5-min stays rejected. The
+        // 14-distinct-DAY trust gate and bounded EMA are untouched, so
+        // learning states still fail closed until real multi-day history.
+        if duration < 5 * 60 {
             return BaselineLearningEvidence(value: restingEvidence.value,
                                             source: restingEvidence.source,
                                             accepted: false,
-                                            reason: "duration_below_20m")
+                                            reason: "duration_below_5m")
         }
         if avg > rest + 15 {
             return BaselineLearningEvidence(value: restingEvidence.value,
@@ -3357,6 +3365,10 @@ final class SessionStore: ObservableObject {
     /// marker changes so SwiftUI renders read O(1) values.
     @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
     @Published private(set) var researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: [], sessions: [])
+    /// Coalesces the off-main recompute of the research/collection summaries so
+    /// they don't rebuild over ALL sessions on the main thread on every live
+    /// checkpoint (2026-07-08 compute-cadence pass).
+    private var pendingResearchSummaryRecompute: DispatchWorkItem?
     /// History opens with this cached snapshot instead of recomputing activity
     /// detection, trend summaries, and daily rollups on the navigation path.
     @Published private(set) var historySnapshot = HistorySnapshot.empty
@@ -3478,9 +3490,23 @@ final class SessionStore: ObservableObject {
     }
 
     private func recomputeCollectionResearchSummaries() {
-        imuAuditSummary = IMUAuditSummary(sessions: sessions)
-        researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers,
-                                                                                          sessions: sessions)
+        // These feed non-live research/collection cards, so coalesce them off the
+        // hot sessions.didSet (fires on every live checkpoint) and compute OFF the
+        // main thread — rebuilding IMUAuditSummary + the maneuver correlation over
+        // ALL sessions on the main thread on every mutation was a stall (2026-07-08).
+        pendingResearchSummaryRecompute?.cancel()
+        let sessionsSnapshot = sessions
+        let markers = cachedResearchManeuverMarkers
+        let work = DispatchWorkItem {
+            let imu = IMUAuditSummary(sessions: sessionsSnapshot)
+            let maneuver = ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessionsSnapshot)
+            DispatchQueue.main.async { [weak self] in
+                self?.imuAuditSummary = imu
+                self?.researchManeuverProbeCorrelationSummary = maneuver
+            }
+        }
+        pendingResearchSummaryRecompute = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     private func refreshHistorySnapshotCache(deferred: Bool = true) {
@@ -3980,7 +4006,14 @@ final class SessionStore: ObservableObject {
             let dayDetections = detectionsByDay[day] ?? []
             let sleepDetections = dayDetections.filter { $0.kind == .sleepCandidate }
             let aggregateSleep = aggregateSleeps[day]
-            let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
+            // Sleep-ready aligned with the app's own auto-confirm gate
+            // (2026-07-08, device-reported "Sleep --" after 3 nights): the old
+            // flag required motionEvidenceValidated, structurally impossible on
+            // an accelerometer-less chest strap, so overnight sleep this app
+            // already confirms from HR alone was dropped from the readiness
+            // counter. isStrongAutoConfirmableSleepCandidate keeps the motion
+            // path preferred and still fails naps/marginal nights closed.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
             let singleSessionSleepDuration = sleepDetections.reduce(0) { $0 + $1.duration }
             let sleepStart = aggregateSleep?.start ?? sleepDetections.map(\.start).min()
             let sleepEnd = aggregateSleep?.end ?? sleepDetections.map(\.end).max()
@@ -4031,6 +4064,22 @@ final class SessionStore: ObservableObject {
         .sorted { $0.day > $1.day }
     }
 
+    /// Per-DAY strain values (day-summed TRIMP → score), NOT per-session
+    /// scores. score() saturates, so averaging per-session scores under-reports
+    /// a day's strain ~2x versus the day-summed strain every other surface
+    /// shows — trend charts must use this (2026-07-08 calc-consistency audit).
+    nonisolated static func perDayStrains(_ sessions: [SavedSession],
+                                          rest: Int,
+                                          maxHR: Int,
+                                          calendar: Calendar = .current) -> [Double] {
+        var trimpByDay: [Date: Double] = [:]
+        for session in sessions {
+            let day = calendar.startOfDay(for: session.start)
+            trimpByDay[day, default: 0] += session.trimp(rest: rest, max: maxHR)
+        }
+        return trimpByDay.values.map { Metrics.strain(fromTRIMP: $0) }
+    }
+
     private nonisolated static func makeHistoryTrendSummaries(sessions: [SavedSession],
                                                               rollups: [DailyRollup],
                                                               baseline: PersonalBaseline,
@@ -4049,7 +4098,7 @@ final class SessionStore: ObservableObject {
                 let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
                 return evidence.accepted ? evidence.value : nil
             }
-            let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+            let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap {
                 $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
@@ -4185,10 +4234,14 @@ final class SessionStore: ObservableObject {
         return (mean, sqrt(variance), values.count)
     }
 
-    private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
-        guard let duration, duration > 0 else { return nil }
-        let denominator = max(span ?? duration, duration)
-        guard denominator > 0 else { return nil }
+    // Internal (was private) so the honesty rule below is unit-testable.
+    nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double? {
+        // Honesty (2026-07-08 audit): when the in-bed span is unknown we do NOT
+        // know efficiency — return nil so recovery skips the sleep signal,
+        // instead of `max(span ?? duration, duration)` which made an unknown
+        // span read as a fabricated 100% and inflated the recovery score.
+        guard let duration, duration > 0, let span, span > 0 else { return nil }
+        let denominator = max(span, duration)
         return min(max(duration / denominator, 0), 1)
     }
 
@@ -4257,6 +4310,22 @@ final class SessionStore: ObservableObject {
             }
     }
 
+    /// Whether the scored night's recovery inputs differ between the preserved
+    /// frozen daily row and a fresh recompute — i.e. a sleep confirm / EXTEND /
+    /// adjust re-derived today's overnight readiness, so the preserved recovery
+    /// would go stale (2026-07-08). Compares ONLY the frozen overnight inputs to
+    /// recovery (the sleep window + HRV/RHR/respiratory), never live/drifting
+    /// values, so intra-day drift can't trigger a re-mint.
+    nonisolated static func dailyRecoveryInputsChanged(frozen: SavedDailyMetric,
+                                                       fresh: SavedDailyMetric) -> Bool {
+        frozen.sleepEnd != fresh.sleepEnd
+            || frozen.sleepDuration != fresh.sleepDuration
+            || frozen.sleepSpan != fresh.sleepSpan
+            || frozen.hrv != fresh.hrv
+            || frozen.restingHR != fresh.restingHR
+            || frozen.respiratoryRate != fresh.respiratoryRate
+    }
+
     nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
                                                             computed: [SavedDailyMetric],
                                                             sessions: [SavedSession],
@@ -4274,26 +4343,48 @@ final class SessionStore: ObservableObject {
 
         if let frozenToday = existing.first(where: { calendar.isDate($0.day, inSameDayAs: today) }) {
             // Once today's morning reading settles, preserve that frozen readiness
-            // snapshot (HRV/RHR/sleep) for the rest of the day instead of recomputing
-            // on refresh. Strain is a cumulative, all-day total (not an overnight
-            // readiness reading) and must keep accruing as later sessions land, or the
-            // displayed number silently stops climbing after the first refresh of the
-            // day — recompute it fresh each time from the same-day computed rollup.
-            let freshStrainToday = computed.first { calendar.isDate($0.day, inSameDayAs: today) }?.strain
-            merged[today] = SavedDailyMetric(day: frozenToday.day,
-                                             recoveryPercent: frozenToday.recoveryPercent,
-                                             recoveryConfidence: frozenToday.recoveryConfidence,
-                                             hrv: frozenToday.hrv,
-                                             restingHR: frozenToday.restingHR,
-                                             respiratoryRate: frozenToday.respiratoryRate,
-                                             sleepDuration: frozenToday.sleepDuration,
-                                             sleepSpan: frozenToday.sleepSpan,
-                                             sleepStart: frozenToday.sleepStart,
-                                             sleepEnd: frozenToday.sleepEnd,
-                                             sleepSource: frozenToday.sleepSource,
-                                             sleepStageSegments: frozenToday.sleepStageSegments,
-                                             sleepConsistencyPercent: frozenToday.sleepConsistencyPercent,
-                                             strain: freshStrainToday ?? frozenToday.strain)
+            // snapshot (HRV/RHR/sleep → recovery) for the rest of the day instead of
+            // recomputing on refresh. Strain is a cumulative, all-day total (not an
+            // overnight readiness reading) and must keep accruing as later sessions
+            // land, or the displayed number silently stops climbing after the first
+            // refresh of the day — recompute it fresh each time from the same-day
+            // computed rollup.
+            let freshToday = computed.first { calendar.isDate($0.day, inSameDayAs: today) }
+            // BUT if the scored NIGHT itself changed (a sleep confirm / EXTEND / adjust
+            // re-derives today's overnight inputs — e.g. the 2026-07-08 sleep-expand
+            // path moving the night's end), the preserved recovery would go STALE.
+            // Re-mint the frozen readiness from the CURRENT night via the same stable
+            // minter so the persisted recovery + trend point never outlive the night
+            // they describe.
+            let base: SavedDailyMetric
+            if let freshToday,
+               dailyRecoveryInputsChanged(frozen: frozenToday, fresh: freshToday),
+               let reminted = makeMorningFrozenDailyMetric(for: today,
+                                                           computed: computed,
+                                                           sessions: sessions,
+                                                           sleep: sleep,
+                                                           baseline: baseline,
+                                                           maxHR: maxHR,
+                                                           now: now,
+                                                           calendar: calendar) {
+                base = reminted
+            } else {
+                base = frozenToday
+            }
+            merged[today] = SavedDailyMetric(day: base.day,
+                                             recoveryPercent: base.recoveryPercent,
+                                             recoveryConfidence: base.recoveryConfidence,
+                                             hrv: base.hrv,
+                                             restingHR: base.restingHR,
+                                             respiratoryRate: base.respiratoryRate,
+                                             sleepDuration: base.sleepDuration,
+                                             sleepSpan: base.sleepSpan,
+                                             sleepStart: base.sleepStart,
+                                             sleepEnd: base.sleepEnd,
+                                             sleepSource: base.sleepSource,
+                                             sleepStageSegments: base.sleepStageSegments,
+                                             sleepConsistencyPercent: base.sleepConsistencyPercent,
+                                             strain: freshToday?.strain ?? base.strain)
         } else if let settledMorning = makeMorningFrozenDailyMetric(for: today,
                                                                     computed: computed,
                                                                     sessions: sessions,
@@ -4443,8 +4534,12 @@ final class SessionStore: ObservableObject {
         }
         let daySessionsExist = !wearSessionsToday.isEmpty
         let wearRestingHR = wearSessionsToday.map(\.restingStable).filter { $0 > 0 }.min()
+        // Same rest anchor as the primary rollup strain (2026-07-08 audit #14:
+        // baseline.restingInt ?? 60), so today's strain is identical whether it
+        // comes from computedToday or this wear fallback. Previously this branch
+        // added `?? wearRestingHR`, diverging when no baseline exists yet.
         let wearStrainTRIMP = wearSessionsToday.reduce(0.0) {
-            $0 + $1.trimp(rest: baseline.restingInt ?? wearRestingHR ?? 60, max: maxHR)
+            $0 + $1.trimp(rest: baseline.restingInt ?? 60, max: maxHR)
         }
         let wearStrain = wearStrainTRIMP > 0 ? Metrics.strain(fromTRIMP: wearStrainTRIMP) : nil
 
@@ -4899,13 +4994,14 @@ final class SessionStore: ObservableObject {
             return cachedHomeSavedAggregate
         }
 
-        var savedTodayTRIMP = 0.0
-        var hasSavedToday = false
-        for session in sessions {
-            guard calendar.isDateInToday(session.start) else { break }
-            hasSavedToday = true
-            savedTodayTRIMP += session.trimp(rest: rest, max: maxHR)
-        }
+        // Deduped, today-filtered (2026-07-08 consistency audit): the hero
+        // ring's day strain must sum the SAME session set as the widget's
+        // todayTRIMP — canonicalSessions() (deduped), not the raw `sessions`
+        // array with a break, which double-counted BLE-reconnect fragments and
+        // assumed the today rows were strictly sorted contiguously at the front.
+        let todaySessions = canonicalSessions().filter { calendar.isDateInToday($0.start) }
+        let savedTodayTRIMP = todaySessions.reduce(0) { $0 + $1.trimp(rest: rest, max: maxHR) }
+        let hasSavedToday = !todaySessions.isEmpty
 
         let aggregate = HomeSavedAggregate(rest: rest,
                                            maxHR: maxHR,
@@ -7665,7 +7761,11 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // Identity stays on the untrimmed window so a dismissed/confirmed
+        // effort never resurfaces under a new id; only the displayed start is
+        // sharpened to the real onset (getting-ready trimmed). Fails closed.
         let id = confirmedWorkoutID(start: start, end: end, source: summary.bestSource)
+        let displayStart = sustainedWorkoutOnsetStart(start: start, end: end, rest: rest, maxHR: maxHR) ?? start
         let alreadyConfirmed = cachedConfirmedWorkouts.contains { workout in
             if workout.id == id { return true }
             // Two efforts can't overlap in time, so a candidate sharing a
@@ -7702,18 +7802,21 @@ final class SessionStore: ObservableObject {
                       summary.moderateStrengthReviewCandidate ? 1 : 0)
         DetectionEventLog.append(DetectionEvent(kind: "workoutDetected",
                                                  detail: "peak_over_rest=\(summary.bestPeakHR - rest), observed \(Int(summary.bestObservedDuration))s, coverage \(summary.bestStreamCoveragePercent)%",
-                                                 windowStart: start,
+                                                 windowStart: displayStart,
                                                  windowEnd: end))
+        // Trimmed-window HR stats so the review card's avg/coverage match its
+        // shown (trimmed) start + duration (honesty rule); nil when no trim.
+        let reviewStats = displayStart != start ? workoutWindowHRStats(start: displayStart, end: end) : nil
         return WorkoutReviewCandidate(id: id,
-                                      start: start,
+                                      start: displayStart,
                                       end: end,
                                       kind: summary.readySessions > 0 ? .workout : .activityCandidate,
                                       confidence: reviewConfidence,
-                                      duration: end.timeIntervalSince(start),
-                                      avgHR: summary.bestAvgHR,
-                                      peakHR: summary.bestPeakHR,
-                                      streamCoveragePercent: summary.bestStreamCoveragePercent,
-                                      observedDuration: summary.bestObservedDuration,
+                                      duration: end.timeIntervalSince(displayStart),
+                                      avgHR: reviewStats?.avgHR ?? summary.bestAvgHR,
+                                      peakHR: reviewStats?.peakHR ?? summary.bestPeakHR,
+                                      streamCoveragePercent: reviewStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
+                                      observedDuration: reviewStats?.observedDuration ?? summary.bestObservedDuration,
                                       droppedGapSeconds: summary.bestDroppedGapSeconds,
                                       maxSampleGap: summary.bestMaxSampleGap,
                                       gapCount: summary.bestGapCount,
@@ -7826,27 +7929,37 @@ final class SessionStore: ObservableObject {
         }
         let confidence = summary.readySessions > 0 ? "auto_ready_user_confirmed" :
             (summary.nearMiss ? "user_confirmed_near_miss" : "user_confirmed_candidate")
-        let enriched = confirmedWorkoutMetrics(start: bestStart,
+        // Sharpen the displayed start to the real effort onset (getting-ready
+        // trimmed off). `id` above stays on the untrimmed bestStart so identity
+        // is stable (no dismissed/confirmed workout resurfaces), and readiness
+        // was already decided from the untrimmed window; only start + strain
+        // tighten. Fails closed to bestStart when there's no honest onset.
+        let displayStart = sustainedWorkoutOnsetStart(start: bestStart, end: bestEnd, rest: rest, maxHR: maxHR) ?? bestStart
+        // When the start was trimmed, recompute the DISPLAYED HR stats over the
+        // trimmed window so avg/coverage/observed/percentiles match the shown
+        // start+duration+strain (honesty rule). nil = no trim -> summary values.
+        let trimmedStats = displayStart != bestStart ? workoutWindowHRStats(start: displayStart, end: bestEnd) : nil
+        let enriched = confirmedWorkoutMetrics(start: displayStart,
                                                end: bestEnd,
                                                rest: rest,
                                                maxHR: maxHR,
                                                excludedIntervals: [])
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
-                                             start: bestStart,
+                                             start: displayStart,
                                              end: bestEnd,
                                              label: summary.bestLabel,
                                              source: summary.bestSource,
                                              confidence: confidence,
                                              sessions: summary.bestChunkCount,
-                                             samples: summary.bestSamples,
-                                             avgHR: summary.bestAvgHR,
-                                             peakHR: summary.bestPeakHR,
-                                             p95HR: summary.bestP95HR,
-                                             p99HR: summary.bestP99HR,
+                                             samples: trimmedStats?.samples ?? summary.bestSamples,
+                                             avgHR: trimmedStats?.avgHR ?? summary.bestAvgHR,
+                                             peakHR: trimmedStats?.peakHR ?? summary.bestPeakHR,
+                                             p95HR: trimmedStats?.p95HR ?? summary.bestP95HR,
+                                             p99HR: trimmedStats?.p99HR ?? summary.bestP99HR,
                                              thresholdHR: summary.bestThresholdHR,
-                                             streamCoveragePercent: summary.bestStreamCoveragePercent,
-                                             observedDuration: summary.bestObservedDuration,
+                                             streamCoveragePercent: trimmedStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
+                                             observedDuration: trimmedStats?.observedDuration ?? summary.bestObservedDuration,
                                              reason: summary.bestReason,
                                              strain: enriched.strain,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
@@ -8059,6 +8172,64 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
+    /// The trimmed workout start (2026-07-07, user-reported early boundary):
+    /// the first sustained-elevated onset within [start, end], from the REAL
+    /// overlapping HR samples — so the getting-ready/walking-out lead-in is
+    /// not swept into the workout. Fails closed to nil (caller keeps the
+    /// untrimmed start) unless the trim removes >= 60s AND still leaves >= 5
+    /// min of workout, so a ready workout stays ready and no real effort is
+    /// dropped. Identity/readiness are computed from the untrimmed window by
+    /// the caller; this only sharpens the displayed start.
+    private func sustainedWorkoutOnsetStart(start: Date, end: Date, rest: Int, maxHR: Int) -> Date? {
+        // includeActiveJournal: true to match the save gate (2026-07-08 audit):
+        // confirmWorkoutWindow admits a workout on active-journal (live) HR, so
+        // the onset/stats/strain must see the SAME samples, not exclude them.
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return nil }
+        var samples: [(t: Date, bpm: Int)] = []
+        for session in overlapping {
+            for point in session.points where point.bpm > 0 {
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end { samples.append((t, point.bpm)) }
+            }
+        }
+        samples.sort { $0.t < $1.t }
+        guard let onset = AtriaWorkoutOnset.firstSustainedElevatedOnset(samples: samples, rest: rest, maxHR: maxHR),
+              onset > start.addingTimeInterval(60),
+              end.timeIntervalSince(onset) >= 5 * 60
+        else { return nil }
+        return onset
+    }
+
+    /// Displayed HR stats recomputed over an (onset-trimmed) window from the
+    /// REAL samples, so avgHR/coverage/observed/percentiles match the trimmed
+    /// start + duration + strain instead of the old untrimmed summary values
+    /// (honesty rule: a 39-min effort must not show an average diluted by the
+    /// trimmed-off getting-ready lead-in). nil if the window has no samples.
+    private func workoutWindowHRStats(start: Date, end: Date)
+        -> (avgHR: Int, peakHR: Int, p95HR: Int, p99HR: Int,
+            observedDuration: TimeInterval, streamCoveragePercent: Int, samples: Int)? {
+        // includeActiveJournal: true — same sample set as the save gate (audit #9).
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return nil }
+        var points: [(t: Date, bpm: Int)] = []
+        for session in overlapping {
+            for point in session.points where point.bpm > 0 {
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end { points.append((t, point.bpm)) }
+            }
+        }
+        guard points.count > 1 else { return nil }
+        points.sort { $0.t < $1.t }
+        return AtriaWorkoutOnset.windowStats(samples: points,
+                                             windowSeconds: end.timeIntervalSince(start),
+                                             continuityGapLimit: SavedSession.workoutContinuityGapLimit)
+    }
+
     private func confirmedWorkoutMetrics(start: Date,
                                          end: Date,
                                          rest: Int,
@@ -8067,7 +8238,8 @@ final class SessionStore: ObservableObject {
                                                         activeEnergyKilocalories: Double?,
                                                         activeEnergyConfidence: String?,
                                                         zoneSeconds: [String: TimeInterval]?) {
-        let overlapping = canonicalSessions().filter { session in
+        // includeActiveJournal: true — same sample set as the save gate (audit #9).
+        let overlapping = canonicalSessions(includeActiveJournal: true).filter { session in
             session.end > start && session.start < end && !session.points.isEmpty
         }
         guard !overlapping.isEmpty else { return (nil, nil, nil, nil) }
@@ -8439,6 +8611,10 @@ final class SessionStore: ObservableObject {
 
     private var lastForegroundSleepAutoConfirmAt: Date?
 
+    /// How long after a confirmed night's end a wake-then-sleep-again can still
+    /// extend it. Past this, the night is treated as settled (2026-07-08).
+    private static let sleepReExtendMorningWindow: TimeInterval = 5 * 60 * 60
+
     /// Foreground (morning-flow) auto-confirm: launch-time auto-confirm never fires
     /// while the app stays resident overnight, so the first foreground of the day
     /// re-runs it. Rate-limited, and skipped while the newest confirmed sleep is
@@ -8453,8 +8629,18 @@ final class SessionStore: ObservableObject {
             .filter { !Self.confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration) }
             .map(\.end)
             .max()
-        if let latestOvernightEnd, now.timeIntervalSince(latestOvernightEnd) < 16 * 60 * 60 {
-            return
+        // Re-evaluate in the first few hours after a night's end so a wake-then-
+        // sleep-again can EXTEND it (user 2026-07-08), and again after 16h for a
+        // genuinely new night. Between those, the night is settled — skip.
+        let inExtendReCheckWindow: Bool
+        if let latestOvernightEnd {
+            let sinceEnd = now.timeIntervalSince(latestOvernightEnd)
+            if sinceEnd >= Self.sleepReExtendMorningWindow, sinceEnd < 16 * 60 * 60 {
+                return
+            }
+            inExtendReCheckWindow = sinceEnd < Self.sleepReExtendMorningWindow
+        } else {
+            inExtendReCheckWindow = false
         }
         lastForegroundSleepAutoConfirmAt = now
         var saved = autoConfirmStrongSleepCandidates(reason: reason)
@@ -8468,9 +8654,12 @@ final class SessionStore: ObservableObject {
             saved = evaluateWakeBoundarySleepIfUseful(reason: reason, now: now)
         }
         refreshHistorySnapshotCache(deferred: true)
-        if !saved {
+        if !saved && !inExtendReCheckWindow {
             // Back the rate limit off to ~10 min on failure so a transient
-            // blocker does not cost the whole 30-minute window.
+            // blocker does not cost the whole 30-minute window. Skipped while
+            // re-checking a settled confirmed night for extension (2026-07-08):
+            // there is nothing to retry, and the 10-min backoff would otherwise
+            // churn aggregateSleepCandidates on every morning foreground.
             lastForegroundSleepAutoConfirmAt = now.addingTimeInterval(-20 * 60)
             scheduleSleepReadinessRetryIfUseful(reason: reason)
         }
@@ -8499,6 +8688,14 @@ final class SessionStore: ObservableObject {
             let id = confirmedSleepID(start: candidate.start,
                                      end: candidate.end,
                                      source: Self.autoSleepClassification(for: candidate).source)
+            // Wake-then-sleep-again grew the night: extend the confirmed auto night
+            // in place instead of skipping the candidate as a duplicate (user
+            // 2026-07-08). applySleepExtend is extend-only and never touches a
+            // manual/adjusted night, so it can't clobber a user override.
+            if applySleepExtend(to: &existing, candidate: candidate, reason: "\(reason)_extend") != nil {
+                saved += 1
+                continue
+            }
             if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
                 continue
             }
@@ -8819,6 +9016,19 @@ final class SessionStore: ObservableObject {
         // never the in-flight candidate itself, so this can't self-match.
         var existing = cachedConfirmedSleeps
         let confirmed = buildAutoConfirmedSleep(from: candidate, reason: "\(reason)_wake_boundary")
+        // Wake-then-sleep-again on a continuous (all-day-wear) recording: the live
+        // night session's wake boundary moved later, so grow the confirmed night in
+        // place rather than skip it as an overlap (user 2026-07-08). This is the
+        // path the resident-app case actually takes — the closed-candidate path
+        // never sees a still-open night.
+        if let extended = applySleepExtend(to: &existing, candidate: candidate, reason: "\(reason)_wake_boundary_extend") {
+            saveConfirmedSleeps(existing)
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=extended reason=%@ id=%@ end=%@",
+                          reason, extended.id, isoString(extended.end))
+            DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
+                                                     detail: "extended to \(isoString(extended.end)) (wake boundary)"))
+            return true
+        }
         guard !existing.contains(where: { $0.id == confirmed.id || Self.sleepWindowsOverlap($0, candidate: candidate) }) else {
             AtriaDebugLog("ATRIADBG sleep_wake_boundary status=overlaps_saved reason=%@ id=%@", reason, confirmed.id)
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
@@ -8840,6 +9050,28 @@ final class SessionStore: ObservableObject {
         DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
                                                  detail: "\(isoString(confirmed.start))–\(isoString(confirmed.end)), \(SleepHistorySnapshot.formatDuration(confirmed.duration)) (wake boundary)"))
         return true
+    }
+
+    /// Extend an existing confirmed auto night in place when `candidate` grows it
+    /// (wake-then-sleep-again). Mutates `existing`, returns the extended record
+    /// (nil = no extend). Shared by the closed-candidate and wake-boundary paths.
+    /// Keeps the transient auto-logged banner in sync but never re-notifies.
+    @discardableResult
+    private func applySleepExtend(to existing: inout [UserConfirmedSleep],
+                                  candidate: AggregateSleepCandidate,
+                                  reason: String) -> UserConfirmedSleep? {
+        guard Self.sleepExtendReplacement(existing: existing, candidate: candidate) else { return nil }
+        existing.removeAll { Self.isExtendableAutoNight($0) && Self.sleepWindowsOverlap($0, candidate: candidate) }
+        let extended = buildAutoConfirmedSleep(from: candidate, reason: reason)
+        existing.append(extended)
+        if let banner = autoSleepLoggedBanner, banner.start < candidate.end, banner.end > candidate.start {
+            autoSleepLoggedBanner = AutoSleepLoggedBanner(id: extended.id,
+                                                          start: extended.start,
+                                                          end: extended.end,
+                                                          duration: extended.duration,
+                                                          sleepID: extended.id)
+        }
+        return extended
     }
 
     /// Exposed (not `private`) so unit tests can exercise the auto-confirm gate
@@ -8990,6 +9222,45 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
         sleep.start < candidate.end && sleep.end > candidate.start
+    }
+
+    /// A source the user authored or hand-edited — never touched by the auto
+    /// extend path (2026-07-08). Covers manual_sleep/manual_nap and the
+    /// user_adjusted_* sources produced by the Adjust sheet.
+    nonisolated static func isUserAuthoredSleepSource(_ source: String) -> Bool {
+        source.hasPrefix("manual_") || source.hasPrefix("user_adjusted_")
+    }
+
+    /// A confirmed night the auto extend may grow in place: a real overnight sleep
+    /// (not a nap) that the user did not author/edit.
+    nonisolated static func isExtendableAutoNight(_ sleep: UserConfirmedSleep) -> Bool {
+        !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+            && !isUserAuthoredSleepSource(sleep.source)
+    }
+
+    /// Whether `candidate` should EXTEND the confirmed overnight night(s) it
+    /// overlaps rather than be skipped as a duplicate — "wake, then sleep again"
+    /// (user 2026-07-08). Extend-ONLY and safe:
+    ///  - never for a nap candidate;
+    ///  - never when it overlaps a USER-authored/edited night (left strictly alone);
+    ///  - only as a TAIL-superset of the auto night(s) it overlaps: it starts no
+    ///    later than their earliest start (so it can't trim the head, and a
+    ///    later-starting cluster split off by a >2h strap-dead gap is refused
+    ///    rather than fabricating sleep across the gap) AND ends meaningfully
+    ///    later than their latest end.
+    /// So it can only GROW an auto night — never shrink, split, or clobber a manual one.
+    nonisolated static func sleepExtendReplacement(existing: [UserConfirmedSleep],
+                                                   candidate: AggregateSleepCandidate,
+                                                   minGain: TimeInterval = 5 * 60) -> Bool {
+        guard candidate.kind != "nap_candidate" else { return false }
+        if existing.contains(where: { isUserAuthoredSleepSource($0.source) && sleepWindowsOverlap($0, candidate: candidate) }) {
+            return false
+        }
+        let overlappingNights = existing.filter { isExtendableAutoNight($0) && sleepWindowsOverlap($0, candidate: candidate) }
+        guard let latestEnd = overlappingNights.map(\.end).max(),
+              let earliestStart = overlappingNights.map(\.start).min() else { return false }
+        return candidate.start <= earliestStart
+            && candidate.end > latestEnd.addingTimeInterval(minGain)
     }
 
     func addManualSleep(start: Date,
@@ -9457,7 +9728,7 @@ final class SessionStore: ObservableObject {
                                          idPrefix: "migrated")
     }
 
-    private static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
+    nonisolated static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
         if SleepHistorySnapshot.Night.explicitNapSources.contains(source) {
             return true
         }
@@ -10637,7 +10908,14 @@ final class SessionStore: ObservableObject {
             let restCandidates = detections.filter { $0.kind == .restCandidate }.count
             let singleSessionSleepCandidates = detections.filter { $0.kind == .sleepCandidate }.count
             let aggregateSleep = aggregateSleeps[day]
-            let aggregateSleepReady = (aggregateSleep?.motionEvidenceValidated == true && aggregateSleep?.confidence != .low) ? 1 : 0
+            // Sleep-ready aligned with the app's own auto-confirm gate
+            // (2026-07-08, device-reported "Sleep --" after 3 nights): the old
+            // flag required motionEvidenceValidated, structurally impossible on
+            // an accelerometer-less chest strap, so overnight sleep this app
+            // already confirms from HR alone was dropped from the readiness
+            // counter. isStrongAutoConfirmableSleepCandidate keeps the motion
+            // path preferred and still fails naps/marginal nights closed.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
             let singleSessionSleepDuration = detections
                 .filter { $0.kind == .sleepCandidate }
@@ -11517,7 +11795,7 @@ final class SessionStore: ObservableObject {
                 let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
                 return evidence.accepted ? evidence.value : nil
             }
-            let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+            let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
             let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recent.compactMap {
                 $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
@@ -11593,7 +11871,28 @@ final class SessionStore: ObservableObject {
                                       restingTrend: restingTrend14)
     }
 
+    private var cachedBiologicalAge: (summary: BiologicalAgeSummary, computedAt: Date)?
+
+    /// Fitness age moves slowly (WHOOP recomputes "WHOOP Age"/VO2max on a WEEKLY
+    /// timer), so recompute it at most weekly instead of on every profile-metrics
+    /// publish + daily-rollup refresh. The expensive canonicalSessions + per-
+    /// session timeInZone scan (which only runs once baselines are trusted) was on
+    /// the main-thread hot path — user 2026-07-08: "biological age could be weekly/
+    /// biweekly … lesser load on the app all the time." Only the READY value is
+    /// cached; while calibrating it returns .building cheaply on every call.
     func biologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
+        if let cached = cachedBiologicalAge,
+           Date().timeIntervalSince(cached.computedAt) < 7 * 24 * 60 * 60 {
+            return cached.summary
+        }
+        let summary = computeBiologicalAgeSummary(vo2MaxEstimate: vo2MaxEstimate)
+        if summary.isReady {
+            cachedBiologicalAge = (summary, Date())
+        }
+        return summary
+    }
+
+    private func computeBiologicalAgeSummary(vo2MaxEstimate: VO2MaxEstimateSummary) -> BiologicalAgeSummary {
         let chronologicalAge = profile.age
         var blockers: [String] = []
         if vo2MaxEstimate.value == nil { blockers.append("vo2max_learning") }
@@ -11659,21 +11958,28 @@ final class SessionStore: ObservableObject {
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: maxHR)
             return evidence.accepted ? evidence.value : nil
         }
-        let strains = recent.map { Metrics.strain(fromTRIMP: $0.trimp(rest: rest, max: maxHR)) }
+        let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
         let hrvs = recent.compactMap(\.localRMSSD).filter { $0 > 0 }
         let respiratoryRates = recent.compactMap {
             $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR)
         }
-        let latestSleep = sleepHistorySnapshot.latest
-        let recoveries = recent.compactMap {
+        // Per-day sleep (2026-07-08 consistency audit): each session's recovery
+        // must use ITS OWN night's sleep, not the single latest night applied to
+        // every session in the window — which diverged from the per-day history
+        // recovery (makeHistoryTrendSummaries resolves per-day the same way).
+        let nightsByDay = Dictionary(sleepHistorySnapshot.nights.map {
+            (Calendar.current.startOfDay(for: $0.day), $0)
+        }, uniquingKeysWith: { first, _ in first })
+        let recoveries = recent.compactMap { session -> Int? in
+            let night = nightsByDay[Calendar.current.startOfDay(for: session.start)]
             let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                              fallbackRMSSD: $0.localRMSSD,
-                                              restingNow: $0.restingStable,
+                                              fallbackRMSSD: session.localRMSSD,
+                                              restingNow: session.restingStable,
                                               baseline: baseline,
-                                              hrvReferenceValidated: $0.hrvReferenceValidated == true,
-                                              sleepEfficiency: latestSleep?.sleepEfficiency,
-                                              sleepDurationHours: latestSleep?.durationHours,
-                                              respiratoryRate: $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
+                                              hrvReferenceValidated: session.hrvReferenceValidated == true,
+                                              sleepEfficiency: night?.sleepEfficiency,
+                                              sleepDurationHours: night?.durationHours,
+                                              respiratoryRate: session.sleepRespiratoryRate(rest: rest, maxHR: maxHR),
                                               respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
             return recovery.percent
         }
@@ -16017,7 +16323,10 @@ private struct HistoryActivityRhythmCard: View {
     }
 
     private var sleepContextCount: Int {
-        rollups.reduce(0) { $0 + $1.sleepReady + $1.sleepCandidates }
+        // max, not sum: a ready night is also a candidate. Since sleepReady
+        // became HR-only-eligible (2026-07-08) the two are no longer disjoint,
+        // so summing double-counted every auto-confirmed night.
+        rollups.reduce(0) { $0 + max($1.sleepReady, $1.sleepCandidates) }
     }
 
     var body: some View {
@@ -16257,12 +16566,12 @@ private struct DailyRollupRow: View {
             if rollup.restCandidates > 0 {
                 rollupChip(title: "Rest", value: "\(rollup.restCandidates)", tint: .cyan)
             }
-            if rollup.sleepReady + rollup.sleepCandidates > 0 {
-                rollupChip(title: "Sleep", value: "\(rollup.sleepReady + rollup.sleepCandidates)", tint: .blue)
+            if max(rollup.sleepReady, rollup.sleepCandidates) > 0 {
+                rollupChip(title: "Sleep", value: "\(max(rollup.sleepReady, rollup.sleepCandidates))", tint: .blue)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Saved \(formatMinutes(rollup.duration)), \(rollup.confirmedWorkouts) confirmed workouts, \(rollup.activityCandidates) activity reviews, \(rollup.sleepReady + rollup.sleepCandidates) sleep items.")
+        .accessibilityLabel("Saved \(formatMinutes(rollup.duration)), \(rollup.confirmedWorkouts) confirmed workouts, \(rollup.activityCandidates) activity reviews, \(max(rollup.sleepReady, rollup.sleepCandidates)) sleep items.")
     }
 
     private func rollupChip(title: String, value: String, tint: Color) -> some View {
@@ -16793,7 +17102,9 @@ struct SessionDetail: View {
     init(session: SavedSession) {
         self.session = session
         self.displayedPoints = Self.downsampledPoints(session.points)
-        self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)
+        self.summary = SessionDetailSummary(session: session,
+                                            rest: PersonalBaseline.load().restingInt ?? 60,
+                                            maxHR: AthleteProfile.load().maxHR)
     }
 
     var body: some View {
@@ -16864,14 +17175,18 @@ private struct SessionDetailSummary {
     let zoneRows: [TimeInZoneRow]
     let zoneTotal: Double
 
-    init(session: SavedSession, maxHR: Int) {
+    init(session: SavedSession, rest: Int, maxHR: Int) {
         resting = session.resting
         average = session.avg
         peak = session.peak
-        let resolvedMaxHR = max(maxHR, session.restingStable + 1)
+        // Strain uses the SAME baseline rest + profile maxHR as the day/trend
+        // rollups (2026-07-08 consistency audit) so a workout's strain
+        // reconciles everywhere. It previously used session.restingStable +
+        // a re-clamped max, which diverged from every rollup for the same
+        // workout. Zones keep a clamped max (they need max > rest).
         strainText = String(format: "%.1f",
-                            Metrics.strain(fromTRIMP: session.trimp(rest: session.restingStable,
-                                                                     max: resolvedMaxHR)))
+                            Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)))
+        let resolvedMaxHR = max(maxHR, rest + 1)
         let zoneMap = session.timeInZone(maxHR: resolvedMaxHR)
         zoneRows = HRZone.allCases.compactMap { zone in
             guard let seconds = zoneMap[zone], seconds > 0 else { return nil }

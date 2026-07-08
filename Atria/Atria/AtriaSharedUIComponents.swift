@@ -94,10 +94,16 @@ enum AtriaMetricUnit {
 
 struct AtriaCalibratingLabel: View, Equatable {
     let day: Int
+    /// Honest denominator + noun for the calibration countdown. Defaults keep
+    /// recovery's real "Day X of 4" (a usable preliminary estimate lands ~day 4);
+    /// the 14-night baselines (HRV/RHR) pass total: 14, unit: "Night" so the ring
+    /// never reads complete while the metric is still learning (2026-07-08).
+    var total: Int = 4
+    var unit: String = "Day"
     var tint: Color = .orange
 
     private var clampedDay: Int {
-        min(max(day, 1), 4)
+        min(max(day, 0), total)
     }
 
     var body: some View {
@@ -106,7 +112,7 @@ struct AtriaCalibratingLabel: View, Equatable {
                 Circle()
                     .stroke(tint.opacity(0.25), lineWidth: 3)
                 Circle()
-                    .trim(from: 0, to: Double(clampedDay) / 4)
+                    .trim(from: 0, to: Double(clampedDay) / Double(max(total, 1)))
                     .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
@@ -115,13 +121,13 @@ struct AtriaCalibratingLabel: View, Equatable {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Calibrating")
                     .font(.caption.weight(.bold))
-                Text("Day \(clampedDay) of 4")
+                Text("\(unit) \(clampedDay) of \(total)")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         }
         .foregroundStyle(tint)
-        .accessibilityLabel("Calibrating. Day \(clampedDay) of 4.")
+        .accessibilityLabel("Calibrating. \(unit) \(clampedDay) of \(total).")
     }
 }
 
@@ -467,6 +473,8 @@ struct AtriaMetricTile: View, Equatable {
     var zone: AtriaMetricZone? = nil
     var targetMetric: AtriaTodayMetric? = nil
     var calibratingDay: Int? = nil
+    var calibratingTotal: Int = 4
+    var calibratingUnit: String = "Day"
     @State private var showingZoneInfo = false
     @State private var editingTargetMetric: AtriaTodayMetric?
 
@@ -481,6 +489,8 @@ struct AtriaMetricTile: View, Equatable {
             && lhs.zone == rhs.zone
             && lhs.targetMetric == rhs.targetMetric
             && lhs.calibratingDay == rhs.calibratingDay
+            && lhs.calibratingTotal == rhs.calibratingTotal
+            && lhs.calibratingUnit == rhs.calibratingUnit
     }
 
     private var displayValue: String {
@@ -494,7 +504,7 @@ struct AtriaMetricTile: View, Equatable {
     }
 
     private var accessibilityText: String {
-        var parts = [calibratingDay.map { "\(label) calibrating day \(min(max($0, 1), 4)) of 4" } ?? "\(label) \(displayValue)"]
+        var parts = [calibratingDay.map { "\(label) calibrating \(calibratingUnit.lowercased()) \(min(max($0, 0), calibratingTotal)) of \(calibratingTotal)" } ?? "\(label) \(displayValue)"]
         if let unit {
             parts[0] += " \(unit)"
         }
@@ -537,7 +547,7 @@ struct AtriaMetricTile: View, Equatable {
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 if let calibratingDay {
-                    AtriaCalibratingLabel(day: calibratingDay, tint: tint)
+                    AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
                 } else {
                     Text(displayValue)
                         .font(.system(size: 29, weight: .bold, design: .rounded))

@@ -915,9 +915,10 @@ struct AtriaTodayScreen: View {
                                   value: value,
                                   detail: sleepNeedDetailText(performance: performance),
                                   systemImage: "moon.fill",
-                                  // Color-coherence pass (2026-07-05): identity hue always sleep
-                                  // violet -- zone state moved to `stateTint` (the legend dot).
-                                  tint: Metrics.electricSleep,
+                                  // Achievement coloring (2026-07-08, user request): the ring
+                                  // warms to green as sleep fills toward need, so a met goal reads
+                                  // as a win. The legend dot (stateTint) still carries the zone.
+                                  tint: Metrics.ringAchievementTint(fill: performance.map { min(max(Double($0) / 100.0, 0), 1) }),
                                   fill: performance.map { min(max(Double($0) / 100.0, 0), 1) },
                                   stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) },
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
@@ -1030,7 +1031,9 @@ struct AtriaTodayScreen: View {
                                   value: displayHero.strainValue,
                                   detail: target.map { String(format: "of %.1f", $0) } ?? "Strain",
                                   systemImage: "flame.fill",
-                                  tint: Metrics.strainColor(displayHero.strain),
+                                  // Achievement coloring (2026-07-08): green once strain reaches
+                                  // the day's target (color by % of target, not absolute fill).
+                                  tint: Metrics.ringAchievementTint(fill: percentOfTarget.map { $0 / 100 }),
                                   fill: min(max(displayHero.strain / 20.0, 0), 1),
                                   stateTint: percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) },
                                   // Honest: no marker unless there's a real target (a real

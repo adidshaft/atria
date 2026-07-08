@@ -30,6 +30,20 @@ struct WeeklyPlan: Codable, Equatable {
     let generatedAt: Date
     let targets: [WeeklyPlanTarget]
 
+    /// Plain-language week label (e.g. "Jul 7–13") for the surface, instead of
+    /// the ISO week number "W28" — nobody thinks in week-of-year (2026-07-08
+    /// UX audit: jargon on the surface).
+    var dateRangeText: String {
+        let calendar = WeeklyPlanCalendar.iso
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: generatedAt) else { return "" }
+        let end = calendar.date(byAdding: .day, value: 6, to: interval.start) ?? interval.start
+        let startText = interval.start.formatted(.dateTime.month(.abbreviated).day())
+        let endText = calendar.isDate(interval.start, equalTo: end, toGranularity: .month)
+            ? end.formatted(.dateTime.day())
+            : end.formatted(.dateTime.month(.abbreviated).day())
+        return "\(startText)–\(endText)"
+    }
+
     init(rollups: [DailyRollupStoreEntry],
          now: Date = Date(),
          calendar: Calendar = WeeklyPlanCalendar.iso) {

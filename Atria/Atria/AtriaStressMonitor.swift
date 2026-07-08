@@ -252,6 +252,19 @@ enum AtriaStressMonitor {
 @MainActor
 final class AtriaStressMonitorStore: ObservableObject {
     @Published private(set) var state: AtriaStressState = .noSignal
+    /// Scored readings from this app session (thinned to ~1 per 30s, capped
+    /// at 12h). In-memory only — the history chart shows real gaps for any
+    /// stretch the strap wasn't read, never interpolation.
+    @Published private(set) var history: [StressHistoryPoint] = []
+
+    struct StressHistoryPoint: Identifiable, Equatable {
+        let t: Date
+        /// Continuous activation 0-1 behind the discrete level.
+        let activation: Double
+        let level: AtriaStressLevel
+
+        var id: TimeInterval { t.timeIntervalSinceReferenceDate }
+    }
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
     private var contactStartedAt: Date?
@@ -268,6 +281,14 @@ final class AtriaStressMonitorStore: ObservableObject {
     private static let activationEMAAlpha = 0.2
     private static let hysteresisMargin = 0.05
     private static let hysteresisHoldTicks = 2
+
+    private func recordHistory(now: Date) {
+        guard case .scored = state.kind, let level = state.level,
+              let activation = smoothedActivation else { return }
+        if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
+        history.append(StressHistoryPoint(t: now, activation: activation, level: level))
+        history.removeAll { now.timeIntervalSince($0.t) > 12 * 3600 }
+    }
 
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
     /// HR/RR update); the buffers + EMA absorb the exact cadence.
@@ -377,5 +398,6 @@ final class AtriaStressMonitorStore: ObservableObject {
         if finalState != state {
             state = finalState
         }
+        recordHistory(now: now)
     }
 }

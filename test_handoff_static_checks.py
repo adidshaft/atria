@@ -817,7 +817,10 @@ class HandoffStaticChecks(unittest.TestCase):
             'Button(action: onShowStrap) {',
             'Button(action: onShowAssistant) {',
             'AtriaToolbarIcon(symbol: "applewatch.radiowaves.left.and.right")',
-            '"Coming Soon!"',
+            # 2026-07-08 user-directed: the Assistant is implemented
+            # (AtriaAssistantScreen — deterministic Q&A + opt-in coach card);
+            # the Coming Soon placeholder is gone.
+            'AtriaAssistantScreen(store: store,',
             ".tabBarMinimizeBehavior(.onScrollDown)",
             ".tabViewBottomAccessory",
             ".padding(.bottom, scrollBottomClearance)",
@@ -1095,11 +1098,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func yDomain(for points: [AtriaHomeModel.HeartRateChartPoint]) -> ClosedRange<Int>",
             "func nearestPoint(to selectedTime: Date?) -> AtriaHomeModel.HeartRateChartPoint?",
             "@State private var series: AtriaHeartRateChartSeries",
-            "_series = State(initialValue: AtriaHeartRateChartSeries.make(points: points, zoom: 1))",
+            # 2026-07-07: HR-timeline explorer switched from point-count zoom
+            # to time-window zoom (12h default, 1min-24h), so series is built
+            # from a windowed slice.
+            "AtriaHeartRateChartSeries.make(",
             "AtriaHeartRateAxisChart(points: series.visiblePoints,",
             "yDomain: series.yDomain,",
-            "series = AtriaHeartRateChartSeries.make(points: points, zoom: newValue)",
-            "series = AtriaHeartRateChartSeries.make(points: newValue, zoom: zoom)",
+            "AtriaVitalsHeartRateTimeline.windowed(points, window: currentWindow, displayBudget: 400)",
             "struct AtriaHeartRateAxisChart: View, Equatable",
             "let yDomain: ClosedRange<Int>",
             "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain",
@@ -1116,7 +1121,9 @@ class HandoffStaticChecks(unittest.TestCase):
             ".background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))",
             ".mask(RoundedRectangle(cornerRadius: 12, style: .continuous))",
             ".clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))",
-            "Slider(value: $zoom, in: 1...6, step: 1)",
+            # 2026-07-07: time-window zoom slider (1 min .. 24 hr) replaces
+            # the old 1...6 point-count zoom.
+            "Slider(value: $windowIndex,",
             "Label(\"Done\", systemImage: \"xmark\")",
             ".atriaCardAction(prominent: false, tint: .secondary)",
             ".fullScreenCover(isPresented: $showHeartRateExplorer)",
@@ -1404,7 +1411,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .personalBaseline:\n            base = \"Personal baseline\"",
             "if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains(\"HRV baseline\")",
             "base = \"Building baseline\"",
-            "detail: hrvDetailText",
+            # 2026-07-08: HRV/RHR cards show the real baseline value + a "Calibrating ·
+            # night N of 14" detail during calibration (user "start showing something
+            # when we can"), with the zone judgment suppressed; else hrvDetailText/hrvZone.
+            "detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText",
             "private var hrvDetailText: String",
             "if detail.contains(\"validated\") { return \"Checked\" }",
             "if detail.contains(\"personal baseline\") || detail.contains(\"% kept\") { return \"Personal baseline\" }",
@@ -3175,7 +3185,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "cleanedActivityType",
             "cleanedExercises.isEmpty ? nil : cleanedExercises",
             "label: cleanedActivityType ?? \"Live workout\"",
-            "let enriched = confirmedWorkoutMetrics(start: bestStart,",
+            # 2026-07-07: enriched metrics now computed over the onset-trimmed
+            # displayStart (getting-ready lead-in removed); id/readiness stay
+            # on the untrimmed bestStart.
+            "let enriched = confirmedWorkoutMetrics(start: displayStart,",
             "strain: enriched.strain",
             "activeEnergyKilocalories: enriched.activeEnergyKilocalories",
             "activeEnergyConfidence: enriched.activeEnergyConfidence",
@@ -3240,7 +3253,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private let summary: SessionDetailSummary",
             "init(session: SavedSession)",
             "self.displayedPoints = Self.downsampledPoints(session.points)",
-            "self.summary = SessionDetailSummary(session: session, maxHR: AthleteProfile.load().maxHR)",
+            # 2026-07-08: SessionDetailSummary now takes the baseline `rest`
+            # (matching the rollups) so a workout's strain reconciles everywhere.
+            "self.summary = SessionDetailSummary(session: session,",
             "private static func downsampledPoints",
             "Chart(Array(displayedPoints.enumerated()), id: \\.offset)",
             "private struct SessionDetailSummary",
@@ -3934,7 +3949,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Stage breakdown needs checked sleep-stage evidence; duration, RHR, HRV, and respiratory estimates stay visible while Atria learns.",
             "AtriaSleepStageBuildingSummary(night: latest)",
             "Awake, Light, REM, SWS, and Deep are not ready yet.",
-            "private struct AtriaSleepStageHypnogram: View, Equatable",
+            # 2026-07-08: de-privatized so the broader-lane sizing (user request)
+            # is render-testable.
+            "struct AtriaSleepStageHypnogram: View, Equatable",
             "Canvas { context, size in",
             "drawGuides(in: &context, size: size)",
             "drawSegments(in: &context, size: size)",
@@ -6169,10 +6186,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "impactLane(title: \"Watch\"",
             "impactLane(title: \"Support\"",
             "glanceChip(title: \"Logged\"",
-            "glanceChip(title: \"Links\"",
+            # 2026-07-08: "Links" (raw correlation count) renamed to plain
+            # "Patterns", with "—" instead of "0" in the empty state.
+            "glanceChip(title: \"Patterns\"",
             "glanceChip(title: \"Focus\"",
             "Journal impact glance. \\(taggedDays) logged days.",
-            "behavior links",
+            "behavior patterns",
             "Text(count == 1 ? \"1 link\" : \"\\(count) links\")",
             "private func impactLane(title: String,",
             "private func glanceChip(title: String,",
@@ -6204,7 +6223,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".background(.cyan.opacity(0.10), in: Capsule())",
             ".font(.headline.weight(.bold).monospacedDigit())",
             "private struct AtriaJournalImpactBar: View, Equatable",
-            'Label("Impact", systemImage: "waveform.path.ecg")',
+            # 2026-07-08: the inner 'Impact' header was removed (it duplicated
+            # the outer 'Impacts' card header — card-in-card de-dup).
             "GeometryReader { proxy in",
             "let center = width / 2",
             "summary.impactProgress",
@@ -6881,7 +6901,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "@Published private(set) var researchManeuverProbeCorrelationSummary",
             "private func recomputeCollectionResearchSummaries()",
-            "researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers",
+            # 2026-07-08: recompute moved off-main + coalesced (compute-cadence pass);
+            # markers still captured from the local cachedResearchManeuverMarkers,
+            # local-research-only, built off the sessions snapshot.
+            "let markers = cachedResearchManeuverMarkers",
+            "ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessionsSnapshot)",
             "func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind",
             "ATRIADBG research_maneuver_marker status=marked",
             "local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
@@ -8024,7 +8048,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func estimate(samples: [(t: Date, ms: Double)],",
             "lookback: TimeInterval = 90",
             "static func estimate(resampledRR: [Double], sampleRate: Double = 4.0) -> Double?",
-            "for breathsPerMinute in stride(from: 6.0, through: 30.0, by: 0.5)",
+            # 2026-07-08: floor raised 6.0 -> 9.0 bpm (0.15 Hz HF-band floor)
+            # so HRV LF / Mayer-wave drift can no longer be reported as
+            # breathing (device showed a fabricated 6.5-8.2 bpm).
+            "for breathsPerMinute in stride(from: 9.0, through: 30.0, by: 0.5)",
             "bestPower / max(bandPower, bestPower) >= 0.18",
         ]:
             assert_contains(self, text, needle)
@@ -8074,7 +8101,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "sleepDurationHours: latestSleep?.durationHours")
         assert_contains(self, notifications, "sleepEfficiency: latestSleep?.sleepEfficiency")
         assert_contains(self, notifications, "sleepDurationHours: latestSleep?.durationHours")
-        assert_contains(self, sessions, "private nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double?")
+        # 2026-07-08: de-privatized so the unknown-span honesty rule is testable.
+        assert_contains(self, sessions, "nonisolated static func sleepEfficiency(duration: TimeInterval?, span: TimeInterval?) -> Double?")
         assert_contains(self, sessions, "sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,")
         assert_contains(self, sessions, "sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 }")
 
@@ -8347,7 +8375,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "var respiratoryRateText: String",
             "@Published private(set) var imuAuditSummary",
             "private func recomputeCollectionResearchSummaries()",
-            "imuAuditSummary = IMUAuditSummary(sessions: sessions)",
+            # 2026-07-08: research summaries now recompute OFF-main + coalesced
+            # (compute-cadence pass) — still built from the real sessions snapshot,
+            # nothing fabricated; published back on main.
+            "let imu = IMUAuditSummary(sessions: sessionsSnapshot)",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -10691,7 +10722,10 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, vitals, needle)
         for needle in [
             "private var accessibilityText: String",
-            "var parts = [calibratingDay.map { \"\\(title) calibrating day \\(min(max($0, 1), 4)) of 4\" } ?? \"\\(title) \\(displayValue)\", detail]",
+            # 2026-07-08: calibration is honest per-metric — baselines (HRV/RHR) pass
+            # calibratingTotal:14 + calibratingUnit:"Night" for "Night X of 14"; recovery/
+            # sleep keep the default 4/"Day". Accessibility mirrors the visible unit+total.
+            "var parts = [calibratingDay.map { \"\\(title) calibrating \\(calibratingUnit.lowercased()) \\(min(max($0, 0), calibratingTotal)) of \\(calibratingTotal)\" } ?? \"\\(title) \\(displayValue)\", detail]",
             "parts.append(zone.level.label)",
             "parts.append(zone.targetSummary)",
             "parts.append(\"Tap info for guidance.\")",
@@ -10765,10 +10799,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "zone: recoveryZone",
             "zone: strainZone",
             "zone: loadReadinessZone",
-            "zone: hrvZone",
+            "zone: hrvCalibratingValue != nil ? nil : hrvZone",  # 2026-07-08 partial-data calibration
             "zone: sleepGlanceZone",
             "zone: sleepEfficiencyZone",
-            "zone: restingHeartRateZone",
+            "zone: restingCalibratingValue != nil ? nil : restingHeartRateZone",  # 2026-07-08 partial-data calibration
             "zone: stepsZone",
             "zone: activeCaloriesZone",
             "zone: vo2TrendZone",
