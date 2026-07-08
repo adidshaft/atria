@@ -8555,6 +8555,10 @@ final class SessionStore: ObservableObject {
 
     private var lastForegroundSleepAutoConfirmAt: Date?
 
+    /// How long after a confirmed night's end a wake-then-sleep-again can still
+    /// extend it. Past this, the night is treated as settled (2026-07-08).
+    private static let sleepReExtendMorningWindow: TimeInterval = 5 * 60 * 60
+
     /// Foreground (morning-flow) auto-confirm: launch-time auto-confirm never fires
     /// while the app stays resident overnight, so the first foreground of the day
     /// re-runs it. Rate-limited, and skipped while the newest confirmed sleep is
@@ -8569,8 +8573,18 @@ final class SessionStore: ObservableObject {
             .filter { !Self.confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration) }
             .map(\.end)
             .max()
-        if let latestOvernightEnd, now.timeIntervalSince(latestOvernightEnd) < 16 * 60 * 60 {
-            return
+        // Re-evaluate in the first few hours after a night's end so a wake-then-
+        // sleep-again can EXTEND it (user 2026-07-08), and again after 16h for a
+        // genuinely new night. Between those, the night is settled — skip.
+        let inExtendReCheckWindow: Bool
+        if let latestOvernightEnd {
+            let sinceEnd = now.timeIntervalSince(latestOvernightEnd)
+            if sinceEnd >= Self.sleepReExtendMorningWindow, sinceEnd < 16 * 60 * 60 {
+                return
+            }
+            inExtendReCheckWindow = sinceEnd < Self.sleepReExtendMorningWindow
+        } else {
+            inExtendReCheckWindow = false
         }
         lastForegroundSleepAutoConfirmAt = now
         var saved = autoConfirmStrongSleepCandidates(reason: reason)
@@ -8584,9 +8598,12 @@ final class SessionStore: ObservableObject {
             saved = evaluateWakeBoundarySleepIfUseful(reason: reason, now: now)
         }
         refreshHistorySnapshotCache(deferred: true)
-        if !saved {
+        if !saved && !inExtendReCheckWindow {
             // Back the rate limit off to ~10 min on failure so a transient
-            // blocker does not cost the whole 30-minute window.
+            // blocker does not cost the whole 30-minute window. Skipped while
+            // re-checking a settled confirmed night for extension (2026-07-08):
+            // there is nothing to retry, and the 10-min backoff would otherwise
+            // churn aggregateSleepCandidates on every morning foreground.
             lastForegroundSleepAutoConfirmAt = now.addingTimeInterval(-20 * 60)
             scheduleSleepReadinessRetryIfUseful(reason: reason)
         }
@@ -8615,6 +8632,14 @@ final class SessionStore: ObservableObject {
             let id = confirmedSleepID(start: candidate.start,
                                      end: candidate.end,
                                      source: Self.autoSleepClassification(for: candidate).source)
+            // Wake-then-sleep-again grew the night: extend the confirmed auto night
+            // in place instead of skipping the candidate as a duplicate (user
+            // 2026-07-08). applySleepExtend is extend-only and never touches a
+            // manual/adjusted night, so it can't clobber a user override.
+            if applySleepExtend(to: &existing, candidate: candidate, reason: "\(reason)_extend") != nil {
+                saved += 1
+                continue
+            }
             if existing.contains(where: { $0.id == id || Self.sleepWindowsOverlap($0, candidate: candidate) }) {
                 continue
             }
@@ -8935,6 +8960,19 @@ final class SessionStore: ObservableObject {
         // never the in-flight candidate itself, so this can't self-match.
         var existing = cachedConfirmedSleeps
         let confirmed = buildAutoConfirmedSleep(from: candidate, reason: "\(reason)_wake_boundary")
+        // Wake-then-sleep-again on a continuous (all-day-wear) recording: the live
+        // night session's wake boundary moved later, so grow the confirmed night in
+        // place rather than skip it as an overlap (user 2026-07-08). This is the
+        // path the resident-app case actually takes — the closed-candidate path
+        // never sees a still-open night.
+        if let extended = applySleepExtend(to: &existing, candidate: candidate, reason: "\(reason)_wake_boundary_extend") {
+            saveConfirmedSleeps(existing)
+            AtriaDebugLog("ATRIADBG sleep_wake_boundary status=extended reason=%@ id=%@ end=%@",
+                          reason, extended.id, isoString(extended.end))
+            DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
+                                                     detail: "extended to \(isoString(extended.end)) (wake boundary)"))
+            return true
+        }
         guard !existing.contains(where: { $0.id == confirmed.id || Self.sleepWindowsOverlap($0, candidate: candidate) }) else {
             AtriaDebugLog("ATRIADBG sleep_wake_boundary status=overlaps_saved reason=%@ id=%@", reason, confirmed.id)
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
@@ -8956,6 +8994,28 @@ final class SessionStore: ObservableObject {
         DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
                                                  detail: "\(isoString(confirmed.start))–\(isoString(confirmed.end)), \(SleepHistorySnapshot.formatDuration(confirmed.duration)) (wake boundary)"))
         return true
+    }
+
+    /// Extend an existing confirmed auto night in place when `candidate` grows it
+    /// (wake-then-sleep-again). Mutates `existing`, returns the extended record
+    /// (nil = no extend). Shared by the closed-candidate and wake-boundary paths.
+    /// Keeps the transient auto-logged banner in sync but never re-notifies.
+    @discardableResult
+    private func applySleepExtend(to existing: inout [UserConfirmedSleep],
+                                  candidate: AggregateSleepCandidate,
+                                  reason: String) -> UserConfirmedSleep? {
+        guard Self.sleepExtendReplacement(existing: existing, candidate: candidate) else { return nil }
+        existing.removeAll { Self.isExtendableAutoNight($0) && Self.sleepWindowsOverlap($0, candidate: candidate) }
+        let extended = buildAutoConfirmedSleep(from: candidate, reason: reason)
+        existing.append(extended)
+        if let banner = autoSleepLoggedBanner, banner.start < candidate.end, banner.end > candidate.start {
+            autoSleepLoggedBanner = AutoSleepLoggedBanner(id: extended.id,
+                                                          start: extended.start,
+                                                          end: extended.end,
+                                                          duration: extended.duration,
+                                                          sleepID: extended.id)
+        }
+        return extended
     }
 
     /// Exposed (not `private`) so unit tests can exercise the auto-confirm gate
@@ -9106,6 +9166,45 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
         sleep.start < candidate.end && sleep.end > candidate.start
+    }
+
+    /// A source the user authored or hand-edited — never touched by the auto
+    /// extend path (2026-07-08). Covers manual_sleep/manual_nap and the
+    /// user_adjusted_* sources produced by the Adjust sheet.
+    nonisolated static func isUserAuthoredSleepSource(_ source: String) -> Bool {
+        source.hasPrefix("manual_") || source.hasPrefix("user_adjusted_")
+    }
+
+    /// A confirmed night the auto extend may grow in place: a real overnight sleep
+    /// (not a nap) that the user did not author/edit.
+    nonisolated static func isExtendableAutoNight(_ sleep: UserConfirmedSleep) -> Bool {
+        !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+            && !isUserAuthoredSleepSource(sleep.source)
+    }
+
+    /// Whether `candidate` should EXTEND the confirmed overnight night(s) it
+    /// overlaps rather than be skipped as a duplicate — "wake, then sleep again"
+    /// (user 2026-07-08). Extend-ONLY and safe:
+    ///  - never for a nap candidate;
+    ///  - never when it overlaps a USER-authored/edited night (left strictly alone);
+    ///  - only as a TAIL-superset of the auto night(s) it overlaps: it starts no
+    ///    later than their earliest start (so it can't trim the head, and a
+    ///    later-starting cluster split off by a >2h strap-dead gap is refused
+    ///    rather than fabricating sleep across the gap) AND ends meaningfully
+    ///    later than their latest end.
+    /// So it can only GROW an auto night — never shrink, split, or clobber a manual one.
+    nonisolated static func sleepExtendReplacement(existing: [UserConfirmedSleep],
+                                                   candidate: AggregateSleepCandidate,
+                                                   minGain: TimeInterval = 5 * 60) -> Bool {
+        guard candidate.kind != "nap_candidate" else { return false }
+        if existing.contains(where: { isUserAuthoredSleepSource($0.source) && sleepWindowsOverlap($0, candidate: candidate) }) {
+            return false
+        }
+        let overlappingNights = existing.filter { isExtendableAutoNight($0) && sleepWindowsOverlap($0, candidate: candidate) }
+        guard let latestEnd = overlappingNights.map(\.end).max(),
+              let earliestStart = overlappingNights.map(\.start).min() else { return false }
+        return candidate.start <= earliestStart
+            && candidate.end > latestEnd.addingTimeInterval(minGain)
     }
 
     func addManualSleep(start: Date,
@@ -9573,7 +9672,7 @@ final class SessionStore: ObservableObject {
                                          idPrefix: "migrated")
     }
 
-    private static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
+    nonisolated static func confirmedSleepSourceIsNap(source: String, duration: TimeInterval) -> Bool {
         if SleepHistorySnapshot.Night.explicitNapSources.contains(source) {
             return true
         }
