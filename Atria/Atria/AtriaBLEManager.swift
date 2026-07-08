@@ -1289,7 +1289,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// gaps <=2h), and the next sample resumes ~1s later. 3h keeps a comfortable
     /// >=2h live tail while bounding each array to ~3h @1Hz and shrinking the
     /// per-checkpoint `snapshotSession` rescan (which also relieves the freeze).
-    private let longWearLiveSessionRetentionSpan: TimeInterval = 3 * 60 * 60
+    /// DEBUG builds may shorten it via `--atria-retention-roll-seconds N` (or the
+    /// `ATRIA_RETENTION_ROLL_SECONDS` env) so the roll can be verified against a
+    /// live strap without waiting 3 real hours; production is always 3h.
+    private var longWearLiveSessionRetentionSpan: TimeInterval {
+#if DEBUG
+        if let override = Self.debugRetentionRollSecondsOverride { return override }
+#endif
+        return 3 * 60 * 60
+    }
+#if DEBUG
+    private static let debugRetentionRollSecondsOverride: TimeInterval? = {
+        if let raw = ProcessInfo.processInfo.environment["ATRIA_RETENTION_ROLL_SECONDS"],
+           let value = TimeInterval(raw), value > 0 { return value }
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--atria-retention-roll-seconds"),
+           args.indices.contains(index + 1),
+           let value = TimeInterval(args[index + 1]), value > 0 { return value }
+        return nil
+    }()
+#endif
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
