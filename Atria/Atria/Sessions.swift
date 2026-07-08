@@ -3365,6 +3365,10 @@ final class SessionStore: ObservableObject {
     /// marker changes so SwiftUI renders read O(1) values.
     @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
     @Published private(set) var researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: [], sessions: [])
+    /// Coalesces the off-main recompute of the research/collection summaries so
+    /// they don't rebuild over ALL sessions on the main thread on every live
+    /// checkpoint (2026-07-08 compute-cadence pass).
+    private var pendingResearchSummaryRecompute: DispatchWorkItem?
     /// History opens with this cached snapshot instead of recomputing activity
     /// detection, trend summaries, and daily rollups on the navigation path.
     @Published private(set) var historySnapshot = HistorySnapshot.empty
@@ -3486,9 +3490,23 @@ final class SessionStore: ObservableObject {
     }
 
     private func recomputeCollectionResearchSummaries() {
-        imuAuditSummary = IMUAuditSummary(sessions: sessions)
-        researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers,
-                                                                                          sessions: sessions)
+        // These feed non-live research/collection cards, so coalesce them off the
+        // hot sessions.didSet (fires on every live checkpoint) and compute OFF the
+        // main thread — rebuilding IMUAuditSummary + the maneuver correlation over
+        // ALL sessions on the main thread on every mutation was a stall (2026-07-08).
+        pendingResearchSummaryRecompute?.cancel()
+        let sessionsSnapshot = sessions
+        let markers = cachedResearchManeuverMarkers
+        let work = DispatchWorkItem {
+            let imu = IMUAuditSummary(sessions: sessionsSnapshot)
+            let maneuver = ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessionsSnapshot)
+            DispatchQueue.main.async { [weak self] in
+                self?.imuAuditSummary = imu
+                self?.researchManeuverProbeCorrelationSummary = maneuver
+            }
+        }
+        pendingResearchSummaryRecompute = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     private func refreshHistorySnapshotCache(deferred: Bool = true) {
