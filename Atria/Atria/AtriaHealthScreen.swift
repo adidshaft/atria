@@ -19,6 +19,10 @@ struct AtriaHealthScreen: View {
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var isLoadingHistoricalHeartRatePoints = true
     @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
+    // Perf (handoff #2): the reduced/segmented stress strip, recomputed off the
+    // render path in `.onChange(of: stressMonitorStore.history)` and fed to an
+    // Equatable chart subview — never mapped 1:1 in body.
+    @State private var stressStripReduced: [StressStripPoint] = []
     @State private var educationTopic: AtriaVitalsEducationTopic?
     // Visibility/IA fix (2026-07-05): route audit + mounted sections. The
     // Health screen previously had no Trends surface, no sleep-stage
@@ -87,6 +91,12 @@ struct AtriaHealthScreen: View {
         }
         .onAppear { recomputeStress() }
         .onReceive(Self.stressRecomputeTimer) { _ in recomputeStress() }
+        .onChange(of: stressMonitorStore.history, initial: true) { _, history in
+            // Downsample off the render path (handoff #2). Fires when the store
+            // appends a reading (~every 30s while streaming); the Equatable chart
+            // subview then re-lays-out only when the reduced points actually change.
+            stressStripReduced = Self.reduceStressStrip(history)
+        }
         .sheet(item: $educationTopic) { topic in
             AtriaVitalsEducationSheet(topic: topic,
                                       numericRangeText: typicalRangeText(for: topic),
@@ -570,73 +580,92 @@ struct AtriaHealthScreen: View {
         stressMonitorStore.state.detail.isEmpty ? stressMonitorStore.state.label : stressMonitorStore.state.detail
     }
 
-    /// Session stress timeline (WHOOP-research follow-up 2026-07-07): the
-    /// scored readings since the app has been reading, as an area strip with
-    /// the Medium/High thresholds marked. In-memory history — stretches with
-    /// no reading are real gaps, and under 10 minutes of data shows nothing.
-    private struct StressStripPoint: Identifiable {
-        let id: Int
-        let t: Date
-        let value: Double
-        let segment: Int
-    }
-
-    /// Session stress split into contiguous runs: a gap longer than 5 minutes
-    /// (well beyond the ~30s recording cadence) starts a new SERIES so Swift
-    /// Charts leaves a REAL blank instead of interpolating a straight line
-    /// across a stretch the strap wasn't read — the honesty contract the
-    /// store comments promise. Computed off the render path (2026-07-08).
-    private var stressStripPoints: [StressStripPoint] {
-        let history = stressMonitorStore.history
+    /// Downsample the session stress history for display (perf handoff #2). The
+    /// raw history is up to ~1440 pts (12h @ 30s); the strip drew an AreaMark + a
+    /// LineMark PER point (~2880 marks) on every body eval — the worst scroll-jank
+    /// offender on Vitals. Bucket each contiguous run so the whole strip stays near
+    /// `targetTotal` display points, averaging the REAL activation per bucket
+    /// (nothing synthesized). A gap longer than 5 minutes (well beyond the ~30s
+    /// cadence) starts a NEW segment so Swift Charts leaves a real blank instead of
+    /// interpolating across a stretch the strap wasn't read — the honesty contract
+    /// the store comments promise. Runs in `.onChange`, never in body; the reduced
+    /// array feeds an Equatable chart subview so unrelated re-renders (the 5s stress
+    /// tick, live-pulse publishes) don't re-lay-out the chart.
+    private static func reduceStressStrip(_ history: [AtriaStressMonitorStore.StressHistoryPoint],
+                                          targetTotal: Int = 110) -> [StressStripPoint] {
         guard history.count > 1 else { return [] }
-        var points: [StressStripPoint] = []
-        points.reserveCapacity(history.count)
-        var segment = 0
+
+        // Contiguous runs, split on a >5min gap.
+        var segments: [[AtriaStressMonitorStore.StressHistoryPoint]] = []
+        var current: [AtriaStressMonitorStore.StressHistoryPoint] = []
         for (index, point) in history.enumerated() {
             if index > 0, point.t.timeIntervalSince(history[index - 1].t) > 5 * 60 {
-                segment += 1
+                segments.append(current)
+                current = []
             }
-            points.append(StressStripPoint(id: index, t: point.t,
-                                           value: point.activation * 3, segment: segment))
+            current.append(point)
         }
-        return points
+        if !current.isEmpty { segments.append(current) }
+
+        let total = history.count
+        var out: [StressStripPoint] = []
+        out.reserveCapacity(min(total, targetTotal + segments.count))
+        var emittedID = 0
+        for (segmentIndex, segment) in segments.enumerated() {
+            let reduced: [(t: Date, value: Double)]
+            if total <= 150 || segment.count <= 2 {
+                // Already legible / too small to thin — keep full fidelity.
+                reduced = segment.map { ($0.t, $0.activation * 3) }
+            } else {
+                // Budget proportional to this run's share of the readings (>=2 so a
+                // real run never collapses to a single point).
+                let budget = max(2, Int((Double(segment.count) / Double(total)
+                                         * Double(targetTotal)).rounded()))
+                reduced = Self.bucketStressSegment(segment, targetBuckets: budget)
+            }
+            for pair in reduced {
+                out.append(StressStripPoint(id: emittedID, t: pair.t,
+                                            value: pair.value, segment: segmentIndex))
+                emittedID += 1
+            }
+        }
+        return out
+    }
+
+    /// Time-bucket one contiguous run to ~`targetBuckets` points, averaging the
+    /// activation of the samples that fall in each bucket (the real mean, matching
+    /// the HR chart's `smoothedBuckets`). Value is the 0-1 activation scaled x3 to
+    /// the chart's 0...3 domain — identical to the raw 1:1 mapping.
+    private static func bucketStressSegment(_ segment: [AtriaStressMonitorStore.StressHistoryPoint],
+                                            targetBuckets: Int) -> [(t: Date, value: Double)] {
+        guard let first = segment.first?.t, let last = segment.last?.t, last > first,
+              segment.count > targetBuckets else {
+            return segment.map { ($0.t, $0.activation * 3) }
+        }
+        let span = last.timeIntervalSince(first)
+        let width = span / Double(targetBuckets)
+        var grouped: [Int: [Double]] = [:]
+        for point in segment {
+            let index = min(targetBuckets - 1, Int(point.t.timeIntervalSince(first) / width))
+            grouped[index, default: []].append(point.activation)
+        }
+        return grouped.keys.sorted().compactMap { index in
+            guard let activations = grouped[index], !activations.isEmpty else { return nil }
+            let center = first.addingTimeInterval((Double(index) + 0.5) * width)
+            let avg = activations.reduce(0, +) / Double(activations.count)
+            return (center, avg * 3)
+        }
     }
 
     private var stressHistoryStrip: some View {
-        let points = stressStripPoints
-        return Group {
-            if let first = points.first, let last = points.last,
+        Group {
+            if let first = stressStripReduced.first, let last = stressStripReduced.last,
                last.t.timeIntervalSince(first.t) >= 10 * 60 {
                 VStack(alignment: .leading, spacing: 6) {
-                    Chart {
-                        ForEach(points) { point in
-                            AreaMark(x: .value("Time", point.t),
-                                     y: .value("Stress", point.value),
-                                     series: .value("Segment", point.segment))
-                                .interpolationMethod(.monotone)
-                                .foregroundStyle(.orange.opacity(0.16))
-                            LineMark(x: .value("Time", point.t),
-                                     y: .value("Stress", point.value),
-                                     series: .value("Segment", point.segment))
-                                .interpolationMethod(.monotone)
-                                .foregroundStyle(.orange.gradient)
-                        }
-                        RuleMark(y: .value("Medium", 1))
-                            .foregroundStyle(.secondary.opacity(0.25))
-                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-                        RuleMark(y: .value("High", 2))
-                            .foregroundStyle(.secondary.opacity(0.25))
-                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-                    }
-                    .chartYScale(domain: 0...3)
-                    .chartYAxis(.hidden)
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                            AxisValueLabel(format: .dateTime.hour().minute())
-                        }
-                    }
-                    .frame(height: 56)
-                    .clipped()
+                    AtriaStressStripChart(points: stressStripReduced)
+                        .equatable()
+                        .frame(height: 56)
+                        .clipped()
                     Text("Stress while Atria has been reading today \u{00b7} gaps where the strap wasn't read stay blank")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -646,7 +675,7 @@ struct AtriaHealthScreen: View {
                 .background(Color(uiColor: .tertiarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Stress history for this session, \(points.count) readings.")
+                .accessibilityLabel("Stress history for this session, \(stressStripReduced.count) readings.")
             }
         }
     }
@@ -756,6 +785,59 @@ struct AtriaHealthScreen: View {
 
     private var statusTint: Color {
         statusValue == "Updated" ? Metrics.electricGreen : .secondary
+    }
+}
+
+/// One downsampled+segmented session-stress reading (perf handoff #2). A gap
+/// longer than 5 minutes bumps `segment`, which Swift Charts treats as a new
+/// series so the strip leaves a real blank instead of interpolating across a
+/// stretch the strap wasn't read (the honesty contract).
+private struct StressStripPoint: Identifiable, Equatable {
+    let id: Int
+    let t: Date
+    let value: Double
+    let segment: Int
+}
+
+/// The session-stress area strip, isolated behind `Equatable` so it re-lays-out
+/// ONLY when the reduced points change — not on every parent re-render (the 5s
+/// stress tick, live-pulse publishes). Points are already downsampled to ~110
+/// (see `AtriaHealthScreen.reduceStressStrip`); this view just draws them.
+private struct AtriaStressStripChart: View, Equatable {
+    let points: [StressStripPoint]
+
+    static func == (lhs: AtriaStressStripChart, rhs: AtriaStressStripChart) -> Bool {
+        lhs.points == rhs.points
+    }
+
+    var body: some View {
+        Chart {
+            ForEach(points) { point in
+                AreaMark(x: .value("Time", point.t),
+                         y: .value("Stress", point.value),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(.orange.opacity(0.16))
+                LineMark(x: .value("Time", point.t),
+                         y: .value("Stress", point.value),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(.orange.gradient)
+            }
+            RuleMark(y: .value("Medium", 1))
+                .foregroundStyle(.secondary.opacity(0.25))
+                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+            RuleMark(y: .value("High", 2))
+                .foregroundStyle(.secondary.opacity(0.25))
+                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+        }
+        .chartYScale(domain: 0...3)
+        .chartYAxis(.hidden)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisValueLabel(format: .dateTime.hour().minute())
+            }
+        }
     }
 }
 
