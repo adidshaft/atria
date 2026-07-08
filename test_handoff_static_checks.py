@@ -1411,7 +1411,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .personalBaseline:\n            base = \"Personal baseline\"",
             "if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains(\"HRV baseline\")",
             "base = \"Building baseline\"",
-            "detail: hrvDetailText",
+            # 2026-07-08: HRV/RHR cards show the real baseline value + a "Calibrating ·
+            # night N of 14" detail during calibration (user "start showing something
+            # when we can"), with the zone judgment suppressed; else hrvDetailText/hrvZone.
+            "detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText",
             "private var hrvDetailText: String",
             "if detail.contains(\"validated\") { return \"Checked\" }",
             "if detail.contains(\"personal baseline\") || detail.contains(\"% kept\") { return \"Personal baseline\" }",
@@ -10796,10 +10799,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "zone: recoveryZone",
             "zone: strainZone",
             "zone: loadReadinessZone",
-            "zone: hrvZone",
+            "zone: hrvCalibratingValue != nil ? nil : hrvZone",  # 2026-07-08 partial-data calibration
             "zone: sleepGlanceZone",
             "zone: sleepEfficiencyZone",
-            "zone: restingHeartRateZone",
+            "zone: restingCalibratingValue != nil ? nil : restingHeartRateZone",  # 2026-07-08 partial-data calibration
             "zone: stepsZone",
             "zone: activeCaloriesZone",
             "zone: vo2TrendZone",

@@ -2907,13 +2907,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .hrv:
             detailButton(.hrv) {
                 AtriaGlanceMetricCard(title: "HRV",
-                                      value: metricDisplayValue(hero.hrvValue),
-                                      detail: hrvDetailText,
+                                      value: hrvCalibratingValue ?? metricDisplayValue(hero.hrvValue),
+                                      detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText,
                                       systemImage: metric.systemImage,
-                                      tint: hrvZone?.tint ?? Metrics.electricHRV,
+                                      tint: (hrvCalibratingValue != nil ? nil : hrvZone)?.tint ?? Metrics.electricHRV,
                                       sparklineValues: dailyMetricSparklines.hrv,
-                                      zone: hrvZone,
-                                      calibratingDay: hrvCalibratingDay,
+                                      zone: hrvCalibratingValue != nil ? nil : hrvZone,
+                                      calibratingDay: hrvCalibratingValue != nil ? nil : hrvCalibratingDay,
                                       calibratingTotal: PersonalBaseline.trustedMinimumSamples,
                                       calibratingUnit: "Night")
             }
@@ -2970,13 +2970,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .rhr:
             detailButton(.restingHeartRate) {
                 AtriaGlanceMetricCard(title: "RHR",
-                                      value: metricDisplayValue(hero.restingHeartRateText),
-                                      detail: "Baseline",
+                                      value: restingCalibratingValue ?? metricDisplayValue(hero.restingHeartRateText),
+                                      detail: restingCalibratingValue != nil ? calibratingProgressDetail(samples: restingBaselineSamples) : "Baseline",
                                       systemImage: metric.systemImage,
-                                      tint: restingHeartRateZone?.tint ?? Metrics.electricRHR,
+                                      tint: (restingCalibratingValue != nil ? nil : restingHeartRateZone)?.tint ?? Metrics.electricRHR,
                                       sparklineValues: dailyMetricSparklines.restingHeartRate,
-                                      zone: restingHeartRateZone,
-                                      calibratingDay: restingCalibratingDay,
+                                      zone: restingCalibratingValue != nil ? nil : restingHeartRateZone,
+                                      calibratingDay: restingCalibratingValue != nil ? nil : restingCalibratingDay,
                                       calibratingTotal: PersonalBaseline.trustedMinimumSamples,
                                       calibratingUnit: "Night")
             }
@@ -3270,6 +3270,26 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var restingCalibratingDay: Int? {
         metricIsPending(hero.restingHeartRateText) ? restingBaselineSamples : nil
+    }
+
+    // Partial data during calibration (user 2026-07-08 "start showing something
+    // when we can"): once a baseline value exists, show the real HRV/RHR built so
+    // far — a measured number — instead of hiding it behind the countdown ring.
+    // The detail says it's still calibrating and the zone judgment is suppressed
+    // (there is no trusted baseline to grade the number against yet), so nothing
+    // is fabricated or over-claimed.
+    private var hrvCalibratingValue: String? {
+        guard hrvCalibratingDay != nil, let hrv = baselineTarget.hrvBaseline else { return nil }
+        return "\(hrv)"
+    }
+
+    private var restingCalibratingValue: String? {
+        guard restingCalibratingDay != nil, let rhr = baselineTarget.restingBaseline else { return nil }
+        return "\(rhr)"
+    }
+
+    private func calibratingProgressDetail(samples: Int) -> String {
+        "Calibrating · night \(min(max(samples, 0), PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples)"
     }
 
     private var sleepCalibratingDay: Int? {
