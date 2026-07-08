@@ -36,6 +36,24 @@ final class AtriaJournalStoreTests: XCTestCase {
         return try JSONDecoder.atriaJournal.decode(AtriaJournalValue.self, from: data)
     }
 
+    // MARK: - 0. Typed questions
+
+    func testSubjectiveScaleQuestionsAreWellFormed() throws {
+        // Energy + focus (2026-07-08) join the daily journal as scale questions.
+        for q in [AtriaJournalTypedQuestion.energyScale, .focusScale] {
+            XCTAssertTrue(AtriaJournalTypedQuestion.allCases.contains(q))
+            XCTAssertFalse(q.title.isEmpty)
+            XCTAssertFalse(q.symbolName.isEmpty)
+            XCTAssertFalse(q.insightLabel.isEmpty)
+            XCTAssertNil(q.linkedTag, "subjective scales refine no legacy boolean tag")
+        }
+        // Their answers persist + round-trip via the generic scale value.
+        XCTAssertEqual(try roundTrip(.scale(4)), .scale(4))
+        // Every question keeps a distinct rawValue so answer series never collide.
+        let ids = AtriaJournalTypedQuestion.allCases.map(\.rawValue)
+        XCTAssertEqual(Set(ids).count, ids.count)
+    }
+
     // MARK: - 1. Codable round-trips and decode-side clamping
 
     func testJournalValueCodableRoundTripsAndClampsOnDecode() throws {

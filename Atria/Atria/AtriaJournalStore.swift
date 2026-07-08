@@ -228,6 +228,11 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
     case alcoholDrinks = "alcohol.drinks"
     case moodScale = "mood.scale"
     case stressScale = "stress.scale"
+    // Subjective outcomes (2026-07-08): daily energy + focus. Both scale 1→5 =
+    // depleted→energized / scattered→sharp, matching the emoji scale, so the
+    // insight engine can correlate them with recovery/sleep/strain over time.
+    case energyScale = "energy.scale"
+    case focusScale = "focus.scale"
 
     var id: String { rawValue }
 
@@ -237,6 +242,8 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "How many drinks?"
         case .moodScale: return "How's your mood today?"
         case .stressScale: return "How stressed do you feel?"
+        case .energyScale: return "How's your energy today?"
+        case .focusScale: return "How sharp is your focus?"
         }
     }
 
@@ -246,6 +253,8 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "wineglass"
         case .moodScale: return "face.smiling"
         case .stressScale: return "bolt.heart"
+        case .energyScale: return "bolt.fill"
+        case .focusScale: return "target"
         }
     }
 
@@ -256,6 +265,8 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "drinks"
         case .moodScale: return "mood"
         case .stressScale: return "stress"
+        case .energyScale: return "energy"
+        case .focusScale: return "focus"
         }
     }
 
@@ -264,7 +275,7 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         switch self {
         case .caffeineLastTime: return .caffeine
         case .alcoholDrinks: return .alcohol
-        case .moodScale, .stressScale: return nil
+        case .moodScale, .stressScale, .energyScale, .focusScale: return nil
         }
     }
 }
