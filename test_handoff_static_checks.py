@@ -8940,7 +8940,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "confirmedWorkouts: store.confirmedWorkouts",
             "confirmedWorkouts: debugMetricDetailWorkouts ?? confirmedWorkouts",
             "let confirmedWorkouts: [UserConfirmedWorkout]",
-            "AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.strain[range] ?? [], unit: \"\"),",
+            # 2026-07-08: detail heroes now route through periodHeroText (Day = latest,
+            # Week/Month = window average) so the headline tracks the range selector.
+            "AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.strainSummary[range], points: preparedHistory.strain[range] ?? [], unit: \"\"),",
             "strainWorkoutSection",
             "AtriaMetricContributorRows(rows: strainContributorRows, tint: Metrics.electricStrain)",
             "private var strainActivityContributorRows: [AtriaMetricContributorRow]",

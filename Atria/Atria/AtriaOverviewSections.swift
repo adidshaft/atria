@@ -6841,7 +6841,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .hrv:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.hrv[range] ?? [], unit: "ms"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.hrvSummary[range], points: preparedHistory.hrv[range] ?? [], unit: "ms"),
                                       heroState: hrvBand == nil ? learningNightsState(baseline.hrvSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6872,7 +6872,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .restingHeartRate:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.restingHeartRateSummary[range], points: preparedHistory.restingHeartRate[range] ?? [], unit: "bpm"),
                                       heroState: restingBand == nil ? learningNightsState(baseline.restingSampleCount) : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6903,7 +6903,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .respiratoryRate:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
                                       heroState: respiratoryBand == nil ? "Learning" : "Typical",
                                       tint: metric.tint) {
                 AtriaMetricContributorRows(rows: [
@@ -6930,7 +6930,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .sleep:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.sleep[range] ?? [], unit: "h"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepSummary[range], points: preparedHistory.sleep[range] ?? [], unit: "h"),
                                       heroState: sleepHeroState,
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latest {
@@ -6965,7 +6965,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .strain:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.strain[range] ?? [], unit: ""),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.strainSummary[range], points: preparedHistory.strain[range] ?? [], unit: ""),
                                       heroState: strainHeroState,
                                       tint: Metrics.electricStrain) {
                 strainWorkoutSection
@@ -6999,7 +6999,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .sleepPerformance:
-            AtriaMetricDetailTemplate(heroValue: latestMetricText(points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
+            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepPerformanceSummary[range], points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
                                       heroState: sleepPerformanceHeroState,
                                       tint: Metrics.electricSleep) {
                 EmptyView()
@@ -7678,6 +7678,22 @@ struct AtriaMetricDetailSheet: View {
     private func latestMetricText(points: [AtriaDetailChartPoint], unit: String) -> String {
         guard let latest = points.last else { return "--" }
         return latestText(value: latest.value, unit: unit)
+    }
+
+    /// The detail-hero headline for the selected period. Day = the latest reading
+    /// (unchanged); Week/Month/… = the window AVERAGE, read from the SAME per-range
+    /// summary the chart's Avg strip uses, so the headline tracks the selector and
+    /// agrees with the chart. Falls back to the latest reading when no summary yet.
+    /// (2026-07-08: the headline was the latest point for every range, identical
+    /// across Day/Week/Month, so the number looked frozen to the selector — the same
+    /// class of bug the user reported for recovery.)
+    private func periodHeroText(summary: AtriaDetailPeriodSummary?,
+                                points: [AtriaDetailChartPoint],
+                                unit: String) -> String {
+        if range != .day, let summary {
+            return summary.averageText
+        }
+        return latestMetricText(points: points, unit: unit)
     }
 
     private var contributorCard: some View {
