@@ -164,6 +164,17 @@ struct AtriaHistorySection: View, Equatable {
     @State private var model = AtriaHistoryModel.empty
     @State private var selectedDay: AtriaHistoryDay?
     @State private var showAllDetections = false
+    // Perf (handoff #5): the LazyVStack that hosts this section evicts it
+    // off-screen, so `.onAppear` re-fires `rebuild()` on every scroll-in —
+    // re-decoding DetectionEventLog + rebuilding ~400 day rows. Skip the rebuild
+    // when the revisions it depends on are unchanged (same key as `==`).
+    @State private var builtKey: BuiltKey?
+
+    private struct BuiltKey: Equatable {
+        let rollup: Int
+        let workouts: Int
+        let detections: Int
+    }
 
     /// Store access for the detections inbox's Adjust routing only —
     /// deliberately NOT part of ==, which memoizes on the revisions.
@@ -205,6 +216,13 @@ struct AtriaHistorySection: View, Equatable {
     }
 
     private func rebuild() {
+        // Skip the rebuild when inputs are unchanged (scroll-in re-appear). The
+        // onChange handlers only fire when a revision actually changed, so the key
+        // differs and the rebuild proceeds; a bare re-appear with the same data is
+        // skipped.
+        let key = BuiltKey(rollup: rollupRevision, workouts: workoutsRevision, detections: detectionsRevision)
+        guard builtKey != key else { return }
+        builtKey = key
         model = .make(rollups: rollups, workouts: workouts, sleeps: sleeps)
     }
 
