@@ -58,8 +58,38 @@ live capture for `ATRIADBG live_session_retention_roll status=rolled` (~every 3h
 + no jetsam + no multi-second ATRIADBG timestamp gaps on Vitals. #3's *perf* delta is not measurable
 until `dailyRollupHistory` grows toward 90–400 rows (one row/day; ~3 today).
 
-**Next:** the "Next pass" fixes #4–#7 below (not started). #4 (incremental `snapshotSession`)
-must verify identical values vs the rescan on a captured session before shipping.
+## ✅ Progress — 2026-07-08 (session 4): "Next pass" partially shipped
+
+- **#5 — LazyVStack scroll-in re-decode SHIPPED** (commit `92f0e469`): guarded `AtriaHistorySection.rebuild()`
+  with a revision key; the pulse card's `.task` with a `hasLoadedOnce` flag; `AtriaTrendChartCard`'s
+  `prepareSeries` with a `(points, metric, range, baselineRHR)` fingerprint. All behavior-identical.
+  Gates green (static 128 + full AtriaTests).
+- **Debug affordance SHIPPED** (commit `f6c3d9fb`): `--atria-retention-roll-seconds N` (DEBUG only) shortens
+  the #1 retention cap so the roll can be verified against a live strap without waiting 3h. Production unchanged.
+- **#4 — DEFERRED (obviated).** #1's retention roll already bounds the live array to ≤~3h, so the O(N)
+  `snapshotSession` freeze it targeted is largely gone; the remaining win is a constant factor with a
+  value-identity wrinkle (incremental stddev is only ~1e-9-identical, not bit; active-calories can't be
+  incremental because it depends on the final resting-HR + retroactive excluded-intervals). User agreed to
+  skip. A full, careful #4 recipe (exact-int sum-of-squares + an energy-pair accumulator with a profile-
+  signature fallback) is preserved at the session workflow output if ever wanted.
+- **#6, #7 — DEFERRED (low priority now).** With #1/#2/#3/#5 shipped, these are the smallest contributors.
+  - #6 (`AtriaMetricDetailSheet` builds all-ranges `AtriaPreparedMetricHistory` in `init`, re-run every ~700ms
+    while the sheet is open): the fix must move the heavy build OUT of `init` (a `@State`+`.task` with an
+    `.empty` seed + `if let` body guards, OR an internal memo — the latter hits a Swift-6 `static var`
+    concurrency wall AND the pin at `test_handoff_static_checks.py:9987` that asserts the exact `init` line,
+    so it needs a dated pin migration). Secondary path (the detail sheet, not the main scroll).
+  - #7 (memoize `trendEvents` / `WeeklyReport` / `sleepPerformancePercent`): cheap per-eval recomputes;
+    `trendEvents` is computed eagerly but only consumed by the (usually-closed) expanded chart, so the win
+    is lazy-computing it; the sleep-percent computeds are cheap and carry a data-coherence contract not worth
+    risking. Needs stable workout+sleep revision keys.
+
+**Live #1 on-device verification attempted, BLOCKED (environmental):** with the strap on, two Debug runs
+(`--atria-retention-roll-seconds 120` then `30`) could not accumulate the roll's ≥10-sample floor — the
+strap link was too unstable (210 BLE disconnects, HR stalling after ~53s, battery 19%, thermal serious) and
+the OS SIGKILL'd the foreground app before the span reached the cap. Not the fix (only ~13 samples ever
+streamed). Retry when the link is stable + charged: `ATRIA_DEVICE_ID=… bash live_device_debug.sh --configuration
+Debug --seconds 300 --leave-running` then relaunch with `--atria-retention-roll-seconds 120 --atria-long-wear-mode
+--atria-standard-hr-only` and watch for `ATRIADBG live_session_retention_roll status=rolled`.
 
 ## Where we are
 - Branch: **`ui-ux-polish`** (all pushed; `main` is behind by the perf commits — merge when green).
