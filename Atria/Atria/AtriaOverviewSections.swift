@@ -2947,7 +2947,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
                                   value: sleepHistory.latest?.sleepEfficiencyText ?? "Learning",
-                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Learning" : "Duration-based",
+                                  detail: sleepHistory.latest?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latest?.sleepEfficiency == nil ? .orange : .cyan),
                                   zone: sleepEfficiencyZone,
