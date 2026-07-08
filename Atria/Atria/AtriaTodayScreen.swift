@@ -70,7 +70,11 @@ struct AtriaTodayScreen: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
-        VStack(spacing: 16) {
+        // LazyVStack, not VStack (2026-07-08 perf): this whole screen is a single
+        // child of tabNavigation's outer LazyVStack, so an eager VStack here renders
+        // every section (hero, plan, weekly plan, coach, …) synchronously on tab-open
+        // — main-thread jank that grows with data. Lazy renders only what's on screen.
+        LazyVStack(spacing: 16) {
             if debugShowsAICoachOnly {
                 AtriaAICoachCard(context: coachContext,
                                  preparedPayload: coachPayload,
