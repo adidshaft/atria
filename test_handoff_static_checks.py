@@ -6898,7 +6898,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct ResearchManeuverProbeCorrelationSummary: Equatable",
             "@Published private(set) var researchManeuverProbeCorrelationSummary",
             "private func recomputeCollectionResearchSummaries()",
-            "researchManeuverProbeCorrelationSummary = ResearchManeuverProbeCorrelationSummary(markers: cachedResearchManeuverMarkers",
+            # 2026-07-08: recompute moved off-main + coalesced (compute-cadence pass);
+            # markers still captured from the local cachedResearchManeuverMarkers,
+            # local-research-only, built off the sessions snapshot.
+            "let markers = cachedResearchManeuverMarkers",
+            "ResearchManeuverProbeCorrelationSummary(markers: markers, sessions: sessionsSnapshot)",
             "func markResearchManeuver(_ kind: ResearchManeuverMarker.Kind",
             "ATRIADBG research_maneuver_marker status=marked",
             "local_only=1 research_only=1 metric_promotions=0 healthkit_write=0 raw_storage=0",
@@ -8368,7 +8372,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "var respiratoryRateText: String",
             "@Published private(set) var imuAuditSummary",
             "private func recomputeCollectionResearchSummaries()",
-            "imuAuditSummary = IMUAuditSummary(sessions: sessions)",
+            # 2026-07-08: research summaries now recompute OFF-main + coalesced
+            # (compute-cadence pass) — still built from the real sessions snapshot,
+            # nothing fabricated; published back on main.
+            "let imu = IMUAuditSummary(sessions: sessionsSnapshot)",
         ]:
             assert_contains(self, sessions, needle)
 
