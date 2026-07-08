@@ -27,9 +27,14 @@ struct AtriaExpandedChartView: View {
     var priorPoints: [AtriaDetailChartPoint] = []
     var baselineBand: AtriaDetailBaselineBand? = nil
     var events: [AtriaChartEvent] = []
+    /// Sibling series offered as an overlay ("Edit this chart", design
+    /// handoff). One at a time; the overlay is rescaled into this chart's
+    /// y-domain and the legend says so — comparison of shape, not units.
+    var overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = []
     let onDismiss: () -> Void
 
     @State private var visibleDays: Int = 0
+    @State private var activeOverlayTitle: String?
     @State private var brushStart: Date?
     @State private var brushEnd: Date?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -124,6 +129,17 @@ struct AtriaExpandedChartView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
             }
 
+            if let overlay = activeOverlay {
+                ForEach(rescaledOverlayPoints(overlay)) { point in
+                    LineMark(x: .value("Day", point.day, unit: .day),
+                             y: .value(title, point.value),
+                             series: .value("Series", "overlay"))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(overlay.tint.opacity(0.7))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+                }
+            }
+
             ForEach(points) { point in
                 LineMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
@@ -184,7 +200,29 @@ struct AtriaExpandedChartView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
+            if !overlays.isEmpty {
+                ForEach(overlays, id: \.title) { overlay in
+                    let isActive = activeOverlayTitle == overlay.title
+                    Button {
+                        activeOverlayTitle = isActive ? nil : overlay.title
+                    } label: {
+                        Text(overlay.title)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(isActive ? overlay.tint : .secondary)
+                            .padding(.horizontal, 9)
+                            .frame(minHeight: 30)
+                            .background((isActive ? overlay.tint : Color.secondary).opacity(0.14), in: Capsule(style: .continuous))
+                            .contentShape(Capsule())
+                    }
+                    .accessibilityLabel("\(isActive ? "Hide" : "Overlay") \(overlay.title)")
+                }
+                if activeOverlay != nil {
+                    Text("dashed \u{00b7} scaled to fit")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
             if !events.isEmpty {
                 Label("\(events.count) activities marked", systemImage: "flag.fill")
                     .font(.caption2.weight(.semibold))
@@ -194,6 +232,28 @@ struct AtriaExpandedChartView: View {
             Text("\(min(visibleDays, spanDays)) of \(spanDays) days visible")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var activeOverlay: (title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])? {
+        overlays.first { $0.title == activeOverlayTitle }
+    }
+
+    /// Maps the overlay's values from its own min-max into this chart's
+    /// y-domain: an honest SHAPE comparison (the dashed line + "scaled to
+    /// fit" caption make clear the units differ).
+    private func rescaledOverlayPoints(_ overlay: (title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])) -> [AtriaDetailChartPoint] {
+        let values = overlay.points.map(\.value)
+        guard let lo = values.min(), let hi = values.max(), hi > lo else { return [] }
+        let domain = yDomain
+        let pad = (domain.upperBound - domain.lowerBound) * 0.06
+        let targetLo = domain.lowerBound + pad
+        let targetHi = domain.upperBound - pad
+        return overlay.points.map { point in
+            let fraction = (point.value - lo) / (hi - lo)
+            return AtriaDetailChartPoint(day: point.day,
+                                         value: targetLo + fraction * (targetHi - targetLo),
+                                         tint: overlay.tint)
         }
     }
 

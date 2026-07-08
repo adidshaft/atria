@@ -180,6 +180,19 @@ enum Metrics {
     /// Electric sleep indigo — sleep owns purple so it stays distinct from strain.
     static let electricSleep = adaptive(dark: (0.51, 0.35, 1.0), light: (0.39, 0.25, 0.78))
 
+    /// "Close your rings" achievement coloring (2026-07-08, user request): a
+    /// progress ring warms from orange → yellow → green as it fills, landing on
+    /// green the moment it reaches its target so a completed day reads as a
+    /// win. `fill` is progress toward the metric's OWN target (>= 1.0 = reached);
+    /// nil = not computed yet (neutral). Recovery keeps its own %-band green,
+    /// which uses the same green, so an all-good day shows three green rings.
+    static func ringAchievementTint(fill: Double?) -> Color {
+        guard let fill else { return .secondary }
+        if fill >= 0.999 { return .green }
+        if fill >= 0.6 { return .yellow }
+        return .orange
+    }
+
     // Secondary-vital identity hues. Each metric owns ONE hue (the "one hue per
     // metric" rule) drawn from the design-handoff palette, and — like the bands
     // above — is deepened on light so a tinted chip/number stays legible on

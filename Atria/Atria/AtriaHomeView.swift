@@ -670,6 +670,7 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showSettings) {
             AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
+                              myWeeklyRecovery: WeeklyReport(rollups: store.dailyRollupHistory).recoveryAvg,
                               strapName: ble.resolvedDeviceName,
                               strapModel: ble.strapModelLabel,
                               strapGenerationDetail: ble.strapGenerationDetail,
@@ -815,12 +816,25 @@ struct AtriaHomeView: View {
                 }
             }
         }
-        // Assistant moved out of the bottom bar (it's still "Coming Soon"); it
-        // now opens from a top-right icon, mirroring how Strap is presented.
+        // Assistant implemented (2026-07-07, user-directed): deterministic
+        // Q&A from the app's own engines + the opt-in provider coach card.
         .fullScreenCover(isPresented: $showAssistant) {
             NavigationStack {
                 ScrollView {
-                    chatComingSoonContent
+                    AtriaAssistantScreen(store: store,
+                                         context: assistantCoachContext,
+                                         coachPayload: assistantCoachPayload,
+                                         aiCoachSettings: aiCoachSettings,
+                                         aiCoachHasAPIKey: aiCoachHasAPIKey,
+                                         onAICoachSettingsChange: { aiCoachSettings = $0 },
+                                         onSaveAICoachAPIKey: { key in
+                                             AtriaCoachKeychain.saveAPIKey(key, provider: aiCoachSettings.cloudProvider)
+                                             aiCoachHasAPIKey = true
+                                         },
+                                         onDeleteAICoachAPIKey: {
+                                             AtriaCoachKeychain.deleteAPIKey(provider: aiCoachSettings.cloudProvider)
+                                             aiCoachHasAPIKey = false
+                                         })
                 }
                 .scrollContentBackground(.hidden)
                 .background {
@@ -1984,11 +1998,15 @@ struct AtriaHomeView: View {
         // newest confirmed sleep is already recent.
         store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground")
         Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
-        LocalNotificationScheduler.scheduleEveningJournalCheckIn(
-            lastJournalActivity: [store.behaviorJournalEntries.map(\.day).max(),
-                                  store.journalAnswers.latestActivityDay()]
-                .compactMap { $0 }
-                .max())
+        let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
+                                   store.journalAnswers.latestActivityDay()]
+            .compactMap { $0 }
+            .max()
+        LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
+        // Pre-schedule the morning journal nudge too, so a waking user gets a
+        // check-in prompt even when last night's sleep wasn't confirmed and the
+        // rich morning summary is skipped (user 2026-07-08).
+        LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
     }
 
     private func refreshAICoachKeyState() {
@@ -2073,6 +2091,26 @@ struct AtriaHomeView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
+                .background {
+                    // Occluding scrim (2026-07-08, device-reported): the chrome
+                    // band is transparent between the status chip and the icon
+                    // buttons, so scrolled content bled through behind them
+                    // ("This week", glance rows showing through the pill). A
+                    // thin top-anchored fade — NOT a second full AtriaBackdropLayer
+                    // (overdraw trap) — occludes content under the band and
+                    // dissolves it into the page at the lower edge.
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color(.systemBackground), location: 0.0),
+                            .init(color: Color(.systemBackground), location: 0.62),
+                            .init(color: Color(.systemBackground).opacity(0), location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
@@ -2120,28 +2158,32 @@ struct AtriaHomeView: View {
 #endif
     }
 
-    private var chatComingSoonContent: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 44, weight: .semibold))
-                .foregroundStyle(.tint)
-                .padding(.top, 48)
-            Text("ATRIA Intelligent Assistant")
-                .font(.title2.weight(.bold))
-            Text("Coming Soon!")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Ask your recovery, sleep and strain anything — answered from your own data, on this phone.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
-        .atriaCard()
-        .padding(.horizontal, 16)
+    /// Context for the Assistant's deterministic answers — the same hero
+    /// state the Today screen feeds its coach card.
+    private var assistantCoachContext: AtriaCoachContext {
+        let hero = model.heroStore.state
+        return AtriaCoachContext(guidance: hero.guidance,
+                                 strain: hero.strain,
+                                 recoveryText: hero.recoveryValue,
+                                 hrvText: hero.hrvValue,
+                                 stressText: hero.stressValue,
+                                 baselineSamples: hero.baselineSamples,
+                                 sessionsCount: hero.sessionsCount)
     }
+
+    /// Built on demand — the assistant cover opens rarely, so a fresh
+    /// last-7 payload is fine (same builder + baselines as the Today card).
+    private var assistantCoachPayload: AtriaCoachPayload? {
+        AtriaCoachPayload.fromRollups(rollups: Array(store.dailyRollupHistory.prefix(7)),
+                                      fallback: assistantCoachContext,
+                                      baselines: [
+                                          "recovery": .init(low: 0, high: 100),
+                                          "strain": .init(low: 0, high: model.heroStore.state.guidance.target ?? 20),
+                                          "hrv": .init(low: nil, high: nil),
+                                          "rhr": .init(low: nil, high: nil)
+                                      ])
+    }
+
 
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
@@ -6248,17 +6290,18 @@ final class AtriaHomeModel {
     }
 
     private func publishPulseSparkline() {
-        let next = Self.makePulseSparklineState(ble: ble)
-        guard next != pulseSparklineStore.state else { return }
-        // The chart buckets per second, but RR/HR arrive several times a second —
-        // publishing each beat re-merged and re-laid-out the Swift Charts
-        // timeline per heartbeat. 1 Hz is the chart's native resolution; the
-        // hero BPM digit stays on the un-gated pulseLiveStore so perceived
-        // liveness is unchanged. Staleness is bounded: the next beat after the
-        // window publishes.
+        // Throttle FIRST (2026-07-08 perf audit): the chart buckets per second,
+        // but RR/HR arrive several times a second, and makePulseSparklineState
+        // (suffix + filter + stride) plus the ~120-element Equatable compare
+        // were running on EVERY beat before this gate. 1 Hz is the chart's
+        // native resolution; the hero BPM digit stays on the un-gated
+        // pulseLiveStore so perceived liveness is unchanged. Staleness is
+        // bounded: the next beat after the window publishes.
         let now = Date()
         guard now.timeIntervalSince(lastPulseSparklinePublishAt) >= 1.0 else { return }
         lastPulseSparklinePublishAt = now
+        let next = Self.makePulseSparklineState(ble: ble)
+        guard next != pulseSparklineStore.state else { return }
         pulseSparklineStore.state = next
     }
 

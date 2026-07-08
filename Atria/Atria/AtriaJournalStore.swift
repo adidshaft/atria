@@ -228,6 +228,17 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
     case alcoholDrinks = "alcohol.drinks"
     case moodScale = "mood.scale"
     case stressScale = "stress.scale"
+    // Subjective outcomes (2026-07-08): daily energy + focus. Both scale 1→5 =
+    // depleted→energized / scattered→sharp, matching the emoji scale, so the
+    // insight engine can correlate them with recovery/sleep/strain over time.
+    case energyScale = "energy.scale"
+    case focusScale = "focus.scale"
+    // Habit behavior (2026-07-08): evening wind-down / sleep hygiene, scale 1→5 =
+    // wired→relaxed. A daily behavior the user can build a habit around, and the
+    // insight engine can correlate with sleep + recovery ("you sleep better on
+    // well-wound-down nights") — water/nutrition/caffeine are already tracked, so
+    // this fills a genuine gap rather than duplicating.
+    case windDownScale = "winddown.scale"
 
     var id: String { rawValue }
 
@@ -237,6 +248,9 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "How many drinks?"
         case .moodScale: return "How's your mood today?"
         case .stressScale: return "How stressed do you feel?"
+        case .energyScale: return "How's your energy today?"
+        case .focusScale: return "How sharp is your focus?"
+        case .windDownScale: return "How well did you wind down?"
         }
     }
 
@@ -246,6 +260,9 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "wineglass"
         case .moodScale: return "face.smiling"
         case .stressScale: return "bolt.heart"
+        case .energyScale: return "bolt.fill"
+        case .focusScale: return "target"
+        case .windDownScale: return "moon.zzz"
         }
     }
 
@@ -256,6 +273,9 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         case .alcoholDrinks: return "drinks"
         case .moodScale: return "mood"
         case .stressScale: return "stress"
+        case .energyScale: return "energy"
+        case .focusScale: return "focus"
+        case .windDownScale: return "wind-down"
         }
     }
 
@@ -264,7 +284,7 @@ enum AtriaJournalTypedQuestion: String, CaseIterable, Identifiable {
         switch self {
         case .caffeineLastTime: return .caffeine
         case .alcoholDrinks: return .alcohol
-        case .moodScale, .stressScale: return nil
+        case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale: return nil
         }
     }
 }

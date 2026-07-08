@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 struct AtriaSettingsView: View {
     let profile: AthleteProfile
     let restingBaseline: Int?
+    /// Real weekly recovery average for the leaderboard "You" row (nil while
+    /// still learning). Demo social feature (2026-07-08).
+    var myWeeklyRecovery: Int? = nil
     let strapName: String
     let strapModel: String
     let strapGenerationDetail: String
@@ -35,6 +38,8 @@ struct AtriaSettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
+    @State private var showLeaderboard = false
+    @State private var showSparring = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -101,6 +106,7 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
+         myWeeklyRecovery: Int? = nil,
          strapName: String = "",
          strapModel: String = "",
          strapGenerationDetail: String = "",
@@ -128,6 +134,7 @@ struct AtriaSettingsView: View {
          researchValidationContent: AnyView? = nil) {
         self.profile = profile
         self.restingBaseline = restingBaseline
+        self.myWeeklyRecovery = myWeeklyRecovery
         self.strapName = strapName
         self.strapModel = strapModel
         self.strapGenerationDetail = strapGenerationDetail
@@ -324,15 +331,68 @@ struct AtriaSettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $expandedSharing) {
                 AtriaResearchSharingSection(buildBundle: buildResearchBundle)
+                leaderboardRow
+                sparringRow
                 aboutSection
             } label: {
                 settingsGroupLabel("Privacy & Sharing",
-                                   subtitle: "Research sharing, support, app info",
+                                   subtitle: "Research sharing, leaderboard, support",
                                    systemImage: "hand.raised.fill",
                                    tint: .green)
             }
         } footer: {
             Text("Research bundle sharing, app version, and support contact.")
+        }
+    }
+
+    /// Entry to the leaderboard demo (2026-07-08). Self-contained button +
+    /// sheet so it needs no Form-level plumbing.
+    private var leaderboardRow: some View {
+        Button {
+            showLeaderboard = true
+        } label: {
+            HStack {
+                Label("Leaderboard", systemImage: "trophy.fill")
+                Spacer(minLength: 8)
+                Text("Preview")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(.orange.opacity(0.16), in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.primary)
+        .sheet(isPresented: $showLeaderboard) {
+            AtriaLeaderboardScreen(myWeeklyRecovery: myWeeklyRecovery)
+        }
+    }
+
+    /// Entry to the sparring demo (2026-07-08), sibling of the leaderboard.
+    private var sparringRow: some View {
+        Button {
+            showSparring = true
+        } label: {
+            HStack {
+                Label("Sparring", systemImage: "figure.fencing")
+                Spacer(minLength: 8)
+                Text("Preview")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(.purple.opacity(0.16), in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.primary)
+        .sheet(isPresented: $showSparring) {
+            AtriaSparringScreen(myWeeklyRecovery: myWeeklyRecovery)
         }
     }
 
@@ -717,7 +777,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .orange)
                 } label: {
                     targetGroupHeader(title: "Strain",
-                                  subtitle: "Recovery-scaled target band for day load.",
+                                  subtitle: "Today's strain goal, scaled to how recovered you are.",
                                   systemImage: "figure.run",
                                   tint: .orange)
                 }
@@ -784,7 +844,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Training load",
-                                  subtitle: "ACWR and monotony bands for readiness guidance.",
+                                  subtitle: "Warns when training ramps up too fast or gets too repetitive.",
                                   systemImage: "chart.bar.xaxis",
                                   tint: .orange)
                 }
@@ -814,7 +874,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .green)
                 } label: {
                     targetGroupHeader(title: "Activity",
-                                  subtitle: "Daily strap-step and estimated active calories goals.",
+                                  subtitle: "Your daily step and active-calorie goals.",
                                   systemImage: "figure.walk.motion",
                                   tint: .green)
                 }
@@ -860,7 +920,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .cyan)
                 } label: {
                     targetGroupHeader(title: "Sleep",
-                                  subtitle: "Duration goal and efficiency bands for sleep history.",
+                                  subtitle: "Your nightly sleep goal and how restful your nights were.",
                                   systemImage: "bed.double.fill",
                                   tint: .cyan)
                 }
@@ -906,7 +966,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .pink)
                 } label: {
                     targetGroupHeader(title: "Personal baselines",
-                                  subtitle: "HRV and resting-HR ranges wait for trusted baseline data.",
+                                  subtitle: "Your HRV and resting-heart-rate ranges, set once Atria learns your normal.",
                                   systemImage: "heart.text.square.fill",
                                   tint: .pink)
                 }
@@ -966,7 +1026,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Sleep-only signals",
-                                  subtitle: "Respiratory, relative skin-temp, and oxygen evidence bands.",
+                                  subtitle: "Breathing rate, skin temperature, and blood-oxygen ranges.",
                                   systemImage: "waveform.path.ecg",
                                   tint: .teal)
                 }
@@ -1001,7 +1061,7 @@ struct AtriaSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Fitness age",
-                                  subtitle: "Younger/older delta bands for the local estimate.",
+                                  subtitle: "How much younger or older your fitness looks than your age.",
                                   systemImage: "figure.stand",
                                   tint: .purple)
                 }
@@ -1031,7 +1091,7 @@ struct AtriaSettingsView: View {
                 .atriaCardAction(tint: .blue)
                 } label: {
                     targetGroupHeader(title: "VO2max",
-                                  subtitle: "Trend gain or decline needed for target colors.",
+                                  subtitle: "How much your VO2max must change to shift color.",
                                   systemImage: "lungs.fill",
                                   tint: .blue)
                 }

@@ -166,4 +166,22 @@ final class AtriaPolicyMathTests: XCTestCase {
                                                                         now: day2,
                                                                         defaults: defaults))
     }
+
+    // Morning journal check-in timing (2026-07-08): fires at learned wake + 15
+    // min, where the duty-cycle window end is median wake + 1 h.
+    func testMorningNudgeIsWakePlusFifteen() {
+        // windowEnd 08:00 (480) => wake 07:00 => nudge 07:15 (435).
+        XCTAssertEqual(LocalNotificationScheduler.morningNudgeMinutes(windowEnd: 8 * 60), 7 * 60 + 15)
+    }
+
+    func testMorningNudgeFallsBackToEightAMWhenUnlearned() {
+        XCTAssertEqual(LocalNotificationScheduler.morningNudgeMinutes(windowEnd: 0), 8 * 60)
+    }
+
+    func testMorningNudgeWrapsAcrossMidnight() {
+        // windowEnd 00:30 (30) => wake 23:30 => nudge 23:45 (1425), no negative/overflow.
+        XCTAssertEqual(LocalNotificationScheduler.morningNudgeMinutes(windowEnd: 30), 23 * 60 + 45)
+        let m = LocalNotificationScheduler.morningNudgeMinutes(windowEnd: 30)
+        XCTAssertTrue((0..<1440).contains(m))
+    }
 }

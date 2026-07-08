@@ -33,6 +33,7 @@ enum LocalNotificationScheduler {
         static let morningSummaryPrefix = "atria.morningSummary."
         static let weeklyReportPrefix = "atria.weeklyReport."
         static let eveningJournalPrefix = "atria.eveningJournal."
+        static let morningJournalPrefix = "atria.morningJournal."
         static let healthDeviation = "atria.health.deviation"
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
@@ -139,6 +140,9 @@ enum LocalNotificationScheduler {
 
             let identifier = Identifier.morningSummaryPrefix + day
             center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            // The rich summary carries the journal nudge itself, so cancel the
+            // plain pre-scheduled morning check-in for this day — no double nudge.
+            center.removePendingNotificationRequests(withIdentifiers: [Identifier.morningJournalPrefix + day])
             // Adaptive timing (docs/24 §14.2): deliver no earlier than YOUR
             // learned wake + 15 min; metrics landing later fire immediately.
             let windowEnd = UserDefaults.standard.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
@@ -191,8 +195,10 @@ enum LocalNotificationScheduler {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=evening_checkin")
             return
         }
+        // 14-day (not 7-day) re-engage window — see scheduleMorningJournalCheckIn:
+        // the reminder must outlast a typical lapse to rebuild the journal habit.
         guard let lastJournalActivity,
-              now.timeIntervalSince(lastJournalActivity) <= 7 * 24 * 60 * 60 else {
+              now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
             AtriaDebugLog("ATRIADBG notification_skip kind=evening_checkin reason=journal_inactive")
             return
         }
@@ -247,6 +253,96 @@ enum LocalNotificationScheduler {
                 UserDefaults.standard.set(targetDay, forKey: scheduledDayKey)
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=evening_checkin error=%@",
+                              String(describing: error))
+            }
+        }
+    }
+
+    /// Minutes-past-midnight for the morning journal nudge: learned wake + 15
+    /// (the duty-cycle window end is median wake + 1 h, so `windowEnd - 60` is
+    /// wake), or 08:00 until the window is learned. Pure + wraps across midnight,
+    /// so it's unit-testable.
+    nonisolated static func morningNudgeMinutes(windowEnd: Int) -> Int {
+        windowEnd > 0 ? ((((windowEnd + 1440 - 60) % 1440) + 15) % 1440) : 8 * 60
+    }
+
+    /// Morning journal check-in — the peer of scheduleEveningJournalCheckIn.
+    /// The rich morning summary (scheduleMorningSummary) only fires when a full
+    /// recovery+HRV+sleep metric is ready, and it folds the journal nudge into
+    /// itself. On a strict-gate morning where last night's sleep isn't confirmed,
+    /// that summary is skipped and the user got NO wake nudge at all (user
+    /// 2026-07-08). This pre-schedules a plain, honest journal nudge for the
+    /// learned wake time so the ask survives whether or not the night was
+    /// confirmed — it carries NO fabricated metrics. scheduleMorningSummary
+    /// cancels this one for the day when the rich summary does fire, so they
+    /// never both land.
+    static func scheduleMorningJournalCheckIn(lastJournalActivity: Date?,
+                                              now: Date = Date(),
+                                              calendar: Calendar = .current) {
+        guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
+            AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_checkin")
+            return
+        }
+        // 14-day (not 7-day) re-engage window: a journal reminder must survive a
+        // typical lapse to help rebuild the habit — a 7-day gate drops it exactly
+        // when the user has stopped and most needs the nudge (user 2026-07-08 #1/#7).
+        guard let lastJournalActivity,
+              now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=morning_checkin reason=journal_inactive")
+            return
+        }
+        // Scene foregrounds fire this many times a day; schedule at most once per
+        // target day.
+        let scheduledDayKey = "atria.notification.morningJournal.scheduledDay"
+
+        // Deliver at YOUR learned wake + 15 min — the same anchor the rich summary
+        // uses (the duty-cycle window end is median wake + 1 h). Falls back to
+        // 08:00 until the window is learned from confirmed sleeps.
+        let windowEnd = UserDefaults.standard.integer(forKey: AtriaBLEManager.DutyCycleDefaults.sleepWindowEndMin)
+        let nudgeMinutes = morningNudgeMinutes(windowEnd: windowEnd)
+        var target = calendar.date(bySettingHour: nudgeMinutes / 60,
+                                   minute: nudgeMinutes % 60,
+                                   second: 0,
+                                   of: now) ?? now
+        if target.timeIntervalSince(now) < 60 {
+            target = calendar.date(byAdding: .day, value: 1, to: target) ?? target
+        }
+        let delay = target.timeIntervalSince(now)
+        let targetDay = localDayIdentifier(for: target, calendar: calendar)
+        guard UserDefaults.standard.string(forKey: scheduledDayKey) != targetDay else { return }
+
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=morning_checkin",
+                              status)
+                return
+            }
+
+            let identifier = Identifier.morningJournalPrefix + targetDay
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            let decision = NotificationDecision(kind: "morning_summary",
+                                                identifier: identifier,
+                                                title: "Morning check-in",
+                                                body: "A minute now sharpens today's recovery insights.",
+                                                reason: "morning_journal_checkin",
+                                                shouldSchedule: true,
+                                                delay: delay,
+                                                categoryIdentifier: "atria.morningSummary",
+                                                userInfo: ["deepLink": "atria://journal"])
+            do {
+                try await add(decision: decision, center: center)
+                UserDefaults.standard.set(targetDay, forKey: scheduledDayKey)
+                AtriaDebugLog("ATRIADBG notification_schedule status=scheduled kind=morning_checkin target_day=%@ delay_s=%.0f",
+                              targetDay, delay)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=morning_checkin error=%@",
                               String(describing: error))
             }
         }
@@ -826,11 +922,13 @@ enum LocalNotificationScheduler {
 
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
         let savedTRIMP = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
-        let liveTRIMP = ble.session.first.map { first in
-            Metrics.trimp(ble.session.map { (t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
-                          rest: rest,
-                          max: store.profile.maxHR)
-        } ?? 0
+        // Perf (2026-07-08 audit): reuse the incremental accumulator (integrates
+        // only NEW samples) instead of re-mapping + re-integrating the whole
+        // live session (up to ~80k samples) on every notification evaluation.
+        // Same TRIMP math (consecutive dt is identical); both are @MainActor.
+        let liveTRIMP = WidgetSnapshotPublisher.incrementalLiveTRIMP(samples: ble.session,
+                                                                     rest: rest,
+                                                                     max: store.profile.maxHR)
         let strain = Metrics.strain(fromTRIMP: savedTRIMP + liveTRIMP)
         let guide = Coach.guide(recovery: recovery.percent, strain: strain)
         let strainDecision: NotificationDecision
