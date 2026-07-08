@@ -427,10 +427,15 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         _endTime = State(initialValue: workout.end)
     }
 
-    /// The workout window's real recorded HR samples from the saved
-    /// sessions that overlap it. Empty when no session covered the window
-    /// (e.g. a manually added workout) — the card then doesn't render.
-    private var heartRateTracePoints: [AtriaHomeModel.HeartRateChartPoint] {
+    /// The workout window's real recorded HR samples from the saved sessions
+    /// that overlap it. Empty when no session covered the window (e.g. a manually
+    /// added workout) — the card then doesn't render. Cached in `tracePoints`
+    /// because this scan is O(sessions × points): recomputing it on every ~1 Hz
+    /// store publish while the sheet is open was a hang, and a completed workout's
+    /// overlapping samples never change (2026-07-08).
+    @State private var tracePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+
+    private func computeHeartRateTracePoints() -> [AtriaHomeModel.HeartRateChartPoint] {
         store.sessions
             .filter { $0.end > workout.start && $0.start < workout.end }
             .flatMap { session in
@@ -448,7 +453,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// band per the 2026-07-07 feedback.
     @ViewBuilder
     private var heartRateTraceCard: some View {
-        let points = heartRateTracePoints
+        let points = tracePoints
         if points.count >= 30 {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Heart-rate trace")
@@ -618,6 +623,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes it from your history and strain. The recorded sensor data is kept; only this confirmed workout is deleted.")
+            }
+            // Compute the HR trace once per workout (samples are immutable for a
+            // completed workout) instead of rescanning all sessions each publish.
+            .task(id: workout.id) {
+                tracePoints = computeHeartRateTracePoints()
             }
         }
     }
