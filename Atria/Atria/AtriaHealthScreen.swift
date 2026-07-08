@@ -33,6 +33,14 @@ struct AtriaHealthScreen: View {
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
+    // Perf (handoff #3): `latestRollup` is read ~13x per Health Monitor render and
+    // was an O(n) `.max(by:)` each time. Memoize it against the store's rollup
+    // revision so the scan runs once per rollup change instead of once per read AND
+    // once per unrelated re-render (the 5s stress tick / live-pulse publishes that
+    // drive this surface). Reference-type cache in @State so the instance persists
+    // across body evals; mutating it during body is a pure memo (no @Published /
+    // @State value changes -> no view invalidation).
+    @State private var latestRollupCache = LatestRollupCache()
 
     private static let stressRecomputeTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
@@ -466,10 +474,31 @@ struct AtriaHealthScreen: View {
     }
 
     private var latestRollup: DailyRollupStoreEntry? {
-        // Perf (docs/26 follow-up): O(n) single pass instead of sorting the whole
-        // history and taking .first — this row is read ~13x per render on a
-        // reported-laggy surface. Behavior-identical (greatest .day wins).
-        store.dailyRollupHistory.max(by: { $0.day < $1.day })
+        // Perf (handoff #3): read ~13x per Health Monitor render. Memoize the O(n)
+        // single pass against the store's rollup revision (bumped on every
+        // `dailyRollupHistory` reassignment) so it runs once per rollup change, not
+        // once per read or per unrelated re-render. Behavior-identical (greatest
+        // .day wins); the fallbacks in the sibling rows read live sources directly
+        // and are intentionally not cached here.
+        latestRollupCache.latest(revision: store.dailyRollupHistoryRevision) {
+            store.dailyRollupHistory.max(by: { $0.day < $1.day })
+        }
+    }
+
+    /// Per-view memo for `latestRollup` (handoff #3): recomputes only when the
+    /// store's rollup revision changes. Reference type so one instance survives
+    /// body re-evals via @State; the mutation is a pure cache, never observed.
+    private final class LatestRollupCache {
+        private var revision: Int?
+        private var cached: DailyRollupStoreEntry?
+
+        func latest(revision: Int, compute: () -> DailyRollupStoreEntry?) -> DailyRollupStoreEntry? {
+            if revision != self.revision {
+                self.revision = revision
+                cached = compute()
+            }
+            return cached
+        }
     }
 
     // Today↔Vitals unification (2026-07-06): the Health Monitor rows read ONLY
