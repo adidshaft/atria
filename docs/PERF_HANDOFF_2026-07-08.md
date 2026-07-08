@@ -32,11 +32,31 @@ All three "Stop the bleeding" fixes are implemented, gated, and committed on `ui
 · Release build + install + launch-verify on device `3803F5B6` clean (`on_appear elapsed_ms=160`,
 no launch freeze/crash; long-wear supervisor schedules and runs).
 
-**⚠️ Residual verification gap:** the all-day-wear crash/freeze *elimination* still needs a real
-multi-hour strap session on-device (with the Vitals tab open to exercise the stress chart) —
-a headless run can't reproduce continuous streaming or drive the UI. Watch a live capture for
-`ATRIADBG live_session_retention_roll status=rolled` (should appear ~every 3h of continuous wear)
-and confirm no jetsam + no multi-second gaps in the ATRIADBG timestamp stream on Vitals.
+**Verification done (session 3):**
+- **Unit tests** — `Atria/AtriaTests/AtriaPerfFixesTests.swift` (commit `def2fa4d`, 10 cases, in the
+  gate): #1 roll trigger (below/at/above the 3h cap + min-samples floor + the real 20,291-sample
+  session), #2 `reduceStressStrip` (downsample bound + >5min gap kept as a separate segment +
+  honest mean + 1:1 small-input passthrough), #3 memo (computes once per revision incl. nil).
+  Test seams only: extracted `AtriaBLEManager.shouldRollLiveSession` + widened
+  `reduceStressStrip`/`StressStripPoint`/`LatestRollupCache` to internal (no gate pins touched).
+- **Real-data corroboration of the crash diagnosis** — `--pull-sessions` (read-only) off device
+  `3803F5B6`: 61 sessions; the largest "All-day wear" grew to **20,291 HR samples + 14,013 RR**
+  (~5.6h continuous) — direct evidence of the unbounded live-array growth. 4 sessions >2h, 11 >1h;
+  median ~570 pts (gaps segment most of the day). That one over-cap session is exactly what the 3h
+  roll now splits.
+- **On-device #3** — Debug build launched with `--atria-ui-screen vitals` (DEBUG-only tab force;
+  the harness doesn't forward it, add it to the `devicectl … launch` args manually): Vitals rendered
+  against the real 3-row `dailyRollupHistory` (`daily_rollup_persist_summary entries=3`),
+  `body_eval view=AtriaHealthScreen count=1` (single clean render, no storm), zero crashes.
+
+**⚠️ Residual (genuinely needs a live session):** the end-to-end **#1/#2** confirmation under real
+continuous streaming — the 3h roll's `span` is measured from a fresh wall-clock `session.first.t`
+(the 0x2A37 HR packet carries no device time), so it only fires after 3 real hours of continuous
+connected wear; historical/pulled/replayed data can't reconstruct the live arrays (`--replay-log`
+is a Mac-side log re-parser; journal-restore clamps to 18h and finalizes >90s-old records). Watch a
+live capture for `ATRIADBG live_session_retention_roll status=rolled` (~every 3h of continuous wear)
++ no jetsam + no multi-second ATRIADBG timestamp gaps on Vitals. #3's *perf* delta is not measurable
+until `dailyRollupHistory` grows toward 90–400 rows (one row/day; ~3 today).
 
 **Next:** the "Next pass" fixes #4–#7 below (not started). #4 (incremental `snapshotSession`)
 must verify identical values vs the rescan on a captured session before shipping.
