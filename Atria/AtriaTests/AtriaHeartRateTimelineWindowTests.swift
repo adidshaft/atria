@@ -73,5 +73,37 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 4, magnification: 1, maxIndex: 8)
         XCTAssertEqual(idx, 4, accuracy: 0.01)
     }
+
+    // downsampledSpan bounds the point count while PRESERVING the time span, so
+    // the "last 12h/24h" windows can actually fill (2026-07-08 fix: historical
+    // was capped to ~6000 raw ~1 Hz samples ≈ 100 min, so 12h showed ~1.7h).
+    func testDownsampledSpanPreservesEndpointsAndBounds() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let dense = points(spanHours: 24, count: 50_000, endingAt: end)
+        let thinned = AtriaVitalsHeartRateTimeline.downsampledSpan(dense, maxPoints: 2_500)
+        XCTAssertEqual(thinned.count, 2_500)
+        XCTAssertEqual(thinned.first?.t, dense.first?.t, "first sample (span start) must be preserved")
+        XCTAssertEqual(thinned.last?.t, dense.last?.t, "last sample (span end) must be preserved")
+        XCTAssertEqual(thinned, thinned.sorted { $0.t < $1.t }, "must stay time-ordered")
+    }
+
+    func testDownsampledSpanIsNoOpWhenAlreadyUnderBudget() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let sparse = points(spanHours: 3, count: 200, endingAt: end)
+        XCTAssertEqual(AtriaVitalsHeartRateTimeline.downsampledSpan(sparse, maxPoints: 2_500), sparse)
+    }
+
+    // Regression for the actual complaint: 24h of history thinned to 2500 must
+    // still let the 12h window reach ~12h back (not the old ~1.7h).
+    func testDownsampledSpanStillFillsTwelveHourWindow() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let dense = points(spanHours: 24, count: 50_000, endingAt: end)
+        let thinned = AtriaVitalsHeartRateTimeline.downsampledSpan(dense, maxPoints: 2_500)
+        let windowed = AtriaVitalsHeartRateTimeline.windowed(thinned, window: .hour12, displayBudget: 400)
+        let earliest = windowed.first?.t ?? end
+        XCTAssertLessThanOrEqual(earliest.timeIntervalSince(end.addingTimeInterval(-12 * 3600)), 40,
+                                 "12h window must reach ~12h back, within one downsample step")
+        XCTAssertGreaterThan(windowed.count, 200)
+    }
 }
 
