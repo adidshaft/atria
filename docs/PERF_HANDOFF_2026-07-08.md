@@ -216,3 +216,56 @@ The 10 principles correctly diagnose the disease: a **17,198-line `@MainActor Se
 > isolate the stress chart, resolve latestRollup once), gate + install to device 3803F5B6 + verify
 > the freeze/crash is gone, commit each. Then the "Next pass" fixes. Honesty is LAW; keep the
 > stress-chart segment gaps.
+
+## 2026-07-09 — device P0 triage ("not working / laggy / no detection"), strap connected
+
+Fresh Debug build + 120s telemetry capture on device `3803F5B6` (strap connected). **The app is not
+fundamentally broken:** launches in 5ms, HR decodes fine (`hr_accepted=147334`, `hr_zero=10`), render
+is clean (`body_eval count=1`, no storm — the memo fixes hold), rollups + widget snapshots keep saving,
+`strain_validation` computes (`samples=61007 stream_coverage=99% trimp=130.88 strain=8.56`). No launch
+crash ("signal 2" was the capture teardown).
+
+**Confounds in that capture (do not diagnose RR/detection from it):** the script defaulted
+`--atria-standard-hr-only` (`radio_mode=standard_hr_only reason=launch_arg`), suppressing RR/HRV
+(`gate_b_current_rr_ready=0`), AND the **strap battery was ~7%** (`battery=7`, an `atria.battery.low`
+notification that then got canceled), which alone explains most of the flapping (`ble_link disconnects=213`,
+`hr_sample_last_status=zero_contact`, watchdog recoveries in the hundreds/thousands). Re-verify detection on a
+CHARGED strap in full-protocol (no `--standard-hr-only`).
+
+### ✅ SHIPPED — workout under-detection (real, battery-independent logic bug)
+`AtriaWorkoutPromptEvaluator`: `minimumSustainedSamples = 480` was used BOTH as the sustained-window
+length in seconds (`sustainedStart`) AND as the required elevated-sample COUNT (`elevatedSamples >= 480`).
+At ~1 Hz an 8-min window holds ≤480 samples, so it demanded ~100% elevated with zero packet loss — the
+sustained path never fired on real (dropout-prone) data, so only hard zone-3+ efforts were auto-detected
+(moderate walks/cardio/strength missed). Fix: decoupled the count into `minimumSustainedElevatedSamples = 300`
+(~5 min of elevation, dropout-tolerant, still fail-closed). Pin migrated (test_handoff:229); 2 new tests
+(fires-with-dropout at 360 samples, rejects-brief at 180). Confirmed by low-zone strap data (`z3=26s z4=0`).
+
+### ⚠️ CONFIRMED-BUT-NOT-YET-FIXED — the lag/OOM root cause (needs a careful, detection-safe pass)
+The `#1` retention roll (`rollLongWearLiveSessionIfOversized`, :9625) AND the whole long-wear supervisor
+checkpoint loop (:4458) are gated on `guard longWearModeEnabled, standardHROnlyMode`. `standardHROnlyMode`
+defaults **false** (:959) and full-protocol is preserved across the **entire 21:00–11:00 sleep window**
+(`preserve_rr_sleep_window window=21_11`). So during full-protocol/overnight wear the four live arrays
+(`session`/`rrArchive`/`sessionPointsCache`/`rrPointsCache`) are NOT bounded, and the DEFERRED `#4`
+`snapshotSession` O(N) `@MainActor` rescan grows unbounded → progressive multi-second freeze + eventual
+OOM jetsam. **This means `#1` (the crash fix) is effectively inert for the common overnight case.**
+DO NOT just drop the `standardHROnlyMode` clause: rolling during full-protocol fragments the overnight
+night into ~3h `SavedSession`s, which breaks the `sessions == 1` unambiguous sleep gate
+(`isUnambiguousHROnlyMainSleepCandidate`, Sessions.swift) and the single-session wake-boundary anchor
+(`evaluateWakeBoundarySleepIfUseful` uses `nightSessions.max(by:start)`) → sleep detection regresses.
+Careful-pass options (design + adversarial review + CHARGED-strap verification required):
+  (a) Make memory bounding mode-independent WITHOUT segment fragmentation — e.g. land `#4` (incremental
+      or off-`@MainActor` `snapshotSession`) so an unbounded array no longer freezes the main thread; and/or
+  (b) An unconditional trailing hard-cap on the four arrays that preserves derived counters, coordinated so
+      the sleep detectors treat contiguous roll segments (≈1s gap, same wear) as one night, and the roll is
+      suppressed inside the learned sleep window.
+Verify by watching for `ATRIADBG live_session_retention_roll status=rolled` + no jetsam + no multi-second
+ATRIADBG timestamp gaps across a real overnight on a charged strap.
+
+### Also flagged (lower priority, from the diagnosis workflow wf_55bdefcc)
+- Sleep detection currently gated (`candidates=2 ready_candidates=0 blocker=sleep_low_confidence_threshold`) —
+  honesty-correct fail-closed, but partly starved by the hr-only capture confound; re-check on charged/full-protocol.
+- `upsertSession` does `remove(at:)` then `insert(...)` = two `@Published sessions` mutations per checkpoint
+  (Sessions.swift ~5404) → double didSet recompute + re-render; low-risk in-place-mutate win.
+- Sleep foreground auto-confirm fallback only fires inside the 09:00–11:00 core when the duty-cycle window
+  is unlearned (n<3 overnights) — a user checking outside that slot sees "no detection" though it's working-as-designed.
