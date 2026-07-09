@@ -10073,7 +10073,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let motionShortStats = sleepMotionShortSummary()
         let liveIMU = imuFeatureSummary()
-        let historicalIMU = liveIMU.stillnessRatio == nil
+        // Perf/thermal (2026-07-09, device-reported tab-switch freeze): this
+        // historical-gravity read parses several MB of the (pre-compaction, ~80 MB)
+        // archive on the MainActor on every checkpoint. Under thermal pressure
+        // (serious/critical, or Low Power) that parse compounds the 2.5-4x CPU
+        // throttle into a death spiral -- hot -> expensive parse -> hotter -- and
+        // stalls UI transitions. It's NON-ESSENTIAL motion evidence (falls back to
+        // the HR-only sleep tier and is recomputed once the device cools), so skip
+        // it while deferring, mirroring the long-wear supervisor's own
+        // shouldDeferNonEssentialAnalysis deferral of its autosave/diagnostic.
+        let historicalIMU = (liveIMU.stillnessRatio == nil
+                             && !powerThermalGovernor.shouldDeferNonEssentialAnalysis)
             ? HistoricalArchive.motionFeatureSummary(start: start, end: last.t)
             : nil
         let imuStillnessRatio = liveIMU.stillnessRatio ?? historicalIMU?.stillnessRatio
