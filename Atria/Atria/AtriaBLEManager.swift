@@ -868,6 +868,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var sessionMaxHeartRate: Int?
     private var sessionHeartRateTotal = 0
 
+    // Off-main historical-motion cache (2026-07-09, device-reported tab-switch
+    // freeze). snapshotSession used to parse several MB of the (pre-compaction,
+    // ~80 MB) historical archive on the MainActor every checkpoint. Instead a
+    // background task refreshes this value off-main and snapshotSession reads it.
+    // Keyed by the live session's start (`Origin`) so a value from a previous
+    // rolled/reset segment is never reused for a new one.
+    private var cachedHistoricalMotion: HistoricalArchive.MotionFeatureSummary?
+    private var cachedHistoricalMotionOrigin: Date?
+    private var cachedHistoricalMotionAt: Date?
+    private var historicalMotionRefreshInFlight = false
+
     var restingHR: Int? { sessionMinHeartRate }   // lowest sustained = resting proxy
     var peakHR: Int? { sessionMaxHeartRate }
     var avgHR: Int? {
@@ -1278,6 +1289,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var forceFreshScanOnRestore = false
     private var forceFreshScanAfterDisconnect = false
     private let minimumFinishedLongWearDuration: TimeInterval = 5 * 60
+    /// Perf/crash (2026-07-08 handoff #1): during continuous all-day streaming the
+    /// four parallel live arrays (`session`/`rrArchive`/`sessionPointsCache`/
+    /// `rrPointsCache`) grow unbounded — they reset ONLY on explicit stop or a
+    /// >=90s gap, neither of which happens while the strap streams (the OOM/jetsam
+    /// cause). When the live segment's SPAN reaches this cap we finalize it to disk
+    /// (`persistFinishedSession` -> `store.add` upserts by id, so the full record is
+    /// preserved) and segment-roll to a fresh segment. The day's contiguous segments
+    /// re-cluster into one aggregate sleep/wear candidate (`sleepClusters` bridges
+    /// gaps <=2h), and the next sample resumes ~1s later. 3h keeps a comfortable
+    /// >=2h live tail while bounding each array to ~3h @1Hz and shrinking the
+    /// per-checkpoint `snapshotSession` rescan (which also relieves the freeze).
+    /// DEBUG builds may shorten it via `--atria-retention-roll-seconds N` (or the
+    /// `ATRIA_RETENTION_ROLL_SECONDS` env) so the roll can be verified against a
+    /// live strap without waiting 3 real hours; production is always 3h.
+    private var longWearLiveSessionRetentionSpan: TimeInterval {
+#if DEBUG
+        if let override = Self.debugRetentionRollSecondsOverride { return override }
+#endif
+        return 3 * 60 * 60
+    }
+#if DEBUG
+    private static let debugRetentionRollSecondsOverride: TimeInterval? = {
+        if let raw = ProcessInfo.processInfo.environment["ATRIA_RETENTION_ROLL_SECONDS"],
+           let value = TimeInterval(raw), value > 0 { return value }
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--atria-retention-roll-seconds"),
+           args.indices.contains(index + 1),
+           let value = TimeInterval(args[index + 1]), value > 0 { return value }
+        return nil
+    }()
+#endif
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
     // The active long-wear journal is a crash-recovery aid, not a live UI input.
@@ -4482,6 +4524,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     }
                     autoSaveIndex += 1
                     lastAutoSaveAt = now
+                }
+
+                // Crash fix (handoff #1): bound the live session so its four
+                // parallel arrays can't grow unbounded across an all-day stream.
+                // Independent of workout readiness (the autosave above only fires
+                // for a detected workout, never during pure resting/overnight wear
+                // — the reported crash window). Skipped under thermal suspend, which
+                // already parks non-essential work; the roll resumes next tick.
+                if !powerThermalGovernor.shouldSuspendNonEssentialWork {
+                    rollLongWearLiveSessionIfOversized(now: now,
+                                                       reason: "long_wear_retention_roll")
                 }
 
                 // Anchor the no-data gap to ANY GATT activity (battery included),
@@ -9557,6 +9610,57 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               persisted ? "start_new_segment" : "retain_existing_segment")
     }
 
+    /// Bound the live session during continuous all-day wear: once the current
+    /// segment spans `longWearLiveSessionRetentionSpan`, finalize it to disk and
+    /// segment-roll to a fresh one so the four live arrays can't grow unbounded
+    /// (the OOM/jetsam cause — handoff #1). Uses the same persist-then-reset
+    /// primitive as the >=90s-gap roll: `persistFinishedSession` calls
+    /// `onSessionEnd` (`store.add`, which upserts by id), so the full record is
+    /// preserved on disk before `resetLiveSessionState` clears the live arrays and
+    /// mints a new `liveSessionID`. The next received sample resumes ~1s later, so
+    /// the day's contiguous segments re-cluster into one aggregate sleep/wear
+    /// candidate (`sleepClusters` bridges gaps <=2h). Returns without rolling
+    /// unless long-wear mode is active with enough samples and the span cap is met.
+    /// Pure trigger for the retention roll, extracted so the 3h-cap logic is
+    /// unit-testable without standing up a live AtriaBLEManager (AtriaPerfFixesTests):
+    /// roll once the live segment has enough samples AND spans the retention cap.
+    static func shouldRollLiveSession(spanSeconds: TimeInterval,
+                                      sampleCount: Int,
+                                      minSamples: Int,
+                                      retentionSpan: TimeInterval) -> Bool {
+        sampleCount >= minSamples && spanSeconds >= retentionSpan
+    }
+
+    @discardableResult
+    private func rollLongWearLiveSessionIfOversized(now: Date, reason: String) -> Bool {
+        guard longWearModeEnabled, standardHROnlyMode else { return false }
+        guard let first = session.first else { return false }
+        let span = now.timeIntervalSince(first.t)
+        guard Self.shouldRollLiveSession(spanSeconds: span,
+                                         sampleCount: session.count,
+                                         minSamples: autoSaveMinSamples,
+                                         retentionSpan: longWearLiveSessionRetentionSpan) else { return false }
+
+        let label = captureLabel.isEmpty ? "All-day wear" : captureLabel
+        guard let saved = snapshotSession(label: label) else { return false }
+        let persisted = persistFinishedSession(saved, reason: reason)
+        if persisted {
+            // Full segment is on disk; start the next sample in a clean segment so
+            // the live arrays reset. Mirrors the gap-roll at the reset below.
+            resetLiveSessionState(start: now)
+        }
+        AtriaDebugLog("ATRIADBG live_session_retention_roll status=%@ reason=%@ span_s=%.0f cap_s=%.0f samples=%d rr_samples=%d duration_s=%.0f action=%@",
+              persisted ? "rolled" : "store_failed",
+              reason,
+              span,
+              longWearLiveSessionRetentionSpan,
+              saved.points.count,
+              saved.rrSampleCount,
+              saved.duration,
+              persisted ? "reset_live_segment" : "retain_live_segment")
+        return persisted
+    }
+
     private func resetLiveSessionState(start: Date) {
         session.removeAll(keepingCapacity: true)
         sessionSampleCount = 0
@@ -9566,6 +9670,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         sessionMinHeartRate = nil
         sessionMaxHeartRate = nil
         sessionHeartRateTotal = 0
+        // Invalidate the off-main historical-motion cache for the new segment so a
+        // previous session's value can never be reused, and clear the in-flight flag
+        // so a fresh refresh can always start (defense-in-depth; origin-keying
+        // already prevents cross-session reads, but this survives frequent resets).
+        cachedHistoricalMotion = nil
+        cachedHistoricalMotionOrigin = nil
+        cachedHistoricalMotionAt = nil
+        historicalMotionRefreshInFlight = false
         replaceLastHeartRates([])
         rrArchive.removeAll(keepingCapacity: true)
         recentRRBeatTimes.removeAll(keepingCapacity: true)
@@ -9953,6 +10065,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Refresh the off-main historical-gravity motion summary for the current live
+    /// session window. Runs the multi-MB archive parse on a utility queue so it can
+    /// never block the MainActor (the freeze `snapshotSession` used to cause). Rate-
+    /// limited to ~30 s and keyed by the session origin, so a new rolled/reset
+    /// segment invalidates the previous value. Fire-and-forget; the result is picked
+    /// up by the next `snapshotSession`.
+    private func refreshHistoricalMotionCache(start: Date, end: Date) {
+        guard !historicalMotionRefreshInFlight else { return }
+        if cachedHistoricalMotionOrigin == start,
+           let at = cachedHistoricalMotionAt,
+           Date().timeIntervalSince(at) < 30 {
+            return
+        }
+        historicalMotionRefreshInFlight = true
+        Task.detached(priority: .utility) { [weak self] in
+            let summary = HistoricalArchive.motionFeatureSummary(start: start, end: end)
+            await MainActor.run {
+                guard let self else { return }
+                self.cachedHistoricalMotion = summary
+                self.cachedHistoricalMotionOrigin = start
+                self.cachedHistoricalMotionAt = Date()
+                self.historicalMotionRefreshInFlight = false
+            }
+        }
+    }
+
     /// Snapshot the current HR session into a persistable record without
     /// resetting it, so unattended long runs survive debugger/device drops.
     func snapshotSession(label: String,
@@ -9980,9 +10118,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let motionShortStats = sleepMotionShortSummary()
         let liveIMU = imuFeatureSummary()
-        let historicalIMU = liveIMU.stillnessRatio == nil
-            ? HistoricalArchive.motionFeatureSummary(start: start, end: last.t)
-            : nil
+        // Historical-gravity motion evidence NEVER parses the archive on the
+        // MainActor here (device-reported tab-switch freeze, 2026-07-09): it reads
+        // the background-refreshed off-main cache (`cachedHistoricalMotion`, keyed by
+        // this session's `start`). If the cache isn't warm for this session yet (its
+        // first checkpoint, or a just-rolled segment) it falls back to nil -- the
+        // HR-only sleep tier -- and kicks off an off-main refresh so the next
+        // checkpoint has it (negligible for multi-hour sleep windows). Still skipped
+        // entirely under thermal / Low-Power pressure (shouldDeferNonEssentialAnalysis),
+        // mirroring the long-wear supervisor's own autosave/diagnostic deferral.
+        let historicalIMU: HistoricalArchive.MotionFeatureSummary?
+        if liveIMU.stillnessRatio != nil || powerThermalGovernor.shouldDeferNonEssentialAnalysis {
+            historicalIMU = nil
+        } else if cachedHistoricalMotionOrigin == start {
+            historicalIMU = cachedHistoricalMotion
+            refreshHistoricalMotionCache(start: start, end: last.t)
+        } else {
+            historicalIMU = nil
+            refreshHistoricalMotionCache(start: start, end: last.t)
+        }
         let imuStillnessRatio = liveIMU.stillnessRatio ?? historicalIMU?.stillnessRatio
         let imuMovementIntensity = liveIMU.movementIntensity ?? historicalIMU?.movementIntensity
         let motionEvidenceSource = historicalIMU != nil ? "historical_gravity" : sleepMotionSource

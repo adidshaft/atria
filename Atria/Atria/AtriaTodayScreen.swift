@@ -70,7 +70,11 @@ struct AtriaTodayScreen: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
-        VStack(spacing: 16) {
+        // LazyVStack, not VStack (2026-07-08 perf): this whole screen is a single
+        // child of tabNavigation's outer LazyVStack, so an eager VStack here renders
+        // every section (hero, plan, weekly plan, coach, …) synchronously on tab-open
+        // — main-thread jank that grows with data. Lazy renders only what's on screen.
+        LazyVStack(spacing: 16) {
             if debugShowsAICoachOnly {
                 AtriaAICoachCard(context: coachContext,
                                  preparedPayload: coachPayload,
@@ -858,6 +862,23 @@ struct AtriaTodayScreen: View {
         store.sleepHistorySnapshot.latest
     }
 
+    /// Yesterday's strain (the latest sleep night's prior calendar day) -- the
+    /// extra recovery sleep a hard day demands. Mirrors the Vitals Health
+    /// screen's `yesterdayStrainForLatestNight` and the persisted rollup path
+    /// (`dailyRollupSleepPerformance`) so Today's sleep need / performance can't
+    /// disagree with those surfaces for the same night (consistency fix
+    /// 2026-07-09: Today was the sole scoring site omitting this term).
+    private var yesterdayStrainForLatestNight: Double? {
+        guard let latestSleep else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latestSleep.day)) else { return nil }
+        return store.dailyRollupHistory
+            .first { calendar.isDate($0.day, inSameDayAs: priorDay) }?
+            .strain
+    }
+
     /// Real nightly need in hours, computed the same way the sleep-history
     /// screen's "Slept X of Y needed" line is (`sleepNeedHours`, which
     /// factors in yesterday's strain and any running sleep debt) -- only
@@ -865,7 +886,9 @@ struct AtriaTodayScreen: View {
     /// callers fall back to the plainer stored `sleepPerformance` percent.
     private var sleepNeedHoursValue: Double? {
         guard let latestSleep else { return nil }
-        return store.sleepHistorySnapshot.sleepNeedHours(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+        return store.sleepHistorySnapshot.sleepNeedHours(for: latestSleep,
+                                                         baseNeedHours: sleepBaseNeedHours,
+                                                         yesterdayStrain: yesterdayStrainForLatestNight)
     }
 
     /// Legend-chip-style "of 8h 58m need" detail. Sleep is always shown
@@ -899,7 +922,9 @@ struct AtriaTodayScreen: View {
     /// rollup value only when there's no `Night` on record at all yet.
     private var sleepPerformancePercent: Int? {
         if let latestSleep {
-            return store.sleepHistorySnapshot.sleepPerformancePercent(for: latestSleep, baseNeedHours: sleepBaseNeedHours)
+            return store.sleepHistorySnapshot.sleepPerformancePercent(for: latestSleep,
+                                                                      baseNeedHours: sleepBaseNeedHours,
+                                                                      yesterdayStrain: yesterdayStrainForLatestNight)
         }
         return latestRollup?.sleepPerformance
     }
@@ -1117,10 +1142,14 @@ struct AtriaTodayScreen: View {
             fill = nil
         }
         return AtriaTriRingMetric(title: "HRV",
-                                  value: current.map { "\($0)" } ?? displayHero.hrvValue,
-                                  detail: legendDetail(displayHero.hrvDetail),
+                                  // Settled-first (2026-07-09): show the SAME frozen morning HRV the
+                                  // glance tile + detail sheet read, not the live BLE/fallback reading,
+                                  // so a ring chip can't disagree with the tile for the same metric.
+                                  // Fill stays live (baseline ratio) — only the shown number settles.
+                                  value: displaySettledHRV.value,
+                                  detail: legendDetail(displaySettledHRV.detail),
                                   systemImage: "waveform.path.ecg",
-                                  tint: .pink,
+                                  tint: Metrics.electricHRV,
                                   fill: fill)
     }
 
@@ -1139,14 +1168,14 @@ struct AtriaTodayScreen: View {
             fill = nil
         }
         return AtriaTriRingMetric(title: "RHR",
-                                  // Honest value: `current` is the 60 math-fallback (always > 0),
-                                  // so the old `current > 0 ? "\(current)"` always showed a
-                                  // fabricated 60. restingHeartRateText is "Learning" until there
-                                  // is a real reading, matching the RHR glance tile and Vitals row.
-                                  value: displayHero.restingHeartRateText,
-                                  detail: legendDetail("bpm"),
+                                  // Settled-first (2026-07-09): the SAME frozen morning RHR the glance
+                                  // tile + detail sheet read (falls back to restingHeartRateText, which
+                                  // is "Learning" until a real reading — never the fabricated 60), so the
+                                  // ring chip agrees with the tile and Vitals row. Fill stays live.
+                                  value: displaySettledRHR.value,
+                                  detail: legendDetail(displaySettledRHR.detail),
                                   systemImage: "heart.fill",
-                                  tint: .pink,
+                                  tint: Metrics.electricRHR,
                                   fill: fill)
     }
 
@@ -1220,7 +1249,17 @@ struct AtriaTodayScreen: View {
     private var centerDeltaText: String? {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            guard let current = displayHero.recoveryEstimate.percent,
+            // The ring center carries YESTERDAY's score before this morning's reading
+            // lands (see displayRecovery), so a "vs yesterday" delta only makes sense
+            // once today has its own stored recovery. Computing it from the live
+            // estimate regardless produced "+N% vs yesterday" against a numeral that
+            // was itself yesterday (2026-07-09 coherence fix). Gate on today actually
+            // having a reading, and delta the value actually shown in the center.
+            let newestStoredRecoveryIsToday = dayDescendingRollups
+                .first(where: { $0.recovery != nil })
+                .map { Calendar.current.isDateInToday($0.day) } ?? false
+            guard newestStoredRecoveryIsToday,
+                  let current = displayRecovery.percent,
                   let previous = previousRollup?.recovery else { return nil }
             return Self.deltaText(current - previous, unit: "%")
         case .sleep:
@@ -1415,7 +1454,7 @@ struct AtriaTodayScreen: View {
                                         value: displaySettledHRV.value,
                                         detail: legendDetail(displaySettledHRV.detail),
                                         systemImage: metric.systemImage,
-                                        tint: .pink,
+                                        tint: Metrics.electricHRV,
                                         layoutSize: layoutSize(for: metric))
         case .stress:
             return AtriaTodayGlanceItem(title: metric.label,
@@ -1423,13 +1462,19 @@ struct AtriaTodayScreen: View {
                                         value: displayHero.stressValue,
                                         detail: legendDetail(displayHero.stressDetail),
                                         systemImage: metric.systemImage,
-                                        tint: Metrics.electricStrain,
+                                        // Identity hue (2026-07-09): stress was electricStrain (cool blue),
+                                        // reading as strain; electricStress (amber) matches its detail sheet.
+                                        tint: Metrics.electricStress,
                                         layoutSize: layoutSize(for: metric))
         case .sleepHistory:
+            // Honest learning state (2026-07-09): sleepConsistencyText is "--" until
+            // 2+ sleep nights, so surface the threshold instead of a bare category
+            // word — mirrors the sibling sleepEfficiency empty state.
+            let consistency = store.sleepHistorySnapshot.sleepConsistencyText
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: store.sleepHistorySnapshot.sleepConsistencyText,
-                                        detail: legendDetail("Routine"),
+                                        value: consistency,
+                                        detail: legendDetail(consistency == "--" ? "Needs 2 nights" : "Routine"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))
@@ -1461,15 +1506,19 @@ struct AtriaTodayScreen: View {
                                         value: displaySettledRHR.value,
                                         detail: legendDetail(displaySettledRHR.detail),
                                         systemImage: metric.systemImage,
-                                        tint: .pink,
+                                        tint: Metrics.electricRHR,
                                         layoutSize: layoutSize(for: metric))
         case .respiratoryRate:
+            // Cross-tab consistency (2026-07-09): fall back to the latest recorded
+            // night's respiratory rate — like the Vitals Health row — so a real value
+            // shows instead of "--" when only a night (no daytime rollup value) exists.
+            let respiratory = latestRollup?.respiratoryRate ?? latestSleep?.respiratoryRate
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: latestRollup?.respiratoryRate.map { String(format: "%.1f", $0) } ?? "--",
-                                        detail: legendDetail(latestRollup?.respiratoryRate == nil ? "After a sleep" : "/min"),
+                                        value: respiratory.map { String(format: "%.1f", $0) } ?? "--",
+                                        detail: legendDetail(respiratory == nil ? "After a sleep" : "/min"),
                                         systemImage: metric.systemImage,
-                                        tint: .teal,
+                                        tint: Metrics.electricRespiratory,
                                         layoutSize: layoutSize(for: metric))
         case .steps:
             // Consistency + detection fix (2026-07-05): the Today deck hard-coded

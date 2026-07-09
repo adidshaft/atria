@@ -22,6 +22,16 @@ struct AtriaTrendChartCard: View {
     @State private var showExpandedChart = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
     @State private var rangeCoverage: [AtriaTrendRange: Int] = [:]
+    // Perf (handoff #5): `.onChange(of: points, initial: true)` re-fires on every
+    // LazyVStack scroll-in; skip the prepare when the inputs are unchanged.
+    @State private var preparedKey: PreparedKey?
+
+    private struct PreparedKey: Equatable {
+        let points: [AtriaTrendPoint]
+        let metric: AtriaTrendMetric
+        let range: AtriaTrendRange
+        let baselineRestingHR: Int?
+    }
     // Real progressive disclosure: the compact card shows just the chart; the
     // stacked context sub-cards (range dock, report, balance map, glance board,
     // range lens, position band, dot strip) collapse behind this toggle so the
@@ -185,6 +195,9 @@ struct AtriaTrendChartCard: View {
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
+        let key = PreparedKey(points: points, metric: metric, range: range, baselineRestingHR: baselineRestingHR)
+        guard preparedKey != key else { return }
+        preparedKey = key
         prepared = Self.prepareSeries(points: points,
                                       metric: metric,
                                       range: range,
@@ -2282,6 +2295,24 @@ enum AtriaTrendChartScale {
 /// TRIMP work stay out of SwiftUI render paths.
 struct AtriaOverviewTrendChartHost: View {
     @ObservedObject var store: SessionStore
+    // Perf (handoff #7): `trendEvents` is built eagerly on every store publish but
+    // only consumed by the (usually-closed) expanded chart's marker lane. Memoize
+    // it against the workout/sleep signal so unrelated publishes don't re-map +
+    // re-allocate hundreds of events. Reference-type cache in @State so mutating it
+    // during a body read is a pure memo (no @State value change -> no re-render).
+    @State private var eventsCache = TrendEventsCache()
+
+    private final class TrendEventsCache {
+        private var key: Int?
+        private var events: [AtriaChartEvent] = []
+        func value(key newKey: Int, compute: () -> [AtriaChartEvent]) -> [AtriaChartEvent] {
+            if key != newKey {
+                key = newKey
+                events = compute()
+            }
+            return events
+        }
+    }
 
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
@@ -2292,21 +2323,30 @@ struct AtriaOverviewTrendChartHost: View {
 
     /// Real saved activity for the expanded chart marker lane.
     private var trendEvents: [AtriaChartEvent] {
-        var events: [AtriaChartEvent] = store.confirmedWorkouts.map { workout in
-            AtriaChartEvent(id: "workout-\(workout.id)",
-                            day: workout.start,
-                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
-                            systemImage: "flame.fill",
-                            tint: Metrics.electricStrain)
+        // Cheap signal for "did the events change": workout revision + the night
+        // count and confirmed-count (no sleeps revision exists to key on).
+        let nights = store.sleepHistorySnapshot.nights
+        var hasher = Hasher()
+        hasher.combine(store.confirmedWorkoutsRevision)
+        hasher.combine(nights.count)
+        hasher.combine(nights.reduce(into: 0) { $0 += $1.confirmed ? 1 : 0 })
+        return eventsCache.value(key: hasher.finalize()) {
+            var events: [AtriaChartEvent] = store.confirmedWorkouts.map { workout in
+                AtriaChartEvent(id: "workout-\(workout.id)",
+                                day: workout.start,
+                                label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                                systemImage: "flame.fill",
+                                tint: Metrics.electricStrain)
+            }
+            events.append(contentsOf: nights.filter(\.confirmed).map { night in
+                AtriaChartEvent(id: "sleep-\(night.id)",
+                                day: night.day,
+                                label: "Sleep",
+                                systemImage: "bed.double.fill",
+                                tint: Metrics.electricSleep)
+            })
+            return events
         }
-        events.append(contentsOf: store.sleepHistorySnapshot.nights.filter(\.confirmed).map { night in
-            AtriaChartEvent(id: "sleep-\(night.id)",
-                            day: night.day,
-                            label: "Sleep",
-                            systemImage: "bed.double.fill",
-                            tint: Metrics.electricSleep)
-        })
-        return events
     }
 
     #if DEBUG
