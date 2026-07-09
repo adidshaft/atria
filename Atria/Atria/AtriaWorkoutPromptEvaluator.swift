@@ -2,6 +2,17 @@ import Foundation
 
 enum AtriaWorkoutPromptEvaluator {
     static let minimumSustainedSamples = 480
+    // Detection fix (2026-07-09, device-reported "no detection"): the 480 above
+    // doubles as the sustained-window length in SECONDS (see `sustainedStart`),
+    // and the sustained path USED to also require `elevatedSamples >= 480`. At
+    // the strap's ~1 Hz cadence an 8-min window holds at most ~480 samples, so
+    // that demanded ~100% of samples elevated with zero packet loss -> on real,
+    // dropout-prone data the sustained path never fired and only hard zone-3+
+    // efforts were auto-detected (moderate walks/cardio/strength were missed).
+    // The required count is now a realistic fraction of the window (~5 min of
+    // elevation), tolerant of normal BLE dropout while still demanding a
+    // genuinely sustained effort. Fail-closed semantics unchanged.
+    static let minimumSustainedElevatedSamples = 300
     static let minimumBPMOverRest = 25
     static let zoneLookbackSeconds: TimeInterval = 6 * 60
     static let zoneMinimumSamples = 240
@@ -51,7 +62,7 @@ enum AtriaWorkoutPromptEvaluator {
             }
         }
         let currentElevated = currentHeartRate - restingHeartRate >= minimumBPMOverRest
-        let sustainedPath = elevatedSamples >= minimumSustainedSamples && currentElevated
+        let sustainedPath = elevatedSamples >= minimumSustainedElevatedSamples && currentElevated
         let zonePath = zoneSamples >= zoneMinimumSamples
 
         return Result(shouldPrompt: sustainedPath || zonePath,

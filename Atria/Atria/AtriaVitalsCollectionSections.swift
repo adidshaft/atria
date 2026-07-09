@@ -1310,6 +1310,12 @@ private struct AtriaVitalsPulseCardHost: View {
     // Debounce the ~1 Hz archive-update firehose so we don't re-parse the tail
     // on every append (2026-07-08: that was a hang, and it starved the wider load).
     @State private var lastHistoricalRefresh: Date = .distantPast
+    // Perf (handoff #5): the LazyVStack re-fires `.task` on every scroll-in,
+    // re-reading the 24h archive off-main for nothing when the data is already
+    // loaded. Load once per view lifetime; if the stack evicts this section its
+    // @State (incl. `historicalHeartRatePoints`) resets too, so the flag clears
+    // and the reload correctly repopulates. Live updates still flow via onReceive.
+    @State private var hasLoadedHistoricalOnce = false
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     private var chartPoints: [AtriaHomeModel.HeartRateChartPoint] {
@@ -1342,6 +1348,8 @@ private struct AtriaVitalsPulseCardHost: View {
                        debugOpensHeartRateTimeline: Self.debugOpensHeartRateTimeline(arguments: ProcessInfo.processInfo.arguments))
             .equatable()
             .task {
+                guard !hasLoadedHistoricalOnce else { return }
+                hasLoadedHistoricalOnce = true
                 await refreshHistoricalHeartRatePoints()
             }
             .onReceive(NotificationCenter.default.publisher(for: HistoricalArchive.didUpdateNotification)) { _ in

@@ -9998,10 +9998,29 @@ private struct AtriaPreparedMetricHistory {
         }
     }
 
+    // Perf (handoff #6): AtriaMetricDetailSheet builds this all-ranges history in
+    // its init, and `.sheet` re-invokes that init on every ~700ms presenter
+    // re-render — ~42 filter+sort+bucket passes each time while the sheet is open.
+    // Memoize on the exact inputs so an unchanged re-present is a struct copy, not
+    // a rebuild. Swift-5 mode + built ONLY from the @MainActor sheet init (single
+    // construction site), so this static is only ever touched on the main actor.
+    private struct MemoKey: Equatable {
+        let rollups: [DailyRollupStoreEntry]
+        let baseline: AtriaBaselineTargetSnapshot
+        let sleepGoalHours: Double
+        let calendar: Calendar
+    }
+    private static var memoized: (key: MemoKey, value: AtriaPreparedMetricHistory)?
+
     init(rollups: [DailyRollupStoreEntry],
          baseline: AtriaBaselineTargetSnapshot,
          sleepGoalHours: Double,
          calendar: Calendar = .current) {
+        let memoKey = MemoKey(rollups: rollups, baseline: baseline, sleepGoalHours: sleepGoalHours, calendar: calendar)
+        if let cached = Self.memoized, cached.key == memoKey {
+            self = cached.value
+            return
+        }
         var recoveryByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var hrvByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
         var restingByRange: [AtriaTrendRange: [AtriaDetailChartPoint]] = [:]
@@ -10222,6 +10241,7 @@ private struct AtriaPreparedMetricHistory {
         self.fitnessAgeSummary = fitnessAgeSummaryByRange
         self.fitnessAgeComparison = fitnessAgeComparisonByRange
         self.fitnessAgeEntryCount = fitnessAgeEntryCount
+        Self.memoized = (memoKey, self)
     }
 
     private static func hrvTint(value: Int, baseline: AtriaBaselineTargetSnapshot) -> Color {
