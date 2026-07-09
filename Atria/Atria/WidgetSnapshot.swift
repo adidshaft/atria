@@ -109,6 +109,18 @@ enum WidgetSnapshotPublisher {
                                           sleepDurationHours: latestSleep?.durationHours,
                                           respiratoryRate: latestSleep?.respiratoryRate,
                                           respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
+        // Recovery stability (Scope 2, 2026-07-09): the widget recomputed recovery
+        // live on every publish, so its % drifted through the morning HRV window and
+        // jumped at noon when the window closed -- diverging from the Today ring,
+        // which shows the frozen once-a-morning value. Prefer today's frozen daily
+        // recovery (the SAME scalar the ring reads via displayRecovery), falling back
+        // to the live estimate only before this morning's value has been minted.
+        // Confidence/detail stay from the live estimate (baseline-derived, stable
+        // within the day); only the displayed % is pinned to the frozen value.
+        let frozenTodayRecovery = store.dailyRollupHistory.first {
+            Calendar.current.isDateInToday($0.day) && $0.recovery != nil
+        }?.recovery
+        let recoveryPercent = frozenTodayRecovery ?? recovery.percent
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let hrvRMSSD: Int?
         if recovery.usesHRV {
@@ -130,7 +142,7 @@ enum WidgetSnapshotPublisher {
         let widgetDiagnostics = Self.diagnostics
         let snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: Date(),
-                                      recoveryPercent: recovery.percent,
+                                      recoveryPercent: recoveryPercent,
                                       recoveryConfidence: recovery.confidence.rawValue,
                                       recoveryDetail: recovery.detail,
                                       strain: strain,
