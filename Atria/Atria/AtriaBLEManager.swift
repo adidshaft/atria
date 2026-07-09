@@ -868,6 +868,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var sessionMaxHeartRate: Int?
     private var sessionHeartRateTotal = 0
 
+    // Off-main historical-motion cache (2026-07-09, device-reported tab-switch
+    // freeze). snapshotSession used to parse several MB of the (pre-compaction,
+    // ~80 MB) historical archive on the MainActor every checkpoint. Instead a
+    // background task refreshes this value off-main and snapshotSession reads it.
+    // Keyed by the live session's start (`Origin`) so a value from a previous
+    // rolled/reset segment is never reused for a new one.
+    private var cachedHistoricalMotion: HistoricalArchive.MotionFeatureSummary?
+    private var cachedHistoricalMotionOrigin: Date?
+    private var cachedHistoricalMotionAt: Date?
+    private var historicalMotionRefreshInFlight = false
+
     var restingHR: Int? { sessionMinHeartRate }   // lowest sustained = resting proxy
     var peakHR: Int? { sessionMaxHeartRate }
     var avgHR: Int? {
@@ -9659,6 +9670,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         sessionMinHeartRate = nil
         sessionMaxHeartRate = nil
         sessionHeartRateTotal = 0
+        // Invalidate the off-main historical-motion cache for the new segment so a
+        // previous session's value can never be reused, and clear the in-flight flag
+        // so a fresh refresh can always start (defense-in-depth; origin-keying
+        // already prevents cross-session reads, but this survives frequent resets).
+        cachedHistoricalMotion = nil
+        cachedHistoricalMotionOrigin = nil
+        cachedHistoricalMotionAt = nil
+        historicalMotionRefreshInFlight = false
         replaceLastHeartRates([])
         rrArchive.removeAll(keepingCapacity: true)
         recentRRBeatTimes.removeAll(keepingCapacity: true)
@@ -10046,6 +10065,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Refresh the off-main historical-gravity motion summary for the current live
+    /// session window. Runs the multi-MB archive parse on a utility queue so it can
+    /// never block the MainActor (the freeze `snapshotSession` used to cause). Rate-
+    /// limited to ~30 s and keyed by the session origin, so a new rolled/reset
+    /// segment invalidates the previous value. Fire-and-forget; the result is picked
+    /// up by the next `snapshotSession`.
+    private func refreshHistoricalMotionCache(start: Date, end: Date) {
+        guard !historicalMotionRefreshInFlight else { return }
+        if cachedHistoricalMotionOrigin == start,
+           let at = cachedHistoricalMotionAt,
+           Date().timeIntervalSince(at) < 30 {
+            return
+        }
+        historicalMotionRefreshInFlight = true
+        Task.detached(priority: .utility) { [weak self] in
+            let summary = HistoricalArchive.motionFeatureSummary(start: start, end: end)
+            await MainActor.run {
+                guard let self else { return }
+                self.cachedHistoricalMotion = summary
+                self.cachedHistoricalMotionOrigin = start
+                self.cachedHistoricalMotionAt = Date()
+                self.historicalMotionRefreshInFlight = false
+            }
+        }
+    }
+
     /// Snapshot the current HR session into a persistable record without
     /// resetting it, so unattended long runs survive debugger/device drops.
     func snapshotSession(label: String,
@@ -10073,19 +10118,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let motionShortStats = sleepMotionShortSummary()
         let liveIMU = imuFeatureSummary()
-        // Perf/thermal (2026-07-09, device-reported tab-switch freeze): this
-        // historical-gravity read parses several MB of the (pre-compaction, ~80 MB)
-        // archive on the MainActor on every checkpoint. Under thermal pressure
-        // (serious/critical, or Low Power) that parse compounds the 2.5-4x CPU
-        // throttle into a death spiral -- hot -> expensive parse -> hotter -- and
-        // stalls UI transitions. It's NON-ESSENTIAL motion evidence (falls back to
-        // the HR-only sleep tier and is recomputed once the device cools), so skip
-        // it while deferring, mirroring the long-wear supervisor's own
-        // shouldDeferNonEssentialAnalysis deferral of its autosave/diagnostic.
-        let historicalIMU = (liveIMU.stillnessRatio == nil
-                             && !powerThermalGovernor.shouldDeferNonEssentialAnalysis)
-            ? HistoricalArchive.motionFeatureSummary(start: start, end: last.t)
-            : nil
+        // Historical-gravity motion evidence NEVER parses the archive on the
+        // MainActor here (device-reported tab-switch freeze, 2026-07-09): it reads
+        // the background-refreshed off-main cache (`cachedHistoricalMotion`, keyed by
+        // this session's `start`). If the cache isn't warm for this session yet (its
+        // first checkpoint, or a just-rolled segment) it falls back to nil -- the
+        // HR-only sleep tier -- and kicks off an off-main refresh so the next
+        // checkpoint has it (negligible for multi-hour sleep windows). Still skipped
+        // entirely under thermal / Low-Power pressure (shouldDeferNonEssentialAnalysis),
+        // mirroring the long-wear supervisor's own autosave/diagnostic deferral.
+        let historicalIMU: HistoricalArchive.MotionFeatureSummary?
+        if liveIMU.stillnessRatio != nil || powerThermalGovernor.shouldDeferNonEssentialAnalysis {
+            historicalIMU = nil
+        } else if cachedHistoricalMotionOrigin == start {
+            historicalIMU = cachedHistoricalMotion
+            refreshHistoricalMotionCache(start: start, end: last.t)
+        } else {
+            historicalIMU = nil
+            refreshHistoricalMotionCache(start: start, end: last.t)
+        }
         let imuStillnessRatio = liveIMU.stillnessRatio ?? historicalIMU?.stillnessRatio
         let imuMovementIntensity = liveIMU.movementIntensity ?? historicalIMU?.movementIntensity
         let motionEvidenceSource = historicalIMU != nil ? "historical_gravity" : sleepMotionSource
