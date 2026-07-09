@@ -226,7 +226,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "static let zoneMinimumSamples = 240",
             "static let zoneMinimumIndex = 3",
             "static let cooldown: TimeInterval = 45 * 60",
-            "let sustainedPath = elevatedSamples >= minimumSustainedSamples && currentElevated",
+            # 2026-07-09: decoupled the sustained window (480s) from the required
+            # elevated-sample count (was 480 = ~100% of samples, unreachable with
+            # real BLE dropout -> "no detection"); count is now minimumSustainedElevatedSamples.
+            "let sustainedPath = elevatedSamples >= minimumSustainedElevatedSamples && currentElevated",
             "let zonePath = zoneSamples >= zoneMinimumSamples",
             "return Result(shouldPrompt: sustainedPath || zonePath,",
             "static func isInCooldown(dismissedUntil: Date?, now: Date = Date()) -> Bool",

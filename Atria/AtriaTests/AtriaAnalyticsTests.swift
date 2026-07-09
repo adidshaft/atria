@@ -1485,6 +1485,40 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(result.sustainedPath)
     }
 
+    // Detection fix (2026-07-09): real BLE data drops packets, so a genuine
+    // sustained effort never yields a full 480/480 elevated samples. The old
+    // `elevatedSamples >= 480` gate demanded ~100% of an 8-min window with zero
+    // dropout and therefore never fired on device ("no detection"). A sustained
+    // effort (~5-6 min elevated, i.e. an 8-min bout with normal dropout) must fire.
+    func testWorkoutPromptEvaluatorFiresForSustainedEffortWithPacketDropout() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = syntheticHeartSamples(start: start, count: 360, bpm: 87)
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 87,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+
+        XCTAssertTrue(result.sustainedPath, "a sustained effort must fire despite normal packet dropout")
+        XCTAssertTrue(result.shouldPrompt)
+    }
+
+    // ...and a merely brief elevation must still be rejected (fail-closed).
+    func testWorkoutPromptEvaluatorRejectsBriefElevation() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = syntheticHeartSamples(start: start, count: 180, bpm: 87)
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 87,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+
+        XCTAssertFalse(result.sustainedPath, "a brief ~3-min elevation must not trip the sustained path")
+        XCTAssertFalse(result.shouldPrompt)
+    }
+
     func testWorkoutPromptEvaluatorRejectsTwentyMinutesAtRestPlusTwenty() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let samples = syntheticHeartSamples(start: start, count: 1_200, bpm: 80)
