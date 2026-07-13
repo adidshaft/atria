@@ -2071,7 +2071,11 @@ final class HealthKitExporter {
                                             quantity: quantity,
                                             start: session.start,
                                             end: session.end,
-                                            metadata: metadata))
+                                            metadata: metadata.merging([
+                                                "atria_metric_confidence": "estimate",
+                                                "atria_metric_source": "rr_rsa_sleep_estimate",
+                                                "atria_algorithm_version": "respiration_rr_v1"
+                                            ]) { current, _ in current }))
         }
 
         if snapshot?.activeEnergyExported != true,
@@ -2248,8 +2252,9 @@ final class HealthKitExporter {
 
     private func confirmedSleepSamples(for sleep: UserConfirmedSleep) -> [HKCategorySample] {
         guard sleep.end > sleep.start else { return [] }
+        let isUserAuthored = sleep.source.hasPrefix("manual_") || sleep.source.hasPrefix("user_adjusted_")
         let metadata: [String: Any] = [
-            HKMetadataKeyWasUserEntered: sleep.source.hasPrefix("manual_"),
+            HKMetadataKeyWasUserEntered: isUserAuthored,
             "atria_sleep_id": sleep.id,
             "atria_sleep_source": "user_confirmed",
             "atria_sleep_candidate_source": sleep.source,
@@ -2265,15 +2270,16 @@ final class HealthKitExporter {
             "atria_auto_gate_e_unchanged": true,
             "atria_metric_promotions": 0
         ]
-        guard sleep.source == "validated_sleep_stages",
-              let segments = sleep.stageSegments,
-              !segments.isEmpty else {
+        if isUserAuthored {
             return [HKCategorySample(type: sleepType,
                                      value: HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
                                      start: sleep.start,
                                      end: sleep.end,
                                      metadata: metadata)]
         }
+        guard sleep.source == "validated_sleep_stages",
+              let segments = sleep.stageSegments,
+              AtriaSleepStageIntegrity.validates(segments, for: sleep) else { return [] }
         return segments.compactMap { segment in
             guard segment.end > segment.start else { return nil }
             var stageMetadata = metadata

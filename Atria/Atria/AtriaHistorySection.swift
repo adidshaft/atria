@@ -89,7 +89,7 @@ struct AtriaHistoryModel: Equatable {
             let daySleeps = sleepsByDay[rollup.day] ?? []
             let confirmedWorkoutCount = dayWorkouts.count
             let confirmedSleepCount = daySleeps.count
-            let reviewPending = 0
+            let reviewPending = reviewPendingCount(for: rollup.day)
 
             let state: AtriaHistoryDay.DayState
             if confirmedWorkoutCount > 0 {
@@ -127,6 +127,11 @@ struct AtriaHistoryModel: Equatable {
                                   detections: detections)
     }
 
+    private static func reviewPendingCount(for _: Date) -> Int {
+        // Honest placeholder (2026-07-05): 0 until a real review-queue signal exists.
+        0
+    }
+
     /// Trailing 14 calendar days ending on (and including) `day`.
     func medianWindow(around day: AtriaHistoryDay, calendar: Calendar = .current) -> AtriaHistoryMedians {
         guard let start = calendar.date(byAdding: .day, value: -13, to: day.date) else { return .empty }
@@ -142,48 +147,103 @@ struct AtriaHistoryModel: Equatable {
     }
 }
 
+struct AtriaHistoryRevisionKey: Equatable, Hashable, Sendable {
+    let rollup: Int
+    let workouts: Int
+    let sleep: Int
+    let detections: Int
+}
+
+struct AtriaHistoryProjectionInput: @unchecked Sendable {
+    let key: AtriaHistoryRevisionKey
+    let rollups: [DailyRollupStoreEntry]
+    let workouts: [UserConfirmedWorkout]
+    let sleeps: [UserConfirmedSleep]
+}
+
+struct AtriaHistoryProjection: Equatable {
+    let key: AtriaHistoryRevisionKey?
+    let model: AtriaHistoryModel
+
+    static let empty = AtriaHistoryProjection(key: nil, model: .empty)
+}
+
+/// Builds the immutable History value model away from SwiftUI's render path.
+/// A requested revision never clears the published projection, so the section
+/// keeps rendering its previous complete model until the replacement is ready.
+@MainActor
+final class AtriaVitalsHistoryProjectionStore: ObservableObject {
+    @Published private(set) var projection: AtriaHistoryProjection
+
+    private var requestedKey: AtriaHistoryRevisionKey?
+
+    init(projection: AtriaHistoryProjection = .empty) {
+        self.projection = projection
+    }
+
+    func refresh(from input: AtriaHistoryProjectionInput) async {
+        guard begin(input.key) else { return }
+
+        let preparation = Task.detached(priority: .utility) {
+            AtriaHistoryModel.make(rollups: input.rollups,
+                                   workouts: input.workouts,
+                                   sleeps: input.sleeps)
+        }
+        let model = await withTaskCancellationHandler {
+            await preparation.value
+        } onCancel: {
+            preparation.cancel()
+        }
+
+        guard !Task.isCancelled else {
+            cancel(input.key)
+            return
+        }
+        _ = accept(model, for: input.key)
+    }
+
+    @discardableResult
+    func begin(_ key: AtriaHistoryRevisionKey) -> Bool {
+        guard key != requestedKey, key != projection.key else { return false }
+        requestedKey = key
+        return true
+    }
+
+    @discardableResult
+    func accept(_ model: AtriaHistoryModel, for key: AtriaHistoryRevisionKey) -> Bool {
+        guard requestedKey == key else { return false }
+        projection = AtriaHistoryProjection(key: key, model: model)
+        return true
+    }
+
+    func cancel(_ key: AtriaHistoryRevisionKey) {
+        guard requestedKey == key, projection.key != key else { return }
+        requestedKey = nil
+    }
+}
+
 // MARK: - Inline section (memoized subtree)
 
 /// The compact, inline History card shown in the Vitals tab: hero stat chips,
 /// a 14-day activity-rhythm strip, and the last 14 tappable rollup rows, with
 /// a push to the full ≤400-row history list.
 ///
-/// `.equatable()` at the call site plus the revision-only `==` below means
-/// live-pulse re-renders of the surrounding Vitals tree never rebuild this
-/// subtree -- only an actual rollup or confirmed-workout write does (mirrors
-/// the `dailyRollupHistoryRevision` memoization pattern used by
-/// AtriaTodayScreen, measured-perf pass 2026-07-05).
+/// The parent supplies an immutable, off-main projection. Equality follows the
+/// published revision (not an in-flight request), keeping the previous subtree
+/// unchanged until its replacement is complete.
 struct AtriaHistorySection: View, Equatable {
-    let rollups: [DailyRollupStoreEntry]
-    let rollupRevision: Int
-    let workouts: [UserConfirmedWorkout]
-    let sleeps: [UserConfirmedSleep]
-    let workoutsRevision: Int
-    let detectionsRevision: Int
+    let model: AtriaHistoryModel
+    let revisionKey: AtriaHistoryRevisionKey?
 
-    @State private var model = AtriaHistoryModel.empty
     @State private var selectedDay: AtriaHistoryDay?
     @State private var showAllDetections = false
-    // Perf (handoff #5): the LazyVStack that hosts this section evicts it
-    // off-screen, so `.onAppear` re-fires `rebuild()` on every scroll-in —
-    // re-decoding DetectionEventLog + rebuilding ~400 day rows. Skip the rebuild
-    // when the revisions it depends on are unchanged (same key as `==`).
-    @State private var builtKey: BuiltKey?
-
-    private struct BuiltKey: Equatable {
-        let rollup: Int
-        let workouts: Int
-        let detections: Int
-    }
 
     /// Store access for the detections inbox's Adjust routing only —
     /// deliberately NOT part of ==, which memoizes on the revisions.
     let store: SessionStore
 
     static func == (lhs: AtriaHistorySection, rhs: AtriaHistorySection) -> Bool {
-        lhs.rollupRevision == rhs.rollupRevision
-            && lhs.workoutsRevision == rhs.workoutsRevision
-            && lhs.detectionsRevision == rhs.detectionsRevision
+        lhs.revisionKey == rhs.revisionKey
     }
 
     var body: some View {
@@ -199,10 +259,6 @@ struct AtriaHistorySection: View, Equatable {
                 recentRowsCard
             }
         }
-        .onAppear { rebuild() }
-        .onChange(of: rollupRevision) { _, _ in rebuild() }
-        .onChange(of: workoutsRevision) { _, _ in rebuild() }
-        .onChange(of: detectionsRevision) { _, _ in rebuild() }
         .sheet(item: $selectedDay) { day in
             AtriaHistoryDayDetailSheet(day: day, medians: model.medianWindow(around: day))
                 .presentationDetents([.medium, .large])
@@ -213,17 +269,6 @@ struct AtriaHistorySection: View, Equatable {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-    }
-
-    private func rebuild() {
-        // Skip the rebuild when inputs are unchanged (scroll-in re-appear). The
-        // onChange handlers only fire when a revision actually changed, so the key
-        // differs and the rebuild proceeds; a bare re-appear with the same data is
-        // skipped.
-        let key = BuiltKey(rollup: rollupRevision, workouts: workoutsRevision, detections: detectionsRevision)
-        guard builtKey != key else { return }
-        builtKey = key
-        model = .make(rollups: rollups, workouts: workouts, sleeps: sleeps)
     }
 
     private var historyHeroCard: some View {
@@ -439,7 +484,7 @@ struct AtriaHistoryDayRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: day.confirmedWorkoutCount > 0 ? "figure.run" : "calendar")
+            Image(systemName: day.confirmedWorkoutCount > 0 ? "figure.mixed.cardio" : "calendar")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(day.state.tint)
                 .frame(width: 30, height: 30)
@@ -667,7 +712,12 @@ struct AtriaDetectionsListSheet: View {
 
     private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
         guard let store, event.kind == "sleepAutoConfirmed" else { return nil }
-        let matches = store.sleepHistorySnapshot.nights.filter { night in
+        let snapshot = store.sleepHistorySnapshot
+        let allSleepsByID = (snapshot.nights + snapshot.napNights)
+            .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
+                result[night.id] = night
+            }
+        let matches = allSleepsByID.values.filter { night in
             guard let end = night.end else { return false }
             let delta = event.date.timeIntervalSince(end)
             return delta >= -3_600 && delta <= 12 * 3_600
@@ -701,11 +751,19 @@ struct AtriaHistoryFullScreen: View {
         return formatter
     }()
 
-    private var monthGroups: [MonthGroup] {
+    private let monthGroups: [MonthGroup]
+
+    init(model: AtriaHistoryModel, onSelect: @escaping (AtriaHistoryDay) -> Void) {
+        self.model = model
+        self.onSelect = onSelect
+        self.monthGroups = Self.makeMonthGroups(days: model.days)
+    }
+
+    private static func makeMonthGroups(days: [AtriaHistoryDay]) -> [MonthGroup] {
         let calendar = Calendar.current
         var order: [String] = []
         var buckets: [String: [AtriaHistoryDay]] = [:]
-        for day in model.days {
+        for day in days {
             let comps = calendar.dateComponents([.year, .month], from: day.date)
             let key = "\(comps.year ?? 0)-\(comps.month ?? 0)"
             if buckets[key] == nil {

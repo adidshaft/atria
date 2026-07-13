@@ -99,7 +99,9 @@ struct AtriaTriRing: View, Equatable {
     let actions: [AtriaTriRingSlot: () -> Void]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var animatedFills: [AtriaTriRingSlot: Double] = [:]
+    @State private var ambientPulseExpanded = false
 
     init(slots: [AtriaTriRingSlotContent],
          centerValue: String,
@@ -233,6 +235,20 @@ struct AtriaTriRing: View, Equatable {
     var body: some View {
         VStack(spacing: 14) {
             ZStack {
+                if let recovery = slots.first(where: { $0.slot == .recovery })?.metric,
+                   recovery.fill != nil,
+                   actions[.recovery] != nil {
+                    Circle()
+                        .stroke(recovery.tint.opacity(0.22), lineWidth: 1.5)
+                        .frame(width: Self.outerDiameter + 12, height: Self.outerDiameter + 12)
+                        .scaleEffect(reduceMotion ? 1 : (ambientPulseExpanded ? 1.055 : 0.985))
+                        .opacity(reduceMotion ? 0.30 : (ambientPulseExpanded ? 0.12 : 0.42))
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 2.8).repeatForever(autoreverses: true),
+                                   value: ambientPulseExpanded)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+
                 // Visual layer: purely decorative rendering, in outer-to-inner
                 // paint order so the front-most (smallest) ring's shadow reads
                 // correctly against the ones behind it.
@@ -270,7 +286,16 @@ struct AtriaTriRing: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity)
-        .onAppear(perform: animateToFinalValues)
+        .onAppear {
+            animateToFinalValues()
+            ambientPulseExpanded = !reduceMotion && scenePhase == .active
+        }
+        .onChange(of: reduceMotion) { _, _ in
+            ambientPulseExpanded = !reduceMotion && scenePhase == .active
+        }
+        .onChange(of: scenePhase) { _, phase in
+            ambientPulseExpanded = !reduceMotion && phase == .active
+        }
         .onChange(of: fillSignature) { _, _ in animateToFinalValues() }
     }
 

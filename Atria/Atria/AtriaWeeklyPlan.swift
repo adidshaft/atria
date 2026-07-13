@@ -57,14 +57,12 @@ struct WeeklyPlan: Codable, Equatable {
     static func generate(from rollups: [DailyRollupStoreEntry],
                          now: Date = Date(),
                          calendar: Calendar = WeeklyPlanCalendar.iso) -> [WeeklyPlanTarget] {
-        let ordered = rollups.sorted { $0.day > $1.day }
-        let recent28 = Array(ordered.prefix(28))
         let weekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? calendar.startOfDay(for: now)
-        let currentWeek = ordered.filter { $0.day >= weekStart }
+        let windows = rollupWindows(rollups: rollups, weekStart: weekStart, recentLimit: 28)
         let candidates = [
-            bedtimeTarget(recent28: recent28, currentWeek: currentWeek),
-            workoutTarget(recent28: recent28, currentWeek: currentWeek),
-            rhrTarget(recent28: recent28, currentWeek: currentWeek)
+            bedtimeTarget(recent28: windows.recent, currentWeek: windows.currentWeek),
+            workoutTarget(recent28: windows.recent, currentWeek: windows.currentWeek),
+            rhrTarget(recent28: windows.recent, currentWeek: windows.currentWeek)
         ]
         return candidates
             .sorted { first, second in
@@ -75,6 +73,36 @@ struct WeeklyPlan: Codable, Equatable {
             }
             .prefix(3)
             .map { $0 }
+    }
+
+    private static func rollupWindows(rollups: [DailyRollupStoreEntry],
+                                      weekStart: Date,
+                                      recentLimit: Int) -> (recent: [DailyRollupStoreEntry], currentWeek: [DailyRollupStoreEntry]) {
+        guard recentLimit > 0 else {
+            return ([], rollups.filter { $0.day >= weekStart })
+        }
+        var recent: [DailyRollupStoreEntry] = []
+        var currentWeek: [DailyRollupStoreEntry] = []
+
+        for entry in rollups {
+            if entry.day >= weekStart {
+                currentWeek.append(entry)
+            }
+            if recent.count < recentLimit {
+                insertRecentEntry(entry, into: &recent)
+            } else if let oldest = recent.last, entry.day > oldest.day {
+                recent.removeLast()
+                insertRecentEntry(entry, into: &recent)
+            }
+        }
+
+        return (recent, currentWeek)
+    }
+
+    private static func insertRecentEntry(_ entry: DailyRollupStoreEntry,
+                                          into recent: inout [DailyRollupStoreEntry]) {
+        let index = recent.firstIndex { $0.day < entry.day } ?? recent.endIndex
+        recent.insert(entry, at: index)
     }
 
     private static func bedtimeTarget(recent28: [DailyRollupStoreEntry],
@@ -156,9 +184,15 @@ struct WeeklyPlan: Codable, Equatable {
 }
 
 final class WeeklyPlanStore {
+    private struct CacheKey: Hashable {
+        let isoYear: Int
+        let isoWeek: Int
+    }
+
     private let directory: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var cachedPlans: [CacheKey: WeeklyPlan] = [:]
 
     init(directory: URL? = nil, fileManager: FileManager = .default) {
         if let directory {
@@ -180,11 +214,21 @@ final class WeeklyPlanStore {
         let year = components.yearForWeekOfYear ?? components.year ?? 0
         let week = components.weekOfYear ?? 0
         if let saved = plan(isoYear: year, isoWeek: week) {
+            let freshByKind = Dictionary(uniqueKeysWithValues: WeeklyPlan.generate(from: rollups,
+                                                                                   now: now,
+                                                                                   calendar: calendar)
+                .map { ($0.kind, $0) })
             return WeeklyPlan(isoYear: saved.isoYear,
                               isoWeek: saved.isoWeek,
                               generatedAt: saved.generatedAt,
                               targets: saved.targets.map { target in
-                                  recomputed(target, rollups: rollups, now: now, calendar: calendar)
+                                  guard let fresh = freshByKind[target.kind] else { return target }
+                                  return WeeklyPlanTarget(id: target.id,
+                                                          kind: target.kind,
+                                                          title: target.title,
+                                                          detail: target.detail,
+                                                          goal: target.goal,
+                                                          current: fresh.current)
                               })
         }
         let plan = WeeklyPlan(rollups: rollups, now: now, calendar: calendar)
@@ -193,9 +237,15 @@ final class WeeklyPlanStore {
     }
 
     func plan(isoYear: Int, isoWeek: Int) -> WeeklyPlan? {
+        let key = CacheKey(isoYear: isoYear, isoWeek: isoWeek)
+        if let cached = cachedPlans[key] {
+            return cached
+        }
         let url = urlForPlan(isoYear: isoYear, isoWeek: isoWeek)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? decoder.decode(WeeklyPlan.self, from: data)
+        guard let data = try? Data(contentsOf: url),
+              let plan = try? decoder.decode(WeeklyPlan.self, from: data) else { return nil }
+        cachedPlans[key] = plan
+        return plan
     }
 
     func save(_ plan: WeeklyPlan) {
@@ -203,6 +253,7 @@ final class WeeklyPlanStore {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try encoder.encode(plan)
             try data.write(to: urlForPlan(isoYear: plan.isoYear, isoWeek: plan.isoWeek), options: .atomic)
+            cachedPlans[CacheKey(isoYear: plan.isoYear, isoWeek: plan.isoWeek)] = plan
             AtriaDebugLog("ATRIADBG weekly_plan_store_save status=ok isoYear=%d isoWeek=%d targets=%d",
                           plan.isoYear,
                           plan.isoWeek,
@@ -211,20 +262,6 @@ final class WeeklyPlanStore {
             AtriaDebugLog("ATRIADBG weekly_plan_store_save status=failed error=%@",
                           error.localizedDescription)
         }
-    }
-
-    private func recomputed(_ target: WeeklyPlanTarget,
-                            rollups: [DailyRollupStoreEntry],
-                            now: Date,
-                            calendar: Calendar) -> WeeklyPlanTarget {
-        let fresh = WeeklyPlan.generate(from: rollups, now: now, calendar: calendar)
-        guard let matching = fresh.first(where: { $0.kind == target.kind }) else { return target }
-        return WeeklyPlanTarget(id: target.id,
-                                kind: target.kind,
-                                title: target.title,
-                                detail: target.detail,
-                                goal: target.goal,
-                                current: matching.current)
     }
 
     private func urlForPlan(isoYear: Int, isoWeek: Int) -> URL {

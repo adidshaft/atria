@@ -1,6 +1,10 @@
 import Foundation
 
 enum AtriaStrapStepResearch {
+    // Peak detection remains useful for decoder research, but it must not become
+    // a user metric until a fixed strap-generation layout is reference-validated.
+    static let validatedDecoderAvailable = false
+
     struct Result: Equatable {
         let steps: Int
         let peaks: Int
@@ -27,6 +31,8 @@ enum AtriaStrapStepResearch {
             peaks += 1
             lastPeakIndex = index
         }
-        return Result(steps: peaks, peaks: peaks, state: "research_unvalidated")
+        return Result(steps: validatedDecoderAvailable ? peaks : 0,
+                      peaks: peaks,
+                      state: validatedDecoderAvailable ? "validated" : "research_unvalidated")
     }
 }

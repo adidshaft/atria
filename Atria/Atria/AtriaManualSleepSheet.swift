@@ -1,10 +1,163 @@
 import SwiftUI
 
+struct AtriaSleepStageShare: Equatable {
+    let stage: SleepStageKind
+    var percent: Int
+}
+
+enum AtriaManualSleepMode: Equatable {
+    case add
+    case review
+    case edit
+}
+
+enum AtriaSleepStagePresentation {
+    static func shares(for segments: [SleepStageSegment]) -> [AtriaSleepStageShare] {
+        var durations: [SleepStageKind: TimeInterval] = [:]
+        for segment in segments {
+            durations[segment.stage.displayStage, default: 0] += max(0, segment.duration)
+        }
+        let total = durations.values.reduce(0, +)
+        guard total > 0 else { return [] }
+
+        var shares = SleepStageKind.displayOrder.compactMap { stage -> AtriaSleepStageShare? in
+            guard let duration = durations[stage], duration > 0 else { return nil }
+            let rawPercent = duration / total * 100
+            return AtriaSleepStageShare(stage: stage, percent: Int(rawPercent.rounded(.down)))
+        }
+        var remainder = 100 - shares.reduce(0) { $0 + $1.percent }
+        let rankedIndices = shares.indices.sorted { left, right in
+            let leftDuration = durations[shares[left].stage] ?? 0
+            let rightDuration = durations[shares[right].stage] ?? 0
+            let leftFraction = leftDuration / total * 100 - Double(shares[left].percent)
+            let rightFraction = rightDuration / total * 100 - Double(shares[right].percent)
+            return leftFraction == rightFraction ? left < right : leftFraction > rightFraction
+        }
+        for index in rankedIndices where remainder > 0 {
+            shares[index].percent += 1
+            remainder -= 1
+        }
+        return shares
+    }
+}
+
+private struct AtriaManualSleepHypnogram: View, Equatable {
+    private static let lanes: [SleepStageKind] = [.awake, .rem, .light, .deep]
+
+    let segments: [SleepStageSegment]
+    let start: Date?
+    let end: Date?
+    let eventTimeZoneIdentifier: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Stages · Hypnogram")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Self.lanes) { stage in
+                        Text(stage.label)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
+                            .frame(maxHeight: .infinity, alignment: .center)
+                    }
+                }
+                .frame(width: 34, height: 76, alignment: .leading)
+
+                VStack(spacing: 4) {
+                    Canvas { context, size in
+                        draw(in: &context, size: size)
+                    }
+                    .frame(height: 76)
+
+                    HStack {
+                        Text(Self.timeText(start, timeZoneIdentifier: eventTimeZoneIdentifier))
+                        Spacer(minLength: 0)
+                        Text(Self.timeText(midpoint, timeZoneIdentifier: eventTimeZoneIdentifier))
+                        Spacer(minLength: 0)
+                        Text(Self.timeText(end, timeZoneIdentifier: eventTimeZoneIdentifier))
+                    }
+                    .font(.system(size: 8, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var midpoint: Date? {
+        guard let start, let end, end > start else { return nil }
+        return start.addingTimeInterval(end.timeIntervalSince(start) / 2)
+    }
+
+    private func draw(in context: inout GraphicsContext, size: CGSize) {
+        for lane in Self.lanes {
+            let y = Self.laneY(lane, height: size.height)
+            var guide = Path()
+            guide.move(to: CGPoint(x: 0, y: y))
+            guide.addLine(to: CGPoint(x: size.width, y: y))
+            context.stroke(guide,
+                           with: .color(Color.primary.opacity(0.07)),
+                           style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
+        }
+
+        guard let timelineStart = start ?? segments.map(\.start).min(),
+              let timelineEnd = end ?? segments.map(\.end).max(),
+              timelineEnd > timelineStart else { return }
+        let laneHeight = max(7, min(11, size.height / 7))
+        for segment in segments {
+            guard let range = AtriaSleepStageHypnogram.normalizedRange(for: segment,
+                                                                       timelineStart: timelineStart,
+                                                                       timelineEnd: timelineEnd) else { continue }
+            let displayStage = segment.stage.displayStage
+            let x = size.width * range.lowerBound
+            let width = max(2, size.width * (range.upperBound - range.lowerBound))
+            let rect = CGRect(x: x,
+                              y: Self.laneY(displayStage, height: size.height) - laneHeight / 2,
+                              width: min(width, max(0, size.width - x)),
+                              height: laneHeight)
+            context.fill(Path(roundedRect: rect, cornerRadius: 2.5),
+                         with: .color(AtriaSleepStageGlyph.color(for: displayStage)))
+        }
+    }
+
+    private static func laneY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
+        switch stage.displayStage {
+        case .awake: return height * 0.12
+        case .rem: return height * 0.38
+        case .light: return height * 0.63
+        case .sws, .deep: return height * 0.88
+        }
+    }
+
+    private static func timeText(_ date: Date?, timeZoneIdentifier: String?) -> String {
+        guard let date else { return "--" }
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+            style.timeZone = timeZone
+        }
+        return date.formatted(style)
+    }
+}
+
 struct AtriaManualSleepSheet: View {
     /// Returns whether the save actually persisted. false keeps the sheet
     /// open and shows an inline error instead of silently dismissing
     /// (2026-07-07: failed adjustments used to vanish without a trace).
     let onSave: (Date, Date, Bool) -> Bool
+    /// Removes a saved item, or dismisses an unsaved detection. Keeping this
+    /// optional means the plain Add flow has no destructive action.
+    private let onRemove: (() -> Bool)?
+    private let mode: AtriaManualSleepMode
     private let reviewDetectedTypeText: String?
     /// Detected night backing this review, when one exists (2026-07-07 design
     /// handoff): drives the sensor-evidence card (stage strip, efficiency).
@@ -23,6 +176,9 @@ struct AtriaManualSleepSheet: View {
     @State private var start = Date().addingTimeInterval(-8 * 60 * 60)
     @State private var end = Date()
     @State private var saveFailed = false
+    @State private var removeFailed = false
+    @State private var showsRemoveConfirmation = false
+    @State private var showsStageMethodology = false
 
     init(initialStart: Date? = nil,
          initialEnd: Date? = nil,
@@ -30,8 +186,15 @@ struct AtriaManualSleepSheet: View {
          preservesSensorStages: Bool = false,
          evidenceNight: SleepHistorySnapshot.Night? = nil,
          evidencePerformancePercent: Int? = nil,
+         mode: AtriaManualSleepMode? = nil,
+         onRemove: (() -> Bool)? = nil,
          onSave: @escaping (Date, Date, Bool) -> Bool) {
         self.onSave = onSave
+        self.onRemove = onRemove
+        self.mode = mode ?? {
+            guard let evidenceNight else { return .add }
+            return evidenceNight.confirmed ? .edit : .review
+        }()
         self.preservesSensorStages = preservesSensorStages
         self.evidenceNight = evidenceNight
         self.evidencePerformancePercent = evidencePerformancePercent
@@ -50,6 +213,31 @@ struct AtriaManualSleepSheet: View {
 
     private var duration: TimeInterval {
         max(0, end.timeIntervalSince(start))
+    }
+
+    private var navigationVerb: String {
+        switch mode {
+        case .add: "Add"
+        case .review: "Review"
+        case .edit: "Edit"
+        }
+    }
+
+    private var itemName: String { isNap ? "nap" : "sleep" }
+
+    private var removeButtonTitle: String {
+        mode == .edit ? "Delete \(itemName)" : "Not \(itemName)"
+    }
+
+    private var removeConfirmationTitle: String {
+        mode == .edit ? "Delete this \(itemName)?" : "Dismiss this \(itemName)?"
+    }
+
+    private var removeConfirmationMessage: String {
+        if mode == .edit {
+            return "This removes the saved \(itemName) from Activity. You can add it again later."
+        }
+        return "Atria will remove this detection from Activity. You can add the \(itemName) manually later."
     }
 
     private var canSave: Bool {
@@ -125,7 +313,7 @@ struct AtriaManualSleepSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
                     if saveFailed {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -139,14 +327,13 @@ struct AtriaManualSleepSheet: View {
                     }
 
                     detectedEvidenceCard
-                    typeCard
-                    timeCard
-                    durationCard
+                    editorCard
                     stageEvidenceCard
                 }
-                .padding(20)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
             }
-            .navigationTitle("\(reviewDetectedTypeText == nil ? "Add" : "Review") \(isNap ? "Nap" : "Sleep")")
+            .navigationTitle("\(navigationVerb) \(isNap ? "Nap" : "Sleep")")
             .onAppear(perform: applyInferredTypeIfNeeded)
             .onChange(of: start) { _, _ in
                 saveFailed = false
@@ -161,11 +348,42 @@ struct AtriaManualSleepSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
-                        saveFailed = !onSave(start, end, isNap)
+                    HStack(spacing: 12) {
+                        if onRemove != nil {
+                            Button {
+                                showsRemoveConfirmation = true
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .accessibilityLabel(removeButtonTitle)
+                        }
+
+                        Button("Save") {
+                            saveFailed = !onSave(start, end, isNap)
+                        }
+                        .disabled(!canSave)
                     }
-                    .disabled(!canSave)
                 }
+            }
+            .confirmationDialog(removeConfirmationTitle,
+                                isPresented: $showsRemoveConfirmation,
+                                titleVisibility: .visible) {
+                Button(removeButtonTitle, role: .destructive) {
+                    guard let onRemove else { return }
+                    if onRemove() {
+                        dismiss()
+                    } else {
+                        removeFailed = true
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(removeConfirmationMessage)
+            }
+            .alert("Couldn't update Activity", isPresented: $removeFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Nothing was removed. Please try again.")
             }
         }
     }
@@ -188,19 +406,10 @@ struct AtriaManualSleepSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    GeometryReader { proxy in
-                        let total = max(night.duration, 1)
-                        HStack(spacing: 2) {
-                            ForEach(night.displayStageSegments) { segment in
-                                Rectangle()
-                                    .fill(evidenceStageTint(segment.stage))
-                                    .frame(width: max(5, proxy.size.width * CGFloat(segment.duration / total)))
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    }
-                    .frame(height: 34)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    AtriaManualSleepHypnogram(segments: night.displayStageSegments,
+                                              start: night.start,
+                                              end: night.end,
+                                              eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
 
                     HStack(spacing: 12) {
                         ForEach(evidenceStageShares, id: \.stage) { share in
@@ -232,18 +441,10 @@ struct AtriaManualSleepSheet: View {
         }
     }
 
-    /// Stage shares in display order, folded (SWS into Deep), zero stages
-    /// dropped -- percentages of the night's total window.
-    private var evidenceStageShares: [(stage: SleepStageKind, percent: Int)] {
-        guard let night = evidenceNight, night.duration > 0 else { return [] }
-        var durations: [SleepStageKind: TimeInterval] = [:]
-        for segment in night.displayStageSegments {
-            durations[segment.stage.displayStage, default: 0] += segment.duration
-        }
-        return SleepStageKind.displayOrder.compactMap { stage in
-            guard let duration = durations[stage], duration > 0 else { return nil }
-            return (stage, Int((duration / night.duration * 100).rounded()))
-        }
+    /// Stage shares use the staged wall-clock timeline, not credited sleep
+    /// duration, because awake epochs are part of the same evidence window.
+    private var evidenceStageShares: [AtriaSleepStageShare] {
+        AtriaSleepStagePresentation.shares(for: evidenceNight?.displayStageSegments ?? [])
     }
 
     private func evidenceStageTint(_ stage: SleepStageKind) -> Color {
@@ -268,12 +469,30 @@ struct AtriaManualSleepSheet: View {
         .background(Metrics.electricSleep.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var typeCard: some View {
+    /// One compact editing surface keeps the three parts of the same decision
+    /// (type, bounds, and resulting duration) together instead of presenting
+    /// them as three vertically stacked cards.
+    private var editorCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaManualSleepCardHeader(title: "Type",
-                                       detail: typeSuggestionText,
-                                       systemImage: isNap ? "moon.zzz.fill" : "bed.double.fill",
-                                       tint: .cyan)
+            HStack(spacing: 10) {
+                Image(systemName: isNap ? "moon.zzz.fill" : "bed.double.fill")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 30, height: 30)
+                    .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
+
+                Text("Sleep details")
+                    .font(.headline.weight(.semibold))
+
+                Spacer(minLength: 8)
+
+                Text(durationText)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(canSave ? Color.primary : Color.orange)
+                    .contentTransition(.numericText())
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Duration \(durationText). \(validationText)")
 
             HStack(spacing: 8) {
                 manualTypeButton(title: "Sleep",
@@ -285,8 +504,32 @@ struct AtriaManualSleepSheet: View {
                                  isSelected: isNap,
                                  isNapValue: true)
             }
+
+            if reviewDetectedTypeText != nil || typeWasManuallyEdited {
+                Text(typeSuggestionText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+            DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+
+            if !canSave {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                    Text(validationText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+            }
         }
-        .manualSleepCard(tint: .cyan)
+        .manualSleepCard(tint: canSave ? .cyan : .orange)
     }
 
     private func manualTypeButton(title: String,
@@ -308,72 +551,46 @@ struct AtriaManualSleepSheet: View {
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 
-    private var timeCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaManualSleepCardHeader(title: "Window",
-                                       detail: "Choose the local time range Atria should save.",
-                                       systemImage: "clock.fill",
-                                       tint: .blue)
-
-            DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
-                .datePickerStyle(.compact)
-            DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
-                .datePickerStyle(.compact)
-        }
-        .manualSleepCard(tint: .blue)
-    }
-
-    private var durationCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaManualSleepCardHeader(title: "Duration",
-                                       detail: validationText,
-                                       systemImage: canSave ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
-                                       tint: canSave ? .green : .orange)
-
-            LabeledContent("Window") {
-                Text(durationText)
-                    .font(.headline.weight(.semibold).monospacedDigit())
-            }
-        }
-        .manualSleepCard(tint: canSave ? .green : .orange)
-    }
-
     private var stageEvidenceCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaManualSleepCardHeader(title: "Stages",
-                                       detail: preservesSensorStages ? "Re-derived from sensor data for this window." : "Manual entries save the window only.",
-                                       systemImage: preservesSensorStages ? "waveform.path.ecg" : "checklist.unchecked",
-                                       tint: .purple)
+        DisclosureGroup(isExpanded: $showsStageMethodology) {
+            Text(stageMethodologyText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: preservesSensorStages ? "waveform.path.ecg" : "checklist.unchecked")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.purple)
+                    .frame(width: 30, height: 30)
+                    .background(AtriaIconTileBackground(cornerRadius: 10, tint: .purple))
 
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "waveform.path.ecg")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22)
-                Text(preservesSensorStages
-                     ? "Atria recomputes Awake, Light, REM, SWS, and Deep from the heart-rate samples inside this window. Adjusting the boundaries keeps the sensor-derived stages — it does not blank them, and it does not fabricate any."
-                     : "Awake, Light, REM, SWS, and Deep stay blank until Atria has sensor-derived stage evidence. This manual \(isNap ? "nap" : "sleep") will not fabricate stage bars.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sleep stages")
+                        .font(.subheadline.weight(.semibold))
+                    Text(preservesSensorStages ? "Sensor-derived for this window" : "Not estimated from manual entry")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(preservesSensorStages
-                                ? "Sleep stages are re-derived from sensor data for the chosen window."
-                                : "No manual stage estimate. Sleep stages stay blank until sensor-derived stage evidence exists.")
-
-            stageFooterNote
         }
         .manualSleepCard(tint: .purple)
+        .tint(.purple)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sleep stages")
+        .accessibilityValue(preservesSensorStages
+                            ? "Sensor-derived for this window"
+                            : "Not estimated from manual entry")
+        .accessibilityHint(showsStageMethodology ? "Collapses stage methodology" : "Shows stage methodology")
     }
 
-    // Folded into stageEvidenceCard 2026-07-07 (UX audit): this card
-    // repeated the Stages card's sensor-evidence message; the one unique
-    // clause (saved locally) now rides as the Stages card's footer line.
-    private var stageFooterNote: some View {
-        Text("Atria will save this \(isNap ? "nap" : "sleep") locally. Manual entries improve duration, nap, and sleep-history continuity; sleep stages require sensor evidence.")
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
+    private var stageMethodologyText: String {
+        if preservesSensorStages {
+            return "Atria re-derives Awake, Light, REM, SWS, and Deep from sensor samples inside the edited window; changing its bounds does not fabricate stages."
+        }
+        return "This manual \(isNap ? "nap" : "sleep") saves its window and duration only. Stage bars stay blank until sensor evidence is available."
     }
 
     private func applyInferredTypeIfNeeded() {

@@ -710,7 +710,7 @@ struct AtriaResearchConsentSheet: View {
 /// Settings section: the toggle, the share row, and the receipts line.
 struct AtriaResearchSharingSection: View {
     let buildBundle: () async -> AtriaResearchBundleBuilder.Built?
-    @AppStorage(AtriaResearchSharing.optInKey) private var optedIn = false
+    @AtriaDefault(AtriaResearchSharing.optInKey) private var optedIn = false
     @State private var showConsent = false
     @State private var shareURL: URL?
     @State private var isSendingNow = false
@@ -836,4 +836,3 @@ private struct AtriaResearchShareSheetHost: View {
         .presentationDetents([.medium])
     }
 }
-

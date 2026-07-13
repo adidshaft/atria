@@ -32,6 +32,7 @@ struct AtriaExpandedChartView: View {
     /// y-domain and the legend says so — comparison of shape, not units.
     var overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = []
     let onDismiss: () -> Void
+    private let prepared: AtriaExpandedChartPreparedModel
 
     @State private var visibleDays: Int = 0
     @State private var activeOverlayTitle: String?
@@ -39,9 +40,32 @@ struct AtriaExpandedChartView: View {
     @State private var brushEnd: Date?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    init(title: String,
+         unit: String,
+         tint: Color,
+         points: [AtriaDetailChartPoint],
+         priorPoints: [AtriaDetailChartPoint] = [],
+         baselineBand: AtriaDetailBaselineBand? = nil,
+         events: [AtriaChartEvent] = [],
+         overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
+         onDismiss: @escaping () -> Void) {
+        self.title = title
+        self.unit = unit
+        self.tint = tint
+        self.points = points
+        self.priorPoints = priorPoints
+        self.baselineBand = baselineBand
+        self.events = events
+        self.overlays = overlays
+        self.onDismiss = onDismiss
+        self.prepared = AtriaExpandedChartPreparedModel(points: points,
+                                                        priorPoints: priorPoints,
+                                                        baselineBand: baselineBand,
+                                                        overlays: overlays)
+    }
+
     private var spanDays: Int {
-        guard let first = points.first?.day, let last = points.last?.day else { return 1 }
-        return max(1, Calendar.current.dateComponents([.day], from: first, to: last).day ?? 1)
+        prepared.spanDays
     }
 
     var body: some View {
@@ -113,8 +137,8 @@ struct AtriaExpandedChartView: View {
     private var chartBody: some View {
         Chart {
             if let baselineBand {
-                RectangleMark(xStart: .value("Start", points.first?.day ?? Date()),
-                              xEnd: .value("End", points.last?.day ?? Date()),
+                RectangleMark(xStart: .value("Start", prepared.dataStart),
+                              xEnd: .value("End", prepared.dataEnd),
                               yStart: .value("Lower", baselineBand.lower),
                               yEnd: .value("Upper", baselineBand.upper))
                     .foregroundStyle(baselineBand.tint.opacity(0.10))
@@ -130,7 +154,7 @@ struct AtriaExpandedChartView: View {
             }
 
             if let overlay = activeOverlay {
-                ForEach(rescaledOverlayPoints(overlay)) { point in
+                ForEach(overlay.points) { point in
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
                              series: .value("Series", "overlay"))
@@ -155,7 +179,7 @@ struct AtriaExpandedChartView: View {
             // Event lane: real saved activity pinned to the top of the plot.
             ForEach(events) { event in
                 PointMark(x: .value("Day", event.day, unit: .day),
-                          y: .value(title, eventLaneY))
+                          y: .value(title, prepared.eventLaneY))
                     .symbol {
                         Image(systemName: event.systemImage)
                             .font(.caption2.weight(.bold))
@@ -171,8 +195,8 @@ struct AtriaExpandedChartView: View {
         }
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: max(1, visibleDays) * 86_400)
-        .chartXScale(domain: xDomain)
-        .chartYScale(domain: yDomain)
+        .chartXScale(domain: prepared.xDomain)
+        .chartYScale(domain: prepared.yDomain)
         .chartOverlay { chartProxy in
             GeometryReader { geo in
                 Rectangle()
@@ -201,8 +225,8 @@ struct AtriaExpandedChartView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if !overlays.isEmpty {
-                ForEach(overlays, id: \.title) { overlay in
+            if !prepared.overlays.isEmpty {
+                ForEach(prepared.overlays) { overlay in
                     let isActive = activeOverlayTitle == overlay.title
                     Button {
                         activeOverlayTitle = isActive ? nil : overlay.title
@@ -235,59 +259,159 @@ struct AtriaExpandedChartView: View {
         }
     }
 
-    private var activeOverlay: (title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])? {
-        overlays.first { $0.title == activeOverlayTitle }
-    }
-
-    /// Maps the overlay's values from its own min-max into this chart's
-    /// y-domain: an honest SHAPE comparison (the dashed line + "scaled to
-    /// fit" caption make clear the units differ).
-    private func rescaledOverlayPoints(_ overlay: (title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])) -> [AtriaDetailChartPoint] {
-        let values = overlay.points.map(\.value)
-        guard let lo = values.min(), let hi = values.max(), hi > lo else { return [] }
-        let domain = yDomain
-        let pad = (domain.upperBound - domain.lowerBound) * 0.06
-        let targetLo = domain.lowerBound + pad
-        let targetHi = domain.upperBound - pad
-        return overlay.points.map { point in
-            let fraction = (point.value - lo) / (hi - lo)
-            return AtriaDetailChartPoint(day: point.day,
-                                         value: targetLo + fraction * (targetHi - targetLo),
-                                         tint: overlay.tint)
-        }
+    private var activeOverlay: AtriaExpandedChartPreparedOverlay? {
+        prepared.overlay(title: activeOverlayTitle)
     }
 
     /// Honest summary of the brushed window: only real points inside it.
     private var brushSummaryText: String? {
         guard let start = brushStart, let end = brushEnd else { return nil }
-        let lo = min(start, end), hi = max(start, end)
-        let inside = points.filter { $0.day >= lo && $0.day <= hi }
-        guard !inside.isEmpty else { return "No data in selection" }
-        let values = inside.map(\.value)
-        let avg = values.reduce(0, +) / Double(values.count)
-        let days = (Calendar.current.dateComponents([.day], from: lo, to: hi).day ?? 0) + 1
-        return String(format: "%dd \u{00b7} avg %.1f%@ \u{00b7} %.1f\u{2013}%.1f", days, avg, unit, values.min() ?? 0, values.max() ?? 0)
+        return prepared.brushSummary(start: start, end: end, unit: unit)
     }
+}
 
-    private var eventLaneY: Double {
-        yDomain.upperBound - (yDomain.upperBound - yDomain.lowerBound) * 0.04
-    }
+private struct AtriaExpandedChartPreparedOverlay: Identifiable {
+    let title: String
+    let unit: String
+    let tint: Color
+    let points: [AtriaDetailChartPoint]
 
-    /// Half-day pad each side so edge points render fully.
-    private var xDomain: ClosedRange<Date> {
-        let first = points.first?.day ?? Date()
-        let last = points.last?.day ?? Date()
-        return first.addingTimeInterval(-43_200)...last.addingTimeInterval(43_200)
-    }
+    var id: String { title }
+}
 
-    private var yDomain: ClosedRange<Double> {
-        var values = points.map(\.value) + priorPoints.map(\.value)
+private struct AtriaExpandedChartPreparedModel {
+    let dataStart: Date
+    let dataEnd: Date
+    let xDomain: ClosedRange<Date>
+    let yDomain: ClosedRange<Double>
+    let eventLaneY: Double
+    let spanDays: Int
+    let overlays: [AtriaExpandedChartPreparedOverlay]
+
+    private let brushPoints: [AtriaDetailChartPoint]
+
+    init(points: [AtriaDetailChartPoint],
+         priorPoints: [AtriaDetailChartPoint],
+         baselineBand: AtriaDetailBaselineBand?,
+         overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])]) {
+        let now = Date()
+        dataStart = points.first?.day ?? now
+        dataEnd = points.last?.day ?? now
+        xDomain = dataStart.addingTimeInterval(-43_200)...dataEnd.addingTimeInterval(43_200)
+        spanDays = max(1, Calendar.current.dateComponents([.day], from: dataStart, to: dataEnd).day ?? 1)
+
+        var values: [Double] = []
+        values.reserveCapacity(points.count + priorPoints.count + 2)
+        for point in points {
+            values.append(point.value)
+        }
+        for point in priorPoints {
+            values.append(point.value)
+        }
         if let baselineBand {
             values.append(baselineBand.lower)
             values.append(baselineBand.upper)
         }
-        guard let lo = values.min(), let hi = values.max(), hi > lo else { return 0...1 }
-        let pad = (hi - lo) * 0.12
-        return (lo - pad)...(hi + pad)
+        let computedYDomain: ClosedRange<Double>
+        if let lo = values.min(), let hi = values.max(), hi > lo {
+            let pad = (hi - lo) * 0.12
+            computedYDomain = (lo - pad)...(hi + pad)
+        } else {
+            computedYDomain = 0...1
+        }
+        yDomain = computedYDomain
+        eventLaneY = computedYDomain.upperBound - (computedYDomain.upperBound - computedYDomain.lowerBound) * 0.04
+        brushPoints = points.sorted { $0.day < $1.day }
+        self.overlays = overlays.map { overlay in
+            AtriaExpandedChartPreparedOverlay(title: overlay.title,
+                                              unit: overlay.unit,
+                                              tint: overlay.tint,
+                                              points: Self.rescaledOverlayPoints(overlay.points,
+                                                                                tint: overlay.tint,
+                                                                                yDomain: computedYDomain))
+        }
+    }
+
+    func overlay(title: String?) -> AtriaExpandedChartPreparedOverlay? {
+        guard let title else { return nil }
+        return overlays.first { $0.title == title }
+    }
+
+    /// Maps an overlay from its own min-max into this chart's y-domain: an honest
+    /// shape comparison. The UI labels it as scaled, so units are never implied.
+    private static func rescaledOverlayPoints(_ points: [AtriaDetailChartPoint],
+                                              tint: Color,
+                                              yDomain: ClosedRange<Double>) -> [AtriaDetailChartPoint] {
+        var lo: Double?
+        var hi: Double?
+        for point in points {
+            lo = min(lo ?? point.value, point.value)
+            hi = max(hi ?? point.value, point.value)
+        }
+        guard let low = lo, let high = hi, high > low else { return [] }
+        let pad = (yDomain.upperBound - yDomain.lowerBound) * 0.06
+        let targetLo = yDomain.lowerBound + pad
+        let targetHi = yDomain.upperBound - pad
+        return points.map { point in
+            let fraction = (point.value - low) / (high - low)
+            return AtriaDetailChartPoint(day: point.day,
+                                         value: targetLo + fraction * (targetHi - targetLo),
+                                         tint: tint)
+        }
+    }
+
+    /// Honest summary of the brushed window: binary-search the sorted days, then
+    /// aggregate only real points in range. No filtered/mapped arrays during drag.
+    func brushSummary(start: Date,
+                      end: Date,
+                      unit: String,
+                      calendar: Calendar = .current) -> String {
+        let lo = min(start, end)
+        let hi = max(start, end)
+        let lower = lowerBound(for: lo)
+        let upper = upperBound(for: hi)
+        guard lower < upper else { return "No data in selection" }
+
+        var count = 0
+        var sum = 0.0
+        var minValue = Double.greatestFiniteMagnitude
+        var maxValue = -Double.greatestFiniteMagnitude
+        for point in brushPoints[lower..<upper] {
+            count += 1
+            sum += point.value
+            minValue = min(minValue, point.value)
+            maxValue = max(maxValue, point.value)
+        }
+        let avg = sum / Double(count)
+        let days = (calendar.dateComponents([.day], from: lo, to: hi).day ?? 0) + 1
+        return String(format: "%dd \u{00b7} avg %.1f%@ \u{00b7} %.1f\u{2013}%.1f", days, avg, unit, minValue, maxValue)
+    }
+
+    private func lowerBound(for day: Date) -> Int {
+        var low = 0
+        var high = brushPoints.count
+        while low < high {
+            let mid = (low + high) / 2
+            if brushPoints[mid].day < day {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
+    }
+
+    private func upperBound(for day: Date) -> Int {
+        var low = 0
+        var high = brushPoints.count
+        while low < high {
+            let mid = (low + high) / 2
+            if brushPoints[mid].day <= day {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
     }
 }

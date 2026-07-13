@@ -9,12 +9,16 @@ import XCTest
 final class AtriaSleepExtendTests: XCTestCase {
     private func at(_ h: Double) -> Date { Date(timeIntervalSince1970: 1_800_000_000 + h * 3600) }
 
-    private func candidate(kind: String = "unambiguous_hr", start: Date, end: Date) -> AggregateSleepCandidate {
+    private func candidate(kind: String = "unambiguous_hr",
+                           start: Date,
+                           end: Date,
+                           creditedDuration: TimeInterval? = nil) -> AggregateSleepCandidate {
         AggregateSleepCandidate(
-            kind: kind, day: start, sessions: 1, start: start, end: end,
-            duration: end.timeIntervalSince(start), span: end.timeIntervalSince(start),
+            kind: kind, day: start, eventTimeZoneIdentifier: "UTC", sessions: 1, start: start, end: end,
+            duration: creditedDuration ?? end.timeIntervalSince(start), span: end.timeIntervalSince(start),
             maxGap: 0, samples: 100, avgHR: 55, peakHR: 70, hrStandardDeviation: 3,
-            medianHR: 55, hrP90: 62, elevatedSampleFraction: 0.01, restingHR: 52,
+            medianHR: 55, hrP90: 62, elevatedSampleFraction: 0.01,
+            baselineRestingHR: 52, restingHR: 52,
             confidence: .high, reason: "test", motionHintCount: 0, motionHintKinds: "",
             motionEvidenceSource: "none", motionEvidenceValidated: false, motionShortCount: 0,
             motionShortMean: nil, motionShortMin: nil, motionShortMax: nil, motionShortOverOneCount: 0,
@@ -64,7 +68,7 @@ final class AtriaSleepExtendTests: XCTestCase {
 
     // BLOCKER fix: a manual / user-adjusted night must NEVER be clobbered by extend.
     func testDoesNotClobberUserAuthoredNight() {
-        for source in ["manual_sleep", "user_adjusted_sleep"] {
+        for source in ["manual_sleep", "user_adjusted_sleep", "user_adjusted_nap"] {
             XCTAssertFalse(SessionStore.sleepExtendReplacement(
                 existing: [sleep(source: source, start: at(0), end: at(7))],
                 candidate: candidate(start: at(0), end: at(9))),
@@ -80,5 +84,15 @@ final class AtriaSleepExtendTests: XCTestCase {
     func testDoesNotTrimHeadWithLaterStartingCandidate() {
         XCTAssertFalse(SessionStore.sleepExtendReplacement(
             existing: [sleep(start: at(0), end: at(7))], candidate: candidate(start: at(2), end: at(9))))
+    }
+
+    func testDoesNotReduceCreditedDurationWhileExtendingClockTime() {
+        let existing = sleep(start: at(0), end: at(7))
+        let longerWindowWithLessCreditedSleep = candidate(start: at(0),
+                                                          end: at(9),
+                                                          creditedDuration: 6 * 60 * 60)
+
+        XCTAssertFalse(SessionStore.sleepExtendReplacement(existing: [existing],
+                                                            candidate: longerWindowWithLessCreditedSleep))
     }
 }

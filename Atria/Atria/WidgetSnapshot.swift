@@ -19,7 +19,16 @@ struct WidgetSnapshot: Codable {
     let sleepHours: Double?
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
     let steps: Int?
+    /// `true` means a fresh strap-derived preliminary count. Widgets must
+    /// prefix it with `~` and never present it as a validated exact total.
+    var stepsAreEstimated: Bool? = nil
+    /// Timestamp of the most recent CRC-valid strap motion frame supporting
+    /// `steps`. Independent from `createdAt`, which can advance for battery,
+    /// recovery, or layout changes without making the step stream fresh.
+    let stepsCapturedAt: Date?
     let heartRate: Int?
+    /// Timestamp of the accepted strap HR sample supporting `heartRate`.
+    let heartRateCapturedAt: Date?
     let batteryLevel: Int?
     let batteryChargeStatus: String?
     let batteryChargeText: String?
@@ -50,6 +59,179 @@ enum WidgetSnapshotPublisher {
     // mobileprovision Data(contentsOf:) on the main thread. Compute once and
     // cache (MainActor-isolated, so the cache write is race-free).
     private static var cachedDiagnostics: Diagnostics?
+    private static var scheduledPublishTask: Task<Void, Never>?
+
+    /// During an active workout the stable daily fields (recovery, HRV, sleep,
+    /// layout) do not need to be rebuilt from SessionStore for every pulse.
+    /// Patch only the genuinely live values in the already-durable snapshot.
+    /// This keeps Lock Screen widgets current without running recovery/cycle/
+    /// rollup/TRIMP scans on the main actor during workout controls or a scene
+    /// return animation.
+    static func scheduleLiveWorkoutPatch(heartRate: Int?,
+                                         heartRateCapturedAt: Date?,
+                                         steps: Int?,
+                                         stepsAreEstimated: Bool,
+                                         stepsCapturedAt: Date?,
+                                         strain: Double,
+                                         batteryLevel: Int?,
+                                         batteryChargeStatus: String,
+                                         batteryChargeText: String,
+                                         reason: String,
+                                         delay: Duration = .milliseconds(60)) {
+        scheduledPublishTask?.cancel()
+        scheduledPublishTask = Task { @MainActor in
+            await Task.yield()
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled else { return }
+            let widgetDiagnostics = diagnostics
+            let defaults = widgetDiagnostics.appGroupEnabled
+                ? (UserDefaults(suiteName: appGroupID) ?? .standard)
+                : .standard
+            guard let data = defaults.data(forKey: key),
+                  let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
+                    WidgetSnapshot.self,
+                    from: data
+                  ) else {
+                scheduledPublishTask = nil
+                return
+            }
+            let patched = liveWorkoutPatchedSnapshot(
+                current: current,
+                createdAt: Date(),
+                heartRate: heartRate,
+                heartRateCapturedAt: heartRateCapturedAt,
+                steps: steps,
+                stepsAreEstimated: stepsAreEstimated,
+                stepsCapturedAt: stepsCapturedAt,
+                strain: strain,
+                batteryLevel: batteryLevel,
+                batteryChargeStatus: batteryChargeStatus,
+                batteryChargeText: batteryChargeText
+            )
+            guard let patchedData = try? JSONEncoder.widgetSnapshotEncoder.encode(patched) else {
+                scheduledPublishTask = nil
+                return
+            }
+            defaults.set(patchedData, forKey: key)
+            #if canImport(WidgetKit)
+            if widgetDiagnostics.appGroupEnabled, shouldReloadTimelines(for: patched) {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            #endif
+            AtriaDebugLog("ATRIADBG widget_snapshot status=live_workout_patch reason=%@ bytes=%d",
+                          reason,
+                          patchedData.count)
+            scheduledPublishTask = nil
+        }
+    }
+
+    nonisolated static func liveWorkoutPatchedSnapshot(
+        current: WidgetSnapshot,
+        createdAt: Date,
+        heartRate: Int?,
+        heartRateCapturedAt: Date?,
+        steps: Int?,
+        stepsAreEstimated: Bool,
+        stepsCapturedAt: Date?,
+        strain: Double,
+        batteryLevel: Int?,
+        batteryChargeStatus: String,
+        batteryChargeText: String
+    ) -> WidgetSnapshot {
+        WidgetSnapshot(
+            schema: current.schema,
+            createdAt: createdAt,
+            recoveryPercent: current.recoveryPercent,
+            recoveryConfidence: current.recoveryConfidence,
+            recoveryDetail: current.recoveryDetail,
+            strain: strain,
+            restingHR: current.restingHR,
+            hrvRMSSD: current.hrvRMSSD,
+            hrvState: current.hrvState,
+            maxHR: current.maxHR,
+            sleepHours: current.sleepHours,
+            steps: steps,
+            stepsAreEstimated: steps == nil ? nil : stepsAreEstimated,
+            stepsCapturedAt: steps == nil ? nil : stepsCapturedAt,
+            heartRate: heartRate,
+            heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
+            batteryLevel: batteryLevel,
+            batteryChargeStatus: batteryChargeStatus,
+            batteryChargeText: batteryChargeText,
+            layoutGlanceMetrics: current.layoutGlanceMetrics,
+            layoutRingCenterMetric: current.layoutRingCenterMetric,
+            layoutLegendStatStyle: current.layoutLegendStatStyle,
+            layoutAccent: current.layoutAccent,
+            storage: current.storage,
+            appGroupEnabled: current.appGroupEnabled,
+            widgetTargetPresent: current.widgetTargetPresent,
+            complicationTargetPresent: current.complicationTargetPresent
+        )
+    }
+
+    /// Coalesces publisher bursts and lets scene/UI transitions commit before
+    /// recovery, strain, JSON encoding, defaults writes, and WidgetKit reloads
+    /// run on the main actor. Callers that require an immediate return value
+    /// (proof/debug surfaces and bounded BG tasks) continue using `publish`.
+    static func schedulePublish(store: SessionStore,
+                                ble: AtriaBLEManager,
+                                reason: String,
+                                delay: Duration = .milliseconds(60)) {
+        scheduledPublishTask?.cancel()
+        scheduledPublishTask = Task { @MainActor in
+            await Task.yield()
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard !Task.isCancelled else { return }
+            _ = publish(store: store, ble: ble, reason: reason)
+            scheduledPublishTask = nil
+        }
+    }
+
+    /// Clears only disputed battery fields immediately, even before deferred
+    /// session loading permits a full snapshot rewrite.
+    static func invalidateBatteryProjection(defaults injectedDefaults: UserDefaults? = nil) {
+        let widgetDiagnostics = Self.diagnostics
+        let defaults = injectedDefaults ?? (widgetDiagnostics.appGroupEnabled
+            ? (UserDefaults(suiteName: appGroupID) ?? .standard)
+            : .standard)
+        guard let data = defaults.data(forKey: key),
+              let snapshot = try? JSONDecoder.widgetSnapshotDecoder.decode(WidgetSnapshot.self, from: data) else { return }
+        let sanitized = WidgetSnapshot(schema: snapshot.schema,
+                                       createdAt: Date(),
+                                       recoveryPercent: snapshot.recoveryPercent,
+                                       recoveryConfidence: snapshot.recoveryConfidence,
+                                       recoveryDetail: snapshot.recoveryDetail,
+                                       strain: snapshot.strain,
+                                       restingHR: snapshot.restingHR,
+                                       hrvRMSSD: snapshot.hrvRMSSD,
+                                       hrvState: snapshot.hrvState,
+                                       maxHR: snapshot.maxHR,
+                                       sleepHours: snapshot.sleepHours,
+                                       steps: snapshot.steps,
+                                       stepsAreEstimated: snapshot.stepsAreEstimated,
+                                       stepsCapturedAt: snapshot.stepsCapturedAt,
+                                       heartRate: snapshot.heartRate,
+                                       heartRateCapturedAt: snapshot.heartRateCapturedAt,
+                                       batteryLevel: nil,
+                                       batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue,
+                                       batteryChargeText: "Pending",
+                                       layoutGlanceMetrics: snapshot.layoutGlanceMetrics,
+                                       layoutRingCenterMetric: snapshot.layoutRingCenterMetric,
+                                       layoutLegendStatStyle: snapshot.layoutLegendStatStyle,
+                                       layoutAccent: snapshot.layoutAccent,
+                                       storage: snapshot.storage,
+                                       appGroupEnabled: snapshot.appGroupEnabled,
+                                       widgetTargetPresent: snapshot.widgetTargetPresent,
+                                       complicationTargetPresent: snapshot.complicationTargetPresent)
+        guard let sanitizedData = try? JSONEncoder.widgetSnapshotEncoder.encode(sanitized) else { return }
+        defaults.set(sanitizedData, forKey: key)
+        #if canImport(WidgetKit)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
+        AtriaDebugLog("ATRIADBG widget_snapshot status=battery_invalidated reason=disputed_transition")
+    }
     static var diagnostics: Diagnostics {
         if let cached = cachedDiagnostics { return cached }
         let computed = computeDiagnostics()
@@ -97,9 +279,10 @@ enum WidgetSnapshotPublisher {
         // number until session load. Stable sources first; the live reading
         // is only the last resort before the session_load republish.
         let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
-        let validatedHRV = store.latestReferenceValidatedHRV
-        let fallbackHRV = validatedHRV ?? store.latestLocalRMSSD
-        let latestSleep = store.sleepHistorySnapshot.latest
+        let now = Date()
+        let validatedHRV = store.latestReferenceValidatedRecoveryHRV(on: now)
+        let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)
+        let latestSleep = store.sleepHistorySnapshot.latestMainSleep
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
                                           fallbackRMSSD: fallbackHRV,
                                           restingNow: rest,
@@ -115,16 +298,67 @@ enum WidgetSnapshotPublisher {
         // which shows the frozen once-a-morning value. Prefer today's frozen daily
         // recovery (the SAME scalar the ring reads via displayRecovery), falling back
         // to the live estimate only before this morning's value has been minted.
-        // Confidence/detail stay from the live estimate (baseline-derived, stable
-        // within the day); only the displayed % is pinned to the frozen value.
-        let frozenTodayRecovery = store.dailyRollupHistory.first {
-            Calendar.current.isDateInToday($0.day) && $0.recovery != nil
-        }?.recovery
-        let recoveryPercent = frozenTodayRecovery ?? recovery.percent
+        // Resolve the complete frozen summary atomically. Mixing its score with a
+        // later live confidence/detail/HRV would describe a different recovery.
+        let calendar = Calendar.current
+        let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
+                                                                 confirmedSleeps: store.confirmedSleeps,
+                                                                 calendar: calendar)
+        let frozenTodayRollup = store.dailyRollupHistory.first {
+            physiologicalCycle.boundaryKind == .mainSleep
+                && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                && $0.recovery != nil
+        }
+        let frozenRecovery = frozenTodayRollup?.resolvedRecoverySummary()
+        let noSleepRecovery = physiologicalCycle.boundaryKind == .noSleepFallback
+            ? Metrics.RecoveryEstimate(percent: 1,
+                                       confidence: .unverified,
+                                       usesHRV: false,
+                                       detail: "No main sleep recorded for this physiological cycle.",
+                                       contributors: [
+                                           Metrics.RecoveryEstimate.Contributor(kind: .sleep,
+                                                                                zScore: -3,
+                                                                                weight: 1,
+                                                                                detail: "No main sleep recorded",
+                                                                                displayValue: "0h",
+                                                                                direction: -1)
+                                       ])
+            : nil
+        let displayedRecovery = noSleepRecovery ?? frozenRecovery?.recoveryEstimate ?? recovery
+        let recoveryPercent = noSleepRecovery?.percent ?? frozenRecovery?.score ?? recovery.percent
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
+        let savedAggregate = store.homeSavedAggregate(rest: rest ?? 60,
+                                                       maxHR: store.profile.maxHR,
+                                                       activeSessionID: ble.currentLiveSessionID)
+        let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
+            savedToday: savedAggregate.savedTodayStrapSteps,
+            savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
+            savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
+            liveActiveSession: ble.liveStrapStepResearchCount
+        )
+        let liveHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
+            heartRate: ble.heartRate,
+            sensorHasContact: ble.hasContact,
+            status: ble.status,
+            latestSampleHeartRate: ble.session.last?.bpm,
+            latestSampleAt: ble.session.last?.t
+        )
+        let liveHeartRateCapturedAt = liveHeartRate > 0 ? ble.session.last?.t : nil
+        let stepsAreValidated = strapStepsAreValidated(state: ble.liveStrapStepResearchState)
+        let publishedSteps = strapStepsToday > 0
+            && strapStepsArePublishable(state: ble.liveStrapStepResearchState)
+            ? strapStepsToday
+            : nil
+        let stepsCapturedAt = publishedSteps == nil
+            ? nil
+            : AtriaStrapStepLiveStatus.persistedMotionDate()
         let hrvRMSSD: Int?
-        if recovery.usesHRV {
-            if let snapshot = ble.hrvSnapshot, snapshot.isReady {
+        if let frozenRecovery {
+            hrvRMSSD = frozenRecovery.usesHRV
+                ? frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
+                : nil
+        } else if recovery.usesHRV {
+            if let snapshot = ble.hrvSnapshot, snapshot.isDisplayEligible(on: now) {
                 hrvRMSSD = Int(snapshot.rmssd.rounded())
             } else {
                 hrvRMSSD = fallbackHRV
@@ -136,26 +370,33 @@ enum WidgetSnapshotPublisher {
         if hrvRMSSD == nil {
             hrvState = "learning"
         } else {
-            hrvState = recovery.confidence == .validated ? "validated" : "personal_baseline"
+            hrvState = displayedRecovery.confidence == .validated ? "validated" : "personal_baseline"
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
+        let displayableBatteryLevel = ble.displayableBatteryLevel()
+        let displayableChargeStatus = displayableBatteryLevel == nil
+            ? AtriaBLEManager.BatteryChargeStatus.levelOnly
+            : ble.batteryChargeStatus
         let snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: Date(),
                                       recoveryPercent: recoveryPercent,
-                                      recoveryConfidence: recovery.confidence.rawValue,
-                                      recoveryDetail: recovery.detail,
+                                      recoveryConfidence: displayedRecovery.confidence.rawValue,
+                                      recoveryDetail: displayedRecovery.detail,
                                       strain: strain,
                                       restingHR: rest,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
                                       sleepHours: latestSleep?.durationHours,
-                                      steps: store.imuAuditSummary.strapStepCount > 0 ? store.imuAuditSummary.strapStepCount : nil,
-                                      heartRate: ble.heartRate > 0 ? ble.heartRate : nil,
-                                      batteryLevel: ble.batteryLevel >= 0 ? ble.batteryLevel : nil,
-                                      batteryChargeStatus: ble.batteryChargeStatus.rawValue,
-                                      batteryChargeText: ble.batteryChargeStatus.label,
+                                      steps: publishedSteps,
+                                      stepsAreEstimated: publishedSteps == nil ? nil : !stepsAreValidated,
+                                      stepsCapturedAt: stepsCapturedAt,
+                                      heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
+                                      heartRateCapturedAt: liveHeartRateCapturedAt,
+                                      batteryLevel: displayableBatteryLevel,
+                                      batteryChargeStatus: displayableChargeStatus.rawValue,
+                                      batteryChargeText: displayableChargeStatus.label,
                                       layoutGlanceMetrics: layout.glanceMetrics,
                                       layoutRingCenterMetric: layout.ringCenterMetric.rawValue,
                                       layoutLegendStatStyle: layout.legendStatStyle.rawValue,
@@ -216,6 +457,16 @@ enum WidgetSnapshotPublisher {
         return snapshot
     }
 
+    nonisolated static func strapStepsAreValidated(state: String) -> Bool {
+        state == "validated"
+            || state == "r10_live_validated"
+    }
+
+    nonisolated static func strapStepsArePublishable(state: String) -> Bool {
+        strapStepsAreValidated(state: state)
+            || state == "r10_live_preliminary"
+    }
+
     // WidgetKit throttles reloads (~40-70/day); reloading on every publish burns
     // that budget and leaves the widget stale when it matters. Reload only when a
     // user-visible field changed, or 15+ minutes passed since the last reload.
@@ -233,6 +484,7 @@ enum WidgetSnapshotPublisher {
         // Steps and heart rate are bucketed like battery: they tick continuously,
         // and an unbucketed value would defeat this throttle while walking.
         parts.append(snapshot.steps.map { String(($0 / 100) * 100) } ?? "-")
+        parts.append(snapshot.stepsAreEstimated == true ? "estimated" : "validated")
         parts.append(snapshot.heartRate.map { String(($0 / 5) * 5) } ?? "-")
         let batteryBucket: String = snapshot.batteryLevel.map { String(($0 / 10) * 10) } ?? "-"
         parts.append(batteryBucket)
@@ -261,12 +513,25 @@ enum WidgetSnapshotPublisher {
     private static var liveTRIMPLastTimestamp: Date?
     private static var liveTRIMPRest = 0
     private static var liveTRIMPMax = 0
+    private static var liveTRIMPSex: AthleteProfile.BiologicalSex = .unspecified
+    private static var liveTRIMPCycleStart: Date?
     private static var liveTRIMPValue = 0.0
 
     private static func dayStrain(store: SessionStore, ble: AtriaBLEManager, rest: Int) -> Double {
-        let saved = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
-        let live = incrementalLiveTRIMP(samples: ble.session, rest: rest, max: store.profile.maxHR)
-        return Metrics.strain(fromTRIMP: saved + live)
+        let saved = store.homeSavedAggregate(rest: rest,
+                                              maxHR: store.profile.maxHR,
+                                              activeSessionID: ble.currentLiveSessionID)
+        let live = incrementalLiveTRIMP(samples: ble.session,
+                                        rest: rest,
+                                        max: store.profile.maxHR,
+                                        sex: store.profile.biologicalSex,
+                                        cycleStart: saved.day)
+        let reconciled = SessionStore.mergedTodayTRIMP(
+            savedToday: saved.savedTodayTRIMP,
+            savedActiveSession: saved.savedActiveSessionTRIMP,
+            liveActiveSession: live
+        )
+        return Metrics.strain(fromTRIMP: reconciled)
     }
 
     /// Same TRIMP math as `Metrics.trimp` / `AtriaHomeView.liveSessionTRIMP`, but
@@ -277,17 +542,25 @@ enum WidgetSnapshotPublisher {
     // Internal (was private) so LocalNotificationScheduler reuses this same
     // incremental accumulator instead of re-integrating the whole live session
     // (2026-07-08 perf audit). Both are @MainActor, so the cache stays race-free.
-    static func incrementalLiveTRIMP(samples: [HRSample], rest: Int, max: Int) -> Double {
+    static func incrementalLiveTRIMP(samples: [HRSample],
+                                     rest: Int,
+                                     max: Int,
+                                     sex: AthleteProfile.BiologicalSex = .unspecified,
+                                     cycleStart: Date? = nil) -> Double {
         guard max > rest, samples.count > 1 else {
             liveTRIMPSampleCount = samples.count
             liveTRIMPLastTimestamp = samples.last?.t
             liveTRIMPRest = rest
             liveTRIMPMax = max
+            liveTRIMPSex = sex
+            liveTRIMPCycleStart = cycleStart
             liveTRIMPValue = 0
             return 0
         }
         let canExtend = rest == liveTRIMPRest
             && max == liveTRIMPMax
+            && sex == liveTRIMPSex
+            && cycleStart == liveTRIMPCycleStart
             && liveTRIMPSampleCount > 0
             && liveTRIMPSampleCount <= samples.count
             && liveTRIMPLastTimestamp == samples[liveTRIMPSampleCount - 1].t
@@ -295,10 +568,18 @@ enum WidgetSnapshotPublisher {
         var total = canExtend ? liveTRIMPValue : 0
         var index = canExtend ? liveTRIMPSampleCount : 1
         while index < samples.count {
-            let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
-            if dtMin > 0, dtMin < 5 {
-                let hrr = Swift.min(Swift.max((Double(samples[index].bpm) - Double(rest)) / span, 0), 1)
-                total += dtMin * hrr * 0.64 * exp(1.92 * hrr)
+            let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
+            let insideCycle = cycleStart.map {
+                samples[index - 1].t >= $0 && samples[index].t >= $0
+            } ?? true
+            if insideCycle,
+               dtSeconds > 0,
+               dtSeconds <= AtriaAnalytics.Strain.maximumLoadEvidenceGap {
+                let dtMin = dtSeconds / 60.0
+                let meanBPM = (Double(samples[index - 1].bpm) + Double(samples[index].bpm)) / 2
+                let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
+                let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
+                total += dtMin * hrr * 0.64 * exp(coefficient * hrr)
             }
             index += 1
         }
@@ -306,6 +587,8 @@ enum WidgetSnapshotPublisher {
         liveTRIMPLastTimestamp = samples.last?.t
         liveTRIMPRest = rest
         liveTRIMPMax = max
+        liveTRIMPSex = sex
+        liveTRIMPCycleStart = cycleStart
         liveTRIMPValue = total
         return total
     }
@@ -380,5 +663,13 @@ private extension JSONEncoder {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
         return encoder
+    }()
+}
+
+private extension JSONDecoder {
+    static let widgetSnapshotDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }()
 }

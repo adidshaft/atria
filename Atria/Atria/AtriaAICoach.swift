@@ -63,12 +63,72 @@ struct AtriaCoachPayload: Codable, Equatable {
         let high: Double?
     }
 
-    let today: DailyRollupStoreEntry?
-    let last7: [DailyRollupStoreEntry]
+    struct DailyMetrics: Codable, Equatable {
+        let day: Date
+        let tzOffsetMinutes: Int
+        let recovery: Int?
+        let lnRMSSD: Double?
+        let rhr: Int?
+        let sleepSeconds: TimeInterval?
+        let sleepPerformance: Int?
+        let bedtimeMinutes: Int?
+        let strain: Double?
+        let respiratoryRate: Double?
+        let vitals: DailyRollupVitals?
+        let nutrition: AtriaNutritionSummary?
+        let fitnessAgeDelta: Int?
+
+        init(_ entry: DailyRollupStoreEntry) {
+            day = entry.day
+            tzOffsetMinutes = entry.tzOffsetMinutes
+            recovery = entry.recovery
+            lnRMSSD = entry.lnRMSSD
+            rhr = entry.rhr
+            sleepSeconds = entry.sleepSeconds
+            sleepPerformance = entry.sleepPerformance
+            bedtimeMinutes = entry.bedtimeMinutes
+            strain = entry.strain
+            respiratoryRate = entry.respiratoryRate
+            vitals = entry.vitals
+            nutrition = entry.nutrition
+            fitnessAgeDelta = entry.fitnessAgeDelta
+        }
+    }
+
+    let today: DailyMetrics?
+    let last7: [DailyMetrics]
     let now: String
     let weekday: String
     let units: String
     let baselines: [String: VitalRange]
+
+    init(today: DailyRollupStoreEntry?,
+         last7: [DailyRollupStoreEntry],
+         now: String,
+         weekday: String,
+         units: String,
+         baselines: [String: VitalRange]) {
+        self.today = today.map(DailyMetrics.init)
+        self.last7 = last7.map(DailyMetrics.init)
+        self.now = now
+        self.weekday = weekday
+        self.units = units
+        self.baselines = baselines
+    }
+
+    private init(sanitizedToday: DailyMetrics?,
+                 sanitizedLast7: [DailyMetrics],
+                 now: String,
+                 weekday: String,
+                 units: String,
+                 baselines: [String: VitalRange]) {
+        today = sanitizedToday
+        last7 = sanitizedLast7
+        self.now = now
+        self.weekday = weekday
+        self.units = units
+        self.baselines = baselines
+    }
 
     static let systemPrompt = "Answer ONLY from DATA. If a value is not in DATA, say you don't have it — never estimate, never use population numbers as if personal. Today is {now}."
 
@@ -178,16 +238,18 @@ struct AtriaCoachPayload: Codable, Equatable {
                             timeZone: TimeZone = .current,
                             units: String = Locale.current.measurementSystem == .metric ? "metric" : "imperial",
                             baselines: [String: VitalRange]) -> AtriaCoachPayload {
-        let sorted = rollups.sorted { $0.day > $1.day }
-        let today = sorted.first ?? legacy(context: context, now: now, calendar: calendar).today
-        let last7: [DailyRollupStoreEntry]
-        if sorted.isEmpty, let today {
+        let sanitized = rollups
+            .sorted { $0.day > $1.day }
+            .map(DailyMetrics.init)
+        let today = sanitized.first ?? legacy(context: context, now: now, calendar: calendar).today
+        let last7: [DailyMetrics]
+        if sanitized.isEmpty, let today {
             last7 = [today]
         } else {
-            last7 = Array(sorted.prefix(7))
+            last7 = Array(sanitized.prefix(7))
         }
-        return AtriaCoachPayload(today: today,
-                                 last7: last7,
+        return AtriaCoachPayload(sanitizedToday: today,
+                                 sanitizedLast7: last7,
                                  now: localISO8601(now, timeZone: timeZone),
                                  weekday: weekdayString(now, calendar: calendar, timeZone: timeZone),
                                  units: units,

@@ -13,7 +13,8 @@ struct AtriaHighlight: Identifiable, Equatable {
 
 enum AtriaHighlights {
     static func topTwo(rollups: [DailyRollupStoreEntry]) -> [AtriaHighlight] {
-        Array(rules.compactMap { $0(rollups) }.prefix(2))
+        let ordered = rollups.sorted { $0.day > $1.day }
+        return Array(rules.compactMap { $0(ordered) }.prefix(2))
     }
 
     private static let rules: [(Array<DailyRollupStoreEntry>) -> AtriaHighlight?] = [
@@ -22,8 +23,7 @@ enum AtriaHighlights {
     ]
 
     private static func sleepNeedStreak(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        let sorted = rollups.sorted { $0.day > $1.day }
-        let streak = sorted.prefix { entry in
+        let streak = rollups.prefix { entry in
             guard let performance = entry.sleepPerformance else { return false }
             return performance >= 100
         }.count
@@ -37,9 +37,8 @@ enum AtriaHighlights {
     }
 
     private static func lowerRestingHeartRate(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        let sorted = rollups.sorted { $0.day > $1.day }
-        guard let latest = sorted.first?.rhr else { return nil }
-        let prior = sorted.dropFirst().prefix(7).compactMap(\.rhr)
+        guard let latest = rollups.first?.rhr else { return nil }
+        let prior = rollups.dropFirst().prefix(7).compactMap(\.rhr)
         guard prior.count >= 3 else { return nil }
         let average = Double(prior.reduce(0, +)) / Double(prior.count)
         guard Double(latest) <= average - 2 else { return nil }

@@ -206,7 +206,7 @@ struct AtriaWidgetProofSheet: View {
     }
 
     private var batterySymbol: String {
-        guard let level = snapshot?.batteryLevel else { return "battery.0percent" }
+        guard let level = snapshot?.batteryLevel else { return "questionmark.circle" }
         switch level {
         case ..<13: return "battery.0percent"
         case ..<38: return "battery.25percent"

@@ -12,11 +12,8 @@ import Combine
 /// times per second before the first frame, blowing iOS's 10-20 s scene-create
 /// watchdog (0x8BADF00D crash loop, 2026-07-03).
 ///
-/// This wrapper listens to `UserDefaults.didChangeNotification` instead and
-/// only publishes when the stored value actually changed, so high-frequency
-/// sibling-key writes never invalidate views. In-process cross-view sync is
-/// preserved (a write from Settings updates readers elsewhere); out-of-process
-/// changes are not observed, which is fine for these app-private keys.
+/// In-process writes take a key-specific path, while an equality-gated broad
+/// refresh handles changes made directly through UserDefaults or externally.
 @propertyWrapper
 @MainActor
 struct AtriaDefault<Value: AtriaDefaultValue>: DynamicProperty {
@@ -41,7 +38,7 @@ final class AtriaDefaultBox<Value: AtriaDefaultValue>: ObservableObject {
     private let key: String
     private let fallback: Value
     private let store: UserDefaults
-    private var observer: NSObjectProtocol?
+    private let changeCenter: AtriaDefaultChangeCenter
 
     @Published private(set) var value: Value
 
@@ -50,28 +47,19 @@ final class AtriaDefaultBox<Value: AtriaDefaultValue>: ObservableObject {
         self.fallback = fallback
         self.store = store
         self.value = Value.readDefault(from: store, key: key) ?? fallback
-        observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
-                                                          object: store,
-                                                          queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.refreshFromStore()
-            }
-        }
-    }
-
-    deinit {
-        if let observer {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        self.changeCenter = AtriaDefaultChangeCenter.center(for: store)
+        changeCenter.register(self)
     }
 
     func set(_ newValue: Value) {
         guard newValue != value else { return }
         value = newValue
-        Value.writeDefault(newValue, to: store, key: key)
+        changeCenter.write(key: key) {
+            Value.writeDefault(newValue, to: store, key: key)
+        }
     }
 
-    private func refreshFromStore() {
+    fileprivate func refreshFromStore() {
         let fresh = Value.readDefault(from: store, key: key) ?? fallback
         // Equality gate: this is the dedup that dotted-key AppStorage KVO
         // lacks. Publishing only on real change is what breaks the
@@ -79,6 +67,133 @@ final class AtriaDefaultBox<Value: AtriaDefaultValue>: ObservableObject {
         if fresh != value {
             value = fresh
         }
+    }
+}
+
+@MainActor
+private protocol AtriaDefaultRefreshable: AnyObject {
+    var defaultKey: String { get }
+    func refreshFromStore()
+}
+
+extension AtriaDefaultBox: AtriaDefaultRefreshable {
+    fileprivate var defaultKey: String { key }
+}
+
+/// One coalescing observer per defaults store. The previous implementation
+/// installed an observer for every property-wrapper instance; with ~165 live
+/// wrappers, each BLE diagnostic write produced ~165 main-thread callbacks.
+/// A single observer now batches bursts into one equality-gated refresh pass.
+/// Writes made through AtriaDefault bypass that pass and refresh only their key.
+@MainActor
+final class AtriaDefaultChangeCenter {
+    private final class WeakBox {
+        weak var value: (any AtriaDefaultRefreshable)?
+
+        init(_ value: any AtriaDefaultRefreshable) {
+            self.value = value
+        }
+    }
+
+    private static var centers: [ObjectIdentifier: AtriaDefaultChangeCenter] = [:]
+    static let externalRefreshInterval: Duration = .seconds(5)
+
+    private let store: UserDefaults
+    private var boxesByKey: [String: [WeakBox]] = [:]
+    private var observer: NSObjectProtocol?
+    private var refreshTask: Task<Void, Never>?
+    private var isPerformingKeyedWrite = false
+    private(set) var refreshPassCount = 0
+    private(set) var keyedRefreshPassCount = 0
+
+    static func center(for store: UserDefaults) -> AtriaDefaultChangeCenter {
+        let id = ObjectIdentifier(store)
+        if let existing = centers[id] { return existing }
+        let center = AtriaDefaultChangeCenter(store: store)
+        centers[id] = center
+        return center
+    }
+
+    private init(store: UserDefaults) {
+        self.store = store
+        observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
+                                                          object: store,
+                                                          queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard self?.isPerformingKeyedWrite == false else { return }
+                self?.scheduleExternalRefresh()
+            }
+        }
+    }
+
+    deinit {
+        refreshTask?.cancel()
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    fileprivate func register(_ box: any AtriaDefaultRefreshable) {
+        var boxes = boxesByKey[box.defaultKey, default: []]
+        boxes.removeAll { $0.value == nil }
+        boxes.append(WeakBox(box))
+        boxesByKey[box.defaultKey] = boxes
+    }
+
+    fileprivate func write(key: String, action: () -> Void) {
+        isPerformingKeyedWrite = true
+        action()
+        isPerformingKeyedWrite = false
+        refresh(key: key)
+    }
+
+    private func refresh(key: String) {
+        keyedRefreshPassCount &+= 1
+        guard var boxes = boxesByKey[key] else { return }
+        boxes.removeAll { box in
+            guard let value = box.value else { return true }
+            value.refreshFromStore()
+            return false
+        }
+        if boxes.isEmpty {
+            boxesByKey.removeValue(forKey: key)
+        } else {
+            boxesByKey[key] = boxes
+        }
+    }
+
+    private func scheduleExternalRefresh() {
+        guard refreshTask == nil else { return }
+        refreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.externalRefreshInterval)
+            guard !Task.isCancelled, let self else { return }
+            refreshTask = nil
+            refreshAll()
+        }
+    }
+
+    private func refreshAll() {
+        refreshPassCount &+= 1
+        for key in Array(boxesByKey.keys) {
+            guard var boxes = boxesByKey[key] else { continue }
+            boxes.removeAll { box in
+                guard let value = box.value else { return true }
+                value.refreshFromStore()
+                return false
+            }
+            if boxes.isEmpty {
+                boxesByKey.removeValue(forKey: key)
+            } else {
+                boxesByKey[key] = boxes
+            }
+        }
+    }
+
+    func flushPendingExternalRefreshForTesting() {
+        guard refreshTask != nil else { return }
+        refreshTask?.cancel()
+        refreshTask = nil
+        refreshAll()
     }
 }
 

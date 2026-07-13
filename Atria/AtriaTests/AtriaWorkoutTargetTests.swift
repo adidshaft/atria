@@ -6,6 +6,12 @@ import XCTest
 /// `AtriaWorkoutSession` persistence surface -- all pure, independent of the
 /// live SwiftUI view and its connected stores.
 final class AtriaWorkoutTargetTests: XCTestCase {
+    func testAutoTargetTracksCanonicalDailyTargetWhileOverrideRemainsFixed() {
+        XCTAssertEqual(AtriaWorkoutTargetMath.effectiveTarget(choice: nil, guidanceTarget: 11), 11)
+        XCTAssertEqual(AtriaWorkoutTargetMath.effectiveTarget(choice: nil, guidanceTarget: 15), 15)
+        XCTAssertEqual(AtriaWorkoutTargetMath.effectiveTarget(choice: .strain(12), guidanceTarget: 15), 12)
+    }
+
     func testWorkoutTargetPickerZoneMapsToStrainBand() {
         // Bands are built from HRZone.lowerFraction * 21 (the same 0...21
         // strain ceiling the live HUD already uses), one zone to the next.

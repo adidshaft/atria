@@ -229,9 +229,12 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
     private func updateRecoveryReady(percent: Int?, settings: AtriaHapticAlertSettings) {
         let ready = percent != nil
         defer { recoveryWasReady = ready }
-        guard settings.recoveryReady, ready, !recoveryWasReady else { return }
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        AtriaDebugLog("ATRIADBG haptic_alert kind=recovery_ready phone_side=1 strap_write=0")
+        guard settings.recoveryReady, let percent, !recoveryWasReady else { return }
+        let feedback: UINotificationFeedbackGenerator.FeedbackType = percent <= 33 ? .warning : .success
+        UINotificationFeedbackGenerator().notificationOccurred(feedback)
+        AtriaDebugLog("ATRIADBG haptic_alert kind=recovery_ready percent=%d feedback=%@ phone_side=1 strap_write=0",
+                      percent,
+                      percent <= 33 ? "warning" : "success")
     }
 
     private func updateStrainTarget(strain: Double,

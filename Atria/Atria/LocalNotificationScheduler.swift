@@ -3,7 +3,7 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
-    private static let actionableBatteryThreshold = 25
+    private nonisolated static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
     private static let batteryWarningDrainCycleScheduledKey = "atria.notification.battery.warningDrainCycleScheduled"
@@ -568,11 +568,30 @@ enum LocalNotificationScheduler {
             }
 
             let defaults = UserDefaults.standard
-            if decision.kind == "battery",
-               batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
-                AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
-                              decision.title)
-                return
+            if decision.kind == "battery" {
+                // Authorization/pending-request checks are asynchronous. The
+                // battery value that created this decision may have been
+                // quarantined while they were in flight, so revalidate against
+                // the latest accepted cache immediately before scheduling.
+                let current = AtriaBLEManager.cachedBattery(maxAge: 10 * 60)
+                let charging = current.chargeStatus == .charging || current.chargeStatus == .full
+                guard Self.batteryAlertStillValid(level: current.level,
+                                                  usable: current.usable,
+                                                  isCharging: charging) else {
+                    invalidateDisputedBatterySideEffects(reason: "stale_async_battery_decision",
+                                                         defaults: defaults,
+                                                         center: center)
+                    AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=stale_async_decision level=%d usable=%d charge=%@",
+                                  current.level,
+                                  current.usable ? 1 : 0,
+                                  current.chargeStatus.rawValue)
+                    return
+                }
+                if batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
+                    AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
+                                  decision.title)
+                    return
+                }
             }
             let cooldownKey = actionableDiagnosisLastScheduledPrefix + decision.identifier
             let last = defaults.double(forKey: cooldownKey)
@@ -593,6 +612,12 @@ enum LocalNotificationScheduler {
                               String(describing: error))
             }
         }
+    }
+
+    nonisolated static func batteryAlertStillValid(level: Int,
+                                                    usable: Bool,
+                                                    isCharging: Bool) -> Bool {
+        usable && level >= 0 && level <= actionableBatteryThreshold && !isCharging
     }
 
     static func cancelActionableConnectionDiagnosis(title: String? = nil, reason: String) {
@@ -882,7 +907,7 @@ enum LocalNotificationScheduler {
     private static func makeMetricDecisions(store: SessionStore,
                                             ble: AtriaBLEManager) -> [NotificationDecision] {
         let validatedHRV = store.latestReferenceValidatedHRV
-        let latestSleep = store.sleepHistorySnapshot.latest
+        let latestSleep = store.sleepHistorySnapshot.latestMainSleep
         let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
                                           fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
                                           restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
@@ -921,18 +946,60 @@ enum LocalNotificationScheduler {
         }
 
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
-        let savedTRIMP = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
+        let savedTRIMP = store.homeSavedAggregate(rest: rest,
+                                                   maxHR: store.profile.maxHR,
+                                                   activeSessionID: ble.currentLiveSessionID)
         // Perf (2026-07-08 audit): reuse the incremental accumulator (integrates
         // only NEW samples) instead of re-mapping + re-integrating the whole
         // live session (up to ~80k samples) on every notification evaluation.
         // Same TRIMP math (consecutive dt is identical); both are @MainActor.
         let liveTRIMP = WidgetSnapshotPublisher.incrementalLiveTRIMP(samples: ble.session,
                                                                      rest: rest,
-                                                                     max: store.profile.maxHR)
-        let strain = Metrics.strain(fromTRIMP: savedTRIMP + liveTRIMP)
-        let guide = Coach.guide(recovery: recovery.percent, strain: strain)
+                                                                     max: store.profile.maxHR,
+                                                                     sex: store.profile.biologicalSex,
+                                                                     cycleStart: savedTRIMP.day)
+        let totalTRIMP = SessionStore.mergedTodayTRIMP(
+            savedToday: savedTRIMP.savedTodayTRIMP,
+            savedActiveSession: savedTRIMP.savedActiveSessionTRIMP,
+            liveActiveSession: liveTRIMP
+        )
+        let strain = Metrics.strain(fromTRIMP: totalTRIMP)
+        let calendar = Calendar.current
+        let now = Date()
+        let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
+                                                                 confirmedSleeps: store.confirmedSleeps,
+                                                                 calendar: calendar)
+        // Notifications must use the same sleep-to-sleep attribution as Home
+        // and widgets. Civil-date matching made late/shift sleepers receive a
+        // target derived from a different recovery than the ring displayed.
+        let storedCycleRecovery = store.dailyRollupHistory.first {
+            physiologicalCycle.boundaryKind == .mainSleep
+                && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                && $0.recovery != nil
+        }?.recovery
+        let attributedRecovery: Int?
+        if physiologicalCycle.boundaryKind == .noSleepFallback {
+            attributedRecovery = 1
+        } else {
+            attributedRecovery = storedCycleRecovery
+                ?? (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true
+                    ? recovery.percent
+                    : nil)
+        }
+        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: attributedRecovery,
+                                                               load: store.trainingLoadSummarySnapshot,
+                                                               recoveryIsAttributedToCurrentDay: attributedRecovery != nil,
+                                                               loadIsPrepared: store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared,
+                                                               now: now,
+                                                               calendar: calendar)
+        let guideRecovery = attributedRecovery ?? frozenTarget?.recovery
+        let guide = guideRecovery.map {
+            Coach.guide(recovery: $0,
+                        strain: strain,
+                        frozenTarget: frozenTarget?.target ?? Coach.baseStrainTarget(recovery: $0))
+        }
         let strainDecision: NotificationDecision
-        if recovery.percent == nil {
+        if guideRecovery == nil {
             strainDecision = NotificationDecision(
                 kind: "strain",
                 identifier: Identifier.strain,
@@ -942,7 +1009,7 @@ enum LocalNotificationScheduler {
                 shouldSchedule: false,
                 delay: 0
             )
-        } else if let target = guide.target, strain >= target {
+        } else if let target = guide?.target, strain >= target {
             strainDecision = NotificationDecision(
                 kind: "strain",
                 identifier: Identifier.strain,
@@ -1040,6 +1107,9 @@ enum LocalNotificationScheduler {
         }
 
         let battery = batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)
+        if !battery.usable, battery.source == "disputed_rapid_transition" {
+            invalidateDisputedBatterySideEffects(reason: "disputed_rapid_transition")
+        }
         let effectiveChargeStatus = battery.chargeStatus
         let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full
         if battery.usable,
@@ -1106,7 +1176,7 @@ enum LocalNotificationScheduler {
         let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
                                                                   source: "notification_sleep_review")
 
-        let reviewableSnapshotNight = snapshot.latest?.confirmed == false ? snapshot.latest : nil
+        let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil
         guard let latest = latestReviewNight ?? reviewableSnapshotNight,
               latest.confirmed == false else {
             let reason = sleepReviewUnavailableReason(snapshot: snapshot, store: store)
@@ -1410,18 +1480,40 @@ enum LocalNotificationScheduler {
                       hadDrainCycle ? 1 : 0)
     }
 
-    private static func batterySnapshot(liveLevel: Int,
-        liveChargeStatus: AtriaBLEManager.BatteryChargeStatus) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool, recentDrop: Bool) {
+    /// A quarantined battery transition is not merely "unknown"—any alert
+    /// derived from it is false evidence. Remove pending/delivered warnings and
+    /// reset the drain-cycle cooldown so a later genuinely low stable series
+    /// can notify normally.
+    static func invalidateDisputedBatterySideEffects(
+        reason: String,
+        defaults: UserDefaults = .standard,
+        center: UNUserNotificationCenter = .current()
+    ) {
+        clearBatteryDrainCycleState(reason: reason, defaults: defaults)
+        let identifiers = [Identifier.battery, Identifier.strapChargeReminder]
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        defaults.removeObject(forKey: strapChargeReminderLastScheduledKey)
+        AtriaDebugLog("ATRIADBG notification_battery_disputed action=cancel_all reason=%@", reason)
+    }
+
+    static func batterySnapshot(liveLevel: Int,
+        liveChargeStatus: AtriaBLEManager.BatteryChargeStatus,
+        defaults: UserDefaults = .standard,
+        now: Date = Date()) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool, recentDrop: Bool) {
         let drop = AtriaBLEManager.cachedBatteryDrop()
-        if liveLevel >= 0 {
-            let cached = AtriaBLEManager.cachedBattery(maxAge: 10 * 60)
-            let chargeStatus = liveChargeStatus == .levelOnly && cached.usable ? cached.chargeStatus : liveChargeStatus
-            let source = chargeStatus == liveChargeStatus ? "live_2A19" : "live_2A19_cached_charge"
-            return (liveLevel, source, 0, chargeStatus, true, drop.recent)
-        }
-        let cached = AtriaBLEManager.cachedBattery()
+        let cached = AtriaBLEManager.cachedBattery(
+            maxAge: AtriaBLEManager.batteryDisplayFreshnessLimit,
+            defaults: defaults,
+            now: now
+        )
         if cached.usable {
-            return (cached.level, cached.source, cached.age, cached.chargeStatus, true, drop.recent)
+            let liveMatchesAcceptedProjection = liveLevel == cached.level
+            let chargeStatus = liveMatchesAcceptedProjection && liveChargeStatus != .levelOnly
+                ? liveChargeStatus
+                : cached.chargeStatus
+            let source = liveMatchesAcceptedProjection ? "live_2A19_fresh" : cached.source
+            return (cached.level, source, cached.age, chargeStatus, true, drop.recent)
         }
         return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, cached.chargeStatus, false, false)
     }

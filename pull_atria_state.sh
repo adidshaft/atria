@@ -24,6 +24,7 @@ Pulled files, when present:
   - historical-archive.diagnostics.json
   - historical-archive.manifest.json
   - historical-archive-segments/
+  - atria-step-calibration/
   - app preferences plist
   - process-check.txt
   - pull-summary.txt
@@ -109,6 +110,8 @@ copy_first_from_container() {
   local label=$2
   shift 2
 
+  rm -f "${destination_path}.partial"
+
   local source_path
   for source_path in "$@"; do
     if "${devicectl_cmd[@]}" device copy from \
@@ -123,6 +126,15 @@ copy_first_from_container() {
       return 0
     fi
   done
+  if [[ -s "$destination_path" ]]; then
+    local partial_bytes
+    partial_bytes=$(wc -c < "$destination_path" | tr -d ' ')
+    : > "${destination_path}.partial"
+    printf '%s_status=partial_copy\n' "$label" | tee -a "$summary"
+    printf '%s_file=%s\n' "$label" "$destination_path" | tee -a "$summary"
+    printf '%s_partial_bytes=%s\n' "$label" "$partial_bytes" | tee -a "$summary"
+    return 0
+  fi
   printf '%s_status=missing\n' "$label" | tee -a "$summary"
   printf '%s_sources=%s\n' "$label" "$*" | tee -a "$summary"
   return 1
@@ -215,19 +227,25 @@ copy_from_container "Documents/atria-historical/historical-archive.manifest.json
 copy_from_container "Documents/atria-historical/segments" \
   "$evidence_dir/historical-archive-segments" \
   "historical_archive_segments" || true
+copy_from_container "Documents/atria-step-calibration" \
+  "$evidence_dir/atria-step-calibration" \
+  "step_calibration_archive" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
-python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
+python3 - "$evidence_dir" "$(dirname "$0")/Atria/Atria/HistoricalArchive.swift" <<'PY' | tee -a "$summary"
+import csv
 import datetime as dt
 import json
 import math
 import plistlib
+import re
 import struct
 import sys
 import time
 from pathlib import Path
 
 evidence = Path(sys.argv[1])
+historical_archive_source = Path(sys.argv[2])
 apple_epoch = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 ist = dt.timezone(dt.timedelta(hours=5, minutes=30), "IST")
 
@@ -288,6 +306,69 @@ def emit_historical_archive_rotation_summary():
             base_index_rows = 0
     print(f"historical_archive_aggregate_index_rows={base_index_rows + total_rows}")
 
+def emit_step_calibration_archive_summary():
+    archive_path = evidence / "atria-step-calibration"
+    csv_paths = sorted(
+        path for path in archive_path.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".csv"
+    ) if archive_path.is_dir() else []
+    if not csv_paths:
+        print("step_calibration_archive_summary_status=missing")
+        print("step_calibration_archive_file_count=0")
+        print("step_calibration_archive_row_count=0")
+        print("step_calibration_archive_earliest_received_at_iso_utc=missing")
+        print("step_calibration_archive_latest_received_at_iso_utc=missing")
+        print("step_calibration_archive_total_bytes=0")
+        print("step_calibration_archive_packet_types=missing")
+        print("step_calibration_archive_record_types=missing")
+        return
+
+    total_bytes = 0
+    total_rows = 0
+    earliest_received_at = None
+    latest_received_at = None
+    read_errors = 0
+    packet_type_counts = {}
+    record_type_counts = {}
+    for path in csv_paths:
+        try:
+            total_bytes += path.stat().st_size
+            with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    total_rows += 1
+                    packet_type = (row.get("packet_type") or "legacy").strip().lower()
+                    record_type = (row.get("record_type") or "legacy").strip().lower()
+                    packet_type_counts[packet_type] = packet_type_counts.get(packet_type, 0) + 1
+                    record_type_counts[record_type] = record_type_counts.get(record_type, 0) + 1
+                    raw_received_at = row.get("received_at_unix_ms")
+                    try:
+                        unix_ms = float(raw_received_at)
+                        if not math.isfinite(unix_ms):
+                            continue
+                        received_at = dt.datetime.fromtimestamp(unix_ms / 1_000, tz=dt.timezone.utc)
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                    earliest_received_at = min(earliest_received_at, received_at) if earliest_received_at else received_at
+                    latest_received_at = max(latest_received_at, received_at) if latest_received_at else received_at
+        except (OSError, csv.Error):
+            read_errors += 1
+
+    def iso_utc(value):
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z") if value else "missing"
+
+    print(f"step_calibration_archive_summary_status={'partial' if read_errors else 'ok'}")
+    print(f"step_calibration_archive_file_count={len(csv_paths)}")
+    print(f"step_calibration_archive_row_count={total_rows}")
+    print(f"step_calibration_archive_earliest_received_at_iso_utc={iso_utc(earliest_received_at)}")
+    print(f"step_calibration_archive_latest_received_at_iso_utc={iso_utc(latest_received_at)}")
+    print(f"step_calibration_archive_total_bytes={total_bytes}")
+    print("step_calibration_archive_packet_types=" + ",".join(
+        f"{key}:{packet_type_counts[key]}" for key in sorted(packet_type_counts)
+    ))
+    print("step_calibration_archive_record_types=" + ",".join(
+        f"{key}:{record_type_counts[key]}" for key in sorted(record_type_counts)
+    ))
+
 def app_time(value):
     if isinstance(value, (int, float)):
         return apple_epoch + dt.timedelta(seconds=float(value))
@@ -337,6 +418,46 @@ def emit_offline_sync_preferences():
     print(f"offline_range_loss_backfill_reason={pref(prefs, 'offlineSync.rangeLossBackfillReason', 'none') or 'none'}")
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
+    radio_standard_only = bool(pref(prefs, "radio.standardHROnly", False))
+    radio_user_selected = bool(pref(prefs, "radio.standardHROnlyUserSelected", False))
+    step_full_protocol_migrated = bool(pref(prefs, "capture.strapStepFullProtocolMigrated", False))
+    passive_r10_status = str(pref(prefs, "radio.passiveR10Status", "none") or "none")
+    protected_r10_active = (
+        radio_standard_only
+        and not radio_user_selected
+        and passive_r10_status == "receiving_crc_valid"
+    )
+    # `standardHROnly` is a legacy key name. Production-safe mode now keeps
+    # 2A37 HR plus the isolated stream-5 R10 motion subscription, so a true key
+    # is not itself evidence that strap steps need migration repair.
+    legacy_radio_repair_needed = (
+        radio_standard_only
+        and not radio_user_selected
+        and not step_full_protocol_migrated
+        and not protected_r10_active
+    )
+    recorded_runtime_mode = pref(prefs, "radio.mode", "none") or "none"
+    if protected_r10_active:
+        effective_radio_mode = "protected_hr_plus_r10"
+    elif recorded_runtime_mode in ("full_protocol", "standard_hr_only"):
+        effective_radio_mode = recorded_runtime_mode
+    else:
+        effective_radio_mode = "standard_hr_only" if radio_standard_only else "full_protocol"
+    print(f"radio_namespace={pref_namespace(prefs, 'radio.standardHROnly')}")
+    print(f"radio_standard_hr_only={bool_int(radio_standard_only)}")
+    print(f"radio_standard_hr_only_user_selected={bool_int(radio_user_selected)}")
+    print(f"radio_step_full_protocol_migrated={bool_int(step_full_protocol_migrated)}")
+    print(f"radio_legacy_automatic_repair_needed={bool_int(legacy_radio_repair_needed)}")
+    print(f"radio_recorded_runtime_mode={recorded_runtime_mode}")
+    print(f"radio_effective_mode={effective_radio_mode}")
+    print(f"radio_protected_r10_active={bool_int(protected_r10_active)}")
+    print(f"radio_passive_r10_status={passive_r10_status}")
+    print(f"protocol_packets={int(pref(prefs, 'protocol.packets', 0) or 0)}")
+    print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
+    print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
+    print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
+    print(f"step_source=strap_r10_imu")
+    print("phone_step_fallback=0")
     print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
     link_auto_save_status = pref(prefs, "link.lastAutoSaveStatus", "none") or "none"
     link_auto_save_samples = int(pref(prefs, "link.lastAutoSaveSamples", 0) or 0)
@@ -375,7 +496,9 @@ def emit_battery_preferences():
     drop_delta = int(pref(prefs, "battery.dropDelta", 0) or 0)
     drop_at = pref(prefs, "battery.dropAt")
     drop_age = max(0.0, now - float(drop_at)) if isinstance(drop_at, (int, float)) and drop_at > 0 else -1.0
-    usable = isinstance(level, int) and level >= 0 and 0 <= age <= 86_400 and (charge_status == "levelOnly" or 0 <= charge_age <= 86_400)
+    # Match the app's fail-closed presentation contract: a persisted 2A19
+    # percentage is history, not current strap truth, after ten minutes.
+    usable = isinstance(level, int) and level >= 0 and 0 <= age <= 10 * 60
     recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
     charging = charge_status in ("charging", "full")
     print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
@@ -386,9 +509,84 @@ def emit_battery_preferences():
     print(f"battery_charge_age_s={charge_age:.1f}")
     print(f"battery_is_charging={bool_int(charging)}")
     print(f"battery_usable={bool_int(usable)}")
+    print(f"battery_effective_level={int(level) if usable else -1}")
+    print(f"battery_effective_status={'live' if usable else 'pending'}")
     print(f"battery_drop_recent={bool_int(recent_drop)}")
     print(f"battery_drop_delta={drop_delta}")
     print(f"battery_drop_age_s={drop_age:.1f}")
+
+def emit_motion_context_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        print("motion_context_summary_status=missing_preferences")
+        print("motion_context_effective_gate_decision=abstain")
+        print("motion_context_effective_gate_reason=missing_preferences")
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"motion_context_summary_status=error:{type(exc).__name__}:{exc}")
+        return
+
+    payload = pref(prefs, "motionContext.diagnostics")
+    if not isinstance(payload, dict):
+        print("motion_context_summary_status=missing")
+        print("motion_context_effective_gate_decision=abstain")
+        print("motion_context_effective_gate_reason=no_snapshot")
+        return
+
+    now = time.time()
+    def age(key):
+        value = payload.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value <= 0:
+            return -1.0
+        return max(0.0, now - float(value))
+
+    authorization = str(payload.get("authorization") or "missing")
+    monitor_state = str(payload.get("monitorState") or "missing")
+    kind = str(payload.get("kind") or "missing")
+    confidence = str(payload.get("confidence") or "missing")
+    recorded_decision = str(payload.get("decision") or "missing")
+    observed_value = payload.get("observedAt")
+    observed_age = age("observedAt")
+    observed_future_skew = (
+        float(observed_value) - now
+        if isinstance(observed_value, (int, float)) and math.isfinite(float(observed_value))
+        else -1.0
+    )
+    evidence_fresh = (
+        authorization == "authorized"
+        and monitor_state == "running"
+        and observed_age >= 0
+        and observed_age <= 45
+        and observed_future_skew <= 5
+    )
+    if evidence_fresh:
+        effective_decision = recorded_decision
+        stale_reason = "none"
+    else:
+        effective_decision = "abstain"
+        if authorization != "authorized": stale_reason = "authorization"
+        elif monitor_state != "running": stale_reason = "monitor_not_running"
+        elif observed_age < 0: stale_reason = "observation_missing_or_future"
+        else: stale_reason = "observation_stale"
+
+    print("motion_context_summary_status=ok")
+    print(f"motion_context_namespace={pref_namespace(prefs, 'motionContext.diagnostics')}")
+    print(f"motion_context_schema_version={int(payload.get('schemaVersion') or 0)}")
+    print(f"motion_context_authorization={authorization}")
+    print(f"motion_context_monitor_state={monitor_state}")
+    print(f"motion_context_latest_kind={kind}")
+    print(f"motion_context_latest_confidence={confidence}")
+    print(f"motion_context_started_age_s={age('startedAt'):.1f}")
+    print(f"motion_context_observed_age_s={observed_age:.1f}")
+    print(f"motion_context_evidence_fresh={bool_int(evidence_fresh)}")
+    print(f"motion_context_recorded_gate_decision={recorded_decision}")
+    print(f"motion_context_effective_gate_decision={effective_decision}")
+    print(f"motion_context_effective_gate_reason={stale_reason}")
+    print(f"motion_context_decision_age_s={age('decisionAt'):.1f}")
+    print(f"motion_context_persisted_age_s={age('persistedAt'):.1f}")
 
 def emit_hr_broadcast_preferences():
     prefs_path = evidence / "preferences.plist"
@@ -753,6 +951,28 @@ def emit_confirmed_workout_preferences():
     )
     print("confirmed_workout_summary_status=ok")
     print(f"confirmed_workouts_count={len(workouts)}")
+    coverage_rows = [
+        row for row in workouts
+        if isinstance(row, dict) and isinstance(row.get("streamCoveragePercent"), (int, float))
+    ]
+    incomplete = [row for row in coverage_rows if float(row.get("streamCoveragePercent", 0)) < 75]
+    lowest_coverage = min(
+        coverage_rows,
+        key=lambda row: float(row.get("streamCoveragePercent", 0)),
+        default=None,
+    )
+    print(f"confirmed_workouts_incomplete_coverage_count={len(incomplete)}")
+    if lowest_coverage:
+        print(f"lowest_coverage_workout_id={lowest_coverage.get('id', 'missing') or 'missing'}")
+        print(f"lowest_coverage_workout_label={lowest_coverage.get('label', 'missing') or 'missing'}")
+        print(f"lowest_coverage_workout_start={workout_time(lowest_coverage, 'start')}")
+        print(f"lowest_coverage_workout_end={workout_time(lowest_coverage, 'end')}")
+        print(f"lowest_coverage_workout_percent={int(lowest_coverage.get('streamCoveragePercent', 0) or 0)}")
+        print(f"lowest_coverage_workout_samples={int(lowest_coverage.get('samples', 0) or 0)}")
+        print(f"lowest_coverage_workout_observed_s={float(lowest_coverage.get('observedDuration', 0) or 0):.1f}")
+        print(f"lowest_coverage_workout_strain={float(lowest_coverage.get('strain', 0) or 0):.3f}")
+    else:
+        print("lowest_coverage_workout_id=none")
     if latest:
         print(f"latest_confirmed_workout_id={latest.get('id', 'missing') or 'missing'}")
         print(f"latest_confirmed_workout_label={latest.get('label', 'missing') or 'missing'}")
@@ -761,7 +981,7 @@ def emit_confirmed_workout_preferences():
         print(f"latest_confirmed_workout_start={workout_time(latest, 'start')}")
         print(f"latest_confirmed_workout_end={workout_time(latest, 'end')}")
         print(f"latest_confirmed_workout_created={workout_time(latest, 'createdAt')}")
-        print(f"latest_confirmed_workout_peak={int(latest.get('peak', 0) or 0)}")
+        print(f"latest_confirmed_workout_peak={int(latest.get('peakHR', latest.get('peak', 0)) or 0)}")
         print(f"latest_confirmed_workout_samples={int(latest.get('samples', 0) or 0)}")
     else:
         print("latest_confirmed_workout_id=none")
@@ -825,6 +1045,7 @@ def emit_daily_rollups_summary():
 
 emit_offline_sync_preferences()
 emit_battery_preferences()
+emit_motion_context_preferences()
 emit_hr_broadcast_preferences()
 emit_ble_link_preferences()
 emit_duty_cycle_and_compaction_preferences()
@@ -840,6 +1061,7 @@ emit_confirmed_workout_preferences()
 emit_daily_rollups_summary()
 emit_historical_archive_index_summary()
 emit_historical_archive_rotation_summary()
+emit_step_calibration_archive_summary()
 
 def decode_historical_gravity(payload_hex):
     try:
@@ -880,6 +1102,7 @@ def historical_current_session_usable(row):
 
 def emit_historical_archive_summary():
     archive_path = evidence / "historical-archive.jsonl"
+    partial_copy = (evidence / "historical-archive.jsonl.partial").exists()
     if not archive_path.exists():
         print("historical_archive_summary_status=missing")
         print("historical_archive_metric_ready=0")
@@ -908,6 +1131,18 @@ def emit_historical_archive_summary():
     gravity_min = None
     gravity_max = None
     hist_versions = set()
+    validated_layout_versions = set()
+    try:
+        source_text = historical_archive_source.read_text(encoding="utf-8")
+        declaration = re.search(
+            r"validatedMetricLayoutVersions:\s*Set<String>\s*=\s*\[([^\]]*)\]",
+            source_text,
+            re.S,
+        )
+        if declaration:
+            validated_layout_versions = set(re.findall(r'"([^"]+)"', declaration.group(1)))
+    except Exception:
+        validated_layout_versions = set()
     with archive_path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if not line.strip():
@@ -952,11 +1187,26 @@ def emit_historical_archive_summary():
                     gravity_max = magnitude if gravity_max is None else max(gravity_max, magnitude)
                     if valid:
                         gravity_validated_rows += 1
-    metric_ready = parse_errors == 0 and rows > 0 and metric_usable_rows > 0 and current_usable_rows > 0
-    if parse_errors:
+    validated_layout_rows_present = bool(layouts.intersection(validated_layout_versions))
+    metric_ready = (not partial_copy and parse_errors == 0 and rows > 0
+                    and metric_usable_rows > 0 and current_usable_rows > 0
+                    and validated_layout_rows_present)
+    if partial_copy:
+        interpretation = "partial_local_copy"
+        metric_gate = "copy_incomplete"
+        user_action = "rerun_pull_or_use_bounded_archive_export"
+    elif parse_errors:
         interpretation = "parse_errors"
         metric_gate = "repair_needed"
         user_action = "archive_needs_repair"
+    elif not validated_layout_versions:
+        interpretation = "archive_persisted_decoder_validation_required"
+        metric_gate = "layout_not_reference_validated"
+        user_action = "capture_synchronized_live_hr_rr_reference_before_metric_use"
+    elif not validated_layout_rows_present:
+        interpretation = "archive_layout_not_whitelisted"
+        metric_gate = "archive_layout_not_validated"
+        user_action = "validate_exact_archived_layout_before_metric_use"
     elif metric_ready:
         interpretation = "metric_ready"
         metric_gate = "metric_ready"
@@ -973,11 +1223,12 @@ def emit_historical_archive_summary():
         interpretation = "empty_archive"
         metric_gate = "waiting"
         user_action = "wait_for_missed_data_after_reconnect"
-    print("historical_archive_summary_status=ok")
+    print(f"historical_archive_summary_status={'partial_copy' if partial_copy else 'ok'}")
     print(f"historical_archive_rows={rows}")
     print(f"historical_archive_parse_errors={parse_errors}")
     print(f"historical_archive_schemas={','.join(sorted(schemas)) if schemas else 'none'}")
     print(f"historical_archive_layouts={','.join(sorted(layouts)) if layouts else 'none'}")
+    print(f"historical_archive_validated_metric_layouts={','.join(sorted(validated_layout_versions)) if validated_layout_versions else 'none'}")
     print(f"historical_archive_payload_lengths={','.join(map(str, sorted(payload_lengths))) if payload_lengths else 'none'}")
     print(f"historical_archive_raw_payload_rows={raw_payload_rows}")
     print(f"historical_archive_undecodable_rows={undecodable_rows}")
@@ -1176,9 +1427,12 @@ def stage_breakdown(segments):
 def confirmed_sleep_is_nap(record):
     source = str(record.get("source", ""))
     duration = float(record.get("duration") or 0)
-    if source in ("manual_nap", "nap_candidate", "hr_only_nap"):
+    if source in ("manual_nap", "auto_nap", "nap_candidate", "hr_only_nap", "user_adjusted_nap"):
         return True
-    if source in ("manual_sleep", "aggregate_sleep", "sleep_window", "validated_sleep_window", "overnight_sleep", "sleep_candidate", "single_session_sleep_candidate", "incomplete_fragmented_sleep"):
+    if source in ("manual_sleep", "auto_sleep", "auto_confirmed_sleep", "auto_confirmed_sleep_hr_only",
+                  "aggregate_sleep", "sleep_window", "validated_sleep_window", "overnight_sleep",
+                  "sleep_candidate", "single_session_sleep_candidate", "incomplete_fragmented_sleep",
+                  "user_adjusted_sleep"):
         return False
     return duration <= 3 * 60 * 60
 

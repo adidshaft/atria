@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import Charts
 
@@ -8,10 +9,12 @@ import Charts
 /// itself draws static marks (no interactive glass, no per-frame work).
 struct AtriaTrendChartCard: View {
     let points: [AtriaTrendPoint]
+    let pointsRevision: Int?
     let baselineRestingHR: Int?
     /// Real saved activity for the expanded chart's marker lane. Optional so
     /// existing call sites/tests compile unchanged.
     var events: [AtriaChartEvent] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var metric: AtriaTrendMetric = .restingHR
     @State private var range: AtriaTrendRange = .month
@@ -22,12 +25,44 @@ struct AtriaTrendChartCard: View {
     @State private var showExpandedChart = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
     @State private var rangeCoverage: [AtriaTrendRange: Int] = [:]
-    // Perf (handoff #5): `.onChange(of: points, initial: true)` re-fires on every
-    // LazyVStack scroll-in; skip the prepare when the inputs are unchanged.
+    // Perf (handoff #5/#8): watching the full points array did a full equality
+    // before the skip guard could help. Watch a cheap O(1) key instead;
+    // store-backed data supplies a revision, previews fall back to endpoint
+    // identity.
     @State private var preparedKey: PreparedKey?
 
+    private struct PointsKey: Equatable {
+        let revision: Int?
+        let count: Int
+        let firstID: UUID?
+        let firstDate: Date?
+        let firstRestingHR: Int?
+        let firstStrain: Double?
+        let firstHRV: Int?
+        let lastID: UUID?
+        let lastDate: Date?
+        let lastRestingHR: Int?
+        let lastStrain: Double?
+        let lastHRV: Int?
+
+        init(points: [AtriaTrendPoint], revision: Int?) {
+            self.revision = revision
+            count = points.count
+            firstID = points.first?.id
+            firstDate = points.first?.date
+            firstRestingHR = points.first?.restingHR
+            firstStrain = points.first?.strain
+            firstHRV = points.first?.hrv
+            lastID = points.last?.id
+            lastDate = points.last?.date
+            lastRestingHR = points.last?.restingHR
+            lastStrain = points.last?.strain
+            lastHRV = points.last?.hrv
+        }
+    }
+
     private struct PreparedKey: Equatable {
-        let points: [AtriaTrendPoint]
+        let pointsKey: PointsKey
         let metric: AtriaTrendMetric
         let range: AtriaTrendRange
         let baselineRestingHR: Int?
@@ -37,6 +72,10 @@ struct AtriaTrendChartCard: View {
     // range lens, position band, dot strip) collapse behind this toggle so the
     // card is no longer a long "box inside box" accordion by default.
     @State private var showMoreInsights = false
+
+    private var pointsKey: PointsKey {
+        PointsKey(points: points, revision: pointsRevision)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -155,11 +194,12 @@ struct AtriaTrendChartCard: View {
             }
         }
         .padding(16)
-        .animation(.snappy(duration: 0.28), value: showMoreInsights)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showMoreInsights)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
-        .animation(.snappy(duration: 0.25), value: metric)
-        .animation(.snappy(duration: 0.25), value: range)
-        .onChange(of: points, initial: true) { _, _ in refreshPreparedSeries() }
+        // Metric/range controls already animate their own selection chrome. A
+        // broad implicit animation here also animated every Chart mark and the
+        // full report subtree, making data switches noticeably more expensive.
+        .onChange(of: pointsKey, initial: true) { _, _ in refreshPreparedSeries() }
         .onChange(of: baselineRestingHR) { _, _ in refreshPreparedSeries() }
         .onChange(of: metric) { _, _ in refreshPreparedSeries() }
         .onChange(of: range) { _, _ in refreshPreparedSeries() }
@@ -195,7 +235,7 @@ struct AtriaTrendChartCard: View {
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
-        let key = PreparedKey(points: points, metric: metric, range: range, baselineRestingHR: baselineRestingHR)
+        let key = PreparedKey(pointsKey: pointsKey, metric: metric, range: range, baselineRestingHR: baselineRestingHR)
         guard preparedKey != key else { return }
         preparedKey = key
         prepared = Self.prepareSeries(points: points,
@@ -2120,28 +2160,31 @@ private struct AtriaTrendRangePositionBand: View, Equatable {
     let series: [AtriaTrendPoint.Sample]
     let metric: AtriaTrendMetric
 
-    private var values: [Double] {
-        series.map(\.value)
+    private struct RangeStats {
+        let low: Double?
+        let high: Double?
+        let latest: Double?
+        let latestPosition: Double
     }
 
-    private var low: Double? {
-        values.min()
+    private static func rangeStats(for series: [AtriaTrendPoint.Sample]) -> RangeStats {
+        let values = series.map(\.value)
+        let low = values.min()
+        let high = values.max()
+        let latest = series.last?.value
+        let latestPosition: Double
+        if let low, let high, let latest, high > low {
+            latestPosition = min(max((latest - low) / (high - low), 0), 1)
+        } else {
+            latestPosition = 0.5
+        }
+        return RangeStats(low: low,
+                          high: high,
+                          latest: latest,
+                          latestPosition: latestPosition)
     }
 
-    private var high: Double? {
-        values.max()
-    }
-
-    private var latest: Double? {
-        series.last?.value
-    }
-
-    private var latestPosition: Double {
-        guard let low, let high, let latest, high > low else { return 0.5 }
-        return min(max((latest - low) / (high - low), 0), 1)
-    }
-
-    private var positionText: String {
+    private func positionText(for latestPosition: Double) -> String {
         switch latestPosition {
         case ..<0.34:
             return metric.lowPositionText
@@ -2153,6 +2196,8 @@ private struct AtriaTrendRangePositionBand: View, Equatable {
     }
 
     var body: some View {
+        let stats = Self.rangeStats(for: series)
+        let positionText = positionText(for: stats.latestPosition)
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Current position")
@@ -2181,18 +2226,18 @@ private struct AtriaTrendRangePositionBand: View, Equatable {
                         .fill(.white)
                         .frame(width: 14, height: 14)
                         .shadow(color: metric.tint.opacity(0.32), radius: 5, x: 0, y: 0)
-                        .offset(x: min(max(width * latestPosition - 7, 0), max(width - 14, 0)))
+                        .offset(x: min(max(width * stats.latestPosition - 7, 0), max(width - 14, 0)))
                 }
             }
             .frame(height: 14)
             .accessibilityHidden(true)
 
             HStack {
-                bandLabel("Low", value: low)
+                bandLabel("Low", value: stats.low)
                 Spacer(minLength: 8)
-                bandLabel("Now", value: latest)
+                bandLabel("Now", value: stats.latest)
                 Spacer(minLength: 8)
-                bandLabel("High", value: high)
+                bandLabel("High", value: stats.high)
             }
         }
         .padding(12)
@@ -2202,7 +2247,7 @@ private struct AtriaTrendRangePositionBand: View, Equatable {
                 .stroke(metric.tint.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Current position. Latest \(latest.map(metric.format) ?? "not ready"), low \(low.map(metric.format) ?? "not ready"), high \(high.map(metric.format) ?? "not ready"), \(positionText).")
+        .accessibilityLabel("Current position. Latest \(stats.latest.map(metric.format) ?? "not ready"), low \(stats.low.map(metric.format) ?? "not ready"), high \(stats.high.map(metric.format) ?? "not ready"), \(positionText).")
     }
 
     private func bandLabel(_ label: String, value: Double?) -> some View {
@@ -2226,8 +2271,8 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
         Array(series.suffix(28))
     }
 
-    private var domain: ClosedRange<Double> {
-        let values = visibleSamples.map(\.value)
+    private static func domain(for samples: [AtriaTrendPoint.Sample]) -> ClosedRange<Double> {
+        let values = samples.map(\.value)
         guard let low = values.min(), let high = values.max(), high > low else {
             return 0...1
         }
@@ -2235,23 +2280,26 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
     }
 
     var body: some View {
+        let samples = visibleSamples
+        let domain = Self.domain(for: samples)
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Day pattern")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Text("\(visibleSamples.count)d")
+                Text("\(samples.count)d")
                     .font(.caption2.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
             }
 
             HStack(alignment: .bottom, spacing: 4) {
-                ForEach(visibleSamples) { sample in
+                ForEach(samples) { sample in
+                    let normalized = Self.normalized(sample.value, domain: domain)
                     Capsule(style: .continuous)
-                        .fill(metric.tint.opacity(opacity(for: sample.value)))
+                        .fill(metric.tint.opacity(Self.opacity(for: normalized)))
                         .frame(maxWidth: .infinity)
-                        .frame(height: height(for: sample.value))
+                        .frame(height: Self.height(for: normalized))
                         .accessibilityLabel("\(metric.shortLabel) \(metric.format(sample.value))")
                 }
             }
@@ -2265,26 +2313,30 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
                 .stroke(metric.tint.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(visibleSamples.count) days in view.")
+        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(samples.count) days in view.")
     }
 
-    private func normalized(_ value: Double) -> Double {
+    private static func normalized(_ value: Double, domain: ClosedRange<Double>) -> Double {
         let span = max(domain.upperBound - domain.lowerBound, 0.01)
         return min(max((value - domain.lowerBound) / span, 0), 1)
     }
 
-    private func height(for value: Double) -> CGFloat {
-        6 + CGFloat(normalized(value)) * 18
+    private static func height(for normalized: Double) -> CGFloat {
+        6 + CGFloat(normalized) * 18
     }
 
-    private func opacity(for value: Double) -> Double {
-        0.22 + normalized(value) * 0.66
+    private static func opacity(for normalized: Double) -> Double {
+        0.22 + normalized * 0.66
     }
 }
 
 enum AtriaTrendChartScale {
     static func domain(values: [Double], paddingRatio: Double = 0.16) -> ClosedRange<Double> {
         guard let low = values.min(), let high = values.max() else { return 0...1 }
+        return domain(low: low, high: high, paddingRatio: paddingRatio)
+    }
+
+    static func domain(low: Double, high: Double, paddingRatio: Double = 0.16) -> ClosedRange<Double> {
         let span = max(high - low, max(abs(high), 1) * 0.08)
         let padding = max(span * paddingRatio, 0.5)
         return (low - padding)...(high + padding)
@@ -2294,59 +2346,21 @@ enum AtriaTrendChartScale {
 /// Renders cached trend points from the store. Session filtering, sorting, and
 /// TRIMP work stay out of SwiftUI render paths.
 struct AtriaOverviewTrendChartHost: View {
-    @ObservedObject var store: SessionStore
-    // Perf (handoff #7): `trendEvents` is built eagerly on every store publish but
-    // only consumed by the (usually-closed) expanded chart's marker lane. Memoize
-    // it against the workout/sleep signal so unrelated publishes don't re-map +
-    // re-allocate hundreds of events. Reference-type cache in @State so mutating it
-    // during a body read is a pure memo (no @State value change -> no re-render).
-    @State private var eventsCache = TrendEventsCache()
+    let store: SessionStore
+    @StateObject private var projectionStore: AtriaTrendChartProjectionStore
 
-    private final class TrendEventsCache {
-        private var key: Int?
-        private var events: [AtriaChartEvent] = []
-        func value(key newKey: Int, compute: () -> [AtriaChartEvent]) -> [AtriaChartEvent] {
-            if key != newKey {
-                key = newKey
-                events = compute()
-            }
-            return events
-        }
+    init(store: SessionStore) {
+        self.store = store
+        _projectionStore = StateObject(wrappedValue: AtriaTrendChartProjectionStore(store: store))
     }
 
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
-        AtriaTrendChartCard(points: fixturePoints ?? store.overviewTrendPoints,
-                            baselineRestingHR: fixturePoints == nil ? store.baseline.restingInt : 58,
-                            events: trendEvents)
-    }
-
-    /// Real saved activity for the expanded chart marker lane.
-    private var trendEvents: [AtriaChartEvent] {
-        // Cheap signal for "did the events change": workout revision + the night
-        // count and confirmed-count (no sleeps revision exists to key on).
-        let nights = store.sleepHistorySnapshot.nights
-        var hasher = Hasher()
-        hasher.combine(store.confirmedWorkoutsRevision)
-        hasher.combine(nights.count)
-        hasher.combine(nights.reduce(into: 0) { $0 += $1.confirmed ? 1 : 0 })
-        return eventsCache.value(key: hasher.finalize()) {
-            var events: [AtriaChartEvent] = store.confirmedWorkouts.map { workout in
-                AtriaChartEvent(id: "workout-\(workout.id)",
-                                day: workout.start,
-                                label: workout.activitySubtype ?? workout.activityType ?? "Workout",
-                                systemImage: "flame.fill",
-                                tint: Metrics.electricStrain)
-            }
-            events.append(contentsOf: nights.filter(\.confirmed).map { night in
-                AtriaChartEvent(id: "sleep-\(night.id)",
-                                day: night.day,
-                                label: "Sleep",
-                                systemImage: "bed.double.fill",
-                                tint: Metrics.electricSleep)
-            })
-            return events
-        }
+        let projection = projectionStore.state
+        AtriaTrendChartCard(points: fixturePoints ?? projection.points,
+                            pointsRevision: fixturePoints == nil ? projection.pointsRevision : nil,
+                            baselineRestingHR: fixturePoints == nil ? projection.baselineRestingHR : 58,
+                            events: projection.events)
     }
 
     #if DEBUG
@@ -2377,7 +2391,103 @@ struct AtriaOverviewTrendChartHost: View {
     #endif
 }
 
-enum AtriaTrendRange: String, CaseIterable, Identifiable {
+struct AtriaTrendChartProjectionState: Equatable {
+    let points: [AtriaTrendPoint]
+    let pointsRevision: Int
+    let baselineRestingHR: Int?
+    let events: [AtriaChartEvent]
+}
+
+@MainActor
+final class AtriaTrendChartProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaTrendChartProjectionState
+
+    private weak var store: SessionStore?
+    private var confirmedWorkoutsRevision: Int
+    private var sleepHistoryRevision: Int
+    private var cachedEvents: [AtriaChartEvent]
+    private var cancellables = Set<AnyCancellable>()
+
+    init(store: SessionStore) {
+        self.store = store
+        confirmedWorkoutsRevision = store.confirmedWorkoutsRevision
+        sleepHistoryRevision = store.sleepHistorySnapshotRevision
+        cachedEvents = Self.makeEvents(store: store)
+        state = AtriaTrendChartProjectionState(points: store.overviewTrendPoints,
+                                               pointsRevision: store.overviewTrendPointsRevision,
+                                               baselineRestingHR: store.baseline.restingInt,
+                                               events: cachedEvents)
+        bind(to: store)
+    }
+
+    init(state: AtriaTrendChartProjectionState) {
+        self.state = state
+        confirmedWorkoutsRevision = 0
+        sleepHistoryRevision = 0
+        cachedEvents = state.events
+    }
+
+    @discardableResult
+    func refresh(_ next: AtriaTrendChartProjectionState) -> Bool {
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+
+    private func bind(to store: SessionStore) {
+        Publishers.Merge3(
+            store.$overviewTrendPoints.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        )
+        .sink { [weak self] in self?.refreshFromStore() }
+        .store(in: &cancellables)
+
+        store.$dashboardRevision
+            .dropFirst()
+            .sink { [weak self, weak store] _ in
+                guard let self, let store,
+                      store.confirmedWorkoutsRevision != self.confirmedWorkoutsRevision else { return }
+                self.refreshFromStore()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func refreshFromStore() {
+        guard let store else { return }
+        let nextWorkoutRevision = store.confirmedWorkoutsRevision
+        let nextSleepRevision = store.sleepHistorySnapshotRevision
+        if nextWorkoutRevision != confirmedWorkoutsRevision || nextSleepRevision != sleepHistoryRevision {
+            confirmedWorkoutsRevision = nextWorkoutRevision
+            sleepHistoryRevision = nextSleepRevision
+            cachedEvents = Self.makeEvents(store: store)
+        }
+        refresh(AtriaTrendChartProjectionState(points: store.overviewTrendPoints,
+                                               pointsRevision: store.overviewTrendPointsRevision,
+                                               baselineRestingHR: store.baseline.restingInt,
+                                               events: cachedEvents))
+    }
+
+    private static func makeEvents(store: SessionStore) -> [AtriaChartEvent] {
+        var events = store.confirmedWorkouts.map { workout in
+            AtriaChartEvent(id: "workout-\(workout.id)",
+                            day: workout.start,
+                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                            systemImage: "flame.fill",
+                            tint: Metrics.electricStrain)
+        }
+        events.append(contentsOf: store.sleepHistorySnapshot.nights.filter(\.confirmed).map { night in
+            AtriaChartEvent(id: "sleep-\(night.id)",
+                            day: night.day,
+                            label: "Sleep",
+                            systemImage: "bed.double.fill",
+                            tint: Metrics.electricSleep)
+        })
+        return events
+    }
+}
+
+enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
     case day
     case week
     case month
@@ -2667,6 +2777,7 @@ struct AtriaTrendPoint: Equatable, Identifiable {
 
 #Preview("Trend chart") {
     AtriaTrendChartCard(points: AtriaTrendPoint.sampleData(now: Date()),
+                        pointsRevision: nil,
                         baselineRestingHR: 58)
         .padding()
         .background(Color.black)
@@ -2733,4 +2844,3 @@ struct AtriaTrendExpandedSheet: View {
         }
     }
 }
-

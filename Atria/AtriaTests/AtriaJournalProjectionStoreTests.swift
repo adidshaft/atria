@@ -1,0 +1,115 @@
+import Combine
+import XCTest
+@testable import Atria
+
+@MainActor
+final class AtriaJournalProjectionStoreTests: XCTestCase {
+    private let day = Date(timeIntervalSince1970: 1_783_641_600)
+
+    private func state(journalRevision: Int = 1,
+                       answersRevision: Int = 1,
+                       rollupRevision: Int = 1,
+                       insights: [JournalInsight] = []) -> AtriaJournalProjectionState {
+        AtriaJournalProjectionState(
+            behaviorJournalRevision: journalRevision,
+            journalAnswersRevision: answersRevision,
+            typedInsights: insights,
+            dailyRollupHistoryRevision: rollupRevision,
+            localDay: day
+        )
+    }
+
+    func testNoOpRefreshDoesNotPublish() {
+        let projection = AtriaJournalProjectionStore(state: state())
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refresh(state()))
+        XCTAssertFalse(projection.refresh(state()))
+        XCTAssertEqual(publications, 0)
+
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testRelevantJournalRevisionsPublishExactlyOnceEach() {
+        let projection = AtriaJournalProjectionStore(state: state())
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertTrue(projection.refresh(state(journalRevision: 2)))
+        XCTAssertEqual(publications, 1)
+        XCTAssertTrue(projection.refresh(state(journalRevision: 2, answersRevision: 2)))
+        XCTAssertEqual(publications, 2)
+        XCTAssertTrue(projection.refresh(state(journalRevision: 2,
+                                               answersRevision: 2,
+                                               rollupRevision: 2)))
+        XCTAssertEqual(publications, 3)
+
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testTypedInsightSlicePublishesButEqualSliceDoesNot() {
+        let projection = AtriaJournalProjectionStore(state: state())
+        let insight = JournalInsight(questionID: "mood.scale",
+                                     label: "Mood",
+                                     kind: .rankCorrelation(rho: 0.4, days: 14, pValue: 0.04))
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        let populated = state(insights: [insight])
+        XCTAssertTrue(projection.refresh(populated))
+        XCTAssertFalse(projection.refresh(populated))
+        XCTAssertEqual(publications, 1)
+
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testLocalDayRefreshPublishesOnlyAcrossMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let initialDay = calendar.startOfDay(for: day)
+        let projection = AtriaJournalProjectionStore(
+            state: AtriaJournalProjectionState(
+                behaviorJournalRevision: 1,
+                journalAnswersRevision: 1,
+                typedInsights: [],
+                dailyRollupHistoryRevision: 1,
+                localDay: initialDay
+            )
+        )
+        let sameDay = day.addingTimeInterval(12 * 60 * 60)
+        let nextDay = day.addingTimeInterval(24 * 60 * 60)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refreshDayIfNeeded(now: sameDay, calendar: calendar))
+        XCTAssertTrue(projection.refreshDayIfNeeded(now: nextDay, calendar: calendar))
+        XCTAssertEqual(publications, 1)
+        XCTAssertEqual(projection.state.localDay, calendar.startOfDay(for: nextDay))
+
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testJournalSourceUsesNarrowProjectionInsteadOfSessionStoreObservation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaJournalTab.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
+        XCTAssertFalse(source.contains("@ObservedObject var sessionStore: SessionStore"))
+        XCTAssertTrue(source.contains("@StateObject private var projectionStore: AtriaJournalProjectionStore"))
+        XCTAssertTrue(source.contains("store.$dashboardRevision.dropFirst()"))
+        XCTAssertTrue(source.contains("store.$journalAnswersRevision.dropFirst()"))
+        XCTAssertTrue(source.contains("store.$journalInsightsCache.dropFirst()"))
+        XCTAssertTrue(source.contains("store.$dailyRollupHistory.dropFirst()"))
+        XCTAssertTrue(source.contains("let localDay = projection.localDay"))
+        XCTAssertTrue(source.contains("projectionStore.refreshDayIfNeeded()"))
+        XCTAssertTrue(source.contains("revision: projection.behaviorJournalRevision"))
+        XCTAssertTrue(source.contains("entryMemo.snapshot(revision: projection.behaviorJournalRevision"))
+        XCTAssertTrue(source.contains("answerMemo.answers(revision: projection.journalAnswersRevision"))
+        XCTAssertFalse(source.contains("entryMemo.snapshot(revision: store.behaviorJournalRevision"))
+        XCTAssertFalse(source.contains("answerMemo.answers(revision: store.journalAnswersRevision"))
+    }
+}

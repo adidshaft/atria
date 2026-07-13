@@ -64,10 +64,7 @@ enum AtriaFaceOff {
     static func makePayload(name: String, history: [SavedDailyMetric], now: Date = Date()) -> AtriaFaceOffPayload? {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
-        let recent = history
-            .filter { calendar.startOfDay(for: $0.day) <= today }
-            .sorted { $0.day > $1.day }
-            .prefix(7)
+        let recent = recentMetrics(history: history, onOrBefore: today, limit: 7, calendar: calendar)
         guard !recent.isEmpty, let newest = recent.first else { return nil }
         let endDay = epochDay(newest.day)
         var stats: [AtriaFaceOffPayload.DayStat] = []
@@ -90,6 +87,31 @@ enum AtriaFaceOff {
                                    name: cleanName.isEmpty ? "A friend" : cleanName,
                                    endEpochDay: endDay,
                                    days: stats)
+    }
+
+    private static func recentMetrics(history: [SavedDailyMetric],
+                                      onOrBefore today: Date,
+                                      limit: Int,
+                                      calendar: Calendar) -> [SavedDailyMetric] {
+        guard limit > 0 else { return [] }
+        var recent: [SavedDailyMetric] = []
+
+        for metric in history where calendar.startOfDay(for: metric.day) <= today {
+            if recent.count < limit {
+                insertRecentMetric(metric, into: &recent)
+            } else if let oldest = recent.last, metric.day > oldest.day {
+                recent.removeLast()
+                insertRecentMetric(metric, into: &recent)
+            }
+        }
+
+        return recent
+    }
+
+    private static func insertRecentMetric(_ metric: SavedDailyMetric,
+                                           into recent: inout [SavedDailyMetric]) {
+        let index = recent.firstIndex { $0.day < metric.day } ?? recent.endIndex
+        recent.insert(metric, at: index)
     }
 
     static func url(for payload: AtriaFaceOffPayload) -> URL? {

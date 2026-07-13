@@ -32,9 +32,9 @@ struct WeeklyReport: Codable, Equatable {
     init(rollups: [DailyRollupStoreEntry],
          now: Date = Date(),
          calendar: Calendar = WeeklyReportCalendar.iso) {
-        let ordered = rollups.sorted { $0.day > $1.day }
-        let currentWeek = Array(ordered.prefix(7))
-        let priorWeek = Array(ordered.dropFirst(7).prefix(7))
+        let recent = Self.recentRollups(rollups, limit: 14)
+        let currentWeek = Array(recent.prefix(7))
+        let priorWeek = Array(recent.dropFirst(7).prefix(7))
         let currentRecoveries = currentWeek.compactMap(\.recovery)
         let priorRecoveries = priorWeek.compactMap(\.recovery)
         let currentAverage = Self.roundedAverage(currentRecoveries)
@@ -67,6 +67,29 @@ struct WeeklyReport: Codable, Equatable {
         recoverySeries = currentWeek
             .sorted { $0.day < $1.day }
             .map { DaySummary(day: $0.day, recovery: $0.recovery, strain: $0.strain) }
+    }
+
+    private static func recentRollups(_ rollups: [DailyRollupStoreEntry],
+                                      limit: Int) -> [DailyRollupStoreEntry] {
+        guard limit > 0 else { return [] }
+        var recent: [DailyRollupStoreEntry] = []
+
+        for rollup in rollups {
+            if recent.count < limit {
+                insertRecentRollup(rollup, into: &recent)
+            } else if let oldest = recent.last, rollup.day > oldest.day {
+                recent.removeLast()
+                insertRecentRollup(rollup, into: &recent)
+            }
+        }
+
+        return recent
+    }
+
+    private static func insertRecentRollup(_ rollup: DailyRollupStoreEntry,
+                                           into recent: inout [DailyRollupStoreEntry]) {
+        let index = recent.firstIndex { $0.day < rollup.day } ?? recent.endIndex
+        recent.insert(rollup, at: index)
     }
 
     private static func roundedAverage(_ values: [Int]) -> Int? {
