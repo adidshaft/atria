@@ -211,14 +211,17 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                        maxHR: 190,
                                                        biologicalSex: .unspecified,
                                                        calendar: calendar,
-                                                       now: day.addingTimeInterval(12 * 3600))
+                                                       now: midnight,
+                                                       cycleStart: day)
+        let followingMidnight = calendar.date(byAdding: .day, value: 1, to: midnight)!
         let dayTwo = SessionStore.homeSavedAggregate(from: [],
                                                        archiveHeartRatePoints: archive,
                                                        rest: 60,
                                                        maxHR: 190,
                                                        biologicalSex: .unspecified,
                                                        calendar: calendar,
-                                                       now: midnight.addingTimeInterval(12 * 3600))
+                                                       now: followingMidnight,
+                                                       cycleStart: midnight)
         let tenSeconds = Metrics.trimp([(t: 0, bpm: 150), (t: 10, bpm: 150)],
                                        rest: 60,
                                        max: 190)
@@ -255,13 +258,16 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                           maxHR: 190,
                                                           biologicalSex: .male,
                                                           calendar: calendar,
-                                                          now: dayOne.addingTimeInterval(12 * 3600))
+                                                          now: midnight,
+                                                          cycleStart: dayOne)
+        let followingMidnight = calendar.date(byAdding: .day, value: 1, to: midnight)!
         let dayTwoHome = SessionStore.homeSavedAggregate(from: [session],
                                                           rest: 60,
                                                           maxHR: 190,
                                                           biologicalSex: .male,
                                                           calendar: calendar,
-                                                          now: midnight.addingTimeInterval(12 * 3600))
+                                                          now: followingMidnight,
+                                                          cycleStart: midnight)
         let rollups = SessionStore.makeHistoryDailyRollups(sessions: [session],
                                                             detections: [],
                                                             confirmedWorkouts: [],

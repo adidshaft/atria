@@ -875,22 +875,22 @@ private func liveActivityDailyStepGoalPresentation(
 ) -> AtriaLiveActivityGoalPresentation? {
     guard let goal = state.dailyStepGoal, goal > 0 else { return nil }
     switch state.stepsAvailability {
-    case .reconnecting:
+    case .some(.reconnecting):
         return AtriaLiveActivityGoalPresentation(text: "Step goal syncing",
                                                  tint: .orange,
                                                  fraction: nil,
                                                  accessibilityText: "Daily strap step goal reconnecting")
-    case .stale:
+    case .some(.stale):
         return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
                                                  tint: .orange,
                                                  fraction: nil,
                                                  accessibilityText: "Daily strap step goal stale")
-    case .unavailable:
+    case .some(.unavailable):
         return AtriaLiveActivityGoalPresentation(text: "Step goal --",
                                                  tint: .secondary,
                                                  fraction: nil,
                                                  accessibilityText: "Daily strap step goal unavailable")
-    case .live, .none:
+    case .some(.live), .none:
         break
     }
     guard let steps = state.dailySteps,
@@ -1456,6 +1456,12 @@ struct AtriaMetricWidgetEntryView: View {
 
     private var metricFooterText: String {
         guard let snapshot = entry.snapshot else { return "Open Atria" }
+        if metric == .steps,
+           atriaFreshStaticSensorValue(snapshot.steps,
+                                       capturedAt: snapshot.stepsCapturedAt,
+                                       now: entry.date) == nil {
+            return snapshot.steps == nil ? "Waiting for strap" : "Step signal stale"
+        }
         let age = atriaSnapshotAgeMinutes(snapshot)
         let prefix = metric == .steps && snapshot.stepsAreEstimated == true ? "Estimated · " : ""
         if age < 1 { return "\(prefix)Updated now" }
