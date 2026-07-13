@@ -56,13 +56,58 @@ struct AtriaWorkoutShareSnapshot: Equatable, Hashable {
         let badge: String
     }
 
+    struct RoutePoint: Equatable, Hashable {
+        let latitude: Double
+        let longitude: Double
+        let startsNewSegment: Bool
+    }
+
     let date: Date
     let activity: String
     let duration: String
     let strain: String
     let peakHeartRate: String
     let zoneMinutes: [ZoneMinute]
+    var averageHeartRate: String? = nil
+    var distance: String? = nil
+    var pace: String? = nil
+    var activitySystemImage: String = "figure.mixed.cardio"
+    var routeFileURL: URL? = nil
+    var routePoints: [RoutePoint] = []
     var personalRecord: PersonalRecord? = nil
+
+    static func routePreviewPoints(from route: AtriaWorkoutRoute,
+                                   limit: Int = 240) -> [RoutePoint] {
+        guard limit >= 2, route.points.count >= 2 else { return [] }
+        let lastIndex = route.points.count - 1
+        var retained = Set([0, lastIndex])
+        for index in route.points.indices where route.points[index].startsNewSegment == true {
+            guard retained.count < limit else { break }
+            retained.insert(index)
+        }
+        if route.points.count <= limit {
+            retained.formUnion(route.points.indices)
+        } else if retained.count < limit {
+            let slots = limit - retained.count
+            for slot in 1...slots {
+                let fraction = Double(slot) / Double(slots + 1)
+                retained.insert(Int((Double(lastIndex) * fraction).rounded()))
+            }
+            if retained.count < limit {
+                let stride = max(1, route.points.count / limit)
+                for index in Swift.stride(from: 0, through: lastIndex, by: stride) {
+                    guard retained.count < limit else { break }
+                    retained.insert(index)
+                }
+            }
+        }
+        return retained.sorted().map { index in
+            let point = route.points[index]
+            return RoutePoint(latitude: point.latitude,
+                              longitude: point.longitude,
+                              startsNewSegment: index == 0 || point.startsNewSegment == true)
+        }
+    }
 }
 
 struct AtriaWeeklyShareSnapshot: Equatable, Hashable {
@@ -217,6 +262,33 @@ enum AtriaShareCanvasStyle: String, CaseIterable, Identifiable {
         case .champagne:
             return [Color(red: 1.000, green: 0.940, blue: 0.782),
                     Color(red: 0.954, green: 0.900, blue: 0.984)]
+        }
+    }
+}
+
+private enum AtriaSharePictureBackground: String, CaseIterable, Identifiable {
+    case abstractPulse
+    case alpineDawn
+    case neonRun
+    case animeAscension
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .abstractPulse: return "Pulse"
+        case .alpineDawn: return "Alpine"
+        case .neonRun: return "Neon"
+        case .animeAscension: return "Ascend"
+        }
+    }
+
+    var assetName: String {
+        switch self {
+        case .abstractPulse: return "ShareAbstractPulse"
+        case .alpineDawn: return "ShareAlpineDawn"
+        case .neonRun: return "ShareNeonRun"
+        case .animeAscension: return "ShareAnimeAscension"
         }
     }
 }
@@ -493,33 +565,43 @@ struct AtriaShareCardView: View {
 }
 
 struct AtriaWorkoutShareCardView: View {
+    private struct WorkoutStat: Identifiable {
+        let title: String
+        let value: String
+        var id: String { title }
+    }
+
     let snapshot: AtriaWorkoutShareSnapshot
     let format: AtriaShareFormat
     let canvasStyle: AtriaShareCanvasStyle
+    let photoBackground: UIImage?
 
     init(snapshot: AtriaWorkoutShareSnapshot,
          format: AtriaShareFormat,
          lightCanvas: Bool) {
         self.init(snapshot: snapshot,
                   format: format,
-                  canvasStyle: lightCanvas ? .pearl : .midnight)
+                  canvasStyle: lightCanvas ? .pearl : .midnight,
+                  photoBackground: nil)
     }
 
     init(snapshot: AtriaWorkoutShareSnapshot,
          format: AtriaShareFormat,
-         canvasStyle: AtriaShareCanvasStyle) {
+         canvasStyle: AtriaShareCanvasStyle,
+         photoBackground: UIImage? = nil) {
         self.snapshot = snapshot
         self.format = format
         self.canvasStyle = canvasStyle
+        self.photoBackground = photoBackground
     }
 
     var body: some View {
         ZStack {
-            canvasStyle.background
+            backgroundLayer
             radialGlow
 
-            VStack(spacing: format == .story ? 22 : 15) {
-                Spacer(minLength: format == .story ? 78 : 40)
+            VStack(spacing: contentSpacing) {
+                Spacer(minLength: topSpacing)
 
                 Text(dateLine)
                     .font(.system(size: format == .story ? 15 : 13, weight: .bold, design: .rounded))
@@ -529,7 +611,13 @@ struct AtriaWorkoutShareCardView: View {
                 atriaSafeWordmark
 
                 workoutRing
-                    .frame(width: format == .story ? 276 : 244, height: format == .story ? 276 : 244)
+                    .frame(width: workoutRingSize, height: workoutRingSize)
+
+                if hasRoute {
+                    routeTrace
+                        .frame(maxWidth: format == .story ? 306 : 320)
+                        .frame(height: format == .story ? 108 : 92)
+                }
 
                 if let personalRecord = snapshot.personalRecord {
                     personalRecordSpotlight(personalRecord)
@@ -537,16 +625,18 @@ struct AtriaWorkoutShareCardView: View {
                 }
 
                 HStack(spacing: 10) {
-                    workoutStat("Strain", snapshot.strain)
-                    workoutStat("Duration", snapshot.duration)
-                    workoutStat("Peak HR", snapshot.peakHeartRate)
+                    ForEach(workoutStats) { stat in
+                        workoutStat(stat.title, stat.value)
+                    }
                 }
                 .frame(maxWidth: format == .story ? 306 : 320)
 
-                zoneMinuteBar
-                    .frame(maxWidth: format == .story ? 306 : 320)
+                if snapshot.zoneMinutes.contains(where: { $0.minutes > 0 }) {
+                    zoneMinuteBar
+                        .frame(maxWidth: format == .story ? 306 : 320)
+                }
 
-                Spacer(minLength: format == .story ? 74 : 28)
+                Spacer(minLength: bottomSpacing)
             }
             .padding(.horizontal, 30)
         }
@@ -554,6 +644,31 @@ struct AtriaWorkoutShareCardView: View {
     }
 
     private var foreground: Color { canvasStyle.foreground }
+
+    @ViewBuilder
+    private var backgroundLayer: some View {
+        if let photoBackground {
+            Image(uiImage: photoBackground)
+                .resizable()
+                .scaledToFill()
+                .frame(width: format.renderSize.width, height: format.renderSize.height)
+                .clipped()
+                .overlay(Color.black.opacity(0.38))
+                .overlay(
+                    LinearGradient(colors: [.black.opacity(0.54), .clear, .black.opacity(0.52)],
+                                   startPoint: .top,
+                                   endPoint: .bottom)
+                )
+        } else {
+            canvasStyle.background
+        }
+    }
+
+    private var hasRoute: Bool { snapshot.routePoints.count >= 2 }
+    private var contentSpacing: CGFloat { hasRoute ? (format == .story ? 13 : 9) : (format == .story ? 22 : 15) }
+    private var topSpacing: CGFloat { hasRoute ? (format == .story ? 30 : 16) : (format == .story ? 78 : 40) }
+    private var bottomSpacing: CGFloat { hasRoute ? (format == .story ? 24 : 12) : (format == .story ? 74 : 28) }
+    private var workoutRingSize: CGFloat { hasRoute ? (format == .story ? 176 : 164) : (format == .story ? 220 : 204) }
 
     private var accent: Color {
         snapshot.zoneMinutes.first?.tint ?? Color(red: 1.0, green: 0.54, blue: 0.24)
@@ -578,6 +693,9 @@ struct AtriaWorkoutShareCardView: View {
                 .rotationEffect(.degrees(-90))
 
             VStack(spacing: 5) {
+                Image(systemName: snapshot.activitySystemImage)
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(accent)
                 Text(snapshot.activity)
                     .font(.system(size: 17, weight: .black, design: .rounded))
                     .foregroundStyle(foreground.opacity(0.68))
@@ -600,6 +718,54 @@ struct AtriaWorkoutShareCardView: View {
     private var strainFill: Double {
         let value = Double(snapshot.strain) ?? 0
         return min(max(value / 21, 0.12), 1)
+    }
+
+    private var workoutStats: [WorkoutStat] {
+        if let distance = snapshot.distance {
+            return [WorkoutStat(title: "Distance", value: distance),
+                    WorkoutStat(title: snapshot.pace == nil ? "Avg HR" : "Pace",
+                                value: snapshot.pace ?? snapshot.averageHeartRate ?? "--"),
+                    WorkoutStat(title: "Duration", value: snapshot.duration)]
+        }
+        return [
+            WorkoutStat(title: "Duration", value: snapshot.duration),
+            WorkoutStat(title: "Avg HR", value: snapshot.averageHeartRate ?? "--"),
+            WorkoutStat(title: "Peak HR", value: snapshot.peakHeartRate)
+        ]
+    }
+
+    private var routeTrace: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                Text("Route")
+                Spacer(minLength: 8)
+                if let distance = snapshot.distance {
+                    Text(distance)
+                        .monospacedDigit()
+                }
+            }
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .textCase(.uppercase)
+            .foregroundStyle(foreground.opacity(0.64))
+
+            AtriaWorkoutShareRouteShape(points: snapshot.routePoints)
+                .stroke(accent,
+                        style: StrokeStyle(lineWidth: format == .story ? 4.5 : 3.5,
+                                           lineCap: .round,
+                                           lineJoin: .round))
+                .shadow(color: accent.opacity(0.30), radius: 5)
+                .padding(5)
+        }
+        .padding(11)
+        .background(foreground.opacity(canvasStyle.chipOpacity),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(foreground.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Workout route trace\(snapshot.distance.map { ", \($0)" } ?? "")")
     }
 
     private func workoutStat(_ title: String, _ value: String) -> some View {
@@ -692,6 +858,42 @@ struct AtriaWorkoutShareCardView: View {
 
     private var dateLine: String {
         atriaShareDateLineFormatter.string(from: snapshot.date)
+    }
+}
+
+private struct AtriaWorkoutShareRouteShape: Shape {
+    let points: [AtriaWorkoutShareSnapshot.RoutePoint]
+
+    func path(in rect: CGRect) -> Path {
+        guard points.count >= 2 else { return Path() }
+        let meanLatitude = points.map(\.latitude).reduce(0, +) / Double(points.count)
+        let longitudeScale = max(cos(meanLatitude * .pi / 180), 0.01)
+        let projected = points.map { point in
+            CGPoint(x: point.longitude * longitudeScale, y: point.latitude)
+        }
+        let minX = projected.map(\.x).min() ?? 0
+        let maxX = projected.map(\.x).max() ?? 0
+        let minY = projected.map(\.y).min() ?? 0
+        let maxY = projected.map(\.y).max() ?? 0
+        let sourceWidth = max(maxX - minX, 0.000_000_1)
+        let sourceHeight = max(maxY - minY, 0.000_000_1)
+        let scale = min(rect.width / sourceWidth, rect.height / sourceHeight)
+        let drawnWidth = sourceWidth * scale
+        let drawnHeight = sourceHeight * scale
+        let originX = rect.minX + (rect.width - drawnWidth) / 2
+        let originY = rect.minY + (rect.height - drawnHeight) / 2
+
+        var path = Path()
+        for (index, projectedPoint) in projected.enumerated() {
+            let point = CGPoint(x: originX + (projectedPoint.x - minX) * scale,
+                                y: originY + (maxY - projectedPoint.y) * scale)
+            if index == 0 || points[index].startsNewSegment {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+        return path
     }
 }
 
@@ -855,15 +1057,15 @@ struct AtriaShareSheet: View {
     let snapshot: AtriaShareSnapshot
     /// Optional Recovery Face-Off deep link ("Challenge a friend"); nil hides the button.
     var challengeURL: URL? = nil
-    @Environment(\.dismiss) private var dismiss
     @State private var canvasStyle: AtriaShareCanvasStyle = .midnight
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoBackground: UIImage?
+    @State private var selectedPictureBackground: AtriaSharePictureBackground?
     @State private var photoBackgroundID = UUID()
     @State private var showCamera = false
     @State private var shareURL: URL?
     @State private var controlsRefreshID = UUID()
-    @State private var saveState: AtriaShareSaveState = .idle
+    @Environment(\.dismiss) private var dismiss
 
     init(snapshot: AtriaShareSnapshot, challengeURL: URL? = nil) {
         self.snapshot = snapshot
@@ -880,37 +1082,38 @@ struct AtriaShareSheet: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: {
+                        shareCornerButton(systemImage: "xmark")
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     if let shareURL {
                         ShareLink(item: shareURL,
                                   preview: SharePreview("Today on Atria", image: Image(uiImage: previewImage))) {
-                            shareToolbarLabel("Share", systemImage: "square.and.arrow.up")
+                            shareCornerButton(systemImage: "square.and.arrow.up")
                         }
                         .accessibilityLabel("Share")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { dismiss() } label: {
-                        shareToolbarLabel("Done", systemImage: "checkmark")
-                    }
-                }
-                if let challengeURL {
-                    ToolbarItem(placement: .bottomBar) {
-                        ShareLink(item: challengeURL,
-                                  subject: Text("Recovery Face-Off"),
-                                  message: Text("Compare your week against mine in Atria — tap the link.")) {
-                            shareToolbarLabel("Challenge a friend", systemImage: "figure.2.arms.open")
+                    } else {
+                        Button {} label: {
+                            shareCornerButton(systemImage: "square.and.arrow.up")
                         }
-                        .accessibilityLabel("Challenge a friend with a Recovery Face-Off link")
+                        .disabled(true)
                     }
                 }
             }
             .task(id: renderKey) {
-                shareURL = try? await AtriaShareCardRenderer.renderURL(snapshot: snapshot,
-                                                                       format: .story,
-                                                                       selectedStatIDs: Self.fixedDailyStatIDs(),
-                                                                       canvasStyle: effectiveCanvasStyle,
-                                                                       photoBackground: photoBackground)
-                saveState = .idle
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let renderedURL = try? await AtriaShareCardRenderer.renderURL(
+                    snapshot: snapshot,
+                    format: .story,
+                    selectedStatIDs: Self.fixedDailyStatIDs(),
+                    canvasStyle: effectiveCanvasStyle,
+                    photoBackground: photoBackground
+                )
+                guard !Task.isCancelled else { return }
+                shareURL = renderedURL
             }
             .task(id: selectedPhotoItem) {
                 guard let selectedPhotoItem,
@@ -919,6 +1122,7 @@ struct AtriaShareSheet: View {
                     return
                 }
                 photoBackground = image
+                selectedPictureBackground = nil
                 photoBackgroundID = UUID()
                 controlsRefreshID = UUID()
                 canvasStyle = .midnight
@@ -928,6 +1132,7 @@ struct AtriaShareSheet: View {
                     photoBackground
                 } set: { image in
                     photoBackground = image
+                    selectedPictureBackground = nil
                     photoBackgroundID = UUID()
                     controlsRefreshID = UUID()
                     if image != nil {
@@ -1012,10 +1217,23 @@ struct AtriaShareSheet: View {
                     .buttonStyle(.plain)
                 }
 
+                ForEach(AtriaSharePictureBackground.allCases) { background in
+                    Button {
+                        selectPictureBackground(background)
+                    } label: {
+                        canvasButtonLabel(title: background.shortLabel,
+                                          systemImage: nil,
+                                          isSelected: selectedPictureBackground == background,
+                                          swatch: nil,
+                                          assetName: background.assetName)
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                     canvasButtonLabel(title: "Photo",
                                       systemImage: "photo",
-                                      isSelected: photoBackground != nil,
+                                      isSelected: photoBackground != nil && selectedPictureBackground == nil,
                                       swatch: nil)
                 }
                 .buttonStyle(.plain)
@@ -1037,6 +1255,7 @@ struct AtriaShareSheet: View {
                     Button {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                             photoBackground = nil
+                            selectedPictureBackground = nil
                             selectedPhotoItem = nil
                             photoBackgroundID = UUID()
                         }
@@ -1055,48 +1274,64 @@ struct AtriaShareSheet: View {
         .contentMargins(.horizontal, 6, for: .scrollContent)
     }
 
-    private func shareToolbarLabel(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 13)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: Capsule(style: .continuous))
+    private func shareCornerButton(systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.callout.weight(.semibold))
+            .frame(width: 38, height: 38)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .contentShape(Circle())
     }
 
     private func selectCanvas(_ style: AtriaShareCanvasStyle) {
         canvasStyle = style
         photoBackground = nil
+        selectedPictureBackground = nil
         selectedPhotoItem = nil
         photoBackgroundID = UUID()
         controlsRefreshID = UUID()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
-    private func saveShareCardToPhotos() {
-        guard let shareURL else { return }
-        saveState = .saving
-        Task {
-            do {
-                try await AtriaShareCardRenderer.savePNGToPhotoLibrary(from: shareURL)
-                await MainActor.run {
-                    saveState = .saved
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
-            } catch {
-                await MainActor.run {
-                    saveState = .failed
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
-                }
-            }
+    private func selectPictureBackground(_ background: AtriaSharePictureBackground) {
+        guard let image = UIImage(named: background.assetName) else { return }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+            selectedPictureBackground = background
+            selectedPhotoItem = nil
+            photoBackground = image
+            photoBackgroundID = UUID()
+            controlsRefreshID = UUID()
+            canvasStyle = .midnight
         }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     private func canvasButtonLabel(title: String,
                                    systemImage: String?,
                                    isSelected: Bool,
-                                   swatch: AtriaShareCanvasStyle?) -> some View {
+                                   swatch: AtriaShareCanvasStyle?,
+                                   assetName: String? = nil) -> some View {
         VStack(spacing: 5) {
-            if let swatch {
+            if let assetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 52, height: 52)
+                    .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(Color.white.opacity(isSelected ? 0.98 : 0.28), lineWidth: isSelected ? 2 : 1)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white, Color.black.opacity(0.56))
+                                .offset(x: 3, y: 3)
+                        }
+                    }
+                    .scaleEffect(isSelected ? 1.04 : 1)
+                    .shadow(color: .black.opacity(isSelected ? 0.34 : 0.18), radius: isSelected ? 10 : 5, x: 0, y: 5)
+            } else if let swatch {
                 swatch.background
                     .frame(width: 52, height: 52)
                     .clipShape(Circle())
@@ -1144,7 +1379,7 @@ struct AtriaShareSheet: View {
     }
 
     private var renderKey: String {
-        "\(AtriaShareFormat.story.rawValue)-\(effectiveCanvasStyle.rawValue)-photo-\(photoBackground != nil)-\(photoBackgroundID.uuidString)-fixed-daily-trio"
+        "\(AtriaShareFormat.story.rawValue)-\(effectiveCanvasStyle.rawValue)-picture-\(selectedPictureBackground?.rawValue ?? "custom")-photo-\(photoBackground != nil)-\(photoBackgroundID.uuidString)-fixed-daily-trio"
     }
 
     private var effectiveCanvasStyle: AtriaShareCanvasStyle {
@@ -1156,7 +1391,7 @@ struct AtriaShareSheet: View {
         let availableWidth = max(size.width, 1)
         let availableHeight = max(size.height - 82, 1)
         let widthFromHeight = availableHeight * aspect
-        let width = max(availableWidth, widthFromHeight)
+        let width = min(availableWidth, widthFromHeight)
         return CGSize(width: width, height: width / aspect)
     }
 
@@ -1181,10 +1416,16 @@ struct AtriaShareSheet: View {
 
 struct AtriaWorkoutShareSheet: View {
     let snapshot: AtriaWorkoutShareSnapshot
-    @Environment(\.dismiss) private var dismiss
     @State private var canvasStyle: AtriaShareCanvasStyle = .midnight
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var photoBackground: UIImage?
+    @State private var selectedPictureBackground: AtriaSharePictureBackground?
+    @State private var photoBackgroundID = UUID()
+    @State private var showCamera = false
     @State private var shareURL: URL?
+    @State private var portableRecapURL: URL?
     @State private var saveState: AtriaShareSaveState = .idle
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -1193,7 +1434,11 @@ struct AtriaWorkoutShareSheet: View {
                     Color.black.ignoresSafeArea()
                     AtriaWorkoutShareCardView(snapshot: snapshot,
                                               format: .story,
-                                              canvasStyle: canvasStyle)
+                                              canvasStyle: effectiveCanvasStyle,
+                                              photoBackground: photoBackground)
+                        .frame(width: AtriaShareFormat.story.renderSize.width,
+                               height: AtriaShareFormat.story.renderSize.height)
+                        .scaleEffect(previewScale(for: proxy.size), anchor: .center)
                         .frame(width: previewSize(for: proxy.size).width,
                                height: previewSize(for: proxy.size).height)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1216,35 +1461,61 @@ struct AtriaWorkoutShareSheet: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        if let shareURL {
-                            ShareLink(item: shareURL,
-                                      preview: SharePreview("Workout on Atria",
-                                                            image: Image(systemName: "figure.run.circle.fill"))) {
-                                shareToolbarLabel("Share", systemImage: "square.and.arrow.up")
-                            }
-                            .accessibilityLabel("Share workout")
-                            Button {
-                                saveShareCardToPhotos()
-                            } label: {
-                                shareToolbarLabel(saveState.label, systemImage: saveState.systemImage)
-                            }
-                            .accessibilityLabel("Save workout image to Photos")
-                            .disabled(saveState == .saving)
-                        }
+                    Button { dismiss() } label: {
+                        shareCornerButton(systemImage: "xmark")
                     }
+                    .accessibilityLabel("Cancel")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { dismiss() } label: {
-                        shareToolbarLabel("Done", systemImage: "checkmark")
+                    if let shareURL {
+                        ShareLink(item: shareURL) {
+                            shareCornerButton(systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("Share workout image")
+                    } else {
+                        Button {} label: {
+                            shareCornerButton(systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(true)
                     }
                 }
             }
             .task(id: renderKey) {
-                shareURL = try? await AtriaShareCardRenderer.renderURL(snapshot: snapshot,
-                                                                       format: .story,
-                                                                       canvasStyle: canvasStyle)
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let renderedURL = try? await AtriaShareCardRenderer.renderURL(
+                    snapshot: snapshot,
+                    format: .story,
+                    canvasStyle: effectiveCanvasStyle,
+                    photoBackground: photoBackground
+                )
+                guard !Task.isCancelled else { return }
+                shareURL = renderedURL
+                portableRecapURL = try? await AtriaShareCardRenderer.renderPortableWorkoutURL(
+                    snapshot: snapshot,
+                    canvasStyle: effectiveCanvasStyle,
+                    renderedImageURL: photoBackground == nil ? renderedURL : nil
+                )
                 saveState = .idle
+            }
+            .task(id: selectedPhotoItem) {
+                guard let selectedPhotoItem,
+                      let data = try? await selectedPhotoItem.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else { return }
+                photoBackground = image
+                selectedPictureBackground = nil
+                photoBackgroundID = UUID()
+                canvasStyle = .midnight
+            }
+            .sheet(isPresented: $showCamera) {
+                AtriaShareCameraPicker(image: Binding {
+                    photoBackground
+                } set: { image in
+                    photoBackground = image
+                    selectedPictureBackground = nil
+                    photoBackgroundID = UUID()
+                    if image != nil { canvasStyle = .midnight }
+                })
             }
         }
     }
@@ -1258,10 +1529,55 @@ struct AtriaWorkoutShareSheet: View {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     } label: {
                         shareCanvasButtonLabel(title: style.shortLabel,
-                                               isSelected: canvasStyle == style,
+                                               isSelected: canvasStyle == style && photoBackground == nil,
                                                swatch: style)
                     }
                     .buttonStyle(.plain)
+                }
+                ForEach(AtriaSharePictureBackground.allCases) { background in
+                    Button { selectPictureBackground(background) } label: {
+                        shareCanvasButtonLabel(title: background.shortLabel,
+                                               isSelected: selectedPictureBackground == background,
+                                               assetName: background.assetName)
+                    }
+                    .buttonStyle(.plain)
+                }
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    shareCanvasButtonLabel(title: "Photo",
+                                           isSelected: photoBackground != nil && selectedPictureBackground == nil,
+                                           systemImage: "photo")
+                }
+                Button { showCamera = true } label: {
+                    shareCanvasButtonLabel(title: "Camera", isSelected: false, systemImage: "camera")
+                }
+                if photoBackground != nil {
+                    Button {
+                        photoBackground = nil
+                        selectedPictureBackground = nil
+                        selectedPhotoItem = nil
+                        photoBackgroundID = UUID()
+                    } label: {
+                        shareCanvasButtonLabel(title: "Clear", isSelected: false, systemImage: "xmark")
+                    }
+                }
+                if portableRecapURL != nil || snapshot.routeFileURL != nil {
+                    Menu {
+                        if let portableRecapURL {
+                            ShareLink(item: portableRecapURL) {
+                                Label("Portable workout recap", systemImage: "doc.richtext")
+                            }
+                            .accessibilityLabel("Share portable workout recap without route")
+                        }
+                        if let routeFileURL = snapshot.routeFileURL {
+                            ShareLink(item: routeFileURL) {
+                                Label("Exact GPX route", systemImage: "map")
+                            }
+                            .accessibilityLabel("Share exact GPX route")
+                        }
+                    } label: {
+                        shareCanvasButtonLabel(title: "Files", isSelected: false, systemImage: "ellipsis")
+                    }
+                    .accessibilityLabel("More workout sharing formats")
                 }
             }
             .padding(.horizontal, 10)
@@ -1269,12 +1585,12 @@ struct AtriaWorkoutShareSheet: View {
         .frame(height: 76)
     }
 
-    private func shareToolbarLabel(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: Capsule(style: .continuous))
+    private func shareCornerButton(systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.callout.weight(.semibold))
+            .frame(width: 38, height: 38)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .contentShape(Circle())
     }
 
     private func saveShareCardToPhotos() {
@@ -1298,25 +1614,33 @@ struct AtriaWorkoutShareSheet: View {
 
     private func shareCanvasButtonLabel(title: String,
                                         isSelected: Bool,
-                                        swatch: AtriaShareCanvasStyle) -> some View {
+                                        swatch: AtriaShareCanvasStyle? = nil,
+                                        assetName: String? = nil,
+                                        systemImage: String? = nil) -> some View {
         VStack(spacing: 4) {
-            swatch.background
-                .frame(width: 34, height: 34)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+            Group {
+                if let assetName {
+                    Image(assetName).resizable().scaledToFill()
+                } else if let swatch {
+                    swatch.background
+                } else {
+                    Image(systemName: systemImage ?? "circle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.white.opacity(0.12))
+                }
+            }
+            .frame(width: 52, height: 52)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(Color.white.opacity(isSelected ? 0.98 : 0.28), lineWidth: isSelected ? 2 : 1))
 
             Text(title)
                 .font(.caption2.weight(.bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
         }
-        .frame(width: 68, height: 64)
-        .background(isSelected ? Color.white.opacity(0.42) : Color.black.opacity(0.20),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSelected ? Color.white.opacity(0.86) : Color.white.opacity(0.18), lineWidth: 1)
-        }
+        .frame(width: 66, height: 72)
     }
 
     private func previewSize(for size: CGSize) -> CGSize {
@@ -1327,8 +1651,26 @@ struct AtriaWorkoutShareSheet: View {
         return CGSize(width: width, height: width / aspect)
     }
 
+    private func previewScale(for size: CGSize) -> CGFloat {
+        previewSize(for: size).height / AtriaShareFormat.story.renderSize.height
+    }
+
+    private func selectPictureBackground(_ background: AtriaSharePictureBackground) {
+        guard let image = UIImage(named: background.assetName) else { return }
+        selectedPictureBackground = background
+        selectedPhotoItem = nil
+        photoBackground = image
+        photoBackgroundID = UUID()
+        canvasStyle = .midnight
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private var effectiveCanvasStyle: AtriaShareCanvasStyle {
+        photoBackground == nil ? canvasStyle : .midnight
+    }
+
     private var renderKey: String {
-        "\(AtriaShareFormat.story.rawValue)-\(canvasStyle.rawValue)-\(snapshot.personalRecord?.exercise ?? "no-pr")-\(snapshot.personalRecord?.set ?? "no-set")"
+        "\(AtriaShareFormat.story.rawValue)-\(effectiveCanvasStyle.rawValue)-photo-\(photoBackground != nil)-\(photoBackgroundID.uuidString)-\(snapshot.personalRecord?.exercise ?? "no-pr")-\(snapshot.personalRecord?.set ?? "no-set")"
     }
 }
 
@@ -1393,7 +1735,7 @@ struct AtriaWeeklyShareSheet: View {
                         Spacer()
                         canvasPicker
                             .padding(.vertical, 6)
-                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .stroke(Color.white.opacity(0.16), lineWidth: 1)
@@ -1431,9 +1773,13 @@ struct AtriaWeeklyShareSheet: View {
                 }
             }
             .task(id: renderKey) {
-                shareURL = try? await AtriaShareCardRenderer.renderURL(snapshot: snapshot,
-                                                                       format: .story,
-                                                                       canvasStyle: canvasStyle)
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let renderedURL = try? await AtriaShareCardRenderer.renderURL(snapshot: snapshot,
+                                                                               format: .story,
+                                                                               canvasStyle: canvasStyle)
+                guard !Task.isCancelled else { return }
+                shareURL = renderedURL
                 saveState = .idle
             }
         }
@@ -1462,9 +1808,6 @@ struct AtriaWeeklyShareSheet: View {
     private func shareToolbarLabel(_ title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
             .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: Capsule(style: .continuous))
     }
 
     private func saveShareCardToPhotos() {
@@ -1550,15 +1893,15 @@ enum AtriaShareCardRenderer {
            FileManager.default.fileExists(atPath: cached.path) {
             return cached
         }
-        let data = try renderPNGData(snapshot: snapshot,
-                                     format: format,
-                                     selectedStatIDs: selectedStatIDs,
-                                     canvasStyle: canvasStyle,
-                                     photoBackground: photoBackground)
+        let data = try await renderPNGDataForExport(snapshot: snapshot,
+                                                    format: format,
+                                                    selectedStatIDs: selectedStatIDs,
+                                                    canvasStyle: canvasStyle,
+                                                    photoBackground: photoBackground)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-share-\(key)")
             .appendingPathExtension("png")
-        try data.write(to: url, options: .atomic)
+        try await writeExportData(data, to: url)
         if photoBackground == nil {
             cache[key] = url
         }
@@ -1575,22 +1918,98 @@ enum AtriaShareCardRenderer {
 
     static func renderURL(snapshot: AtriaWorkoutShareSnapshot,
                           format: AtriaShareFormat,
-                          canvasStyle: AtriaShareCanvasStyle) async throws -> URL {
+                          canvasStyle: AtriaShareCanvasStyle,
+                          photoBackground: UIImage? = nil) async throws -> URL {
         let key = workoutCacheKey(snapshot: snapshot,
                                   format: format,
                                   canvasStyle: canvasStyle)
-        if let cached = cache[key], FileManager.default.fileExists(atPath: cached.path) {
+        if photoBackground == nil,
+           let cached = cache[key], FileManager.default.fileExists(atPath: cached.path) {
             return cached
         }
-        let data = try renderPNGData(snapshot: snapshot,
-                                     format: format,
-                                     canvasStyle: canvasStyle)
+        let data = try await renderPNGDataForExport(snapshot: snapshot,
+                                                    format: format,
+                                                    canvasStyle: canvasStyle,
+                                                    photoBackground: photoBackground)
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("atria-workout-share-\(key)")
+            .appendingPathComponent("atria-workout-share-\(key)-\(photoBackground == nil ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("png")
-        try data.write(to: url, options: .atomic)
-        cache[key] = url
+        try await writeExportData(data, to: url)
+        if photoBackground == nil { cache[key] = url }
         return url
+    }
+
+    /// Creates a single-file recap that opens in any browser and remains useful
+    /// to recipients who do not have Atria. Exact route coordinates are
+    /// deliberately excluded; GPX remains a separate, explicit share action.
+    static func renderPortableWorkoutURL(snapshot: AtriaWorkoutShareSnapshot,
+                                         canvasStyle: AtriaShareCanvasStyle,
+                                         renderedImageURL: URL? = nil) async throws -> URL {
+        let key = workoutCacheKey(snapshot: snapshot,
+                                  format: .story,
+                                  canvasStyle: canvasStyle)
+        let cacheKey = "portable-\(key)"
+        if let cached = cache[cacheKey], FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+
+        let imageData: Data
+        if let renderedImageURL {
+            imageData = try await readExportData(from: renderedImageURL)
+        } else {
+            imageData = try await renderPNGDataForExport(snapshot: snapshot,
+                                                         format: .story,
+                                                         canvasStyle: canvasStyle)
+        }
+        let html = portableWorkoutHTML(snapshot: snapshot, imageData: imageData)
+        let activity = fileSafeSlug(snapshot.activity)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Atria-\(activity)-\(stableDigest(key))")
+            .appendingPathExtension("html")
+        try await writeExportData(Data(html.utf8), to: url)
+        cache[cacheKey] = url
+        return url
+    }
+
+    static func portableWorkoutHTML(snapshot: AtriaWorkoutShareSnapshot,
+                                    imageData: Data) -> String {
+        let image = imageData.base64EncodedString()
+        let date = atriaShareDateLineFormatter.string(from: snapshot.date)
+        let optionalMetrics = [
+            snapshot.averageHeartRate.map { ("Average heart rate", $0) },
+            snapshot.distance.map { ("Distance", $0) },
+            snapshot.pace.map { ("Pace", $0) }
+        ].compactMap { $0 }
+        let metrics = [
+            ("Duration", snapshot.duration),
+            ("Workout strain", snapshot.strain),
+            ("Peak heart rate", snapshot.peakHeartRate)
+        ] + optionalMetrics
+        let metricHTML = metrics.map { label, value in
+            "<div class=\"metric\"><span>\(htmlEscaped(label))</span><strong>\(htmlEscaped(value))</strong></div>"
+        }.joined()
+        let zoneHTML = snapshot.zoneMinutes
+            .filter { $0.minutes > 0 }
+            .map { "<li>\(htmlEscaped($0.label)): \($0.minutes) min</li>" }
+            .joined()
+        let routeNote = snapshot.routeFileURL == nil
+            ? ""
+            : "<p class=\"privacy\">Precise route omitted for privacy.</p>"
+
+        return """
+        <!doctype html><html lang="en"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>\(htmlEscaped(snapshot.activity)) · Atria</title>
+        <style>
+        :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#08090b;color:#f7f7f8;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(720px,100%);margin:auto;padding:24px}img{display:block;width:min(100%,420px);margin:0 auto 28px;border-radius:24px}h1{margin:0;font-size:2rem}p{color:#a8abb2}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:22px 0}.metric{padding:14px;border:1px solid #30333a;border-radius:14px;background:#15171b}.metric span{display:block;color:#999da6;font-size:.78rem;text-transform:uppercase}.metric strong{display:block;margin-top:5px;font-size:1.25rem}ul{padding-left:20px}.privacy{padding:12px 14px;border-radius:12px;background:#17191d;font-size:.9rem}footer{margin-top:28px;color:#777b84;font-size:.82rem}
+        </style></head><body><main>
+        <img src="data:image/png;base64,\(image)" alt="Atria workout card">
+        <h1>\(htmlEscaped(snapshot.activity))</h1><p>\(htmlEscaped(date))</p>
+        <section class="metrics">\(metricHTML)</section>
+        \(zoneHTML.isEmpty ? "" : "<h2>Zone minutes</h2><ul>\(zoneHTML)</ul>")
+        \(routeNote)<footer>Recorded with Atria · This recap is self-contained and works without the app.</footer>
+        </main></body></html>
+        """
     }
 
     static func renderURL(snapshot: AtriaWeeklyShareSnapshot,
@@ -1610,13 +2029,13 @@ enum AtriaShareCardRenderer {
         if let cached = cache[key], FileManager.default.fileExists(atPath: cached.path) {
             return cached
         }
-        let data = try renderPNGData(snapshot: snapshot,
-                                     format: format,
-                                     canvasStyle: canvasStyle)
+        let data = try await renderPNGDataForExport(snapshot: snapshot,
+                                                    format: format,
+                                                    canvasStyle: canvasStyle)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-weekly-share-\(key)")
             .appendingPathExtension("png")
-        try data.write(to: url, options: .atomic)
+        try await writeExportData(data, to: url)
         cache[key] = url
         return url
     }
@@ -1636,6 +2055,21 @@ enum AtriaShareCardRenderer {
                               selectedStatIDs: Set<String>,
                               canvasStyle: AtriaShareCanvasStyle,
                               photoBackground: UIImage? = nil) throws -> Data {
+        guard let data = pngData(from: try renderedCGImage(snapshot: snapshot,
+                                                           format: format,
+                                                           selectedStatIDs: selectedStatIDs,
+                                                           canvasStyle: canvasStyle,
+                                                           photoBackground: photoBackground)) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private static func renderedCGImage(snapshot: AtriaShareSnapshot,
+                                        format: AtriaShareFormat,
+                                        selectedStatIDs: Set<String>,
+                                        canvasStyle: AtriaShareCanvasStyle,
+                                        photoBackground: UIImage? = nil) throws -> CGImage {
         let view = AtriaShareCardView(snapshot: snapshot,
                                       format: format,
                                       selectedStatIDs: selectedStatIDs,
@@ -1646,11 +2080,10 @@ enum AtriaShareCardRenderer {
         renderer.proposedSize = ProposedViewSize(format.renderSize)
         renderer.isOpaque = true
         guard let image = renderer.uiImage,
-              let cgImage = image.cgImage,
-              let data = pngData(from: cgImage) else {
+              let cgImage = image.cgImage else {
             throw CocoaError(.fileWriteUnknown)
         }
-        return data
+        return cgImage
     }
 
     static func renderPNGData(snapshot: AtriaWeeklyShareSnapshot,
@@ -1664,6 +2097,17 @@ enum AtriaShareCardRenderer {
     static func renderPNGData(snapshot: AtriaWeeklyShareSnapshot,
                               format: AtriaShareFormat,
                               canvasStyle: AtriaShareCanvasStyle) throws -> Data {
+        guard let data = pngData(from: try renderedCGImage(snapshot: snapshot,
+                                                           format: format,
+                                                           canvasStyle: canvasStyle)) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private static func renderedCGImage(snapshot: AtriaWeeklyShareSnapshot,
+                                        format: AtriaShareFormat,
+                                        canvasStyle: AtriaShareCanvasStyle) throws -> CGImage {
         let view = AtriaWeeklyShareCardView(snapshot: snapshot,
                                             format: format,
                                             canvasStyle: canvasStyle)
@@ -1672,11 +2116,10 @@ enum AtriaShareCardRenderer {
         renderer.proposedSize = ProposedViewSize(format.renderSize)
         renderer.isOpaque = true
         guard let image = renderer.uiImage,
-              let cgImage = image.cgImage,
-              let data = pngData(from: cgImage) else {
+              let cgImage = image.cgImage else {
             throw CocoaError(.fileWriteUnknown)
         }
-        return data
+        return cgImage
     }
 
     static func renderPNGData(snapshot: AtriaWorkoutShareSnapshot,
@@ -1689,20 +2132,92 @@ enum AtriaShareCardRenderer {
 
     static func renderPNGData(snapshot: AtriaWorkoutShareSnapshot,
                               format: AtriaShareFormat,
-                              canvasStyle: AtriaShareCanvasStyle) throws -> Data {
+                              canvasStyle: AtriaShareCanvasStyle,
+                              photoBackground: UIImage? = nil) throws -> Data {
+        guard let data = pngData(from: try renderedCGImage(snapshot: snapshot,
+                                                           format: format,
+                                                           canvasStyle: canvasStyle,
+                                                           photoBackground: photoBackground)) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private static func renderedCGImage(snapshot: AtriaWorkoutShareSnapshot,
+                                        format: AtriaShareFormat,
+                                        canvasStyle: AtriaShareCanvasStyle,
+                                        photoBackground: UIImage? = nil) throws -> CGImage {
         let view = AtriaWorkoutShareCardView(snapshot: snapshot,
                                              format: format,
-                                             canvasStyle: canvasStyle)
+                                             canvasStyle: canvasStyle,
+                                             photoBackground: photoBackground)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 3
         renderer.proposedSize = ProposedViewSize(format.renderSize)
         renderer.isOpaque = true
         guard let image = renderer.uiImage,
-              let cgImage = image.cgImage,
-              let data = pngData(from: cgImage) else {
+              let cgImage = image.cgImage else {
             throw CocoaError(.fileWriteUnknown)
         }
-        return data
+        return cgImage
+    }
+
+    private struct SendableCGImage: @unchecked Sendable {
+        let value: CGImage
+    }
+
+    private static func renderPNGDataForExport(snapshot: AtriaShareSnapshot,
+                                               format: AtriaShareFormat,
+                                               selectedStatIDs: Set<String>,
+                                               canvasStyle: AtriaShareCanvasStyle,
+                                               photoBackground: UIImage? = nil) async throws -> Data {
+        let image = SendableCGImage(value: try renderedCGImage(snapshot: snapshot,
+                                                               format: format,
+                                                               selectedStatIDs: selectedStatIDs,
+                                                               canvasStyle: canvasStyle,
+                                                               photoBackground: photoBackground))
+        return try await encodePNGForExport(image)
+    }
+
+    private static func renderPNGDataForExport(snapshot: AtriaWeeklyShareSnapshot,
+                                               format: AtriaShareFormat,
+                                               canvasStyle: AtriaShareCanvasStyle) async throws -> Data {
+        let image = SendableCGImage(value: try renderedCGImage(snapshot: snapshot,
+                                                               format: format,
+                                                               canvasStyle: canvasStyle))
+        return try await encodePNGForExport(image)
+    }
+
+    private static func renderPNGDataForExport(snapshot: AtriaWorkoutShareSnapshot,
+                                               format: AtriaShareFormat,
+                                               canvasStyle: AtriaShareCanvasStyle,
+                                               photoBackground: UIImage? = nil) async throws -> Data {
+        let image = SendableCGImage(value: try renderedCGImage(snapshot: snapshot,
+                                                               format: format,
+                                                               canvasStyle: canvasStyle,
+                                                               photoBackground: photoBackground))
+        return try await encodePNGForExport(image)
+    }
+
+    nonisolated private static func encodePNGForExport(_ image: SendableCGImage) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            guard let data = pngData(from: image.value) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            return data
+        }.value
+    }
+
+    nonisolated private static func writeExportData(_ data: Data, to url: URL) async throws {
+        try await Task.detached(priority: .utility) {
+            try data.write(to: url, options: .atomic)
+        }.value
+    }
+
+    nonisolated private static func readExportData(from url: URL) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try Data(contentsOf: url)
+        }.value
     }
 
     static func pngPixelSize(_ data: Data) -> CGSize? {
@@ -1758,7 +2273,7 @@ enum AtriaShareCardRenderer {
         }
     }
 
-    private static func pngData(from image: CGImage) -> Data? {
+    nonisolated private static func pngData(from image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
             return nil
@@ -1806,17 +2321,48 @@ enum AtriaShareCardRenderer {
         return "\(day)-\(format.rawValue)-\(canvasStyle.rawValue)-\(chips)"
     }
 
-    private static func workoutCacheKey(snapshot: AtriaWorkoutShareSnapshot,
-                                        format: AtriaShareFormat,
-                                        canvasStyle: AtriaShareCanvasStyle) -> String {
-        let day = Int(snapshot.date.timeIntervalSince1970 / 86_400)
-        let activity = snapshot.activity
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-        let pr = [snapshot.personalRecord?.exercise, snapshot.personalRecord?.set, snapshot.personalRecord?.badge]
-            .compactMap { $0?.lowercased().replacingOccurrences(of: " ", with: "-") }
-            .joined(separator: "-")
-        return "\(day)-workout-\(activity)-\(format.rawValue)-\(canvasStyle.rawValue)-\(pr)"
+    static func workoutCacheKey(snapshot: AtriaWorkoutShareSnapshot,
+                                format: AtriaShareFormat,
+                                canvasStyle: AtriaShareCanvasStyle) -> String {
+        let zones = snapshot.zoneMinutes.map {
+            "\($0.id):\($0.label):\($0.minutes):\($0.tintHex)"
+        }.joined(separator: "|")
+        let content = [
+            String(snapshot.date.timeIntervalSince1970), snapshot.activity,
+            snapshot.duration, snapshot.strain, snapshot.peakHeartRate,
+            snapshot.averageHeartRate ?? "", snapshot.distance ?? "", snapshot.pace ?? "",
+            snapshot.activitySystemImage, zones,
+            snapshot.routePoints.map {
+                "\($0.latitude):\($0.longitude):\($0.startsNewSegment ? 1 : 0)"
+            }.joined(separator: "|"),
+            snapshot.personalRecord?.exercise ?? "", snapshot.personalRecord?.set ?? "",
+            snapshot.personalRecord?.badge ?? "", format.rawValue, canvasStyle.rawValue
+        ].joined(separator: "\u{1f}")
+        return "workout-\(fileSafeSlug(snapshot.activity))-\(stableDigest(content))"
+    }
+
+    private static func fileSafeSlug(_ value: String) -> String {
+        let slug = value.lowercased().unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(String(scalar)) : "-"
+        }
+        return String(slug).split(separator: "-").joined(separator: "-").prefix(40).description
+    }
+
+    private static func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func htmlEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
     }
 
     private static func weeklyCacheKey(snapshot: AtriaWeeklyShareSnapshot,

@@ -51,18 +51,50 @@ enum AtriaStrengthLog {
             .flatMap { $0.strengthSets ?? [] }
             .filter { normalized($0.exercise) == normalized(exercise) }
         var records = StrengthPersonalRecords()
-        for set in sets {
-            if let weight = set.weightKg {
-                records.maxWeightKg = max(records.maxWeightKg ?? weight, weight)
-                if let reps = set.reps {
-                    records.maxRepsAtWeight[weight] = max(records.maxRepsAtWeight[weight] ?? reps, reps)
+        for set in sets { records.accept(set) }
+        return records
+    }
+
+    /// Builds the compact strength-only input used by interactive workout UI.
+    /// This is intentionally created once when a logger/review flow opens. The
+    /// live sheet must never retain or repeatedly scan the HR/RR-heavy lifetime
+    /// session archive just to render a set row.
+    static func historyProjection(in sessions: [SavedSession],
+                                  recentDaysPerExercise: Int = 12,
+                                  calendar: Calendar = .current) -> StrengthHistoryProjection {
+        let dayLimit = max(1, recentDaysPerExercise)
+        var recordsByExercise: [String: StrengthPersonalRecords] = [:]
+        var dailyBestByExercise: [String: [Date: LoggedSet]] = [:]
+
+        for session in sessions {
+            guard let sets = session.strengthSets, !sets.isEmpty else { continue }
+            for set in sets {
+                let key = normalized(set.exercise)
+                guard !key.isEmpty else { continue }
+                var records = recordsByExercise[key] ?? StrengthPersonalRecords()
+                records.accept(set)
+                recordsByExercise[key] = records
+
+                let day = calendar.startOfDay(for: set.t)
+                let existing = dailyBestByExercise[key]?[day]
+                if existing == nil || setScore(existing!) < setScore(set) {
+                    dailyBestByExercise[key, default: [:]][day] = set
                 }
             }
-            if let e1RM = estimatedOneRepMax(weightKg: set.weightKg, reps: set.reps) {
-                records.maxE1RM = max(records.maxE1RM ?? e1RM, e1RM)
-            }
         }
-        return records
+
+        var recentHistoryByExercise: [String: [StrengthHistoryDay]] = [:]
+        recentHistoryByExercise.reserveCapacity(dailyBestByExercise.count)
+        for (key, bestByDay) in dailyBestByExercise {
+            let recent = bestByDay
+                .map { StrengthHistoryDay(day: $0.key, best: $0.value) }
+                .sorted { $0.day < $1.day }
+                .suffix(dayLimit)
+            recentHistoryByExercise[key] = Array(recent)
+        }
+        return StrengthHistoryProjection(recordsByExercise: recordsByExercise,
+                                         recentHistoryByExercise: recentHistoryByExercise,
+                                         recentDaysPerExercise: dayLimit)
     }
 
     static func isPR(_ set: LoggedSet, against records: StrengthPersonalRecords) -> Bool {
@@ -127,7 +159,7 @@ enum AtriaStrengthLog {
         return overrides
     }
 
-    private static func normalized(_ value: String) -> String {
+    static func normalized(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -143,4 +175,58 @@ struct StrengthPersonalRecords: Equatable {
     var maxWeightKg: Double?
     var maxE1RM: Double?
     var maxRepsAtWeight: [Double: Int] = [:]
+
+    mutating func accept(_ set: LoggedSet) {
+        if let weight = set.weightKg {
+            maxWeightKg = max(maxWeightKg ?? weight, weight)
+            if let reps = set.reps {
+                maxRepsAtWeight[weight] = max(maxRepsAtWeight[weight] ?? reps, reps)
+            }
+        }
+        if let e1RM = AtriaStrengthLog.estimatedOneRepMax(weightKg: set.weightKg, reps: set.reps) {
+            maxE1RM = max(maxE1RM ?? e1RM, e1RM)
+        }
+    }
+
+    func including(_ sets: [LoggedSet], exercise: String) -> StrengthPersonalRecords {
+        let key = AtriaStrengthLog.normalized(exercise)
+        var result = self
+        for set in sets where AtriaStrengthLog.normalized(set.exercise) == key {
+            result.accept(set)
+        }
+        return result
+    }
+}
+
+struct StrengthHistoryDay: Equatable {
+    let day: Date
+    let best: LoggedSet
+}
+
+/// Small immutable projection passed into workout UI. PR aggregates cover all
+/// saved strength sets exactly; only display history is bounded.
+struct StrengthHistoryProjection: Equatable {
+    static let empty = StrengthHistoryProjection(recordsByExercise: [:],
+                                                 recentHistoryByExercise: [:],
+                                                 recentDaysPerExercise: 12)
+
+    private let recordsByExercise: [String: StrengthPersonalRecords]
+    private let recentHistoryByExercise: [String: [StrengthHistoryDay]]
+    let recentDaysPerExercise: Int
+
+    init(recordsByExercise: [String: StrengthPersonalRecords],
+         recentHistoryByExercise: [String: [StrengthHistoryDay]],
+         recentDaysPerExercise: Int) {
+        self.recordsByExercise = recordsByExercise
+        self.recentHistoryByExercise = recentHistoryByExercise
+        self.recentDaysPerExercise = recentDaysPerExercise
+    }
+
+    func records(for exercise: String) -> StrengthPersonalRecords {
+        recordsByExercise[AtriaStrengthLog.normalized(exercise)] ?? StrengthPersonalRecords()
+    }
+
+    func history(for exercise: String) -> [StrengthHistoryDay] {
+        recentHistoryByExercise[AtriaStrengthLog.normalized(exercise)] ?? []
+    }
 }

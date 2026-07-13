@@ -29,6 +29,7 @@ COUNTER_KEYS = [
     "atria.sample.rawNotifications",
     "atria.sample.acceptedSamples",
     "atria.keepalive.ticks",
+    "atria.radio.passiveR10ValidFrames",
 ]
 
 STATUS_KEYS = [
@@ -42,6 +43,11 @@ STATUS_KEYS = [
     "atria.keepalive.lastSilence",
     "atria.keepalive.ticks",
     "atria.radio.standardHROnly",
+    "atria.radio.passiveR10Status",
+    "atria.radio.passiveR10LastValidAt",
+    "atria.protectedR10.rollback",
+    "atria.protectedR10.streamSuppressed",
+    "atria.protectedR10.stableTransport",
     "atria.longWear.enabled",
     "atria.offlineSync.enabled",
     "atria.offlineSync.attempts",
@@ -155,6 +161,13 @@ def evaluate_sample(delta: dict[str, int], current: dict[str, Any], worn: bool) 
     flags: list[str] = []
     if worn and delta["atria.sample.rawNotifications"] <= 0:
         flags.append("NO_NEW_DATA")
+    if worn and current.get("atria.protectedR10.streamSuppressed"):
+        flags.append("R10_STREAM_SUPPRESSED")
+    if (worn
+            and current.get("atria.radio.standardHROnly")
+            and not current.get("atria.protectedR10.streamSuppressed")
+            and delta["atria.radio.passiveR10ValidFrames"] <= 0):
+        flags.append("NO_NEW_R10")
     if delta["atria.link.disconnects"] >= 3:
         flags.append("DISCONNECT_CHURN")
     if delta["atria.watchdog.hrContinuityCount"] >= 3:
@@ -177,6 +190,7 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
     accepted_deltas = [delta["atria.sample.acceptedSamples"] for delta in deltas]
     disconnect_deltas = [delta["atria.link.disconnects"] for delta in deltas]
     hr_continuity_deltas = [delta["atria.watchdog.hrContinuityCount"] for delta in deltas]
+    r10_deltas = [delta["atria.radio.passiveR10ValidFrames"] for delta in deltas]
     return {
         "status": "pass" if len(samples) > 1 and not flags else "fail",
         "samples": len(samples),
@@ -186,6 +200,7 @@ def summarize(samples: list[dict[str, Any]], worn: bool) -> dict[str, Any]:
         "min_accepted_sample_delta": min(accepted_deltas) if accepted_deltas else 0,
         "max_disconnect_delta": max(disconnect_deltas) if disconnect_deltas else 0,
         "max_hr_continuity_delta": max(hr_continuity_deltas) if hr_continuity_deltas else 0,
+        "min_r10_frame_delta": min(r10_deltas) if r10_deltas else 0,
         "latest": samples[-1]["current"] if samples else {},
     }
 
@@ -435,15 +450,16 @@ def main() -> int:
             handle.write(json.dumps(sample, sort_keys=True) + "\n")
         print(
             "ATRIA_REALTIME_BLE_SAMPLE "
-            f"index={index} rawNotif+{sample['delta']['whoop.sample.rawNotifications']} "
-            f"accepted+{sample['delta']['whoop.sample.acceptedSamples']} "
-            f"disc+{sample['delta']['whoop.link.disconnects']} "
-            f"hrCont+{sample['delta']['whoop.watchdog.hrContinuityCount']} "
-            f"keepaliveTicks+{sample['delta']['whoop.keepalive.ticks']} "
-            f"sample={sample['current'].get('whoop.sample.lastStatus')} "
-            f"lastAction={sample['current'].get('whoop.watchdog.lastAction')} "
-            f"keepalive={sample['current'].get('whoop.keepalive.lastAction')} "
-            f"keepaliveTicks={sample['current'].get('whoop.keepalive.ticks')} "
+            f"index={index} rawNotif+{sample['delta']['atria.sample.rawNotifications']} "
+            f"accepted+{sample['delta']['atria.sample.acceptedSamples']} "
+            f"disc+{sample['delta']['atria.link.disconnects']} "
+            f"hrCont+{sample['delta']['atria.watchdog.hrContinuityCount']} "
+            f"keepaliveTicks+{sample['delta']['atria.keepalive.ticks']} "
+            f"r10+{sample['delta']['atria.radio.passiveR10ValidFrames']} "
+            f"sample={sample['current'].get('atria.sample.lastStatus')} "
+            f"lastAction={sample['current'].get('atria.watchdog.lastAction')} "
+            f"keepalive={sample['current'].get('atria.keepalive.lastAction')} "
+            f"keepaliveTicks={sample['current'].get('atria.keepalive.ticks')} "
             f"events={','.join(sample_events_for_index) or 'none'} "
             f"flags={','.join(sample['flags']) or 'OK'}",
             flush=True,
@@ -495,6 +511,7 @@ def main() -> int:
         f"min_raw_notification_delta={summary['min_raw_notification_delta']} "
         f"max_disconnect_delta={summary['max_disconnect_delta']} "
         f"max_hr_continuity_delta={summary['max_hr_continuity_delta']} "
+        f"min_r10_frame_delta={summary['min_r10_frame_delta']} "
         f"flags={','.join(summary['flags']) or 'none'} "
         f"summary={summary_path}"
         f"{state_text}",

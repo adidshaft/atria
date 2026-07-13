@@ -14,8 +14,10 @@ final class AtriaAssistantAnswerTests: XCTestCase {
         let context = AtriaCoachContext(guidance: Coach.guide(recovery: 0, strain: 0),
                                         strain: 0, recoveryText: recoveryText, hrvText: "--",
                                         stressText: "--", baselineSamples: 0, sessionsCount: 0)
+        let store = SessionStore()
+        store.debugResetForEmptyAssistantAnswers()
         return AtriaAssistantScreen(
-            store: SessionStore(), context: context, coachPayload: nil,
+            store: store, context: context, coachPayload: nil,
             aiCoachSettings: AtriaAICoachSettings(), aiCoachHasAPIKey: false,
             onAICoachSettingsChange: { _ in }, onSaveAICoachAPIKey: { _ in }, onDeleteAICoachAPIKey: {})
     }
@@ -45,5 +47,17 @@ final class AtriaAssistantAnswerTests: XCTestCase {
             let result = screen.debugAnswer(promptID: prompt)
             XCTAssertFalse(result.provenance.isEmpty, "\(prompt) must state where its answer came from")
         }
+    }
+
+    func testAssistantReadsSessionStoreAtTapTimeWithoutObservingWholeStore() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaAssistantScreen.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("let store: SessionStore"))
+        XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
+        XCTAssertTrue(source.contains("exchanges.append(answer(for: prompt))"))
     }
 }

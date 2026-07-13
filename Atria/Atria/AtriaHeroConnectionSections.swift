@@ -358,6 +358,13 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
     let displayDeviceName: String
     let heartRateText: String
     let heartRateZone: Metrics.HeartRateZone?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaConnectedPulseStatusCard, rhs: AtriaConnectedPulseStatusCard) -> Bool {
+        lhs.displayDeviceName == rhs.displayDeviceName
+            && lhs.heartRateText == rhs.heartRateText
+            && lhs.heartRateZone == rhs.heartRateZone
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -392,8 +399,8 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
                         Text(heartRateText)
                             .font(.system(size: 38, weight: .bold, design: .rounded))
                             .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .animation(.snappy(duration: 0.3), value: heartRateText)
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                            .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: heartRateText)
                         Text("bpm")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)

@@ -2,6 +2,67 @@ import SwiftUI
 import UIKit
 import BackgroundTasks
 
+enum AtriaSceneResumePolicy {
+    static let inactiveCheckpointDelay: TimeInterval = 1.5
+
+    /// `.inactive` is commonly only the app-switch animation, Control Center,
+    /// or a system alert. Durable work belongs either after the state remains
+    /// inactive for a bounded grace period or on the real background edge.
+    static func shouldRunInactiveCheckpoint(isStillInactive: Bool,
+                                            elapsed: TimeInterval) -> Bool {
+        isStillInactive && elapsed >= inactiveCheckpointDelay
+    }
+
+    static func shouldStopMotionMonitor(isBackground: Bool) -> Bool {
+        isBackground
+    }
+}
+
+final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
+    static var supportedOrientations: UIInterfaceOrientationMask = .portrait
+
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        Self.supportedOrientations
+    }
+}
+
+/// Stable ownership for the two long-lived runtime services. Keeping these
+/// references in `@State` (rather than owning each service with `@StateObject`
+/// at the `App` scene root) prevents every BLE and session-store publish from
+/// invalidating the entire WindowGroup. Screens observe narrow projections or
+/// leaf objects where their values are actually rendered.
+@MainActor
+private final class AtriaAppDependencies {
+    let ble: AtriaBLEManager
+    let store: SessionStore
+
+    init() {
+        let ble = AtriaBLEManager()
+        let store = SessionStore()
+        ble.onSessionEnd = { [store] saved in store.add(saved) }
+        ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
+        self.ble = ble
+        self.store = store
+    }
+}
+
+private final class AtriaBackgroundTaskCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func complete(_ task: BGTask, success: Bool) {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        lock.unlock()
+        task.setTaskCompleted(success: success)
+    }
+}
+
 @main
 struct AtriaApp: App {
     private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
@@ -21,20 +82,20 @@ struct AtriaApp: App {
     }
 
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var ble: AtriaBLEManager
-    @StateObject private var store: SessionStore
+    @UIApplicationDelegateAdaptor(AtriaAppDelegate.self) private var appDelegate
+    @State private var dependencies: AtriaAppDependencies
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
+    @State private var foregroundBLETransitionTask: Task<Void, Never>?
     private let launchStartedAt = Date()
 
+    private var ble: AtriaBLEManager { dependencies.ble }
+    private var store: SessionStore { dependencies.store }
+
     init() {
-        let ble = AtriaBLEManager()
-        let store = SessionStore()
-        ble.onSessionEnd = { [store] saved in store.add(saved) }
-        ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
-        _ble = StateObject(wrappedValue: ble)
-        _store = StateObject(wrappedValue: store)
-        Self.registerBackgroundTasks(store: store, ble: ble)
+        let dependencies = AtriaAppDependencies()
+        _dependencies = State(initialValue: dependencies)
+        Self.registerBackgroundTasks(store: dependencies.store, ble: dependencies.ble)
     }
 
     var body: some Scene {
@@ -67,35 +128,58 @@ struct AtriaApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:
+                        foregroundBLETransitionTask?.cancel()
+                        foregroundBLETransitionTask = nil
                         recordScenePhase("background", reason: "scene_background")
+                        AtriaStrapCalibrationArchive.shared.flush()
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         ble.handleSceneBackgroundTransition(reason: "scene_background",
                                                             rest: store.baseline.restingInt ?? 60,
-                                                            maxHR: store.profile.maxHR)
+                                                            maxHR: store.profile.maxHR,
+                                                            flushRealtimeState: false)
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
+                        foregroundBLETransitionTask?.cancel()
+                        foregroundBLETransitionTask = nil
                         recordScenePhase("inactive", reason: "scene_inactive")
+                        AtriaStrapCalibrationArchive.shared.flush()
                         // Inactive is often a short transient state during gestures,
                         // alerts, and multitasking transitions. Keep the BLE manager in
                         // its current mode here; true backgrounding is handled by the
                         // `.background` case. Flipping modes on every app-switch gesture
                         // can restart long-wear supervision while the app is still live.
-                        ble.flushLifecycleRealtimeState(reason: "scene_inactive_checkpoint")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            let startedAt = Date()
+                            try? await Task.sleep(for: .seconds(AtriaSceneResumePolicy.inactiveCheckpointDelay))
                             guard !Task.isCancelled else { return }
-                            guard scenePhase == .inactive else { return }
+                            guard AtriaSceneResumePolicy.shouldRunInactiveCheckpoint(
+                                isStillInactive: scenePhase == .inactive,
+                                elapsed: Date().timeIntervalSince(startedAt)
+                            ) else { return }
+                            ble.flushLifecycleRealtimeState(reason: "scene_inactive_deferred_checkpoint")
                             store.requestPersistenceFlush(reason: "scene_inactive_deferred")
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
-                        ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
-                                                       maxHR: store.profile.maxHR)
+                        foregroundBLETransitionTask?.cancel()
+                        foregroundBLETransitionTask = Task { @MainActor in
+                            // Give SwiftUI one interactive frame before watchdog,
+                            // defaults and service-repair orchestration. The
+                            // existing CoreBluetooth subscription remains live.
+                            await Task.yield()
+                            try? await Task.sleep(for: .milliseconds(120))
+                            guard !Task.isCancelled, scenePhase == .active else { return }
+                            ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                                           maxHR: store.profile.maxHR)
+                            foregroundBLETransitionTask = nil
+                        }
                     @unknown default:
+                        foregroundBLETransitionTask?.cancel()
+                        foregroundBLETransitionTask = nil
                         recordScenePhase("unknown", reason: "scene_unknown")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
@@ -106,6 +190,7 @@ struct AtriaApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
+                    AtriaStrapCalibrationArchive.shared.flush()
                     ble.flushLifecycleRealtimeState(reason: "app_will_terminate")
                     store.flushScheduledPersistence(reason: "app_will_terminate")
                 }
@@ -116,8 +201,10 @@ struct AtriaApp: App {
                     recordScenePhase("active", reason: "ui_did_become_active")
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
-                    ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
-                                                    maxHR: store.profile.maxHR)
+                    // `scenePhase == .active` is the single owner of foreground
+                    // BLE restoration. Calling it again from this notification
+                    // duplicated journal restore, watchdog setup and notification
+                    // reassertion during the same app-switch transition.
                 }
         }
     }
@@ -143,13 +230,17 @@ struct AtriaApp: App {
                                              reason: String) {
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
+        let completion = AtriaBackgroundTaskCompletionGate()
         let work = Task { @MainActor in
             ble.flushActiveSessionJournal(reason: reason)
-            let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)
-            if syncStarted {
-                try? await Task.sleep(for: .seconds(185))
-            }
+            // Settlement and durable state come first. BGAppRefresh may receive
+            // only a short execution window, so it must never wait on backfill
+            // before finalizing already-collected overnight evidence.
             store.performBackgroundMaintenance(reason: reason)
+            guard !Task.isCancelled else {
+                completion.complete(task, success: false)
+                return
+            }
             // Refresh the shared widget snapshot so the morning recovery number
             // is on the Lock Screen before the app is ever opened.
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
@@ -157,13 +248,18 @@ struct AtriaApp: App {
             // only (app-refresh's budget is too short for a build+network
             // round trip); gated to the sleep window and once per day inside.
             if reason == "bg_processing" {
+                _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)
                 await AtriaResearchUploadQueue.runNightlyIfDue(store: store, reason: reason)
             }
-            task.setTaskCompleted(success: true)
+            guard !Task.isCancelled else {
+                completion.complete(task, success: false)
+                return
+            }
+            completion.complete(task, success: true)
         }
         task.expirationHandler = {
             work.cancel()
-            task.setTaskCompleted(success: false)
+            completion.complete(task, success: false)
         }
     }
 
@@ -182,15 +278,33 @@ struct AtriaApp: App {
             }
         }
 
-        ble.flushLifecycleRealtimeState(reason: reason)
         let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: "\(reason)_opportunistic")
-        store.requestPersistenceFlush(reason: reason)
-        scheduleBackgroundMaintenance(reason: reason)
-
-        if backgroundTask != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundTask)
+        // Scene backgrounding is a durability boundary, but lifecycle callbacks
+        // must never wait synchronously for JSON encoding or disk I/O. Keep the
+        // UIKit task alive until both the session snapshot and active journal
+        // have settled, allowing the return animation to remain interactive.
+        var sessionFlushFinished = false
+        var journalFlushFinished = false
+        func finishBackgroundTaskIfReady() {
+            guard sessionFlushFinished, journalFlushFinished else { return }
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+            AtriaDebugLog("ATRIADBG background_flush status=completed reason=%@ offline_sync_started=%d",
+                          reason,
+                          syncStarted ? 1 : 0)
         }
-        AtriaDebugLog("ATRIADBG background_flush status=ok reason=%@ offline_sync_started=%d",
+        store.flushScheduledPersistenceAsync(reason: reason) {
+            sessionFlushFinished = true
+            finishBackgroundTaskIfReady()
+        }
+        scheduleBackgroundMaintenance(reason: reason)
+        ble.flushLifecycleRealtimeState(reason: reason) {
+            journalFlushFinished = true
+            finishBackgroundTaskIfReady()
+        }
+        AtriaDebugLog("ATRIADBG background_flush status=awaiting_durable_writes reason=%@ offline_sync_started=%d timeout_s=3",
                       reason,
                       syncStarted ? 1 : 0)
     }
@@ -236,7 +350,12 @@ struct AtriaApp: App {
             ble.applyPersistentLongWearModeIfNeeded(rest: store.baseline.restingInt ?? 60,
                                                     maxHR: store.profile.maxHR)
         }
-        store.reconcileCanonicalSessionsFromBackupIfNeeded(reason: "fast_launch")
+        // Do not synchronously decode sessions.json and the latest backup on
+        // the main actor immediately after the first frame. Deferred loading
+        // already merges the durable store, and every add/checkpoint that can
+        // arrive before it completes performs the same lossless reconciliation
+        // before writing. The redundant fast-launch merge caused a visible
+        // freeze when reopening Atria with a multi-megabyte wear history.
         LocalNotificationScheduler.scheduleFastLaunchHealthDeviationDebugFixtureIfRequested(arguments: arguments)
         LocalNotificationScheduler.scheduleFastLaunchWeeklyReportDebugFixtureIfRequested(arguments: arguments)
         LocalNotificationScheduler.scheduleFastLaunchMorningSummaryDebugFixtureIfRequested(arguments: arguments)
@@ -287,7 +406,6 @@ struct AtriaApp: App {
         } else if reason == "ui_will_enter_foreground" {
             defaults.set(now, forKey: SceneDefaults.lastWillEnterForegroundAt)
         }
-        defaults.synchronize()
         AtriaDebugLog("ATRIADBG scene_phase phase=%@ reason=%@", phase, reason)
     }
 
@@ -352,6 +470,7 @@ struct AtriaApp: App {
             || arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
             || arguments.contains("--atria-analytics-calibration-audit")
             || arguments.contains("--atria-confirm-best-workout-candidate")
+            || arguments.contains("--atria-confirm-workout-window")
             || arguments.contains("--atria-confirm-best-sleep-candidate")
             || arguments.contains("--atria-schedule-notifications")
             || arguments.contains("--atria-test-health-deviation-notification")
@@ -453,8 +572,9 @@ struct AtriaApp: App {
         let needsHealthKitAudit = arguments.contains("--atria-healthkit-reference-audit")
         let needsHealthKitResetRebuild = arguments.contains("--atria-healthkit-reset-rebuild-atria-hr")
         let needsWorkoutConfirm = arguments.contains("--atria-confirm-best-workout-candidate")
+        let needsWorkoutWindowConfirm = arguments.contains("--atria-confirm-workout-window")
         let needsSleepConfirm = arguments.contains("--atria-confirm-best-sleep-candidate")
-        guard needsRR || needsRRUI || needsHR || needsHRUI || needsRawExport || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsSleepConfirm else { return }
+        guard needsRR || needsRRUI || needsHR || needsHRUI || needsRawExport || needsRRValidation || needsHRValidation || needsReferenceClear || needsHealthKit || needsHealthKitAudit || needsHealthKitResetRebuild || needsWorkoutConfirm || needsWorkoutWindowConfirm || needsSleepConfirm else { return }
         AtriaDebugLog("ATRIADBG launch_exports status=scheduled rr_reference=%d rr_reference_ui=%d hr_reference=%d hr_reference_ui=%d raw_export=%d rr_reference_validation=%d hr_reference_validation=%d reference_clear=%d healthkit=%d healthkit_reference_audit=%d healthkit_reset_rebuild=%d workout_confirm=%d sleep_confirm=%d",
                       needsRR ? 1 : 0,
                       needsRRUI ? 1 : 0,
@@ -488,6 +608,7 @@ struct AtriaApp: App {
             store.validateRRReferenceFromLaunchIfRequested(arguments: arguments)
             store.resetAndRebuildHealthKitHeartRateFromLaunchIfRequested(arguments: arguments)
             store.confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: arguments)
+            store.confirmWorkoutWindowFromLaunchIfRequested(arguments: arguments)
             store.confirmBestSleepCandidateFromLaunchIfRequested(arguments: arguments)
             store.exportHealthKitFromLaunchIfRequested(arguments: arguments)
             store.auditHealthKitHRReferenceFromLaunchIfRequested(arguments: arguments)

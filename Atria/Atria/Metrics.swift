@@ -53,7 +53,7 @@ enum Metrics {
 
     static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
                                         maxHR: Int,
-                                        maxGap: TimeInterval = 5 * 60) -> MaxHeartRateZoneSeconds {
+                                        maxGap: TimeInterval = AtriaAnalytics.Strain.maximumLoadEvidenceGap) -> MaxHeartRateZoneSeconds {
         AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, maxGap: maxGap)
     }
 
@@ -78,23 +78,28 @@ enum Metrics {
 
     static func heartRateZone(bpm: Int, rest: Int, max: Int) -> HeartRateZone? {
         guard bpm > 0, max > rest else { return nil }
-        let rawFraction = Double(bpm - rest) / Double(max - rest)
-        let fraction = Swift.min(Swift.max(rawFraction, 0), 1)
+        // User-visible Z0...Z5 labels must match workout targets, saved zone
+        // minutes, haptics, widgets, and Live Activity. Those surfaces use
+        // percent-of-max bands. HR reserve remains available here only as the
+        // physiological lens/strain input; it no longer changes the zone name.
+        let rawReserveFraction = Double(bpm - rest) / Double(max - rest)
+        let reserveFraction = Swift.min(Swift.max(rawReserveFraction, 0), 1)
+        let maxFraction = Double(bpm) / Double(max)
         let index: Int
-        switch fraction {
-        case ..<0.30: index = 0
-        case ..<0.50: index = 1
+        switch maxFraction {
+        case ..<0.50: index = 0
+        case ..<0.60: index = 1
         case ..<0.70: index = 2
         case ..<0.80: index = 3
         case ..<0.90: index = 4
         default: index = 5
         }
-        let names = ["Recovery", "Easy", "Endurance", "Tempo", "Hard", "Max"]
+        let names = ["Rest", "Warm-up", "Fat burn", "Aerobic", "Anaerobic", "Max"]
         return HeartRateZone(index: index,
                              title: "Zone \(index)",
                              shortLabel: "Z\(index)",
                              name: names[index],
-                             reserveFraction: fraction,
+                             reserveFraction: reserveFraction,
                              tint: heartRateZoneTint(index))
     }
 

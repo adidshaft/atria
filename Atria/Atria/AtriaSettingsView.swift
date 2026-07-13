@@ -51,11 +51,10 @@ struct AtriaSettingsView: View {
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
     @State private var storageFootprintTotal: String?
-    @State private var storageFootprintBreakdown: String?
     @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
     @AtriaDefault(AtriaNutritionContext.healthReadNutritionKey) private var useHealthNutrition = false
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
-    @AppStorage("atria.faceoff.displayName") private var faceOffDisplayName = ""
+    @AtriaDefault("atria.faceoff.displayName") private var faceOffDisplayName = ""
     @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
     @AtriaDefault(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
     @AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
@@ -92,12 +91,12 @@ struct AtriaSettingsView: View {
     // Section-group expansion state. Dotted keys go through @AtriaDefault, not
     // @AppStorage — see AtriaDefault.swift for the dotted-key UserDefaults KVO
     // storm this avoids (documented against AtriaHomeView's 0x8BADF00D crash).
-    @AtriaDefault("atria.settings.v2.expanded.profile") private var expandedProfile = false
-    @AtriaDefault("atria.settings.v2.expanded.strap") private var expandedStrap = false
-    @AtriaDefault("atria.settings.v2.expanded.notifications") private var expandedNotifications = false
-    @AtriaDefault("atria.settings.v2.expanded.data") private var expandedData = false
-    @AtriaDefault("atria.settings.v2.expanded.sharing") private var expandedSharing = false
-    @AtriaDefault("atria.settings.v2.expanded.developer") private var expandedDeveloper = false
+    @AtriaDefault("atria.settings.v3.expanded.profile") private var expandedProfile = false
+    @AtriaDefault("atria.settings.v3.expanded.strap") private var expandedStrap = false
+    @AtriaDefault("atria.settings.v3.expanded.notifications") private var expandedNotifications = false
+    @AtriaDefault("atria.settings.v3.expanded.data") private var expandedData = false
+    @AtriaDefault("atria.settings.v3.expanded.sharing") private var expandedSharing = false
+    @AtriaDefault("atria.settings.v3.expanded.developer") private var expandedDeveloper = false
 
     /// Support destinations are shown as text only. Atria's core stays local-first
     /// with no in-app network/browser clients, so contact details are surfaced for
@@ -188,6 +187,11 @@ struct AtriaSettingsView: View {
                 sharingPrivacyGroup
                 developerGroup
             }
+            // Keep the native grouped hierarchy, but avoid the oversized gaps
+            // that made six collapsed groups feel like six separate screens.
+            // Rows retain Apple's 44-point minimum interaction target.
+            .environment(\.defaultMinListRowHeight, 44)
+            .listSectionSpacing(.compact)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -197,7 +201,7 @@ struct AtriaSettingsView: View {
                 }
             }
         }
-        .onAppear { computeStorageFootprint() }
+        .task { await refreshStorageFootprint() }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
         // Keep the editable form in sync with the source of truth. Without this,
         // `draft` was seeded once at init; if the stored profile changed after
@@ -211,7 +215,29 @@ struct AtriaSettingsView: View {
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: heartRateBroadcast) { _, value in onUpdateHeartRateBroadcast(value) }
         .onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }
-        .onChange(of: targetSettingsSignature) { _, _ in normalizeAllTargets() }
+        .onChange(of: recoveryTargetSignature) { _, _ in normalizeRecoveryTargets() }
+        .onChange(of: strainTargetSignature) { _, _ in normalizeStrainTargets() }
+        .onChange(of: trainingLoadTargetSignature) { _, _ in normalizeTrainingLoadTargets() }
+        .onChange(of: activityTargetSignature) { _, _ in
+            normalizeStepsGoal()
+            normalizeCaloriesGoal()
+        }
+        .onChange(of: sleepTargetSignature) { _, _ in
+            normalizeSleepGoal()
+            normalizeSleepBaseNeed()
+            normalizeSleepEfficiencyTargets()
+        }
+        .onChange(of: baselineTargetSignature) { _, _ in
+            normalizeHRVTargets()
+            normalizeRestingTargets()
+            normalizeRespiratoryTargets()
+        }
+        .onChange(of: signalTargetSignature) { _, _ in
+            normalizeSkinTemperatureTargets()
+            normalizeBloodOxygenTargets()
+        }
+        .onChange(of: biologicalAgeTargetSignature) { _, _ in normalizeBiologicalAgeTargets() }
+        .onChange(of: vo2TargetSignature) { _, _ in normalizeVO2Targets() }
         .onChange(of: useHealthNutrition) { _, enabled in
             if enabled {
                 onNutritionHealthToggle?()
@@ -226,31 +252,24 @@ struct AtriaSettingsView: View {
 
     // MARK: Collapsible section groups
     //
-    // Regrouping only — each xxxSection below still owns its original rows,
-    // header and footer verbatim. These groups just fold multiple existing
-    // Sections under one DisclosureGroup so the settings list isn't one long
-    // flat scroll. Expansion state is remembered per section via @AtriaDefault
-    // (dotted keys, so no @AppStorage KVO storm).
+    // These groups fold related sections into a shorter settings list. Their
+    // labels already summarize the contents, so they intentionally omit a
+    // second explanatory footer. Expansion state is remembered via
+    // @AtriaDefault (dotted keys, so no @AppStorage KVO storm).
 
     private func settingsGroupLabel(_ title: String,
-                                    subtitle: String,
                                     systemImage: String,
                                     tint: Color) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: systemImage)
-                .font(.headline.weight(.bold))
+                .font(.subheadline.weight(.bold))
                 .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(AtriaIconTileBackground(cornerRadius: 9, tint: tint))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+                .frame(width: 26, height: 26)
+                .background(AtriaIconTileBackground(cornerRadius: 8, tint: tint))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
         }
+        .frame(minHeight: 36)
     }
 
     private var strapExpandedBinding: Binding<Bool> {
@@ -267,15 +286,21 @@ struct AtriaSettingsView: View {
                 todayLayoutSection
                 profileSection
                 appearanceSection
-                targetsSection
+                NavigationLink {
+                    Form {
+                        targetsSection
+                    }
+                    .navigationTitle("Advanced targets")
+                    .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("Advanced targets", systemImage: "scope")
+                }
+                .accessibilityHint("Customize recovery, strain, sleep, and health metric ranges")
             } label: {
-                settingsGroupLabel("Profile & Preferences",
-                                   subtitle: "Today layout, profile, appearance, targets",
+                settingsGroupLabel("Personal",
                                    systemImage: "person.crop.circle.fill",
                                    tint: .pink)
             }
-        } footer: {
-            Text("Open only when you want to tune how Atria feels and scores your day.")
         }
     }
 
@@ -287,28 +312,22 @@ struct AtriaSettingsView: View {
                 deviceSection
                 sensorAvailabilitySection
             } label: {
-                settingsGroupLabel("Strap & Sensors",
-                                   subtitle: "Connection, broadcast, device, sensor limits",
+                settingsGroupLabel("Strap",
                                    systemImage: "antenna.radiowaves.left.and.right.circle.fill",
                                    tint: .cyan)
             }
-        } footer: {
-            Text("Connection tools stay together so device troubleshooting is one stop.")
         }
-        }
+    }
 
     private var notificationsGroup: some View {
         Section {
             DisclosureGroup(isExpanded: $expandedNotifications) {
                 alertsSection
             } label: {
-                settingsGroupLabel("Notifications",
-                                   subtitle: "Haptics, strain targets, summaries",
+                settingsGroupLabel("Alerts",
                                    systemImage: "bell.badge.fill",
                                    tint: .orange)
             }
-        } footer: {
-            Text("Haptic alerts and on-device notification preferences.")
         }
     }
 
@@ -317,13 +336,10 @@ struct AtriaSettingsView: View {
             DisclosureGroup(isExpanded: dataExpandedBinding) {
                 dataSection
             } label: {
-                settingsGroupLabel("Data & Storage",
-                                   subtitle: "Backups, sync, Health export, local files",
+                settingsGroupLabel("Data",
                                    systemImage: "internaldrive.fill",
                                    tint: .blue)
             }
-        } footer: {
-            Text("Local backups, Apple Health export and sync, and on-device storage.")
         }
     }
 
@@ -335,13 +351,10 @@ struct AtriaSettingsView: View {
                 sparringRow
                 aboutSection
             } label: {
-                settingsGroupLabel("Privacy & Sharing",
-                                   subtitle: "Research sharing, leaderboard, support",
+                settingsGroupLabel("Privacy & About",
                                    systemImage: "hand.raised.fill",
                                    tint: .green)
             }
-        } footer: {
-            Text("Research bundle sharing, app version, and support contact.")
         }
     }
 
@@ -404,68 +417,49 @@ struct AtriaSettingsView: View {
                     researchValidationSection
                 } label: {
                     settingsGroupLabel("Developer",
-                                       subtitle: "Internal validation tools",
                                        systemImage: "hammer.fill",
                                        tint: .secondary)
                 }
-            } footer: {
-                Text("Internal validation tools, visible only in developer mode.")
             }
         }
     }
 
-    private var targetSettingsSignature: String {
-        [
-            recoveryGreenLower,
-            recoveryYellowLower,
-            strainGreenBand,
-            strainYellowBand,
-            loadACWRWatchLow,
-            loadACWRWatchHigh,
-            loadACWRBadLow,
-            loadACWRBadHigh,
-            loadMonotonyWatch,
-            loadMonotonyBad,
-            Double(stepsGoal),
-            Double(caloriesGoal),
-            sleepGoalHours,
-            sleepBaseNeedHours,
-            sleepEfficiencyGreenLower,
-            sleepEfficiencyYellowLower,
-            hrvGreenRatio,
-            hrvYellowRatio,
-            Double(restingGreenDelta),
-            Double(restingYellowDelta),
-            respiratoryGreenDelta,
-            respiratoryYellowDelta,
-            skinTemperatureGreenDelta,
-            skinTemperatureYellowDelta,
-            Double(bloodOxygenCandidateGoal),
-            Double(biologicalAgeGreenOlderDelta),
-            Double(biologicalAgeYellowOlderDelta),
-            vo2GreenDelta,
-            vo2RedDelta,
-        ]
-        .map { String(format: "%.3f", $0) }
-        .joined(separator: "|")
+    private var recoveryTargetSignature: [Double] {
+        [recoveryGreenLower, recoveryYellowLower]
     }
 
-    private func normalizeAllTargets() {
-        normalizeRecoveryTargets()
-        normalizeStrainTargets()
-        normalizeTrainingLoadTargets()
-        normalizeStepsGoal()
-        normalizeCaloriesGoal()
-        normalizeSleepGoal()
-        normalizeSleepBaseNeed()
-        normalizeSleepEfficiencyTargets()
-        normalizeHRVTargets()
-        normalizeRestingTargets()
-        normalizeRespiratoryTargets()
-        normalizeSkinTemperatureTargets()
-        normalizeBloodOxygenTargets()
-        normalizeBiologicalAgeTargets()
-        normalizeVO2Targets()
+    private var strainTargetSignature: [Double] {
+        [strainGreenBand, strainYellowBand]
+    }
+
+    private var trainingLoadTargetSignature: [Double] {
+        [loadACWRWatchLow, loadACWRWatchHigh, loadACWRBadLow, loadACWRBadHigh,
+         loadMonotonyWatch, loadMonotonyBad]
+    }
+
+    private var activityTargetSignature: [Double] {
+        [Double(stepsGoal), Double(caloriesGoal)]
+    }
+
+    private var sleepTargetSignature: [Double] {
+        [sleepGoalHours, sleepBaseNeedHours, sleepEfficiencyGreenLower, sleepEfficiencyYellowLower]
+    }
+
+    private var baselineTargetSignature: [Double] {
+        [hrvGreenRatio, hrvYellowRatio, Double(restingGreenDelta), Double(restingYellowDelta),
+         respiratoryGreenDelta, respiratoryYellowDelta]
+    }
+
+    private var signalTargetSignature: [Double] {
+        [skinTemperatureGreenDelta, skinTemperatureYellowDelta, Double(bloodOxygenCandidateGoal)]
+    }
+
+    private var biologicalAgeTargetSignature: [Double] {
+        [Double(biologicalAgeGreenOlderDelta), Double(biologicalAgeYellowOlderDelta)]
+    }
+
+    private var vo2TargetSignature: [Double] {
+        [vo2GreenDelta, vo2RedDelta]
     }
 
     private func normalizeRecoveryTargets() {
@@ -543,33 +537,69 @@ struct AtriaSettingsView: View {
     }
 
     private func resetAllTargetZones() {
+        resetRecoveryTargets()
+        resetStrainTargets()
+        resetTrainingLoadTargets()
+        resetActivityTargets()
+        resetSleepTargets()
+        resetBaselineTargets()
+        resetSignalTargets()
+        resetFitnessAgeTargets()
+        resetVO2TrendTargets()
+    }
+
+    private func resetRecoveryTargets() {
         recoveryGreenLower = 67
         recoveryYellowLower = 34
+    }
+
+    private func resetStrainTargets() {
         strainGreenBand = 1.5
         strainYellowBand = 3.0
+    }
+
+    private func resetTrainingLoadTargets() {
         loadACWRWatchLow = 0.80
         loadACWRWatchHigh = 1.30
         loadACWRBadLow = 0.60
         loadACWRBadHigh = 1.50
         loadMonotonyWatch = 2.0
         loadMonotonyBad = 2.5
+    }
+
+    private func resetActivityTargets() {
         stepsGoal = 8_000
         caloriesGoal = 500
+    }
+
+    private func resetSleepTargets() {
         sleepGoalHours = 8.0
         sleepBaseNeedHours = 8.0
         sleepEfficiencyGreenLower = 90
         sleepEfficiencyYellowLower = 80
+    }
+
+    private func resetBaselineTargets() {
         hrvGreenRatio = 0.95
         hrvYellowRatio = 0.85
         restingGreenDelta = 3
         restingYellowDelta = 7
+    }
+
+    private func resetSignalTargets() {
         respiratoryGreenDelta = 1.5
         respiratoryYellowDelta = 3.0
         skinTemperatureGreenDelta = 0.5
         skinTemperatureYellowDelta = 1.0
         bloodOxygenCandidateGoal = 8
+    }
+
+    private func resetFitnessAgeTargets() {
         biologicalAgeGreenOlderDelta = 0
         biologicalAgeYellowOlderDelta = 3
+    }
+
+    private func resetVO2TrendTargets() {
         vo2GreenDelta = 0.2
         vo2RedDelta = -0.2
     }
@@ -578,34 +608,14 @@ struct AtriaSettingsView: View {
 
     private var appearanceSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 14) {
-                // Standard native iOS 26 segmented control (text-only keeps every
-                // segment legible; the icon lives in the status row below).
-                Picker("Appearance", selection: $appearanceMode) {
-                    Text("System").tag("system")
-                    Text("Light").tag("light")
-                    Text("Dark").tag("dark")
-                }
-                .pickerStyle(.segmented)
-
-                HStack(spacing: 8) {
-                    Image(systemName: appearanceMode == "dark" ? "moon.stars.fill" : (appearanceMode == "light" ? "sun.max.fill" : "circle.lefthalf.filled"))
-                        .imageScale(.small)
-                    Text(appearanceMode == "system" ? "Using system appearance" : "Using \(appearanceMode) appearance")
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(.secondary)
+            Picker("Appearance", selection: $appearanceMode) {
+                Text("System").tag("system")
+                Text("Light").tag("light")
+                Text("Dark").tag("dark")
             }
-            .frame(maxWidth: .infinity)
-            .padding(14)
-            .atriaInsetCard(tint: .purple)
+            .pickerStyle(.segmented)
         } header: {
             Text("Appearance")
-        } footer: {
-            Text("Native theme controls.")
         }
     }
 
@@ -738,18 +748,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    recoveryGreenLower = 67
-                    recoveryYellowLower = 34
-                } label: {
-                    Label("Reset to recommended", systemImage: "arrow.counterclockwise")
-                }
-                .atriaCardAction(tint: .green)
                 } label: {
                     targetGroupHeader(title: "Recovery",
                                   subtitle: target.summaryText,
                                   systemImage: "gauge.with.dots.needle.67percent",
-                                  tint: .green)
+                                  tint: .green,
+                                  resetTitle: "Reset to recommended",
+                                  onReset: resetRecoveryTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Strain")) {
@@ -768,18 +773,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    strainGreenBand = 1.5
-                    strainYellowBand = 3.0
-                } label: {
-                    Label("Reset strain band", systemImage: "figure.run")
-                }
-                .atriaCardAction(tint: .orange)
                 } label: {
                     targetGroupHeader(title: "Strain",
                                   subtitle: "Today's strain goal, scaled to how recovered you are.",
-                                  systemImage: "figure.run",
-                                  tint: .orange)
+                                  systemImage: "bolt.fill",
+                                  tint: .orange,
+                                  resetTitle: "Reset strain band",
+                                  onReset: resetStrainTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Training load")) {
@@ -826,27 +826,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    loadACWRWatchLow = 0.80
-                    loadACWRWatchHigh = 1.30
-                    loadACWRBadLow = 0.60
-                    loadACWRBadHigh = 1.50
-                    loadMonotonyWatch = 2.0
-                    loadMonotonyBad = 2.5
-                } label: {
-                    Label("Reset training-load target", systemImage: "chart.bar.xaxis")
-                }
-                .atriaCardAction(tint: .orange)
-
-                Text("Training Load uses ACWR and monotony from saved strain. These controls tune readiness colors and guidance, not the underlying history.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     targetGroupHeader(title: "Training load",
                                   subtitle: "Warns when training ramps up too fast or gets too repetitive.",
                                   systemImage: "chart.bar.xaxis",
-                                  tint: .orange)
+                                  tint: .orange,
+                                  resetTitle: "Reset training-load target",
+                                  onReset: resetTrainingLoadTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Activity")) {
@@ -865,18 +851,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    stepsGoal = 8_000
-                    caloriesGoal = 500
-                } label: {
-                    Label("Reset activity targets", systemImage: "figure.walk.motion")
-                }
-                .atriaCardAction(tint: .green)
                 } label: {
                     targetGroupHeader(title: "Activity",
                                   subtitle: "Your daily step and active-calorie goals.",
                                   systemImage: "figure.walk.motion",
-                                  tint: .green)
+                                  tint: .green,
+                                  resetTitle: "Reset activity targets",
+                                  onReset: resetActivityTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Sleep")) {
@@ -909,20 +890,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    sleepGoalHours = 8.0
-                    sleepBaseNeedHours = 8.0
-                    sleepEfficiencyGreenLower = 90
-                    sleepEfficiencyYellowLower = 80
-                } label: {
-                    Label("Reset sleep targets", systemImage: "bed.double.fill")
-                }
-                .atriaCardAction(tint: .cyan)
                 } label: {
                     targetGroupHeader(title: "Sleep",
                                   subtitle: "Your nightly sleep goal and how restful your nights were.",
                                   systemImage: "bed.double.fill",
-                                  tint: .cyan)
+                                  tint: .cyan,
+                                  resetTitle: "Reset sleep targets",
+                                  onReset: resetSleepTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Personal baselines")) {
@@ -955,20 +929,13 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    hrvGreenRatio = 0.95
-                    hrvYellowRatio = 0.85
-                    restingGreenDelta = 3
-                    restingYellowDelta = 7
-                } label: {
-                    Label("Reset baseline targets", systemImage: "heart.text.square.fill")
-                }
-                .atriaCardAction(tint: .pink)
                 } label: {
                     targetGroupHeader(title: "Personal baselines",
                                   subtitle: "Your HRV and resting-heart-rate ranges, set once Atria learns your normal.",
                                   systemImage: "heart.text.square.fill",
-                                  tint: .pink)
+                                  tint: .pink,
+                                  resetTitle: "Reset baseline targets",
+                                  onReset: resetBaselineTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Sleep-only signals")) {
@@ -1008,18 +975,6 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    respiratoryGreenDelta = 1.5
-                    respiratoryYellowDelta = 3.0
-                    skinTemperatureGreenDelta = 0.5
-                    skinTemperatureYellowDelta = 1.0
-                    bloodOxygenCandidateGoal = 8
-                } label: {
-                    // Static handoff compatibility marker for the old label: Reset research targets
-                    Label("Reset signal targets", systemImage: "waveform.path.ecg")
-                }
-                .atriaCardAction(tint: .teal)
-
                 Text("These bands tune sleep-only deviations and candidate-frame evidence. They do not turn these signals into validated SpO2 or absolute body-temperature readings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1028,7 +983,9 @@ struct AtriaSettingsView: View {
                     targetGroupHeader(title: "Sleep-only signals",
                                   subtitle: "Breathing rate, skin temperature, and blood-oxygen ranges.",
                                   systemImage: "waveform.path.ecg",
-                                  tint: .teal)
+                                  tint: .teal,
+                                  resetTitle: "Reset signal targets",
+                                  onReset: resetSignalTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Fitness age")) {
@@ -1047,14 +1004,6 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    biologicalAgeGreenOlderDelta = 0
-                    biologicalAgeYellowOlderDelta = 3
-                } label: {
-                    Label("Reset fitness-age target", systemImage: "figure.stand")
-                }
-                .atriaCardAction(tint: .purple)
-
                 Text("Fitness age is estimated from RHR, lnRMSSD, weekly zone-2+ minutes, and sleep consistency. It is not a medical measurement; these bands only tune younger/older color guidance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1063,7 +1012,9 @@ struct AtriaSettingsView: View {
                     targetGroupHeader(title: "Fitness age",
                                   subtitle: "How much younger or older your fitness looks than your age.",
                                   systemImage: "figure.stand",
-                                  tint: .purple)
+                                  tint: .purple,
+                                  resetTitle: "Reset fitness-age target",
+                                  onReset: resetFitnessAgeTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("VO2max")) {
@@ -1082,36 +1033,19 @@ struct AtriaSettingsView: View {
                     }
                 }
 
-                Button {
-                    vo2GreenDelta = 0.2
-                    vo2RedDelta = -0.2
-                } label: {
-                    Label("Reset VO2 trend target", systemImage: "lungs.fill")
-                }
-                .atriaCardAction(tint: .blue)
                 } label: {
                     targetGroupHeader(title: "VO2max",
                                   subtitle: "How much your VO2max must change to shift color.",
                                   systemImage: "lungs.fill",
-                                  tint: .blue)
-                }
-
-
-                HStack(spacing: 10) {
-                    Image(systemName: "heart.text.square.fill")
-                        .foregroundStyle(.pink)
-                    Text("HRV and resting HR zones personalize from your trusted \(PersonalBaseline.trustedMinimumSamples)-sample baseline before warning.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                                  tint: .blue,
+                                  resetTitle: "Reset VO2 trend target",
+                                  onReset: resetVO2TrendTargets)
                 }
             }
-            .padding(14)
-            .atriaInsetCard(tint: .green)
         } header: {
             Text("Targets & zones")
         } footer: {
-            Text("Recovery uses recommended 67/34 zones by default. Guidance is general wellness information, not medical advice.")
+            Text("General wellness, not medical advice.")
         }
     }
 
@@ -1131,13 +1065,16 @@ struct AtriaSettingsView: View {
     private func targetGroupHeader(title: String,
                                    subtitle: String,
                                    systemImage: String,
-                                   tint: Color) -> some View {
+                                   tint: Color,
+                                   resetTitle: String,
+                                   onReset: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(tint)
                 .frame(width: 38, height: 38)
                 .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -1150,10 +1087,24 @@ struct AtriaSettingsView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.78)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title). \(subtitle)")
 
             Spacer(minLength: 0)
+
+            Menu {
+                Button(action: onReset) {
+                    Label(resetTitle, systemImage: "arrow.counterclockwise")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(resetTitle)
+            .accessibilityHint("Restores the recommended \(title.lowercased()) values")
         }
-        .accessibilityElement(children: .combine)
     }
 
     private var alertsSection: some View {
@@ -1195,9 +1146,8 @@ struct AtriaSettingsView: View {
 
             Toggle(isOn: $useHealthNutrition) {
                 Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
-                Text("Read-only context from your food app: calories, macros, water, caffeine, and alcohol. Atria never asks you to log meals.")
             }
-            .accessibilityHint("Allows Atria to read nutrition samples from Apple Health when you grant permission.")
+            .accessibilityHint("Read-only calories, macros, water, caffeine, and alcohol from Apple Health when you grant permission. Atria never asks you to log meals.")
 
             if let onSyncMissedData {
                 Button {
@@ -1208,27 +1158,15 @@ struct AtriaSettingsView: View {
                         syncTapped = false
                     }
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label(syncTapped ? "Syncing from strap…" : "Sync missed data from strap",
-                              systemImage: syncTapped ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
-                        Text("Pulls data your strap stored while disconnected or while the app was closed. Briefly pauses live tracking.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Label(syncTapped ? "Syncing from strap…" : "Sync missed data from strap",
+                          systemImage: syncTapped ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
                 }
                 .disabled(syncTapped)
+                .accessibilityHint("Pulls data stored by the strap while disconnected or closed. Briefly pauses live tracking.")
             }
             storageFootprintRow
-            settingsInfoRow(icon: "lock.shield.fill", tint: .green,
-                            title: "Stays on this device",
-                            detail: "No account, no cloud, no subscription. Your data never leaves your phone.")
-            settingsInfoRow(icon: "hand.raised.fill", tint: .orange,
-                            title: "Keep Atria running",
-                            detail: "Background tracking continues when you switch apps. If you swipe Atria closed, iOS pauses tracking until you reopen it — your strap fills in the gap on reconnect.")
         } header: {
             Text("Your data")
-        } footer: {
-            Text("Local ownership, free export.")
         }
     }
 
@@ -1237,23 +1175,30 @@ struct AtriaSettingsView: View {
             settingsInfoRow(
                 icon: "internaldrive.fill",
                 tint: .blue,
-                title: "On-device storage" + (storageFootprintTotal.map { " · \($0)" } ?? ""),
-                detail: "Atria keeps every heartbeat on this phone: raw detail for recent days, then per-minute summaries, and daily scores forever. Workouts and sleeps you confirm keep full beat-by-beat data permanently and stay exportable. Nothing leaves your phone."
+                title: "Storage" + (storageFootprintTotal.map { " · \($0)" } ?? ""),
+                detail: "Stored locally and exportable."
             )
-            if let breakdown = storageFootprintBreakdown {
-                Text(breakdown)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 38)
-            }
         }
     }
 
-    /// Cheap `FileManager` attribute lookups only — never reads file contents.
-    /// Recomputed once per Settings appearance so the row reflects current disk usage.
-    private func computeStorageFootprint() {
+    private struct StorageFootprint: Sendable {
+        let totalText: String
+        let sessionsBytes: Int64
+        let coldSessionsBytes: Int64
+        let archiveBaseBytes: Int64
+        let segmentsBytes: Int64
+        let rollupsBytes: Int64
+
+        var totalBytes: Int64 {
+            sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+        }
+    }
+
+    /// Attribute-only filesystem work, kept off the main actor so opening
+    /// Settings remains immediate even when the archive has many segments.
+    nonisolated private static func storageFootprint() -> StorageFootprint? {
         let fileManager = FileManager.default
-        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
 
         func size(of url: URL) -> Int64 {
             guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return 0 }
@@ -1286,13 +1231,29 @@ struct AtriaSettingsView: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         let totalText = formatter.string(fromByteCount: totalBytes)
-        storageFootprintTotal = totalText
-        storageFootprintBreakdown = "Sessions \(formatter.string(fromByteCount: sessionsBytes + coldSessionsBytes)) · "
-            + "Strap archive \(formatter.string(fromByteCount: archiveBaseBytes + segmentsBytes)) · "
-            + "Daily scores \(formatter.string(fromByteCount: rollupsBytes))"
+        return StorageFootprint(totalText: totalText,
+                                sessionsBytes: sessionsBytes,
+                                coldSessionsBytes: coldSessionsBytes,
+                                archiveBaseBytes: archiveBaseBytes,
+                                segmentsBytes: segmentsBytes,
+                                rollupsBytes: rollupsBytes)
+    }
+
+    private func refreshStorageFootprint() async {
+        let footprint = await Task.detached(priority: .utility) {
+            Self.storageFootprint()
+        }.value
+        guard !Task.isCancelled, let footprint else { return }
+
+        storageFootprintTotal = footprint.totalText
 
         AtriaDebugLog("ATRIADBG settings_storage_footprint status=ok sessions_bytes=%d cold_sessions_bytes=%d archive_bytes=%d segments_bytes=%d rollups_bytes=%d total_bytes=%d",
-                       sessionsBytes, coldSessionsBytes, archiveBaseBytes, segmentsBytes, rollupsBytes, totalBytes)
+                       footprint.sessionsBytes,
+                       footprint.coldSessionsBytes,
+                       footprint.archiveBaseBytes,
+                       footprint.segmentsBytes,
+                       footprint.rollupsBytes,
+                       footprint.totalBytes)
     }
 
     private var backupArchiveRow: some View {
@@ -1403,8 +1364,6 @@ struct AtriaSettingsView: View {
                     .listRowBackground(Color.clear)
             } header: {
                 Text("Research & Validation")
-            } footer: {
-                Text("Developer-only tools for reference files, raw sensor review, probes, and validation gates.")
             }
         }
     }
@@ -1461,57 +1420,58 @@ struct AtriaSettingsView: View {
                 Button {
                     onCustomizeToday()
                 } label: {
-                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                        .frame(maxWidth: .infinity)
+                    Label("At a glance", systemImage: "rectangle.3.group")
                 }
-                .atriaCardAction(prominent: true, tint: Metrics.electricGreen)
-                .accessibilityLabel("Customize Today")
-            }
+                .accessibilityLabel("Customize At a glance")
+                .accessibilityHint("Choose, resize, and reorder the metrics on Today")
+            } else {
+                // Compatibility fallback for hosts that do not provide the
+                // dedicated drag-and-drop customizer.
+                ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
+                    HStack(spacing: 10) {
+                        Toggle(isOn: todayBinding(metric)) {
+                            Label(metric.label, systemImage: metric.systemImage)
+                        }
 
-            ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
-                HStack(spacing: 10) {
-                    Toggle(isOn: todayBinding(metric)) {
-                        Label(metric.label, systemImage: metric.systemImage)
-                    }
+                        Spacer(minLength: 0)
 
-                    Spacer(minLength: 0)
+                        Menu {
+                            Button {
+                                todayOrderCSV = AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)
+                            } label: {
+                                Label("Move up", systemImage: "arrow.up")
+                            }
+                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
 
-                    HStack(spacing: 12) {
-                        Button {
-                            todayOrderCSV = AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)
+                            Button {
+                                todayOrderCSV = AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)
+                            } label: {
+                                Label("Move down", systemImage: "arrow.down")
+                            }
+                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)
                         } label: {
-                            Image(systemName: "chevron.up")
-                                .frame(width: 40, height: 40)
+                            Image(systemName: "ellipsis")
+                                .frame(width: 44, height: 44)
                                 .contentShape(Rectangle())
                         }
-                        .atriaCardAction(prominent: false, tint: .secondary)
-                        .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
-                        .accessibilityLabel("Move \(metric.label) up")
-
-                        Button {
-                            todayOrderCSV = AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)
-                        } label: {
-                            Image(systemName: "chevron.down")
-                                .frame(width: 40, height: 40)
-                                .contentShape(Rectangle())
-                        }
-                        .atriaCardAction(prominent: false, tint: .secondary)
-                        .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)
-                        .accessibilityLabel("Move \(metric.label) down")
+                        .accessibilityLabel("Reorder \(metric.label)")
                     }
                 }
             }
 
-            Button(action: resetTodayLayout) {
-                Label("Reset Today layout", systemImage: "arrow.counterclockwise")
-                    .frame(maxWidth: .infinity)
-            }
-            .atriaCardAction(prominent: false, tint: .secondary)
-            .accessibilityLabel("Reset Today layout")
         } header: {
-            Text("Today screen")
-        } footer: {
-            Text("Choose, reorder, and reset the cards shown at a glance.")
+            HStack {
+                Text("Today screen")
+                Spacer(minLength: 8)
+                Button(action: resetTodayLayout) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reset Today layout")
+                .accessibilityHint("Restores the default cards, order, and sizes")
+            }
         }
     }
 
@@ -1579,8 +1539,8 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .purple,
                             title: batterySaver ? "Heart-rate only" : "Full sensor mode",
                             detail: batterySaver
-                                ? "Uses the strap's low-power heart-rate stream. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
-                                : "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep detail. Uses more strap battery.")
+                                ? "Uses the strap's low-power heart-rate stream in the background. Background strap steps pause; Atria never substitutes phone motion. HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
+                                : "Keeps strap steps and richer streams available in the background. Uses more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
         } header: {
@@ -1654,17 +1614,24 @@ struct AtriaSettingsView: View {
     }
 
     private func settingsInfoRow(icon: String, tint: Color, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.body)
-                .foregroundStyle(tint)
-                .frame(width: 26)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.body)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        DisclosureGroup {
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 38)
+        } label: {
+            Label {
+                Text(title)
+                    .font(.body)
+            } icon: {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(tint)
+                    .frame(width: 26)
             }
         }
+        .accessibilityHint(detail)
     }
 
     private var appVersion: String {

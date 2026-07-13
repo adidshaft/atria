@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Atria
 
@@ -100,5 +101,137 @@ final class AtriaRoutineTests: XCTestCase {
         XCTAssertEqual(AtriaRoutineComputer.currentStreak([.kept, .kept, .noData, .kept, .kept]), 2)
         // Upcoming (future) days don't count as a break -- they haven't happened.
         XCTAssertEqual(AtriaRoutineComputer.currentStreak([.kept, .kept, .upcoming, .upcoming]), 2)
+    }
+}
+
+@MainActor
+final class AtriaRoutineProjectionStoreTests: XCTestCase {
+    private func summary(hasAnyHistory: Bool = false) -> AtriaRoutineSummary {
+        AtriaRoutineSummary(isoYear: 2026,
+                            isoWeek: 28,
+                            targets: [],
+                            hasAnyHistory: hasAnyHistory)
+    }
+
+    func testEqualSummaryRefreshDoesNotPublish() {
+        let initial = summary()
+        let projection = AtriaRoutineProjectionStore(summary: initial)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refresh(initial))
+        XCTAssertEqual(publications, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testChangedSummaryPublishesExactlyOnce() {
+        let projection = AtriaRoutineProjectionStore(summary: summary())
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertTrue(projection.refresh(summary(hasAnyHistory: true)))
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testUnrelatedSessionStoreSignalDoesNotPublishRoutineSummary() {
+        let sessionStore = SessionStore()
+        let projection = AtriaRoutineProjectionStore(store: sessionStore)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        sessionStore.objectWillChange.send()
+
+        XCTAssertEqual(publications, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testJournalRevisionImmediatelyRefreshesJournalRoutineState() {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 7, day: 8))!
+        let initial = AtriaRoutineComputer.summary(rollups: [],
+                                                   journalEntries: [],
+                                                   now: now,
+                                                   calendar: calendar)
+        let projection = AtriaRoutineProjectionStore(summary: initial)
+        let entry = BehaviorJournalEntry(id: "routine-projection-journal",
+                                         day: now,
+                                         createdAt: now,
+                                         tags: [.sleep])
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertTrue(projection.refreshForJournalRevision(1,
+                                                           rollups: [],
+                                                           journalEntries: [entry],
+                                                           now: now))
+        let journal = projection.summary.targets.first { $0.kind == .journal }
+        XCTAssertEqual(journal?.week[2].state, .kept)
+        XCTAssertEqual(publications, 1)
+        XCTAssertFalse(projection.refreshForJournalRevision(1,
+                                                            rollups: [],
+                                                            journalEntries: [],
+                                                            now: now),
+                       "The same revision must not recompute or publish")
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testRoutineCardUsesNarrowProjectionAndJournalRevisionGate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaRoutineCard.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
+        XCTAssertTrue(source.contains("@StateObject private var projectionStore: AtriaRoutineProjectionStore"))
+        XCTAssertTrue(source.contains("store.$dailyRollupHistory"))
+        XCTAssertTrue(source.contains("store.$dashboardRevision"))
+        XCTAssertTrue(source.contains("refreshForJournalRevision(store.behaviorJournalRevision"))
+        XCTAssertTrue(source.contains("NotificationCenter.default.publisher(for: .NSCalendarDayChanged)"))
+    }
+}
+
+@MainActor
+final class AtriaPlanProjectionStoreTests: XCTestCase {
+    private func plan(offset: TimeInterval = 0) -> WeeklyPlan {
+        WeeklyPlan(rollups: [],
+                   now: Date(timeIntervalSinceReferenceDate: 800_000_000 + offset))
+    }
+
+    func testEqualWeeklyPlanRefreshDoesNotPublish() {
+        let initial = plan()
+        let projection = AtriaPlanProjectionStore(weeklyPlan: initial)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refresh(initial))
+        XCTAssertEqual(publications, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testChangedWeeklyPlanPublishesExactlyOnce() {
+        let projection = AtriaPlanProjectionStore(weeklyPlan: plan())
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertTrue(projection.refresh(plan(offset: 7 * 24 * 60 * 60)))
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testPlanTabUsesRollupProjectionInsteadOfWholeSessionStoreObservation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaPlanTab.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
+        XCTAssertTrue(source.contains("@StateObject private var projectionStore: AtriaPlanProjectionStore"))
+        XCTAssertTrue(source.contains("store.$dailyRollupHistory"))
+        XCTAssertTrue(source.contains("NotificationCenter.default.publisher(for: .NSCalendarDayChanged)"))
     }
 }

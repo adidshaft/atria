@@ -139,6 +139,18 @@ final class AtriaJournalAnswerStore {
         return answers.first { $0.questionID == questionID && calendar.startOfDay(for: $0.day) == target }
     }
 
+    func answersByQuestion(for day: Date, calendar: Calendar = .current) -> [String: AtriaJournalAnswer] {
+        loadIfNeeded()
+        let target = calendar.startOfDay(for: day)
+        var result: [String: AtriaJournalAnswer] = [:]
+        for answer in answers where calendar.startOfDay(for: answer.day) == target {
+            if result[answer.questionID] == nil {
+                result[answer.questionID] = answer
+            }
+        }
+        return result
+    }
+
     func answerHistory(questionID: String) -> [AtriaJournalAnswer] {
         loadIfNeeded()
         return answers.filter { $0.questionID == questionID }.sorted { $0.day < $1.day }

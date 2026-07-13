@@ -29,6 +29,21 @@ private func atriaSnapshotIsStale(_ snapshot: AtriaWidgetSnapshot, now: Date = D
     atriaSnapshotAgeMinutes(snapshot, now: now) >= 6 * 60
 }
 
+/// Static WidgetKit snapshots may be rewritten by unrelated fields. Sensor
+/// values therefore age from their own capture clock, never `createdAt`.
+private let atriaStaticSensorFreshness: TimeInterval = 90
+private let atriaStaticSensorFutureTolerance: TimeInterval = 5
+
+private func atriaFreshStaticSensorValue<Value>(_ value: Value?,
+                                                capturedAt: Date?,
+                                                now: Date) -> Value? {
+    guard let value, let capturedAt else { return nil }
+    let age = now.timeIntervalSince(capturedAt)
+    guard age >= -atriaStaticSensorFutureTolerance,
+          age <= atriaStaticSensorFreshness else { return nil }
+    return value
+}
+
 private func atriaFormattedSleepHours(_ hours: Double?) -> String {
     guard let hours, hours > 0 else { return "--" }
     return String(format: "%.1fh", hours)
@@ -55,7 +70,12 @@ struct AtriaWidgetSnapshot: Codable {
     // Optional so schema-1 payloads still decode (missing keys -> nil).
     let sleepHours: Double?
     let steps: Int?
+    /// Optional for snapshots written before preliminary strap steps were
+    /// exposed honestly in widgets.
+    var stepsAreEstimated: Bool? = nil
+    let stepsCapturedAt: Date?
     let heartRate: Int?
+    let heartRateCapturedAt: Date?
     let batteryLevel: Int?
     let batteryChargeStatus: String?
     let batteryChargeText: String?
@@ -84,8 +104,23 @@ struct AtriaWidgetProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<AtriaWidgetEntry>) -> Void) {
-        let entry = AtriaWidgetEntry(date: Date(), snapshot: Self.loadSnapshot())
-        completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(15 * 60))))
+        let now = Date()
+        let refreshAt = now.addingTimeInterval(15 * 60)
+        let snapshot = Self.loadSnapshot()
+        var entryDates = [now]
+        // Schedule a second entry at the exact sensor-expiry boundary. Without
+        // it, an on-screen widget can retain a value until the normal 15-minute
+        // provider refresh even though its source became stale after 90 seconds.
+        for capturedAt in [snapshot?.heartRateCapturedAt, snapshot?.stepsCapturedAt].compactMap({ $0 }) {
+            let staleAt = capturedAt.addingTimeInterval(atriaStaticSensorFreshness + 0.001)
+            if staleAt > now, staleAt < refreshAt {
+                entryDates.append(staleAt)
+            }
+        }
+        let entries = Set(entryDates).sorted().map {
+            AtriaWidgetEntry(date: $0, snapshot: snapshot)
+        }
+        completion(Timeline(entries: entries, policy: .after(refreshAt)))
     }
 
     private static func loadSnapshot() -> AtriaWidgetSnapshot? {
@@ -151,7 +186,7 @@ struct AtriaWidgetEntryView: View {
                                   tint: .orange,
                                   deepLinkURL: AtriaWidgetMetric.strain.deepLinkURL)
                     compactMetric("BPM",
-                                  value: entry.snapshot?.heartRate.map(String.init) ?? "--",
+                                  value: AtriaWidgetMetric.bpm.value(entry.snapshot, now: entry.date),
                                   icon: "heart.fill",
                                   tint: .red,
                                   deepLinkURL: AtriaWidgetMetric.bpm.deepLinkURL)
@@ -239,7 +274,7 @@ struct AtriaWidgetEntryView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .minimumScaleFactor(0.72)
-                    if entry.snapshot != nil {
+                    if entry.snapshot?.batteryLevel != nil {
                         Label(largeBatteryText, systemImage: batterySymbol)
                             .font(.caption.weight(.bold))
                             .foregroundStyle(batteryTint)
@@ -322,11 +357,11 @@ struct AtriaWidgetEntryView: View {
     private func widgetMetricLink(_ metric: AtriaWidgetMetric) -> some View {
         Link(destination: metric.deepLinkURL) {
             widgetMetricTile(metric.title,
-                             value: metric.value(entry.snapshot),
+                             value: metric.value(entry.snapshot, now: entry.date),
                              icon: metric.icon,
                              tint: metric.tint)
         }
-        .accessibilityLabel("\(metric.title) \(metric.value(entry.snapshot))")
+        .accessibilityLabel("\(metric.title) \(metric.value(entry.snapshot, now: entry.date))")
     }
 
     private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -349,7 +384,10 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var stepsText: String {
-        guard let steps = entry.snapshot?.steps else { return "--" }
+        guard let snapshot = entry.snapshot,
+              let steps = atriaFreshStaticSensorValue(snapshot.steps,
+                                                       capturedAt: snapshot.stepsCapturedAt,
+                                                       now: entry.date) else { return "--" }
         return steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
     }
 
@@ -362,10 +400,10 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var batterySymbol: String {
-        guard let snapshot = entry.snapshot else { return "battery.0percent" }
+        guard let snapshot = entry.snapshot else { return "questionmark.circle" }
         if snapshot.batteryChargeStatus == "charging" { return "battery.100percent.bolt" }
         if snapshot.batteryChargeStatus == "full" { return "battery.100percent" }
-        guard let level = snapshot.batteryLevel else { return "battery.0percent" }
+        guard let level = snapshot.batteryLevel else { return "questionmark.circle" }
         switch level {
         case ..<13: return "battery.0percent"
         case ..<38: return "battery.25percent"
@@ -461,7 +499,10 @@ struct AtriaWidgetEntryView: View {
 
     private var accessoryHRLine: String {
         guard let snapshot = entry.snapshot else { return "HR --" }
-        return "HR " + (snapshot.heartRate.map { "\($0) bpm" } ?? "--")
+        let heartRate = atriaFreshStaticSensorValue(snapshot.heartRate,
+                                                    capturedAt: snapshot.heartRateCapturedAt,
+                                                    now: entry.date)
+        return "HR " + (heartRate.map { "\($0) bpm" } ?? "--")
     }
 
     private var secondaryText: String {
@@ -553,59 +594,123 @@ struct AtriaLiveActivityWidget: Widget {
                 .activityBackgroundTint(Color(.systemBackground))
                 .activitySystemActionForegroundColor(.primary)
         } dynamicIsland: { context in
-            DynamicIsland {
+            let heartAvailability = liveActivityHeartRateAvailability(for: context.state,
+                                                                      contextIsStale: context.isStale)
+            let signalFresh = heartAvailability == .live
+            let steps = liveActivityStepsPresentation(for: context.state)
+            let dailyStepGoal = liveActivityDailyStepGoalPresentation(for: context.state)
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Label("BPM", systemImage: "heart.fill")
+                        Label(context.state.activityName ?? "Workout",
+                              systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "--")
+                        Text(signalFresh ? "\(context.state.heartRate) bpm" : "-- bpm")
                             .font(.title3.monospacedDigit().weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.62)
+                            .allowsTightening(true)
+                            .layoutPriority(2)
+                            .accessibilityLabel(signalFresh
+                                                ? "Heart rate \(context.state.heartRate) beats per minute"
+                                                : "Heart rate unavailable")
                     }
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("Strain")
+                        if let target = liveActivityTargetZoneLabel(for: context.state) {
+                            Text(target)
+                                .font(.caption2.weight(.black))
+                                .foregroundStyle(.cyan)
+                                .accessibilityLabel("Target heart rate \(target)")
+                        }
+                        Text(liveActivityZoneLabel(for: context.state,
+                                                   availability: heartAvailability))
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "%.1f", context.state.strain))
+                            .foregroundStyle(liveActivityZoneColor(for: context.state,
+                                                                  availability: heartAvailability))
+                        Text(steps.compactText)
                             .font(.title3.monospacedDigit().weight(.bold))
+                            .foregroundStyle(steps.tint)
+                            .accessibilityLabel(steps.accessibilityText)
                     }
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Label(elapsedText(since: context.attributes.startedAt), systemImage: "timer")
-                            Spacer(minLength: 10)
-                            Label(liveActivityBatteryText(for: context.state), systemImage: liveActivityBatterySymbol(for: context.state))
-                                .foregroundStyle(liveActivityBatteryTint(for: context.state))
-                            Button(intent: AtriaControlCaptureIntent(command: .stop)) {
-                                Label("Stop", systemImage: "stop.circle")
-                                    .labelStyle(.titleAndIcon)
+                    VStack(spacing: 8) {
+                        HStack(spacing: 14) {
+                            Label {
+                                liveActivityTimer(state: context.state,
+                                                  startedAt: context.attributes.startedAt)
+                            } icon: {
+                                Image(systemName: (context.state.isPaused ?? false) ? "pause.fill" : "timer")
                             }
-                            .tint(.red)
+                            Spacer(minLength: 4)
+                            Label(liveActivityStrainProgressText(for: context.state),
+                                  systemImage: "bolt.fill")
+                                .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
+                            if let dailyStepGoal {
+                                Label(dailyStepGoal.text, systemImage: "target")
+                                    .foregroundStyle(dailyStepGoal.tint)
+                                    .accessibilityLabel(dailyStepGoal.accessibilityText)
+                            }
+                            if context.state.batteryLevel >= 0 {
+                                Label(liveActivityBatteryText(for: context.state),
+                                      systemImage: liveActivityBatterySymbol(for: context.state))
+                                    .foregroundStyle(liveActivityBatteryTint(for: context.state))
+                            }
                         }
-
-                        if context.state.mediaHasNowPlayingInfo {
-                            Label(mediaLine(for: context.state), systemImage: context.state.mediaIsPlaying ? "play.fill" : "pause.fill")
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
+                        if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true
+                            || dailyStepGoal?.fraction != nil {
+                            HStack(spacing: 8) {
+                                if let dailyStepGoal, let fraction = dailyStepGoal.fraction {
+                                    ProgressView(value: fraction)
+                                        .tint(dailyStepGoal.tint)
+                                        .accessibilityLabel("Daily strap step goal progress")
+                                        .accessibilityValue(dailyStepGoal.accessibilityText)
+                                }
+                                if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true {
+                                    ProgressView(value: liveActivityStrainProgressFraction(for: context.state))
+                                        .tint(liveActivityStrainProgressColor(for: context.state))
+                                        .accessibilityLabel("Workout strain goal progress")
+                                        .accessibilityValue(liveActivityStrainProgressText(for: context.state))
+                                }
+                            }
                         }
+                        AtriaLiveActivityControls(state: context.state,
+                                                  startedAt: context.attributes.startedAt,
+                                                  compact: true)
                     }
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(.red)
+                if let target = liveActivityTargetZoneLabel(for: context.state) {
+                    Text(target)
+                        .font(.caption2.monospacedDigit().weight(.black))
+                        .foregroundStyle(.cyan)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .accessibilityLabel("Target heart rate \(target)")
+                } else {
+                    Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
+                        .foregroundStyle(liveActivityZoneColor(for: context.state,
+                                                              availability: heartAvailability))
+                }
             } compactTrailing: {
-                Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "--")
+                Text(signalFresh ? "\(context.state.heartRate)" : "--")
                     .font(.caption.monospacedDigit().weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .allowsTightening(true)
+                    .accessibilityLabel(signalFresh
+                                        ? "Heart rate \(context.state.heartRate) beats per minute"
+                                        : "Heart rate unavailable")
             } minimal: {
-                Text(context.state.heartRate > 0 ? "\(context.state.heartRate)" : "A")
-                    .font(.caption2.monospacedDigit().weight(.bold))
+                Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
+                    .foregroundStyle(liveActivityZoneColor(for: context.state,
+                                                          availability: heartAvailability))
             }
             .keylineTint(.red)
         }
@@ -627,7 +732,7 @@ private func liveActivityBatteryText(for state: AtriaLiveActivityAttributes.Cont
 private func liveActivityBatterySymbol(for state: AtriaLiveActivityAttributes.ContentState) -> String {
     if state.batteryChargeStatus == "charging" { return "battery.100percent.bolt" }
     if state.batteryChargeStatus == "full" { return "battery.100percent" }
-    guard state.batteryLevel >= 0 else { return "battery.0percent" }
+    guard state.batteryLevel >= 0 else { return "questionmark.circle" }
     switch state.batteryLevel {
     case ..<13: return "battery.0percent"
     case ..<38: return "battery.25percent"
@@ -641,6 +746,269 @@ private func liveActivityBatteryTint(for state: AtriaLiveActivityAttributes.Cont
     switch state.batteryChargeStatus {
     case "charging", "full": return .green
     default: return .secondary
+    }
+}
+
+private func liveActivityHeartRateAvailability(
+    for state: AtriaLiveActivityAttributes.ContentState,
+    contextIsStale: Bool,
+    now: Date = Date()
+) -> AtriaLiveSensorAvailability {
+    if state.heartRateAvailability == .reconnecting { return .reconnecting }
+    if state.heartRateAvailability == .unavailable { return .unavailable }
+    let capturedAt = state.heartRateCapturedAt ?? state.updatedAt
+    let isFresh = !contextIsStale
+        && state.heartRate > 0
+        && state.sensorHasContact != false
+        && capturedAt <= now.addingTimeInterval(5)
+        && now.timeIntervalSince(capturedAt) <= 90
+    if isFresh, state.heartRateAvailability != .stale { return .live }
+    if state.heartRateCapturedAt != nil || state.heartRate > 0
+        || state.heartRateAvailability == .stale {
+        return .stale
+    }
+    return .unavailable
+}
+
+private func liveActivityZoneLabel(for state: AtriaLiveActivityAttributes.ContentState,
+                                   availability: AtriaLiveSensorAvailability) -> String {
+    switch availability {
+    case .reconnecting: return "Reconnecting"
+    case .stale: return "HR stale"
+    case .unavailable: return "Unavailable"
+    case .live: break
+    }
+    let index = state.heartRateZoneIndex ?? 0
+    if index <= 0 { return "Below Z1" }
+    return "Z\(index) · \(state.heartRateZoneName ?? "Zone")"
+}
+
+/// A compact, stable target label. Invalid persisted values fail closed, while
+/// reversed picker bounds normalize to the same range the workout UI uses.
+private func liveActivityTargetZoneLabel(for state: AtriaLiveActivityAttributes.ContentState) -> String? {
+    guard let first = state.targetLowerHeartRateZone,
+          let second = state.targetUpperHeartRateZone,
+          (1...5).contains(first),
+          (1...5).contains(second) else { return nil }
+    let lower = min(first, second)
+    let upper = max(first, second)
+    return lower == upper ? "Z\(lower)" : "Z\(lower)–Z\(upper)"
+}
+
+private func liveActivityZoneColor(for state: AtriaLiveActivityAttributes.ContentState,
+                                   availability: AtriaLiveSensorAvailability) -> Color {
+    guard availability == .live else {
+        return availability == .reconnecting ? .orange : .secondary
+    }
+    switch state.heartRateZoneIndex ?? 0 {
+    case 1: return .blue
+    case 2: return .green
+    case 3: return .yellow
+    case 4: return .orange
+    case 5: return .red
+    default: return .secondary
+    }
+}
+
+private struct AtriaLiveActivityStepsPresentation {
+    let compactText: String
+    let labelText: String
+    let tint: Color
+    let accessibilityText: String
+}
+
+private struct AtriaLiveActivityGoalPresentation {
+    let text: String
+    let tint: Color
+    let fraction: Double?
+    let accessibilityText: String
+}
+
+private func liveActivityStepsPresentation(
+    for state: AtriaLiveActivityAttributes.ContentState,
+    now: Date = Date()
+) -> AtriaLiveActivityStepsPresentation {
+    let sourceAvailability = state.stepsAvailability
+    if sourceAvailability == .reconnecting {
+        return AtriaLiveActivityStepsPresentation(compactText: "Syncing",
+                                                  labelText: "Steps reconnecting",
+                                                  tint: .orange,
+                                                  accessibilityText: "Strap steps reconnecting")
+    }
+    if sourceAvailability == .unavailable {
+        return AtriaLiveActivityStepsPresentation(compactText: "--",
+                                                  labelText: "Steps unavailable",
+                                                  tint: .secondary,
+                                                  accessibilityText: "Strap steps unavailable")
+    }
+    if let steps = state.steps,
+       let capturedAt = state.stepsCapturedAt,
+       capturedAt <= now.addingTimeInterval(5),
+       now.timeIntervalSince(capturedAt) <= 90,
+       sourceAvailability != .stale {
+        let estimated = state.stepsAreEstimated ?? false
+        let value = estimated ? "~\(steps)" : "\(steps)"
+        return AtriaLiveActivityStepsPresentation(
+            compactText: value,
+            labelText: "\(value) steps",
+            tint: .mint,
+            accessibilityText: estimated
+                ? "Approximately \(steps) strap-derived workout steps"
+                : "\(steps) strap-derived workout steps"
+        )
+    }
+    if state.steps != nil || state.stepsCapturedAt != nil || sourceAvailability == .stale {
+        return AtriaLiveActivityStepsPresentation(compactText: "Stale",
+                                                  labelText: "Steps stale",
+                                                  tint: .orange,
+                                                  accessibilityText: "Strap step signal stale")
+    }
+    return AtriaLiveActivityStepsPresentation(compactText: "--",
+                                              labelText: "Steps unavailable",
+                                              tint: .secondary,
+                                              accessibilityText: "Strap steps unavailable")
+}
+
+private func liveActivityDailyStepGoalPresentation(
+    for state: AtriaLiveActivityAttributes.ContentState,
+    now: Date = Date()
+) -> AtriaLiveActivityGoalPresentation? {
+    guard let goal = state.dailyStepGoal, goal > 0 else { return nil }
+    switch state.stepsAvailability {
+    case .reconnecting:
+        return AtriaLiveActivityGoalPresentation(text: "Step goal syncing",
+                                                 tint: .orange,
+                                                 fraction: nil,
+                                                 accessibilityText: "Daily strap step goal reconnecting")
+    case .stale:
+        return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
+                                                 tint: .orange,
+                                                 fraction: nil,
+                                                 accessibilityText: "Daily strap step goal stale")
+    case .unavailable:
+        return AtriaLiveActivityGoalPresentation(text: "Step goal --",
+                                                 tint: .secondary,
+                                                 fraction: nil,
+                                                 accessibilityText: "Daily strap step goal unavailable")
+    case .live, .none:
+        break
+    }
+    guard let steps = state.dailySteps,
+          let capturedAt = state.stepsCapturedAt,
+          capturedAt <= now.addingTimeInterval(5),
+          now.timeIntervalSince(capturedAt) <= 90 else {
+        return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
+                                                 tint: .orange,
+                                                 fraction: nil,
+                                                 accessibilityText: "Daily strap step goal stale")
+    }
+    let estimated = state.dailyStepsAreEstimated ?? false
+    let prefix = estimated ? "~" : ""
+    let reached = steps >= goal
+    let text = reached && !estimated
+        ? "Goal ✓ · \(steps)"
+        : "\(prefix)\(steps) / \(goal)"
+    let accessibility = estimated
+        ? "Approximately \(steps) of \(goal) daily strap steps"
+        : reached
+            ? "Daily strap step goal reached with \(steps) steps"
+            : "\(steps) of \(goal) daily strap steps"
+    return AtriaLiveActivityGoalPresentation(text: text,
+                                             tint: reached && !estimated ? .green : .mint,
+                                             fraction: min(max(Double(steps) / Double(goal), 0), 1),
+                                             accessibilityText: accessibility)
+}
+
+private func liveActivityStrainProgressText(for state: AtriaLiveActivityAttributes.ContentState) -> String {
+    guard let target = state.targetWorkoutStrain, target > 0 else {
+        return String(format: "%.1f", max(0, state.workoutStrain ?? 0))
+    }
+    let strain = max(0, state.workoutStrain ?? 0)
+    if strain >= target {
+        return String(format: "Goal ✓ · %.1f", strain)
+    }
+    return String(format: "%.1f / %.1f", strain, target)
+}
+
+private func liveActivityStrainProgressColor(for state: AtriaLiveActivityAttributes.ContentState) -> Color {
+    guard let target = state.targetWorkoutStrain, target > 0,
+          max(0, state.workoutStrain ?? 0) >= target else { return .orange }
+    return .green
+}
+
+private func liveActivityStrainProgressFraction(
+    for state: AtriaLiveActivityAttributes.ContentState
+) -> Double {
+    guard let target = state.targetWorkoutStrain, target > 0 else { return 0 }
+    return min(max((state.workoutStrain ?? 0) / target, 0), 1)
+}
+
+@ViewBuilder
+private func liveActivityTimer(state: AtriaLiveActivityAttributes.ContentState,
+                               startedAt: Date) -> some View {
+    if state.isEnding ?? false {
+        Text("Ending…")
+            .monospacedDigit()
+    } else if state.isPaused ?? false {
+        Text(liveActivityDurationText(state.elapsedDuration
+                                      ?? max(0, state.updatedAt.timeIntervalSince(startedAt))))
+            .monospacedDigit()
+    } else {
+        Text(state.timerAnchor ?? startedAt, style: .timer)
+            .monospacedDigit()
+    }
+}
+
+private func liveActivityDurationText(_ duration: TimeInterval) -> String {
+    let total = max(0, Int(duration.rounded(.down)))
+    let hours = total / 3_600
+    let minutes = (total % 3_600) / 60
+    let seconds = total % 60
+    return hours > 0
+        ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        : String(format: "%02d:%02d", minutes, seconds)
+}
+
+private struct AtriaLiveActivityControls: View {
+    let state: AtriaLiveActivityAttributes.ContentState
+    let startedAt: Date
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: compact ? 8 : 10) {
+            Button(intent: AtriaLiveWorkoutControlIntent(
+                action: (state.isPaused ?? false) ? .resume : .pause,
+                workoutStartedAt: startedAt
+            )) {
+                if compact {
+                    Image(systemName: (state.isPaused ?? false) ? "play.fill" : "pause.fill")
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Label((state.isPaused ?? false) ? "Resume" : "Pause",
+                          systemImage: (state.isPaused ?? false) ? "play.fill" : "pause.fill")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .tint((state.isPaused ?? false) ? .green : .orange)
+            .accessibilityLabel((state.isPaused ?? false) ? "Resume workout" : "Pause workout")
+
+            Button(intent: AtriaLiveWorkoutControlIntent(action: .end,
+                                                         workoutStartedAt: startedAt)) {
+                if compact {
+                    Image(systemName: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Label("End", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .tint(.red)
+            .accessibilityLabel("End workout")
+        }
+        .buttonStyle(.borderedProminent)
+        .labelStyle(.titleAndIcon)
+        .disabled(state.isEnding ?? false)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -675,47 +1043,128 @@ struct AtriaStopCaptureControl: ControlWidget {
 private struct AtriaLiveActivityLockScreenView: View {
     let context: ActivityViewContext<AtriaLiveActivityAttributes>
 
+    private var heartRateAvailability: AtriaLiveSensorAvailability {
+        liveActivityHeartRateAvailability(for: context.state,
+                                          contextIsStale: context.isStale)
+    }
+    private var signalFresh: Bool {
+        heartRateAvailability == .live
+    }
+    private var steps: AtriaLiveActivityStepsPresentation {
+        liveActivityStepsPresentation(for: context.state)
+    }
+    private var dailyStepGoal: AtriaLiveActivityGoalPresentation? {
+        liveActivityDailyStepGoalPresentation(for: context.state)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Atria live")
+            HStack(spacing: 8) {
+                Label(context.state.activityName ?? "Workout",
+                      systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
+                    .font(.headline.weight(.bold))
+                Spacer(minLength: 8)
+                liveActivityTimer(state: context.state,
+                                  startedAt: context.attributes.startedAt)
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                    .foregroundStyle((context.state.isPaused ?? false) ? .orange : .secondary)
+                if context.state.batteryLevel >= 0 {
+                    Label("\(context.state.batteryLevel)%",
+                          systemImage: liveActivityBatterySymbol(for: context.state))
+                        .labelStyle(.iconOnly)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(context.state.heartRate > 0 ? "\(context.state.heartRate) BPM" : "Reading BPM")
-                        .font(.title3.monospacedDigit().weight(.bold))
-                }
-
-                Spacer(minLength: 10)
-
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(String(format: "Strain %.1f", context.state.strain))
-                        .font(.subheadline.monospacedDigit().weight(.semibold))
-                    Label(liveActivityBatteryText(for: context.state), systemImage: liveActivityBatterySymbol(for: context.state))
-                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(liveActivityBatteryTint(for: context.state))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                    Text("\(context.state.readingCount) readings · \(elapsedText(since: context.attributes.startedAt))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(liveActivityBatteryText(for: context.state))
                 }
             }
 
-            if context.state.mediaHasNowPlayingInfo {
-                Label(mediaLine(for: context.state), systemImage: context.state.mediaIsPlaying ? "play.fill" : "pause.fill")
-                    .font(.caption.weight(.medium))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(.red)
+                Text(signalFresh ? "\(context.state.heartRate)" : "--")
+                    .font(.system(size: 34, weight: .black, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+                    .allowsTightening(true)
+                    .layoutPriority(3)
+                Text("BPM")
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .fixedSize()
+                Spacer(minLength: 8)
+                Text(liveActivityZoneLabel(for: context.state,
+                                           availability: heartRateAvailability))
+                    .font(.subheadline.weight(.black))
+                    .foregroundStyle(liveActivityZoneColor(for: context.state,
+                                                           availability: heartRateAvailability))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 28)
+                    .background(liveActivityZoneColor(for: context.state,
+                                                      availability: heartRateAvailability).opacity(0.14),
+                                in: Capsule())
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(signalFresh
+                                ? "Heart rate \(context.state.heartRate) beats per minute. \(liveActivityZoneLabel(for: context.state, availability: .live))."
+                                : liveActivityZoneLabel(for: context.state,
+                                                        availability: heartRateAvailability))
+
+            VStack(spacing: 4) {
+                HStack(spacing: 12) {
+                    if let target = liveActivityTargetZoneLabel(for: context.state) {
+                        Label(target, systemImage: "scope")
+                            .foregroundStyle(.cyan)
+                            .accessibilityLabel("Target heart rate \(target)")
+                    }
+                    Label(steps.labelText, systemImage: "figure.walk")
+                        .foregroundStyle(steps.tint)
+                        .accessibilityLabel(steps.accessibilityText)
+                    Spacer(minLength: 4)
+                    Label(liveActivityStrainProgressText(for: context.state), systemImage: "bolt.fill")
+                        .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
+                        .layoutPriority(1)
+                }
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+
+                if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true
+                    || dailyStepGoal?.fraction != nil {
+                    HStack(spacing: 8) {
+                        if let dailyStepGoal, let fraction = dailyStepGoal.fraction {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(dailyStepGoal.text)
+                                    .foregroundStyle(dailyStepGoal.tint)
+                                ProgressView(value: fraction)
+                                    .tint(dailyStepGoal.tint)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Daily strap step goal progress")
+                            .accessibilityValue(dailyStepGoal.accessibilityText)
+                        }
+                        if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(liveActivityStrainProgressText(for: context.state))
+                                    .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
+                                ProgressView(value: liveActivityStrainProgressFraction(for: context.state))
+                                    .tint(liveActivityStrainProgressColor(for: context.state))
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Workout strain goal progress")
+                            .accessibilityValue(liveActivityStrainProgressText(for: context.state))
+                        }
+                    }
+                    .font(.caption2.weight(.semibold))
+                }
             }
 
-            Button(intent: AtriaControlCaptureIntent(command: .stop)) {
-                Label("Stop recording", systemImage: "stop.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
+            AtriaLiveActivityControls(state: context.state,
+                                      startedAt: context.attributes.startedAt)
+                .font(.caption.weight(.bold))
         }
         .padding(.vertical, 4)
     }
@@ -838,18 +1287,23 @@ enum AtriaWidgetMetric: String, Identifiable {
         }
     }
 
-    func value(_ s: AtriaWidgetSnapshot?) -> String {
+    func value(_ s: AtriaWidgetSnapshot?, now: Date) -> String {
         guard let s else { return "--" }
         switch self {
         case .steps:
-            guard let steps = s.steps else { return "--" }
-            return steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
+            guard let steps = atriaFreshStaticSensorValue(s.steps,
+                                                          capturedAt: s.stepsCapturedAt,
+                                                          now: now) else { return "--" }
+            let value = steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
+            return s.stepsAreEstimated == true ? "~\(value)" : value
         case .strain:
             return String(format: "%.1f", s.strain)
         case .hrv:
             return s.hrvRMSSD.map(String.init) ?? "--"
         case .bpm:
-            return s.heartRate.map(String.init) ?? "--"
+            return atriaFreshStaticSensorValue(s.heartRate,
+                                               capturedAt: s.heartRateCapturedAt,
+                                               now: now).map(String.init) ?? "--"
         case .sleep:
             return atriaFormattedSleepHours(s.sleepHours)
         case .rhr:
@@ -863,7 +1317,7 @@ struct AtriaMetricWidgetEntryView: View {
     let metric: AtriaWidgetMetric
     let entry: AtriaWidgetEntry
 
-    private var value: String { metric.value(entry.snapshot) }
+    private var value: String { metric.value(entry.snapshot, now: entry.date) }
 
     var body: some View {
         Group {
@@ -1003,12 +1457,13 @@ struct AtriaMetricWidgetEntryView: View {
     private var metricFooterText: String {
         guard let snapshot = entry.snapshot else { return "Open Atria" }
         let age = atriaSnapshotAgeMinutes(snapshot)
-        if age < 1 { return "Updated now" }
-        if age < 60 { return "Updated \(age)m ago" }
+        let prefix = metric == .steps && snapshot.stepsAreEstimated == true ? "Estimated · " : ""
+        if age < 1 { return "\(prefix)Updated now" }
+        if age < 60 { return "\(prefix)Updated \(age)m ago" }
         if atriaSnapshotIsStale(snapshot) {
-            return "Stale · \(age / 60)h ago"
+            return "\(prefix)Stale · \(age / 60)h ago"
         }
-        return "Updated \(age / 60)h ago"
+        return "\(prefix)Updated \(age / 60)h ago"
     }
 }
 
