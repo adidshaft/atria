@@ -358,6 +358,16 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         return receivedAt.timeIntervalSince(lastEvaluatedAt) >= 1
     }
 
+    /// RFC-1982-style ordering for the strap's UInt32 seconds clock. A delta
+    /// in the lower half of the serial space is forward (including a genuine
+    /// UInt32 wrap); zero is a duplicate and the upper half is stale/replayed.
+    static func forwardDeviceTimestampDelta(from previous: UInt32,
+                                            to current: UInt32) -> UInt32? {
+        let delta = current &- previous
+        guard delta > 0, delta < (UInt32.max / 2 + 1) else { return nil }
+        return delta
+    }
+
     func resetSynchronously() {
         queue.sync { [self] in
             detector.reset()
@@ -404,7 +414,17 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     private func accept(_ frame: AtriaR10MotionFrame, receivedAt: Date?) -> Bool {
         guard frame.acceleration.count == AtriaR10MotionDecoder.sampleCount else { return false }
+        var forwardDeviceTimestampDelta: UInt32?
         if frame.deviceTimestamp > 0 {
+            if let previous = lastAcceptedDeviceTimestamp {
+                guard let delta = Self.forwardDeviceTimestampDelta(
+                    from: previous,
+                    to: frame.deviceTimestamp
+                ) else {
+                    return false
+                }
+                forwardDeviceTimestampDelta = delta
+            }
             guard seenTimestamps.insert(frame.deviceTimestamp).inserted else { return false }
             timestampOrder.append(frame.deviceTimestamp)
             if timestampOrder.count > 512 {
@@ -425,8 +445,8 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             case disconnected
         }
         let continuity: Continuity
-        if frame.deviceTimestamp > 0, let previous = lastAcceptedDeviceTimestamp {
-            switch frame.deviceTimestamp &- previous {
+        if let forwardDeviceTimestampDelta {
+            switch forwardDeviceTimestampDelta {
             case 1:
                 continuity = .continuous
             case 2:
@@ -453,8 +473,6 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         }
         if frame.deviceTimestamp > 0 {
             lastAcceptedDeviceTimestamp = frame.deviceTimestamp
-        } else {
-            lastAcceptedDeviceTimestamp = nil
         }
         if let receivedAt {
             lastAcceptedReceivedAt = receivedAt

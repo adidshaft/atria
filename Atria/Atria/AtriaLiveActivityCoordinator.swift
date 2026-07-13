@@ -386,6 +386,7 @@ final class AtriaLiveActivityCoordinator {
             || current.stepsAreEstimated != previous.stepsAreEstimated
             || (current.stepsCapturedAt == nil) != (previous.stepsCapturedAt == nil)
             || current.stepsAvailability != previous.stepsAvailability
+            || (current.dailySteps == nil) != (previous.dailySteps == nil)
             || current.dailyStepsAreEstimated != previous.dailyStepsAreEstimated
             || current.dailyStepGoal != previous.dailyStepGoal {
             return true

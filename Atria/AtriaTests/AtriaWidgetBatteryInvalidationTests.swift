@@ -87,6 +87,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             heartRate: 151,
             heartRateCapturedAt: Date(timeIntervalSince1970: 1_999),
             steps: 1_120,
+            stepsAreEstimated: true,
             stepsCapturedAt: Date(timeIntervalSince1970: 1_998),
             strain: 6.8,
             batteryLevel: 43,
@@ -98,6 +99,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.heartRate, 151)
         XCTAssertEqual(patched.heartRateCapturedAt, Date(timeIntervalSince1970: 1_999))
         XCTAssertEqual(patched.steps, 1_120)
+        XCTAssertEqual(patched.stepsAreEstimated, true)
         XCTAssertEqual(patched.stepsCapturedAt, Date(timeIntervalSince1970: 1_998))
         XCTAssertEqual(patched.strain, 6.8)
         XCTAssertEqual(patched.batteryLevel, 43)
@@ -137,6 +139,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(decoded.steps, 1_000)
         XCTAssertEqual(decoded.heartRate, 72)
         XCTAssertNil(decoded.stepsCapturedAt)
+        XCTAssertNil(decoded.stepsAreEstimated)
         XCTAssertNil(decoded.heartRateCapturedAt)
     }
 
@@ -147,6 +150,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
         XCTAssertTrue(widgetSource.contains("let stepsCapturedAt: Date?"))
+        XCTAssertTrue(widgetSource.contains("var stepsAreEstimated: Bool? = nil"))
         XCTAssertTrue(widgetSource.contains("let heartRateCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("age <= atriaStaticSensorFreshness"))
         XCTAssertTrue(widgetSource.contains("capturedAt: s.stepsCapturedAt"))
@@ -154,5 +158,23 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("capturedAt.addingTimeInterval(atriaStaticSensorFreshness + 0.001)"),
                       "The timeline must clear values at 90 seconds, not wait for its 15-minute reload")
         XCTAssertFalse(widgetSource.contains("case .bpm:\n            return s.heartRate.map(String.init)"))
+    }
+
+    func testPreliminaryStrapStepsRemainPublishableButNeverValidated() {
+        XCTAssertTrue(WidgetSnapshotPublisher.strapStepsArePublishable(state: "r10_live_preliminary"))
+        XCTAssertFalse(WidgetSnapshotPublisher.strapStepsAreValidated(state: "r10_live_preliminary"))
+        XCTAssertTrue(WidgetSnapshotPublisher.strapStepsArePublishable(state: "r10_live_validated"))
+        XCTAssertTrue(WidgetSnapshotPublisher.strapStepsAreValidated(state: "r10_live_validated"))
+        XCTAssertFalse(WidgetSnapshotPublisher.strapStepsArePublishable(state: "r10_live_calibrating"))
+    }
+
+    func testStaticStepsWidgetMarksPreliminaryCountsAsEstimated() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let widgetSource = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+
+        XCTAssertTrue(widgetSource.contains("return s.stepsAreEstimated == true ? \"~\\(value)\" : value"))
+        XCTAssertTrue(widgetSource.contains("\"Estimated · \""))
     }
 }

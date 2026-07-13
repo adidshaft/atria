@@ -148,6 +148,39 @@ final class AtriaR10MotionTests: XCTestCase {
         XCTAssertEqual(snapshot?.state, "r10_live_preliminary")
     }
 
+    func testPipelineRejectsStaleFrameAfterTimestampDedupeEviction() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        var snapshot: AtriaR10MotionPipeline.Snapshot?
+        for second in 0..<600 {
+            snapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+                constantFrame(timestamp: UInt32(50_000 + second), magnitude: 1)
+            ))
+        }
+        XCTAssertEqual(snapshot?.frames, 600)
+
+        // 50_000 has fallen out of the 512-entry duplicate set, but it is
+        // still older than the authoritative latest device second.
+        XCTAssertNil(pipeline.ingestSynchronouslyForTesting(
+            constantFrame(timestamp: 50_000, magnitude: 1)
+        ))
+
+        let next = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            constantFrame(timestamp: 50_600, magnitude: 1)
+        ))
+        XCTAssertEqual(next.frames, 601,
+                       "a rejected stale replay must not mutate pipeline totals")
+        XCTAssertEqual(next.rawSteps, 0)
+    }
+
+    func testDeviceTimestampOrderingHandlesUInt32WrapAndRejectsBackwardReplay() {
+        XCTAssertEqual(AtriaR10MotionPipeline.forwardDeviceTimestampDelta(
+            from: UInt32.max - 1,
+            to: 1
+        ), 3)
+        XCTAssertNil(AtriaR10MotionPipeline.forwardDeviceTimestampDelta(from: 100, to: 100))
+        XCTAssertNil(AtriaR10MotionPipeline.forwardDeviceTimestampDelta(from: 100, to: 99))
+    }
+
     func testPipelineDoesNotJoinShortGaitBurstsAcrossMissingFrames() throws {
         func frame(timestamp: UInt32, sampleOffset: Int) -> AtriaR10MotionFrame {
             AtriaR10MotionFrame(

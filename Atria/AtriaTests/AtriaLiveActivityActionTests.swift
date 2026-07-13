@@ -226,6 +226,28 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
     }
 
+    func testExactDailyStepGoalCrossingPublishesImmediatelyButEstimateDoesNotClaimIt() {
+        var below = liveSnapshot(elapsed: 100, heartRate: 122)
+        below.dailySteps = 7_999
+        below.dailyStepGoal = 8_000
+        var reached = below
+        reached.dailySteps = 8_000
+
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: below,
+            current: reached,
+            elapsedSinceLastWrite: 0.1
+        ))
+
+        below.dailyStepsAreEstimated = true
+        reached.dailyStepsAreEstimated = true
+        XCTAssertFalse(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: below,
+            current: reached,
+            elapsedSinceLastWrite: 0.1
+        ), "a preliminary step estimate must not publish a validated goal-reaching transition")
+    }
+
     func testTargetChangeAndGoalCrossingBypassFiveSecondCadence() {
         var baseline = liveSnapshot(elapsed: 100, heartRate: 122)
         baseline.strain = 8
@@ -317,6 +339,10 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("let strain = max(0, state.workoutStrain ?? 0)"),
                       "workout goals must use the canonical workout-only strain projection")
         XCTAssertTrue(source.contains("ProgressView(value: liveActivityStrainProgressFraction(for: context.state))"))
+        XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
+        XCTAssertTrue(source.contains("state.dailyStepsAreEstimated ?? false"))
+        XCTAssertTrue(source.contains("reached && !estimated"),
+                      "preliminary steps must never claim an exact goal completion")
     }
 
     func testWorkoutTargetZonesFlowIntoBackwardCompatibleLiveActivityUI() throws {
@@ -364,6 +390,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             stepsAreEstimated: true,
             stepsCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
             stepsAvailability: .live,
+            dailySteps: 4_250,
+            dailyStepsAreEstimated: true,
+            dailyStepGoal: 8_000,
             workoutStrain: 5.4,
             targetWorkoutStrain: 10,
             isPaused: false,
