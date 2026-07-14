@@ -2012,7 +2012,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10PassiveReprobePendingKey = "atria.protectedR10.passiveReprobePending"
     nonisolated private static let protectedR10PassiveReprobeAttemptAtKey = "atria.protectedR10.passiveReprobeAttemptAt"
     nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
-    nonisolated private static let protectedR10PassiveRetryMigrationKey = "atria.protectedR10.passiveRetryMigrationV2"
+    nonisolated private static let protectedR10PassiveRetryMigrationKey = "atria.protectedR10.passiveRetryMigrationV3"
     nonisolated private static let protectedR10EarlyDisconnectsKey = "atria.protectedR10.earlyDisconnects"
     nonisolated private static let protectedR10ActivationSentAtKey = "atria.protectedR10.activationSentAt"
     nonisolated private static let protectedR10ActivationCountKey = "atria.protectedR10.activationCount"
@@ -5359,7 +5359,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastAttemptAge: lastAttemptAt.map { now.timeIntervalSince($0) },
             failureCount: defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey),
             batteryLevel: motionEligibilityBatteryLevel(now: now),
-            isCharging: batteryIsCharging
+            isCharging: motionEligibilityIsCharging
         ), let peripheral else { return }
 
         defaults.set(now.timeIntervalSince1970,
@@ -12594,6 +12594,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         calibrationActive || batteryLevel < 0 || isCharging || batteryLevel > lowBatteryWarningThreshold
     }
 
+    /// The legacy boolean and the typed status can briefly disagree during
+    /// CoreBluetooth restoration. Never let a stale `true` bypass the
+    /// low-battery HR-protection gate unless the verified status also says the
+    /// charger is actively supplying power.
+    nonisolated static func hasCredibleChargingForMotion(
+        isCharging: Bool,
+        chargeStatus: BatteryChargeStatus
+    ) -> Bool {
+        isCharging && chargeStatus == .charging
+    }
+
+    private var motionEligibilityIsCharging: Bool {
+        Self.hasCredibleChargingForMotion(isCharging: batteryIsCharging,
+                                          chargeStatus: batteryChargeStatus)
+    }
+
     private var stepCalibrationCaptureIsActive: Bool {
         strapStepCalibrationCaptureUntil.map { $0 > Date() } ?? false
     }
@@ -12604,7 +12620,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && !historyOnlyProbeEnabled
             && Self.shouldArmHighFrequencyMotion(
                 batteryLevel: motionBattery,
-                isCharging: batteryIsCharging,
+                isCharging: motionEligibilityIsCharging,
                 calibrationActive: stepCalibrationCaptureIsActive
             )
     }
@@ -12619,7 +12635,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && !protectedR10RollbackEnabled
             && Self.shouldArmHighFrequencyMotion(
                 batteryLevel: motionBattery,
-                isCharging: batteryIsCharging,
+                isCharging: motionEligibilityIsCharging,
                 calibrationActive: stepCalibrationCaptureIsActive
             )
     }
@@ -12817,7 +12833,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             try? await Task.sleep(for: .seconds(3))
             let motionBattery = motionEligibilityBatteryLevel()
             guard Self.shouldArmHighFrequencyMotion(batteryLevel: motionBattery,
-                                                    isCharging: batteryIsCharging,
+                                                    isCharging: motionEligibilityIsCharging,
                                                     calibrationActive: stepCalibrationCaptureIsActive) else {
                 AtriaDebugLog("ATRIADBG r10_stream status=deferred reason=low_battery_preserve_hr battery=%d charging=0 threshold=%d action=keep_realtime_hr_only",
                               motionBattery,

@@ -2933,6 +2933,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                                                   isCharging: false))
     }
 
+    func testMotionChargingOverrideRequiresTypedAndBooleanAgreement() {
+        XCTAssertFalse(AtriaBLEManager.hasCredibleChargingForMotion(
+            isCharging: true,
+            chargeStatus: .levelOnly
+        ))
+        XCTAssertFalse(AtriaBLEManager.hasCredibleChargingForMotion(
+            isCharging: false,
+            chargeStatus: .charging
+        ))
+        XCTAssertTrue(AtriaBLEManager.hasCredibleChargingForMotion(
+            isCharging: true,
+            chargeStatus: .charging
+        ))
+    }
+
     private func readyHRVSnapshot(measurementEnd: Date) -> HRVSnapshot {
         HRVSnapshot(rmssd: 54,
                     sdnn: 62,
