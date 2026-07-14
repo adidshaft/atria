@@ -204,6 +204,28 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
                        "Exactly the route HUD and stationary guidance hosts should observe rapid metrics")
     }
 
+    func testHealthMonitorLiveMetricsUseDeduplicatedLeafProjection() throws {
+        let health = try appSource("AtriaHealthScreen.swift")
+        let screenStart = try XCTUnwrap(health.range(of: "struct AtriaHealthScreen: View"))
+        let screenBody = String(health[screenStart.lowerBound...])
+
+        XCTAssertTrue(health.contains("final class AtriaHealthMonitorLiveProjectionStore: ObservableObject"))
+        XCTAssertTrue(health.contains("guard next != state else { return false }"),
+                      "Unrelated live Hero changes must not republish the Health Monitor subtree")
+        XCTAssertTrue(health.contains("private struct AtriaHealthMonitorLiveHost<Content: View>: View"))
+        XCTAssertTrue(screenBody.contains("AtriaHealthMonitorLiveHost(liveStore: liveStore"))
+        XCTAssertFalse(screenBody.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"),
+                       "Live recovery changes must not invalidate every chart on the Health screen")
+        XCTAssertFalse(screenBody.contains("@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore"),
+                       "Weekly Fitness Age completion should invalidate only its leaf cards")
+        XCTAssertTrue(health.contains("private struct AtriaHealthFitnessAgeCardHost: View"))
+        XCTAssertTrue(health.contains("@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore"))
+        XCTAssertTrue(screenBody.contains("AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)"))
+        XCTAssertTrue(health.contains("private struct AtriaHealthspanDetailPresentationHost: View"))
+        XCTAssertTrue(screenBody.contains("AtriaHealthspanDetailPresentationHost("),
+                      "An already-open Healthspan screen must receive the completed weekly cache")
+    }
+
     func testDecorativeDetailAnimationsPauseOutsideActiveScene() throws {
         let healthspan = try appSource("AtriaHealthspanDetailView.swift")
         let overview = try appSource("AtriaOverviewSections.swift")

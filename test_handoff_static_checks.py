@@ -10424,7 +10424,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaHealthStressSection(pulseStore: pulseStore,",
             "baseline: vitalsStore.state.baseline",
-            "maxHeartRate: profileStore.profile.maxHR",
+            "maxHeartRate: live.maxHeartRate",
         ]:
             assert_contains(self, parent_source, needle)
 

@@ -1539,6 +1539,114 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "two post-correction rises may establish a new trajectory")
     }
 
+    func testChargingTrajectoryAcceptsCoalescedSixPointRiseAcrossRealTime() throws {
+        let start = Date(timeIntervalSince1970: 35_000)
+        let candidate = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 11,
+            previousAcceptedAt: start,
+            newLevel: 17,
+            receivedAt: start.addingTimeInterval(90)
+        ))
+
+        XCTAssertEqual(candidate.startLevel, 11)
+        XCTAssertEqual(candidate.lastLevel, 17)
+        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(candidate),
+                      "a bounded coalesced rise should surface the charging bolt")
+
+        let instantCorrection = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 43,
+            previousAcceptedAt: start,
+            newLevel: 49,
+            receivedAt: start.addingTimeInterval(5)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(instantCorrection))
+    }
+
+    func testInitialBatteryValueAfterDidConnectBelongsToCurrentPhysicalLink() {
+        let connectedAt = Date(timeIntervalSince1970: 36_000)
+
+        XCTAssertTrue(AtriaBLEManager.batteryValueBelongsToCurrentConnection(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            receivedAt: connectedAt.addingTimeInterval(0.2)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryValueBelongsToCurrentConnection(
+            peripheralConnected: false,
+            connectionStartedAt: connectedAt,
+            receivedAt: connectedAt.addingTimeInterval(0.2)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryValueBelongsToCurrentConnection(
+            peripheralConnected: true,
+            connectionStartedAt: nil,
+            receivedAt: connectedAt.addingTimeInterval(0.2)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryValueBelongsToCurrentConnection(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            receivedAt: connectedAt.addingTimeInterval(-0.2)
+        ))
+    }
+
+    func testR10DisconnectStormFuseRequiresConsecutiveCurrentFailures() {
+        XCTAssertFalse(AtriaBLEManager.shouldIsolateRecentProtectedR10DisconnectStorm(
+            alreadySuppressed: false,
+            consecutiveEarlyDisconnects: 0,
+            lastDisconnectAge: 2,
+            connectedDuration: 11,
+            lastR10Age: 8
+        ), "a large lifetime disconnect total must not turn one install edge into a storm")
+        XCTAssertFalse(AtriaBLEManager.shouldIsolateRecentProtectedR10DisconnectStorm(
+            alreadySuppressed: false,
+            consecutiveEarlyDisconnects: 1,
+            lastDisconnectAge: 2,
+            connectedDuration: 11,
+            lastR10Age: 8
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldIsolateRecentProtectedR10DisconnectStorm(
+            alreadySuppressed: false,
+            consecutiveEarlyDisconnects: 2,
+            lastDisconnectAge: 2,
+            connectedDuration: 11,
+            lastR10Age: 8
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldIsolateRecentProtectedR10DisconnectStorm(
+            alreadySuppressed: false,
+            consecutiveEarlyDisconnects: 2,
+            lastDisconnectAge: 301,
+            connectedDuration: 11,
+            lastR10Age: 8
+        ))
+    }
+
+    func testLegacyLifetimeDisconnectStormSuppressionIsClearedExactlyOnce() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.falseStormMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set("short_links_with_fresh_r10",
+                     forKey: "atria.protectedR10.disconnectStormReason")
+        defaults.set(0, forKey: "atria.protectedR10.earlyDisconnects")
+        defaults.set(true, forKey: "atria.protectedR10.stableTransport")
+        defaults.set("protected_redp_v9", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("qualified", forKey: "atria.protectedR10.cleanOwnerState")
+
+        XCTAssertTrue(AtriaBLEManager.migrateLegacyFalseR10StormSuppressionIfNeeded(
+            defaults: defaults
+        ))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertNil(defaults.string(forKey: "atria.protectedR10.disconnectStormReason"))
+        XCTAssertEqual(defaults.string(forKey: "atria.radio.passiveR10Status"),
+                       "qualified_migration_resume")
+
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        XCTAssertFalse(AtriaBLEManager.migrateLegacyFalseR10StormSuppressionIfNeeded(
+            defaults: defaults
+        ), "the repair must never clear a later genuine suppression")
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+    }
+
     func testExplicitNotChargingAndFullResetBatteryRiseTrajectory() throws {
         let start = Date(timeIntervalSince1970: 40_000)
         let candidate = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
@@ -3109,7 +3217,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: callbackStart.upperBound..<source.endIndex
         ))
         let callback = String(source[callbackStart.lowerBound..<callbackEnd.lowerBound])
-        XCTAssertTrue(callback.contains("trustedCurrentConnectionNotification: characteristic.isNotifying"))
+        XCTAssertTrue(callback.contains("trustedCurrentConnectionNotification: Self.batteryValueBelongsToCurrentConnection("))
+        XCTAssertTrue(callback.contains("connectionStartedAt: self.connectedAt"))
         XCTAssertFalse(callback.contains("&& self.standardHROnlyMode"),
                        "standard 2A19 validity must not depend on the unrelated R10 radio profile")
     }

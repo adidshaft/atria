@@ -27,6 +27,10 @@ final class AtriaR10MotionTests: XCTestCase {
         let decoded = try XCTUnwrap(AtriaR10MotionDecoder.decode(frame: encodeFrame(payload)))
 
         XCTAssertEqual(decoded.deviceTimestamp, 1_750_000_123)
+        XCTAssertEqual(
+            AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: encodeFrame(payload)),
+            1_750_000_123
+        )
         XCTAssertEqual(decoded.heartRate, 74)
         XCTAssertEqual(decoded.acceleration.count, 100)
         XCTAssertEqual(decoded.acceleration[0].x, 1, accuracy: 0.000_001)
@@ -41,10 +45,12 @@ final class AtriaR10MotionTests: XCTestCase {
         var wrongRecord = makeR10Payload()
         wrongRecord[1] = 0x0B
         XCTAssertNil(AtriaR10MotionDecoder.decode(frame: encodeFrame(wrongRecord)))
+        XCTAssertNil(AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: encodeFrame(wrongRecord)))
 
         var corrupt = encodeFrame(makeR10Payload())
         corrupt[corrupt.index(before: corrupt.endIndex)] ^= 0xFF
         XCTAssertNil(AtriaR10MotionDecoder.decode(frame: corrupt))
+        XCTAssertNil(AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: corrupt))
     }
 
     func testPedometerRejectsRestAndCountsRegularGait() {
@@ -454,7 +460,10 @@ final class AtriaR10MotionTests: XCTestCase {
             }
         }
 
-        wait(for: [latestPublished], timeout: 1)
+        // Full-suite simulator clones can briefly starve the utility queue
+        // while several test workers launch; the production cadence remains
+        // 20 ms in this test, so this only removes harness scheduling flakiness.
+        wait(for: [latestPublished], timeout: 5)
         let snapshot = finalSnapshot.load()
         XCTAssertEqual(snapshot?.frames, 10)
         XCTAssertGreaterThan(snapshot?.steps ?? 0, 0)

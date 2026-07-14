@@ -25,16 +25,20 @@ enum ReplayStepCalibration {
 
         var rows: [(sampleAtMS: Int64, receivedAtMS: Int64, frame: Data)] = []
         for file in files {
-            let text = try String(contentsOf: file, encoding: .utf8)
-            for line in text.split(whereSeparator: \.isNewline).dropFirst() {
+            var isHeader = true
+            try forEachLine(in: file) { line in
+                if isHeader {
+                    isHeader = false
+                    return
+                }
                 let columns = line.split(separator: ",", omittingEmptySubsequences: false)
                 guard columns.count >= 6,
                       let receivedAtMS = Int64(columns[1]),
                       let frame = data(hex: columns[5]),
-                      let decoded = AtriaR10MotionDecoder.decode(frame: frame),
-                      decoded.deviceTimestamp > 0 else { continue }
-                let sampleAtMS = Int64(decoded.deviceTimestamp) * 1_000
-                guard sampleAtMS >= startMS, sampleAtMS < endMS else { continue }
+                      let deviceTimestamp = AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: frame),
+                      deviceTimestamp > 0 else { return }
+                let sampleAtMS = Int64(deviceTimestamp) * 1_000
+                guard sampleAtMS >= startMS, sampleAtMS < endMS else { return }
                 rows.append((sampleAtMS, receivedAtMS, frame))
             }
         }
@@ -269,16 +273,54 @@ enum ReplayStepCalibration {
     }
 
     private static func data(hex: Substring) -> Data? {
-        guard hex.count.isMultiple(of: 2) else { return nil }
+        let utf8 = hex.utf8
+        guard utf8.count.isMultiple(of: 2) else { return nil }
         var bytes: [UInt8] = []
-        bytes.reserveCapacity(hex.count / 2)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
+        bytes.reserveCapacity(utf8.count / 2)
+        var iterator = utf8.makeIterator()
+        while let highCharacter = iterator.next() {
+            guard let lowCharacter = iterator.next(),
+                  let high = hexNibble(highCharacter),
+                  let low = hexNibble(lowCharacter) else { return nil }
+            bytes.append((high << 4) | low)
         }
         return Data(bytes)
+    }
+
+    private static func hexNibble(_ character: UInt8) -> UInt8? {
+        switch character {
+        case 48...57: return character - 48
+        case 65...70: return character - 55
+        case 97...102: return character - 87
+        default: return nil
+        }
+    }
+
+    /// Streams large retained archives instead of materializing every CSV in
+    /// memory. A single calibration pull can exceed 90 MB while a requested
+    /// window contains only a few matching frames; retaining the whole file
+    /// previously allowed the replay process to be killed before it could
+    /// report that sparse evidence honestly.
+    private static func forEachLine(in file: URL,
+                                    _ body: (Substring) throws -> Void) throws {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+
+        var pending = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0A) {
+                var line = pending[..<newline]
+                if line.last == 0x0D { line = line.dropLast() }
+                if let text = String(data: line, encoding: .utf8) {
+                    try body(text[...])
+                }
+                pending.removeSubrange(...newline)
+            }
+        }
+        if !pending.isEmpty,
+           let text = String(data: pending, encoding: .utf8) {
+            try body(text[...])
+        }
     }
 }

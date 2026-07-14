@@ -113,12 +113,17 @@ class StepArchiveCoverageTests(unittest.TestCase):
         self.assertIn("manifest must contain the exact six-stage guided calibration sequence", fitter)
         self.assertIn("previous.endMS <= next.startMS", fitter)
         self.assertIn("window.endMS - window.startMS >= 60_000", fitter)
-        self.assertIn("decoded.deviceTimestamp > 0", replay)
+        self.assertIn("validatedDeviceTimestamp(frame: frame)", replay)
         self.assertIn("sampleAtMS < endMS", replay)
         self.assertIn("duplicate_frames=", replay)
         self.assertIn("magnitudeSegments", replay)
         self.assertIn("decoded.deviceTimestamp &- previousDeviceTimestamp != 1", replay)
         self.assertIn("magnitudeSegments.reduce(0)", replay)
+        for source in (fitter, replay):
+            self.assertIn("FileHandle(forReadingFrom: file)", source)
+            self.assertIn("read(upToCount: 64 * 1_024)", source)
+            self.assertIn("hexNibble", source)
+            self.assertNotIn("String(contentsOf: file", source)
 
     def test_device_timestamp_gap_splits_coverage_segments(self):
         frames = [

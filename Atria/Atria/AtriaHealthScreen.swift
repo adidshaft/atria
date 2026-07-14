@@ -1,5 +1,172 @@
 import SwiftUI
 import Charts
+import Combine
+
+/// The Health tab intentionally does not observe the fast Home stores at its
+/// root: doing so would rebuild its chart-heavy hierarchy for every live pulse.
+/// This projection keeps only values the Health Monitor actually renders and
+/// publishes when one of those values changes. The small monitor subtree stays
+/// live while the timeline and trend charts remain outside the invalidation
+/// boundary.
+struct AtriaHealthMonitorLiveProjection: Equatable {
+    let connectionStatus: AtriaBLEManager.Status
+    let recoveryPercent: Int?
+    let restingHeartRateText: String
+    let hrvValue: String
+    let vo2MaxEstimate: VO2MaxEstimateSummary
+    let maxHeartRate: Int
+}
+
+@MainActor
+final class AtriaHealthMonitorLiveProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaHealthMonitorLiveProjection
+
+    private let liveStore: AtriaHomeModel.CoreLiveStore
+    private let heroStore: AtriaHomeModel.HeroStore
+    private let profileStore: AtriaHomeModel.ProfileStore
+    private let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    private var cancellables = Set<AnyCancellable>()
+
+    init(liveStore: AtriaHomeModel.CoreLiveStore,
+         heroStore: AtriaHomeModel.HeroStore,
+         profileStore: AtriaHomeModel.ProfileStore,
+         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore) {
+        self.liveStore = liveStore
+        self.heroStore = heroStore
+        self.profileStore = profileStore
+        self.profileMetricsStore = profileMetricsStore
+        state = Self.makeState(liveStore: liveStore,
+                               heroStore: heroStore,
+                               profileStore: profileStore,
+                               profileMetricsStore: profileMetricsStore)
+
+        Publishers.MergeMany([
+            liveStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            heroStore.$state.map { _ in () }.eraseToAnyPublisher(),
+            profileStore.$profile.map { _ in () }.eraseToAnyPublisher(),
+            profileMetricsStore.$state.map { _ in () }.eraseToAnyPublisher(),
+        ])
+        .sink { [weak self] in self?.refresh() }
+        .store(in: &cancellables)
+    }
+
+    @discardableResult
+    func refresh() -> Bool {
+        let next = Self.makeState(liveStore: liveStore,
+                                  heroStore: heroStore,
+                                  profileStore: profileStore,
+                                  profileMetricsStore: profileMetricsStore)
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+
+    private static func makeState(
+        liveStore: AtriaHomeModel.CoreLiveStore,
+        heroStore: AtriaHomeModel.HeroStore,
+        profileStore: AtriaHomeModel.ProfileStore,
+        profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    ) -> AtriaHealthMonitorLiveProjection {
+        AtriaHealthMonitorLiveProjection(
+            connectionStatus: liveStore.state.status,
+            recoveryPercent: heroStore.state.recoveryEstimate.percent,
+            restingHeartRateText: heroStore.state.restingHeartRateText,
+            hrvValue: heroStore.state.hrvValue,
+            vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+            maxHeartRate: profileStore.profile.maxHR
+        )
+    }
+}
+
+private struct AtriaHealthMonitorLiveHost<Content: View>: View {
+    @StateObject private var projectionStore: AtriaHealthMonitorLiveProjectionStore
+    let content: (AtriaHealthMonitorLiveProjection) -> Content
+
+    init(liveStore: AtriaHomeModel.CoreLiveStore,
+         heroStore: AtriaHomeModel.HeroStore,
+         profileStore: AtriaHomeModel.ProfileStore,
+         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
+         @ViewBuilder content: @escaping (AtriaHealthMonitorLiveProjection) -> Content) {
+        _projectionStore = StateObject(wrappedValue: AtriaHealthMonitorLiveProjectionStore(
+            liveStore: liveStore,
+            heroStore: heroStore,
+            profileStore: profileStore,
+            profileMetricsStore: profileMetricsStore
+        ))
+        self.content = content
+    }
+
+    var body: some View {
+        content(projectionStore.state)
+    }
+}
+
+private struct AtriaHealthFitnessAgeCardHost: View {
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+
+    var body: some View {
+        AtriaHealthFitnessAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
+    }
+}
+
+private struct AtriaHealthspanDetailPresentationHost: View {
+    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    let store: SessionStore
+    let onClose: () -> Void
+    let onViewPlan: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            AtriaHealthspanDetailView(
+                model: Self.model(
+                    summary: profileMetricsStore.state.biologicalAgeSummary,
+                    projection: store.biologicalAgeHealthspanDetailProjection
+                ),
+                onViewPlan: onViewPlan
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close", action: onClose)
+                }
+            }
+        }
+    }
+
+    private static func model(
+        summary: BiologicalAgeSummary,
+        projection: AtriaFitnessAge.DetailProjection?
+    ) -> AtriaHealthspanDetailModel {
+        let contributors = summary.factors.map { factor in
+            let tone: AtriaHealthspanDetailModel.ContributorTone
+            switch factor.direction {
+            case .younger: tone = .positive
+            case .neutral: tone = .neutral
+            case .older: tone = .attention
+            }
+            return AtriaHealthspanDetailModel.Contributor(id: factor.id,
+                                                          label: factor.label,
+                                                          valueText: factor.deltaText,
+                                                          tone: tone)
+        }
+        let points = (projection?.weeklyObservations ?? []).map {
+            AtriaHealthspanDetailModel.TrendPoint(
+                day: $0.day,
+                value: Double(summary.chronologicalAge + $0.delta)
+            )
+        }
+        return AtriaHealthspanDetailModel(
+            summary: summary,
+            paceOfAging: projection?.paceOfAging,
+            contributors: contributors,
+            trendPoints: points,
+            trendTitle: "Fitness age · 6 months",
+            trendChangeText: projection?.trendChangeText,
+            confidence: .init(level: summary.isReady ? "Estimate ready" : "Learning",
+                              detail: summary.footnote),
+            cachedAt: projection?.cachedAt
+        )
+    }
+}
 
 enum AtriaHealthMonitorGrid {
     static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
@@ -145,7 +312,12 @@ struct AtriaHealthScreen: View {
                                                     baseline: vitals.baseline,
                                                     pulseSparklineStore: pulseSparklineStore,
                                                     isActive: isActive)
-                        healthMonitorCard
+                        AtriaHealthMonitorLiveHost(liveStore: liveStore,
+                                                   heroStore: heroStore,
+                                                   profileStore: profileStore,
+                                                   profileMetricsStore: profileMetricsStore) { projection in
+                            healthMonitorCard(live: projection)
+                        }
                         breathworkCard
                     case .sleep:
                         sleepDetailCard
@@ -154,7 +326,7 @@ struct AtriaHealthScreen: View {
                         Button {
                             showHealthspanDetail = true
                         } label: {
-                            AtriaHealthFitnessAgeCard(summary: profileMetricsStore.state.biologicalAgeSummary)
+                            AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens Healthspan details")
@@ -222,62 +394,19 @@ struct AtriaHealthScreen: View {
             }
         }
         .fullScreenCover(isPresented: $showHealthspanDetail) {
-            NavigationStack {
-                AtriaHealthspanDetailView(
-                    model: healthspanDetailModel(
-                        summary: profileMetricsStore.state.biologicalAgeSummary,
-                        projection: store.biologicalAgeHealthspanDetailProjection
-                    ),
-                    onViewPlan: {
-                        showHealthspanDetail = false
-                        Task { @MainActor in
-                            await Task.yield()
-                            onViewPlan()
-                        }
-                    }
-                )
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Close") { showHealthspanDetail = false }
+            AtriaHealthspanDetailPresentationHost(
+                profileMetricsStore: profileMetricsStore,
+                store: store,
+                onClose: { showHealthspanDetail = false },
+                onViewPlan: {
+                    showHealthspanDetail = false
+                    Task { @MainActor in
+                        await Task.yield()
+                        onViewPlan()
                     }
                 }
-            }
-        }
-    }
-
-    private func healthspanDetailModel(
-        summary: BiologicalAgeSummary,
-        projection: AtriaFitnessAge.DetailProjection?
-    ) -> AtriaHealthspanDetailModel {
-        let contributors = summary.factors.map { factor in
-            let tone: AtriaHealthspanDetailModel.ContributorTone
-            switch factor.direction {
-            case .younger: tone = .positive
-            case .neutral: tone = .neutral
-            case .older: tone = .attention
-            }
-            return AtriaHealthspanDetailModel.Contributor(id: factor.id,
-                                                          label: factor.label,
-                                                          valueText: factor.deltaText,
-                                                          tone: tone)
-        }
-        let points = (projection?.weeklyObservations ?? []).map {
-            AtriaHealthspanDetailModel.TrendPoint(
-                day: $0.day,
-                value: Double(summary.chronologicalAge + $0.delta)
             )
         }
-        return AtriaHealthspanDetailModel(
-            summary: summary,
-            paceOfAging: projection?.paceOfAging,
-            contributors: contributors,
-            trendPoints: points,
-            trendTitle: "Fitness age · 6 months",
-            trendChangeText: projection?.trendChangeText,
-            confidence: .init(level: summary.isReady ? "Estimate ready" : "Learning",
-                              detail: summary.footnote),
-            cachedAt: projection?.cachedAt
-        )
     }
 
     /// Mounts the sleep-stage hypnogram summary (SWS/REM/Light/Awake) that
@@ -391,14 +520,14 @@ struct AtriaHealthScreen: View {
         .accessibilityHint("Opens a guided paced-breathing session tracked from heart rate.")
     }
 
-    private var healthMonitorCard: some View {
+    private func healthMonitorCard(live: AtriaHealthMonitorLiveProjection) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
+            header(live: live)
 
             // Disconnected honesty (2026-07-07 design handoff): saved rollup
             // values are clearly labeled last-known, dimmed, and offered an
             // inline reconnect instead of sitting under a green "Updated".
-            if isDisconnected, latestRollup != nil {
+            if isDisconnected(live: live), latestRollup != nil {
                 HStack(spacing: 10) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.caption.weight(.bold))
@@ -432,15 +561,15 @@ struct AtriaHealthScreen: View {
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
                 AtriaHealthMetricRow(title: "Recovery",
-                                     value: recoveryValue,
-                                     detail: recoveryDetail,
+                                     value: recoveryValue(live: live),
+                                     detail: recoveryDetail(live: live),
                                      systemImage: "heart.fill",
-                                     tint: recoveryTint,
+                                     tint: recoveryTint(live: live),
                                      hint: recoveryHint,
                                      layout: .compactTile,
                                      onTap: { educationTopic = .recovery })
                 AtriaHealthMetricRow(title: "Resting HR",
-                                     value: restingHeartRateValue,
+                                     value: restingHeartRateValue(live: live),
                                      detail: "overnight low",
                                      systemImage: "heart.text.square.fill",
                                      tint: Metrics.electricRHR,
@@ -449,7 +578,7 @@ struct AtriaHealthScreen: View {
                                      layout: .compactTile,
                                      onTap: { educationTopic = .restingHeartRate })
                 AtriaHealthMetricRow(title: "HRV",
-                                     value: hrvValue,
+                                     value: hrvValue(live: live),
                                      detail: "night signal",
                                      systemImage: "waveform.path.ecg",
                                      tint: Metrics.electricHRV,
@@ -458,14 +587,14 @@ struct AtriaHealthScreen: View {
                                      layout: .compactTile,
                                      onTap: { educationTopic = .hrv })
             }
-            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
+            .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
 
             // Stress owns a timeline and action, so it remains full width while
             // the glanceable readiness metrics use a compact adaptive grid.
             AtriaHealthStressSection(pulseStore: pulseStore,
                                      ble: ble,
                                      baseline: vitalsStore.state.baseline,
-                                     maxHeartRate: profileStore.profile.maxHR,
+                                     maxHeartRate: live.maxHeartRate,
                                      behaviorJournalEntries: store.behaviorJournalEntries,
                                      isActive: isActive,
                                      breathworkStressStore: breathworkStressStore,
@@ -473,7 +602,7 @@ struct AtriaHealthScreen: View {
                                          showBreathworkSession = true
                                      },
                                      onOpenEducation: { educationTopic = .stress })
-                .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
+                .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
 
             monitorGroupKicker("Sleep & body")
 
@@ -499,8 +628,8 @@ struct AtriaHealthScreen: View {
                 // no home on the live Vitals tab. Each opens the real detail
                 // sheet (section 3), not just the education sheet, per spec.
                 AtriaHealthMetricRow(title: "VO2 max",
-                                     value: profileMetricsStore.state.vo2MaxEstimate.valueText,
-                                     detail: profileMetricsStore.state.vo2MaxEstimate.value == nil ? "Learning" : "Estimate",
+                                     value: live.vo2MaxEstimate.valueText,
+                                     detail: live.vo2MaxEstimate.value == nil ? "Learning" : "Estimate",
                                      systemImage: "lungs.fill",
                                      tint: Metrics.electricGreen,
                                      layout: .compactTile,
@@ -529,7 +658,7 @@ struct AtriaHealthScreen: View {
             }
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).
-            .opacity(isDisconnected && latestRollup != nil ? 0.65 : 1)
+            .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -601,7 +730,7 @@ struct AtriaHealthScreen: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    private var header: some View {
+    private func header(live: AtriaHealthMonitorLiveProjection) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Health Monitor")
@@ -610,12 +739,12 @@ struct AtriaHealthScreen: View {
 
             Spacer(minLength: 8)
 
-            Text(statusValue)
+            Text(statusValue(live: live))
                 .font(.caption.weight(.bold))
-                .foregroundStyle(statusTint)
+                .foregroundStyle(statusTint(live: live))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(statusTint.opacity(0.12), in: Capsule(style: .continuous))
+                .background(statusTint(live: live).opacity(0.12), in: Capsule(style: .continuous))
         }
     }
 
@@ -667,38 +796,34 @@ struct AtriaHealthScreen: View {
     // Today screen already shows, honestly labeled "today · estimate" so the
     // two tabs never disagree. Nothing is persisted here, so the frozen-chart
     // invariant is untouched -- these are live readiness rows, not trend data.
-    private var liveRecoveryPercent: Int? {
-        heroStore.state.recoveryEstimate.percent
-    }
-
-    private var recoveryValue: String {
+    private func recoveryValue(live: AtriaHealthMonitorLiveProjection) -> String {
         if let value = latestRollup?.recovery {
             return "\(value)%"
         }
-        if let live = liveRecoveryPercent {
-            return "\(live)%"
+        if let recoveryPercent = live.recoveryPercent {
+            return "\(recoveryPercent)%"
         }
         // "Learning" (not "Building") to match this card's own header pill and the
         // Today recovery legend for the identical no-recovery-yet state.
         return "Learning"
     }
 
-    private var recoveryDetail: String {
+    private func recoveryDetail(live: AtriaHealthMonitorLiveProjection) -> String {
         if latestRollup?.recovery != nil { return "saved" }
         // Honesty/consistency: never the banned "building" word here — it
         // contradicts the row's own "Learning" value (see recoveryValue) and the
         // Today/Overview "Day X of 4" calibration language for this same state.
-        return liveRecoveryPercent != nil ? "today · estimate" : "needs a few nights"
+        return live.recoveryPercent != nil ? "today · estimate" : "needs a few nights"
     }
 
-    private var recoveryTint: Color {
-        if let value = latestRollup?.recovery ?? liveRecoveryPercent {
+    private func recoveryTint(live: AtriaHealthMonitorLiveProjection) -> Color {
+        if let value = latestRollup?.recovery ?? live.recoveryPercent {
             return Metrics.recoveryColor(value)
         }
         return .secondary
     }
 
-    private var restingHeartRateValue: String {
+    private func restingHeartRateValue(live: AtriaHealthMonitorLiveProjection) -> String {
         // Honesty (2026-07-05): prefer a real saved rollup RHR. Otherwise only show
         // the live hero value when it's a genuine reading -- its text is "Learning"
         // when it's the 60 math-fallback (no baseline / live / session), and that
@@ -706,18 +831,18 @@ struct AtriaHealthScreen: View {
         if let rollupRHR = latestRollup?.rhr {
             return AtriaMetricFormat.restingHeartRate(Double(rollupRHR))
         }
-        guard let liveRHR = Int(heroStore.state.restingHeartRateText) else { return "Learning" }
+        guard let liveRHR = Int(live.restingHeartRateText) else { return "Learning" }
         return AtriaMetricFormat.restingHeartRate(Double(liveRHR))
     }
 
-    private var hrvValue: String {
+    private func hrvValue(live: AtriaHealthMonitorLiveProjection) -> String {
         if let lnRMSSD = latestRollup?.lnRMSSD {
             return AtriaMetricFormat.hrv(exp(lnRMSSD))
         }
         // Fall back to the live hero HRV (already an honest formatted string --
         // a real value or "Learning") so Vitals matches Today rather than "--".
-        let live = heroStore.state.hrvValue.trimmingCharacters(in: .whitespaces)
-        return live.isEmpty || live == "--" ? "--" : live
+        let liveValue = live.hrvValue.trimmingCharacters(in: .whitespaces)
+        return liveValue.isEmpty || liveValue == "--" ? "--" : liveValue
     }
 
     private var respiratoryValue: String {
@@ -924,19 +1049,19 @@ struct AtriaHealthScreen: View {
         return "\u{2193} \(debtText) debt \u{2014} earlier bedtime tonight"
     }
 
-    private var statusValue: String {
+    private func statusValue(live: AtriaHealthMonitorLiveProjection) -> String {
         guard latestRollup != nil else { return "Learning" }
         // Never a green "Updated" over stale data while disconnected
         // (2026-07-07 design handoff honesty fix).
-        return isDisconnected ? "Last known" : "Updated"
+        return isDisconnected(live: live) ? "Last known" : "Updated"
     }
 
-    private var isDisconnected: Bool {
-        liveStore.state.status != .connected
+    private func isDisconnected(live: AtriaHealthMonitorLiveProjection) -> Bool {
+        live.connectionStatus != .connected
     }
 
-    private var statusTint: Color {
-        statusValue == "Updated" ? Metrics.electricGreen : .secondary
+    private func statusTint(live: AtriaHealthMonitorLiveProjection) -> Color {
+        statusValue(live: live) == "Updated" ? Metrics.electricGreen : .secondary
     }
 }
 

@@ -61,8 +61,8 @@ final class AtriaHealthspanCadenceTests: XCTestCase {
         let appURL = testsURL.deletingLastPathComponent().appendingPathComponent("Atria")
         let source = try String(contentsOf: appURL.appendingPathComponent("AtriaHealthScreen.swift"),
                                 encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "private func healthspanDetailModel("))
-        let end = try XCTUnwrap(source.range(of: "private var sleepDetailCard:",
+        let start = try XCTUnwrap(source.range(of: "private static func model("))
+        let end = try XCTUnwrap(source.range(of: "enum AtriaHealthMonitorGrid",
                                              range: start.upperBound..<source.endIndex))
         let builder = String(source[start.lowerBound..<end.lowerBound])
 
